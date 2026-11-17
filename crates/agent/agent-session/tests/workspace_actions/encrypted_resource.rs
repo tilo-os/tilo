@@ -73,7 +73,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_record().into(),
+        record: source.wire_document().into(),
     };
     assert!(
         route.record.is_empty(),
@@ -84,13 +84,13 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let part_route = part_route(&workspace.workspace, &part);
-    for (_, mutation) in source.take_record_mutations().unwrap() {
+    for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let retained = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace.workspace_id)
         .await
         .unwrap();
@@ -98,8 +98,8 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         retained.iter().any(|body| {
             body.author == writer_device.cert.device_public_key
                 && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
-            Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
-            if app_id == route.app_id && record_id == route.record &&
+            Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, document_id, envelope, ..})
+            if app_id == route.app_id && document_id == route.record &&
                 envelope.encryption.as_ref().is_some())
         }),
         "the real remote writer's retained primary must be encrypted on its exact channel"

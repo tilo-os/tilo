@@ -483,7 +483,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "text_field" | "ime_composition_bounds" => text_field::valid_event(event, value),
         "page_result" | "text_input_result" => crate::webview::page::decode_result(value).is_some(),
-        "page_record" => crate::webview::page::decode_record_event(value).is_some(),
+        "page_resource" => crate::webview::page::decode_resource_event(value).is_some(),
         "page_changed" => crate::webview::page::decode_changed_event(value).is_some(),
         "paint_snapshot" | "paint_resource" => {
             value["request_id"]

@@ -188,7 +188,7 @@ async fn hosted_topic(
     workspace: &str,
 ) -> Option<String> {
     let bytes = workspaces
-        .record_document(workspace, APP, "")
+        .resource_document(workspace, APP, "")
         .await
         .unwrap()?;
     let doc = AutoCommit::load(&bytes).unwrap();
@@ -348,7 +348,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     assert_eq!(wanted, file);
     bob_session
         .publish_presence(
-            postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
+            postcard::to_stdvec(&NeighbourMsg::DocumentContentWant {
                 requester: tilo_peer_state::peer_handle(&phone.device_pubkey()),
                 app_id: APP.into(),
                 cluster_id: workspace.workspace.clone(),
@@ -361,8 +361,8 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let mut fetched = Vec::new();
     tilo_test_env::within("the workspace hands Bob the package", async {
         while fetched.len() < package.len() {
-            if let Some(Inbound::RecordContent { frame, .. }) = bob_session.recv().await
-                && let Ok(NeighbourMsg::RecordContentPiece {
+            if let Some(Inbound::DocumentContent { frame, .. }) = bob_session.recv().await
+                && let Ok(NeighbourMsg::DocumentContentPiece {
                     offset,
                     bytes,
                     hash,

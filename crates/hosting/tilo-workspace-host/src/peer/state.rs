@@ -451,7 +451,7 @@ pub(super) async fn handle_delta(
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);
-    let channel = crate::peer::admission::record_of(&env);
+    let channel = crate::peer::admission::resource_of(&env);
     let Some(source) = authorized_state_source(&ws, peer, session, op, channel).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
@@ -718,7 +718,7 @@ pub(super) async fn handle_delta_prefix(
     }
     // A prefix of changes rides on the plane its first change does.
     let op = crate::peer::admission::plane_of(first);
-    let channel = crate::peer::admission::record_of(first);
+    let channel = crate::peer::admission::resource_of(first);
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
@@ -851,7 +851,7 @@ fn writes_for_an_environment(
     let outside = envelopes.iter().any(|envelope| {
         matches!(envelope, Envelope::Delta { .. })
             && !crate::environment::Environment::Placed(scope)
-                .writes(crate::peer::admission::record_of(envelope))
+                .writes(crate::peer::admission::resource_of(envelope))
     });
     if outside {
         tracing::debug!(

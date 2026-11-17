@@ -3,7 +3,7 @@
 //! A process that commits to a Tilo workspace links this crate, not the UI
 //! toolkit: an app host running tilolang apps as wasm instances, a browser
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
-//! (`ui::collaboration`, `ui::record`,
+//! (`ui::collaboration`, `ui::resource`,
 //! `ui::local_identity`, `ui::local_document_action`,
 //! `ui::portable_storage`), so native apps
 //! compile unchanged.
@@ -99,13 +99,13 @@
 )]
 
 pub mod action_directory;
+pub mod document;
 pub mod document_routes;
 pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
 pub mod portable_storage;
-pub mod record;
 pub mod state;
 
 // The clock, wake routing and host inputs, under the paths the toolkit
@@ -176,7 +176,7 @@ mod lane;
 pub mod write_attribution_lane;
 
 pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
-pub mod record_content;
+pub mod document_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(all(feature = "broker-transport", unix))]
@@ -477,7 +477,7 @@ pub enum CollabRequest {
         record: Option<String>,
         /// The resource kind of `record`, named so a host that creates a
         /// missing record on the app's first write knows what it holds.
-        record_kind: Option<String>,
+        resource_type: Option<String>,
         /// Name on the caret pill; `None` gets a synthetic `peer-<n>`.
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
@@ -507,7 +507,7 @@ pub enum CollabRequest {
     },
     /// Content this route's record references and the app lacks. Answered,
     /// from this device or the route's other devices, with
-    /// [`CollabEvent::RecordContent`].
+    /// [`CollabEvent::DocumentContent`].
     WantContent {
         hash: String,
     },
@@ -607,7 +607,7 @@ pub enum CollabRequest {
         report: runtime_collab::LocalDocumentActionReport,
     },
     /// Terminal receipt for an Effect initiated by this app's local UI.
-    RecordLocalEffect {
+    ResourceLocalEffect {
         address: tilo_actions::ActionAddress,
         update: tilo_actions::InvocationUpdate,
     },
@@ -922,7 +922,7 @@ impl CollaborationManager {
     /// frame.
     ///
     /// Both modes auto-send `Hello` announcing **no record** (one document
-    /// per `(app, workspace)`); use [`Self::for_record`] for apps that have
+    /// per `(app, workspace)`); use [`Self::for_resource`] for apps that have
     /// adopted records.
     pub fn new() -> Self {
         Self::new_scoped(
@@ -934,7 +934,7 @@ impl CollaborationManager {
     /// Without the broker transport there is no native document route to
     /// switch; callers keep their current record.
     #[cfg(not(feature = "broker-transport"))]
-    pub fn switch_native_record(
+    pub fn switch_native_resource(
         &mut self,
         _checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
@@ -951,7 +951,7 @@ impl CollaborationManager {
     }
 
     /// Join through the existing worker; never take the inherited RPC fd twice.
-    pub fn prepare_native_record(
+    pub fn prepare_native_resource(
         &mut self,
         checkout: &collab_types::document::DocumentCheckout,
     ) -> Option<CommittedDocument> {
@@ -990,7 +990,7 @@ impl CollaborationManager {
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
-    pub fn for_record(checkout: &collab_types::document::DocumentCheckout) -> Self {
+    pub fn for_resource(checkout: &collab_types::document::DocumentCheckout) -> Self {
         Self::new_scoped(
             Some(checkout.id.as_str().to_string()),
             Some(checkout.kind.as_str().to_string()),
@@ -1152,7 +1152,7 @@ impl CollaborationManager {
             app_id: pending.app_id,
             cluster_id: pending.cluster_id,
             record,
-            record_kind: Some(checkout.kind.as_str().to_owned()),
+            resource_type: Some(checkout.kind.as_str().to_owned()),
             handle: crate::local_identity::own_name(),
         }) {
             return Err("native route queue unavailable".into());
@@ -1163,7 +1163,7 @@ impl CollaborationManager {
 
     /// Without a built-in transport there is nothing to discover.
     #[cfg(not(feature = "broker-transport"))]
-    fn new_scoped(_record: Option<String>, _record_kind: Option<String>) -> Self {
+    fn new_scoped(_record: Option<String>, _resource_type: Option<String>) -> Self {
         Self::disabled()
     }
 
@@ -1396,16 +1396,16 @@ impl CollaborationManager {
 
     /// Join and subscribe to an additional route without publishing traffic.
     /// Repeated joins of the same route are idempotent.
-    /// Join `route`, whose record holds `record_kind`. The kind travels with
+    /// Join `route`, whose record holds `resource_type`. The kind travels with
     /// the join so a host that must create the record when this device
     /// writes first knows what it holds; joining without it would let the
     /// host answer that the app named no kind.
     pub fn join_route(
         &mut self,
         route: RouteSpec,
-        record_kind: collab_types::document::ResourceType,
+        resource_type: collab_types::document::ResourceType,
     ) {
-        let _ = self.submit(TransportCommand::Join(route, record_kind));
+        let _ = self.submit(TransportCommand::Join(route, resource_type));
     }
 
     /// Install an already-provisioned MLS endpoint for `route`.
@@ -1616,13 +1616,15 @@ impl CollaborationManager {
             // create the record when this device writes first; the owner's
             // own `join_route` is what names it, and a join repeated here
             // only reaches a host that already has the record.
-            let record_kind = match &self.backend {
-                Backend::Transport(transport) => transport.joined_record_kind(&route.channel_id()),
+            let resource_type = match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.joined_resource_type(&route.channel_id())
+                }
                 Backend::Disabled(_) => None,
             };
             let _ = self.submit(TransportCommand::Join(
                 route,
-                record_kind.unwrap_or_else(|| collab_types::document::ResourceType::new("")),
+                resource_type.unwrap_or_else(|| collab_types::document::ResourceType::new("")),
             ));
             return Err(CollabSendError::Unavailable);
         }
@@ -1653,13 +1655,13 @@ impl CollaborationManager {
 
     /// The kind of record `route` was joined with, as the transport holds it.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn joined_record_kind(
+    pub fn joined_resource_type(
         &self,
         route: &RouteSpec,
     ) -> Option<collab_types::document::ResourceType> {
         match &self.backend {
             Backend::Disabled(_) => None,
-            Backend::Transport(transport) => transport.joined_record_kind(&route.channel_id()),
+            Backend::Transport(transport) => transport.joined_resource_type(&route.channel_id()),
         }
     }
 
@@ -1858,8 +1860,11 @@ pub fn local_user_id() -> collab_types::MemberId {
     // An override that names no person (a prefixed or empty id) lands on the
     // last rung the ladder has: the local account, not a subject no roster
     // knows.
-    let person = collab_types::PersonId::parse(&id)
-        .unwrap_or_else(|_| collab_types::PersonId::from(local_account()));
+    let person = tilo_failure::ignored!(
+        "an id that names no person falls back to the local account",
+        collab_types::PersonId::parse(&id)
+            .unwrap_or_else(|_| collab_types::PersonId::from(local_account()))
+    );
     collab_types::MemberId::Person(person)
 }
 
@@ -2275,7 +2280,7 @@ mod late_primary_route_tests {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: None,
-            record_kind: Some("notes.notebook".into()),
+            resource_type: Some("notes.notebook".into()),
             handle: None,
         }));
         manager.confirm_primary_route_in_background();

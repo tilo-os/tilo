@@ -10,8 +10,8 @@ use tilo_app::permissions::Role;
 use tilo_app::prelude::*;
 use tilo_app::{RemoteActions, RemoteActionsGuard};
 use tilo_reference::link::{
-    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
-    WebEntries, WebEntry,
+    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
+    Scope, WebEntries, WebEntry,
 };
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
@@ -176,7 +176,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
                 slug: None,
             },
             app: Some(AppId::parse(NotebookApp::ID).unwrap()),
-            record: Some(RecordSegment::new(app.record().as_str()).unwrap()),
+            record: Some(ResourceSegment::new(app.record().as_str()).unwrap()),
             resource: Some(ResourceAddress {
                 kind: "test.notebook.pages".into(),
                 id: page.to_owned(),
@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
                 format!(
                     "record:{}:{}",
                     NotebookApp::ID,
-                    RecordSegment::new(app.record().as_str())
+                    ResourceSegment::new(app.record().as_str())
                         .unwrap()
                         .provider_part()
                 )

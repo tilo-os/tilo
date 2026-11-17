@@ -16,12 +16,12 @@ use std::sync::Arc;
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
 use collab_types::document::DocumentId;
+use collaboration::document::ResourceSaveStatus;
+use collaboration::document::save::{open_stored, resource_document};
+use collaboration::document_content::{ContentLane, DocumentContent};
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
-use collaboration::record::RecordSaveStatus;
-use collaboration::record::save::{open_stored, record_document};
-use collaboration::record_content::{ContentLane, RecordContent};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
 };
@@ -219,7 +219,7 @@ fn copy_document(
     }
     let base = DocumentId::from_route(route.record.as_deref().unwrap_or(""))?;
     let key = base.chunk(chunk).storage_key();
-    record_document(
+    resource_document(
         documents,
         &route.app_id,
         &route.cluster_id.to_string(),
@@ -237,12 +237,12 @@ fn route_document(
     let workspace = route.cluster_id.to_string();
     match &route.record {
         None => {
-            collaboration::record::save::workspace_document(documents, &route.app_id, &workspace)
+            collaboration::document::save::workspace_document(documents, &route.app_id, &workspace)
         }
         Some(record) => {
             let id = DocumentId::parse(record)
                 .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
-            record_document(documents, &route.app_id, &workspace, &id.storage_key())
+            resource_document(documents, &route.app_id, &workspace, &id.storage_key())
         }
     }
     .map_err(|error| RecordError::Open(error.to_string()))
@@ -320,7 +320,7 @@ impl InstanceRecord {
         let lane = Arc::new(ContentLane::default());
         ContentLane::show_on_route(&route, &lane);
         Self {
-            content: RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
+            content: DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
             lane,
             chunks: Docs::Own(chunks),
             moved: true,
@@ -382,7 +382,7 @@ impl InstanceRecord {
     /// keep as content outlives the instance, and is read back when the record opens again.
     #[must_use]
     pub fn keeping_content_in(mut self, local: ContentStore) -> Self {
-        self.content = RecordContent::store(local, Arc::clone(&self.lane));
+        self.content = DocumentContent::store(local, Arc::clone(&self.lane));
         self
     }
 
@@ -494,10 +494,10 @@ impl InstanceRecord {
         person: impl Into<String>,
         kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
-        use collaboration::native_initial::{self, NativeConstruction};
-        use collaboration::record::save::{
+        use collaboration::document::save::{
             open_stored_adopting, open_with_committed_read, workspace_document,
         };
+        use collaboration::native_initial::{self, NativeConstruction};
         let route = manager
             .primary_route()
             .map(|joined| joined.route().clone())
@@ -668,23 +668,23 @@ impl InstanceRecord {
     /// Whether the record's changes are stored: in memory only without an on-disk copy. Every
     /// chunk is stored to its own copy, so the record is stored when all of them are.
     #[must_use]
-    pub fn save_status(&self) -> RecordSaveStatus {
+    pub fn save_status(&self) -> ResourceSaveStatus {
         let Some(writers) = &self.writers else {
-            return RecordSaveStatus::MemoryOnly;
+            return ResourceSaveStatus::MemoryOnly;
         };
-        let mut status = RecordSaveStatus::Saved;
+        let mut status = ResourceSaveStatus::Saved;
         for (chunk, writer) in &writers.chunks {
             let Some(of) = self.read(|chunks| {
                 chunks
                     .held(*chunk)
-                    .map(|doc| RecordSaveStatus::of_writer(doc, writer))
+                    .map(|doc| ResourceSaveStatus::of_writer(doc, writer))
             }) else {
                 continue;
             };
             match of {
-                failure @ RecordSaveStatus::Failed(_) => return failure,
-                RecordSaveStatus::Saving => status = RecordSaveStatus::Saving,
-                RecordSaveStatus::Saved | RecordSaveStatus::MemoryOnly => {}
+                failure @ ResourceSaveStatus::Failed(_) => return failure,
+                ResourceSaveStatus::Saving => status = ResourceSaveStatus::Saving,
+                ResourceSaveStatus::Saved | ResourceSaveStatus::MemoryOnly => {}
             }
         }
         status
@@ -1689,10 +1689,10 @@ impl InstanceRecord {
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();
         let record_id = self.chunk_record(chunk);
-        let record = collab_types::Record {
+        let record = collab_types::WrittenDocument {
             workspace: &workspace,
             app: &app,
-            record: &record_id,
+            document: &record_id,
         };
         self.keep_on_disk(chunk);
         // What the store wrote of the action is its change, as replaying the action writes it:
@@ -1804,7 +1804,7 @@ impl InstanceRecord {
 
     fn take_in(&mut self, mut other: impl FnMut(CollabEvent)) -> bool {
         let mut changed = false;
-        let mut record_changed = false;
+        let mut resource_changed = false;
         let mut routes = self.taken_routes();
         self.send_content();
         for event in self.manager.poll() {
@@ -1855,11 +1855,11 @@ impl InstanceRecord {
                 }
                 // Content the record names arrived, or where a want of it stands: the record's
                 // store keeps it on its next read.
-                CollabEvent::RecordContent { route, hash, bytes } if route == self.route => {
+                CollabEvent::DocumentContent { route, hash, bytes } if route == self.route => {
                     self.lane.arrive(hash, bytes);
                     continue;
                 }
-                CollabEvent::RecordContentState { route, hash, state } if route == self.route => {
+                CollabEvent::DocumentContentState { route, hash, state } if route == self.route => {
                     self.lane.stands(hash, state);
                     continue;
                 }
@@ -1884,13 +1884,13 @@ impl InstanceRecord {
             changed |= applied > 0;
             self.note_arrived(chunk, &before);
             if chunk == FIRST && applied > 0 {
-                record_changed = true;
+                resource_changed = true;
                 // The record names which chunks its resources are in: a change of it may name
                 // ones this replica holds none of yet.
                 routes = self.taken_routes();
             }
         }
-        if record_changed {
+        if resource_changed {
             self.chunks.reread_placement();
             self.join_chunks();
         }
@@ -1937,7 +1937,7 @@ impl InstanceRecord {
 
 /// Why the workspace refuses what `doc`, the chunk `record`, holds past `before`, when it does.
 fn refusal_of(
-    record: &collab_types::Record<'_>,
+    record: &collab_types::WrittenDocument<'_>,
     doc: &Doc,
     before: &[ChangeHash],
 ) -> Option<String> {
@@ -1960,7 +1960,7 @@ fn fork_back(doc: &mut Doc, before: &[ChangeHash]) -> Result<(), automerge::Auto
 /// What `doc`, the chunk `record`, holds past `before` once an action wrote it: kept, with the
 /// heads before it, or taken out again, with why the workspace refuses it.
 fn kept_or_refused(
-    record: &collab_types::Record<'_>,
+    record: &collab_types::WrittenDocument<'_>,
     doc: &mut Doc,
     before: Vec<ChangeHash>,
 ) -> Result<(Vec<ChangeHash>, Option<String>), RecordError> {

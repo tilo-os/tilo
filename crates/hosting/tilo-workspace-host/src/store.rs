@@ -24,8 +24,8 @@
 pub(crate) use tilo_relay_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
+pub(crate) mod document_sync;
 pub(crate) mod governed_access;
-pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]

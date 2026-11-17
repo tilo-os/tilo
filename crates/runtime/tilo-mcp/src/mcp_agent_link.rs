@@ -137,7 +137,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 self.mint_link(&resolved.provider, resource, arguments)
                     .await?
             }
-            None => self.record_link(&resolved.provider, arguments).await?,
+            None => self.document_link(&resolved.provider, arguments).await?,
         };
         let mut reply = Reply::ok(url.clone());
         if structured {
@@ -153,12 +153,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The link to the record `provider` serves: its root's `share-link`. A
     /// record the workspace serves by its provider names its root by the
     /// empty resource; a window's root is found at its top level.
-    pub(super) async fn record_link(
+    pub(super) async fn document_link(
         &self,
         provider: &str,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String, String> {
-        let resource = if tilo_actions::remote::is_record_provider(provider) {
+        let resource = if tilo_actions::remote::is_resource_provider(provider) {
             String::new()
         } else {
             let mut levels = Levels::new();
@@ -225,7 +225,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         named: &[&str],
     ) -> Option<String> {
-        let (app, _) = tilo_actions::remote::record_parts(provider)?;
+        let (app, _) = tilo_actions::remote::resource_parts(provider)?;
         let app = app.to_owned();
         self.show(provider, "").await;
         for resource in named {
@@ -233,7 +233,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return Some(url);
             }
         }
-        match self.record_link(provider, serde_json::Map::new()).await {
+        match self.document_link(provider, serde_json::Map::new()).await {
             Ok(url) => Some(url),
             Err(error) => {
                 tracing::debug!(%error, provider, "mcp: a changed record answered no link");
@@ -282,9 +282,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     pub(super) async fn show(&self, provider: &str, app_id: &str) {
         use tilo_actions::remote::{
             APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
-            application_action_target, application_record_target,
+            application_action_target, application_resource_target,
         };
-        let (app, record) = match tilo_actions::remote::record_parts(provider) {
+        let (app, record) = match tilo_actions::remote::resource_parts(provider) {
             Some((app, record)) => (app, record),
             None if !app_id.is_empty() => (app_id, ""),
             None => return,
@@ -293,7 +293,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let target = if record.is_empty() {
             application_action_target(&self.workspace, app, resource, APPLICATION_OPEN_ACTION)
         } else {
-            application_record_target(
+            application_resource_target(
                 &self.workspace,
                 app,
                 record,
@@ -365,7 +365,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             value.pointer("/update/state").and_then(Value::as_str),
             Some("succeeded" | "failed" | "cancelled")
         );
-        if finished || !tilo_actions::remote::is_record_provider(provider) {
+        if finished || !tilo_actions::remote::is_resource_provider(provider) {
             return;
         }
         let mut changing = self.changing.lock_recover();
@@ -396,20 +396,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         resource: String,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String, String> {
-        let value = Box::pin(self.invoke_one(OneCall {
-            provider: Addressed {
-                provider: provider.to_owned(),
-                app_id: tilo_actions::remote::record_parts(provider).map(|(app, _)| app.to_owned()),
-            },
-            workspace: false,
-            revision: None,
-            resource,
-            action: SHARE_LINK_ACTION.to_owned(),
-            arguments,
-            invocation_id: None,
-            wait_ms: None,
-        }))
-        .await?;
+        let value =
+            Box::pin(
+                self.invoke_one(OneCall {
+                    provider: Addressed {
+                        provider: provider.to_owned(),
+                        app_id: tilo_actions::remote::resource_parts(provider)
+                            .map(|(app, _)| app.to_owned()),
+                    },
+                    workspace: false,
+                    revision: None,
+                    resource,
+                    action: SHARE_LINK_ACTION.to_owned(),
+                    arguments,
+                    invocation_id: None,
+                    wait_ms: None,
+                }),
+            )
+            .await?;
         url_of(&value)
     }
 }

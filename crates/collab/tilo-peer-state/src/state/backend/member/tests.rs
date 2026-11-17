@@ -288,12 +288,12 @@ tilo_test_env::scenario! {
         workspace.commit();
         let workspace_id = peer.workspace_id().to_owned();
         // Another member's own record is known by what its writes say.
-        let theirs_own = collab_types::OwnRecord::of_person(&"ad".repeat(32), "chat.drafts").unwrap();
-        peer.keep_own_record("so.tilo.chat", &theirs_own);
-        let theirs = theirs_own.record_id();
-        let own = collab_types::OwnRecord::of_person(&person, "chat.drafts")
+        let theirs_own = collab_types::OwnResource::of_person(&"ad".repeat(32), "chat.drafts").unwrap();
+        peer.keep_own_document("so.tilo.chat", &theirs_own);
+        let theirs = theirs_own.document_id();
+        let own = collab_types::OwnResource::of_person(&person, "chat.drafts")
             .unwrap()
-            .record_id();
+            .document_id();
         assert_eq!(
             peer.role(&source, now).unwrap(),
             Role::Owner,
@@ -326,7 +326,7 @@ tilo_test_env::scenario! {
             viewer.answer(
                 &own_node,
                 ActionKind::Undoable,
-                &tilo_action_policy::Context::at_time(now).with_own_record(&own, &person)
+                &tilo_action_policy::Context::at_time(now).with_own_resource(&own, &person)
             ) == tilo_action_policy::Answer::Allow
         );
     }

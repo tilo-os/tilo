@@ -215,23 +215,27 @@ struct WaitListEntryStoredV1 {
 /// `state` holds no workspace record this build reads, or one of its files does
 /// not read: the export says which, and writes nothing.
 pub fn export(state: &Path) -> Result<People, String> {
-    let record_path = one_record(state)?;
+    let resource_path = one_record(state)?;
     let record: Record =
-        postcard::take_from_bytes(&std::fs::read(&record_path).map_err(saying(&record_path))?)
+        postcard::take_from_bytes(&std::fs::read(&resource_path).map_err(saying(&resource_path))?)
             .map(|(record, _)| record)
-            .map_err(|error| format!("{}: {error}", record_path.display()))?;
+            .map_err(|error| format!("{}: {error}", resource_path.display()))?;
     if record.version != 3 {
         return Err(format!(
             "{}: the record is version {}, and this export reads version 3",
-            record_path.display(),
+            resource_path.display(),
             record.version
         ));
     }
-    let durable = durable_state(&record_path, &record.peer)?;
+    let durable = durable_state(&resource_path, &record.peer)?;
     let document = workspace_document(&durable)?;
-    let document = AutoCommit::load(&document)
-        .map_err(|error| format!("{}: the workspace document: {error}", record_path.display()))?;
-    let kept = wait_list_of(&record_path.with_extension("wait-list"))?;
+    let document = AutoCommit::load(&document).map_err(|error| {
+        format!(
+            "{}: the workspace document: {error}",
+            resource_path.display()
+        )
+    })?;
+    let kept = wait_list_of(&resource_path.with_extension("wait-list"))?;
     let emails = addresses(
         &record.collaboration.invitations,
         &kept,
@@ -346,8 +350,8 @@ fn names(record: &Path) -> Option<String> {
 
 /// The record's durable peer state, whole: the parts it names inline, then the
 /// large ones each from its parts directory.
-fn durable_state(record_path: &Path, parts: &[PeerPart]) -> Result<Vec<u8>, String> {
-    let directory = record_path.with_extension("parts");
+fn durable_state(resource_path: &Path, parts: &[PeerPart]) -> Result<Vec<u8>, String> {
+    let directory = resource_path.with_extension("parts");
     let mut whole = Vec::new();
     for part in parts {
         match part {

@@ -151,8 +151,8 @@ fn admit(
 }
 
 /// A record the workspace holds, as any member writes it.
-fn hold_record(doc: &mut AutoCommit, record: &str) {
-    tilo_desktop_model::projection::project_workspace_records(
+fn hold_document(doc: &mut AutoCommit, record: &str) {
+    tilo_desktop_model::projection::project_workspace_documents(
         doc,
         &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
     )
@@ -205,7 +205,7 @@ tilo_test_env::scenario! {
             crate::workspace::policy_of(&workspace, WORKSPACE)
         );
         let writer = key(0x02);
-        let edit = changes_after(&based, |doc| hold_record(doc, "file:/plan.md"));
+        let edit = changes_after(&based, |doc| hold_document(doc, "file:/plan.md"));
         assert!(
             admit(
                 Some(&based),
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
     phase sender_needs_write_on_the_workspace_it_already_governs;
     {
         let before = governed();
-        let edit = changes_after(&before, |doc| hold_record(doc, "file:/plan.md"));
+        let edit = changes_after(&before, |doc| hold_document(doc, "file:/plan.md"));
         let writer = key(0x02);
         assert_eq!(
             admit(
@@ -253,7 +253,7 @@ tilo_test_env::scenario! {
             )
             .is_ok()
         );
-        let added = changes_after(&before, |doc| hold_record(doc, "file:/notes.md"));
+        let added = changes_after(&before, |doc| hold_document(doc, "file:/notes.md"));
         assert!(
             admit(
                 Some(&before),
@@ -337,7 +337,7 @@ tilo_test_env::scenario! {
         let before = governed();
         let edit = changes_after(&before, |doc| {
             doc.put(ROOT, "layout_v1", "personal").unwrap();
-            hold_record(doc, "file:/plan.md");
+            hold_document(doc, "file:/plan.md");
         });
         assert!(
             admit(
@@ -748,7 +748,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         held.commit();
-        let edit = changes_after(&held, |doc| hold_record(doc, "file:/plan.md"));
+        let edit = changes_after(&held, |doc| hold_document(doc, "file:/plan.md"));
         assert!(
             admit(Some(&held), as_editor(), governor, &edit).is_ok(),
             "a shortcut held unchanged is not a write"

@@ -136,7 +136,7 @@ pub enum Reply {
     },
     ConnectionSnapshot(ConnectionSnapshot),
     /// The record reaches a device only once it asks
-    /// (`neighbour_wire::record_sync`), and the workspace's hosts sent
+    /// (`neighbour_wire::document_sync`), and the workspace's hosts sent
     /// everything they hold of it without it, or no host of the workspace
     /// is connected: not readable, and not on its way either. Like
     /// [`Self::Unavailable`] an [`Request::Await`] for `None` holds until

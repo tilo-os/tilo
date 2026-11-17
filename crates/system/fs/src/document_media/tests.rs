@@ -240,7 +240,7 @@ async fn ranged_reads_keep_the_verified_file_chunk_fallback() {
         store.store().blobs().status(hash).await.unwrap(),
         BlobStatus::NotFound
     ));
-    record_reference(&store, &photos, hash).await.unwrap();
+    document_reference(&store, &photos, hash).await.unwrap();
     let media = DocumentMedia::new(Arc::clone(&store));
     assert_eq!(
         media.read_range(photos.clone(), hash, 7, 11).await,

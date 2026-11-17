@@ -32,10 +32,10 @@ fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
         .clone();
     let source_record = app.record().clone();
     let uri = crate::native_timers::alarm_activation(Some(&source_record), id.as_str());
-    let other_record = ui::record::DocumentId::minted();
-    app.open_here(&[&format!("tilo-clocks:record/{other_record}")])
+    let other_document = ui::resource::DocumentId::minted();
+    app.open_here(&[&format!("tilo-clocks:record/{other_document}")])
         .unwrap();
-    assert_eq!(app.record(), &other_record);
+    assert_eq!(app.record(), &other_document);
     app.invoke(Clocks::ADD_ALARM.with(("Other record".to_owned(), 12, 0, Vec::new())))
         .unwrap();
     let mut reopened = app.relaunch(&[&uri]).unwrap();
@@ -71,7 +71,7 @@ fn live_alarm_activation_returns_from_another_record_to_the_source_alarm() {
     let source = app.record().clone();
     let alarm = app.state().alarms.ids().next().unwrap().clone();
     let uri = crate::native_timers::alarm_activation(Some(&source), alarm.as_str());
-    let other = ui::record::DocumentId::minted();
+    let other = ui::resource::DocumentId::minted();
     app.open_here(&[&format!("tilo-clocks:record/{other}")])
         .unwrap();
     assert_eq!(app.record(), &other);

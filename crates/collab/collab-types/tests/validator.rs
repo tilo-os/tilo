@@ -43,7 +43,7 @@ fn fixture() -> Fixture {
     let mut state = InboundState::default();
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.artifact_apps.insert(artifact, "so.tilo.notes".into());
-    state.artifact_records.insert(artifact, "page".into());
+    state.artifact_resources.insert(artifact, "page".into());
     Fixture {
         author_sk,
         author_pub,

@@ -73,7 +73,7 @@ impl Linked {
                 workspace_changes: seed_workspace(WORKSPACE, &a_cert, &devices).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],
@@ -116,7 +116,7 @@ impl Linked {
 }
 
 /// The record's change setting `value`, made on `a`'s copy as `key`'s device.
-fn record_change(a: &DirectSync, key: &SigningKey, value: &str) -> Vec<u8> {
+fn document_change(a: &DirectSync, key: &SigningKey, value: &str) -> Vec<u8> {
     let mut edit = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
     edit.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
@@ -177,14 +177,14 @@ async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
     let (a, key) = (&linked.a, &linked.a_key);
 
     // The earlier write: made on `a`, never sent.
-    let earlier = record_change(a, key, "kept back");
+    let earlier = document_change(a, key, "kept back");
     a.replica().write(|a| {
         a.publication_mut()
             .publish_incremental(APP, RECORD, earlier, key, SystemTime::now())
             .unwrap();
     });
     // The later one, built on it, is all `b` hears.
-    let later = record_change(a, key, "sent");
+    let later = document_change(a, key, "sent");
     a.publish(|a| {
         a.publication_mut()
             .publish_incremental(APP, RECORD, later, key, SystemTime::now())

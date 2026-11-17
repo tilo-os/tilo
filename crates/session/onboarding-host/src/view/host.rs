@@ -531,14 +531,14 @@ fn mount_in_memory(
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::launch::LaunchError;
     use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
-    use ui::record::{DocumentId, RecordOwners};
+    use ui::resource::{DocumentId, ResourceOwners};
 
     const DEVICE: &str = "this-device";
     const ROOM: &str = "onboarding";
     let definition = tilo_onboarding::definition();
     let author = crate::host::person();
     let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
-    let records = RecordOwners::with_store(Rc::clone(&store))
+    let records = ResourceOwners::with_store(Rc::clone(&store))
         .open(definition.app_id(), ROOM)
         .map_err(LaunchError::Record)?;
     let views = ui::application_view::InstanceViewStore::with_store(store, DEVICE, ROOM)
@@ -557,7 +557,7 @@ fn mount_in_memory(
         action_context: tilo_actions::ActionContext::default(),
     };
     let mut context =
-        HostContext::prepare_new_record(definition, inputs, DocumentId::workspace_default())?;
+        HostContext::prepare_new_resource(definition, inputs, DocumentId::workspace_default())?;
     lend(&mut context);
     definition.instantiate(context, LaunchTarget::New, RestoreInput::None)
 }

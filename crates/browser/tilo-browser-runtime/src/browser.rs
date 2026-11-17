@@ -13,7 +13,7 @@ use js_sys::{Function, Reflect};
 use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
-use ui::record::{DocumentCheckout, RecordStore};
+use ui::resource::{DocumentCheckout, ResourceStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -466,7 +466,7 @@ pub(crate) struct Mount {
     media: ui::headless::host_media::MediaLane,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
-    stores: Rc<RefCell<Vec<RecordStore>>>,
+    stores: Rc<RefCell<Vec<ResourceStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<DocumentCheckout>,
     /// The workspace's files, as the page's search reads them.
@@ -1046,7 +1046,7 @@ impl Mount {
         for store in self.stores.borrow().iter() {
             let _ = store.try_flush();
         }
-        crate::person_records::flush(&self.store);
+        crate::person_resources::flush(&self.store);
         self.save_desktop();
     }
 
@@ -1376,7 +1376,7 @@ fn definition(
 /// What a mount presents, before the window and frame pipeline exist.
 struct Presentation {
     root: Root,
-    stores: Rc<RefCell<Vec<RecordStore>>>,
+    stores: Rc<RefCell<Vec<ResourceStore>>>,
     /// The workspace's files, as the page's search reads them.
     files: Option<Rc<crate::page_files::WorkspaceFiles>>,
     checkout: Option<DocumentCheckout>,
@@ -1451,12 +1451,12 @@ fn mount_search(
 /// store its own records are in, from the content the page keeps.
 fn files_of_the_workspace(
     config: &Config,
-    owners: &ui::record::RecordOwners,
+    owners: &ui::resource::ResourceOwners,
     shared: &crate::desktop::Shared,
     content: &tilo_content::ContentStore,
 ) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
     config.peer?;
-    let records = crate::workspace_records::in_page(
+    let records = crate::workspace_resources::in_page(
         owners,
         &shared.stores,
         &config.workspace,
@@ -1473,13 +1473,13 @@ fn files_of_the_workspace(
             let route = ui::collaboration::RouteSpec::record(
                 fs_protocol::tree::FILES_APP,
                 workspace.as_uuid(),
-                collab_types::person_record_id(fs_protocol::tree::TREE_KIND),
+                collab_types::person_document_id(fs_protocol::tree::TREE_KIND),
             );
             // Bytes that arrive ask for the pass that reads their words, so
             // the palette finds what a file says without a keystroke to wake it.
-            ui::collaboration::record_content::ContentLane::of(&route)
+            ui::collaboration::document_content::ContentLane::of(&route)
                 .attach(ui::WakeHandle::new());
-            ui::collaboration::record_content::ContentLane::record_store(&route)
+            ui::collaboration::document_content::ContentLane::resource_store(&route)
         }
         Err(_) => content.clone(),
     };
@@ -1633,7 +1633,7 @@ fn desktop_shell(
     (here, session, (owners, permissions)): (
         &tilo_desktop::here::Here,
         &Arc<tilo_desktop_surface::session::DesktopSession>,
-        (&ui::record::RecordOwners, &SharedPermissions),
+        (&ui::resource::ResourceOwners, &SharedPermissions),
     ),
 ) -> Result<crate::shell::BrowserShell, JsValue> {
     let authorship = crate::shell::Authorship {

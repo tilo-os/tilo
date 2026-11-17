@@ -2370,7 +2370,7 @@ impl Session {
         let index = state.completed;
         let settled = self.run_task_step(run, index, &action, &arguments)?;
         state.step_index += 1;
-        self.record_action(run, &action, settled.as_ref())?;
+        self.resource_action(run, &action, settled.as_ref())?;
         match settled {
             Ok(outcome) => {
                 let succeeded = Succeeded {
@@ -2519,7 +2519,7 @@ impl Session {
                 Ok(Started::Running)
             }
             Err(stop) => {
-                self.record_action(run, &prepared.action, Err(&stop))?;
+                self.resource_action(run, &prepared.action, Err(&stop))?;
                 Ok(match stop {
                     TaskActionStop::Failed(message) => {
                         Started::Refused(Box::new(refused_report(message)))
@@ -2560,7 +2560,7 @@ impl Session {
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             let action = following.action.clone();
             let settled = following.into_outcome();
-            self.record_action(run, &action, settled.as_ref())?;
+            self.resource_action(run, &action, settled.as_ref())?;
             let report = match settled {
                 Ok(outcome) => {
                     let succeeded = Succeeded {
@@ -2661,7 +2661,7 @@ impl Session {
             .surfaces()
             .iter()
             .filter(|surface| peers.contains(&surface.peer_id))
-            .map(|surface| (surface.peer_id, surface.record_id.clone()))
+            .map(|surface| (surface.peer_id, surface.document_id.clone()))
             .collect()
     }
 
@@ -2777,7 +2777,7 @@ impl Session {
 
 /// The records of `app` an open's result names as the windows it opened:
 /// the desktop's command receipt lists them under `opened`, each with its
-/// `app_id` and `record_id` (`tilo_desktop_model::commands::OpenedWindow`).
+/// `app_id` and `document_id` (`tilo_desktop_model::commands::OpenedWindow`).
 /// Empty when the result names none — an owner that does not report its
 /// windows, or an open that is not the desktop's.
 fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
@@ -2787,7 +2787,7 @@ fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter(|window| window.get("app_id").and_then(Value::as_str) == Some(app))
-        .filter_map(|window| window.get("record_id").and_then(Value::as_str))
+        .filter_map(|window| window.get("document_id").and_then(Value::as_str))
         .filter(|record| !record.is_empty())
         .map(str::to_owned)
         .collect()

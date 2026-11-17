@@ -620,7 +620,7 @@ tilo_test_env::scenario! {
     phase page_requests_are_encoded_bounded_and_always_answered;
     {
         use crate::webview::{
-            PageActor, PageFailure, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest,
+            PageActor, PageFailure, PageKey, PageNavigation, PageResourceNote, PageReply, PageRequest,
         };
         // phase: page_requests_encode_to_the_host_page_op
         {
@@ -834,7 +834,7 @@ tilo_test_env::scenario! {
                         image: None,
                         navigation: PageNavigation::Started,
                         loading: true,
-                        record: PageRecordNote::default(),
+                        record: PageResourceNote::default(),
                     }),
                 })
             );
@@ -1516,7 +1516,7 @@ tilo_test_env::scenario! {
         second.events.lock().unwrap().clear();
 
         route(
-            json!({"event":"page_record","tab":2,"seq":3.0,"entry":{"seq":3.0,"actor":"",
+            json!({"event":"page_resource","tab":2,"seq":3.0,"entry":{"seq":3.0,"actor":"",
             "how":"input","ok":true,"secret":true,"target":{"role":"textbox","name":"Password"},
             "message":"Direct input into textbox \"Password\"","url":"https://shop.test/"}}),
         )
@@ -1533,7 +1533,7 @@ tilo_test_env::scenario! {
         assert_eq!(told.len(), 2, "{told:?}");
         assert!(matches!(
             &told[0],
-            WebViewEvent::PageRecord { seq: 3, entry }
+            WebViewEvent::PageResource { seq: 3, entry }
                 if entry["seq"] == 3 && entry["secret"] == true && entry.get("text").is_none()
         ));
         assert!(matches!(
@@ -1547,8 +1547,8 @@ tilo_test_env::scenario! {
         ));
 
         for malformed in [
-            json!({"event":"page_record","tab":2,"seq":0,"entry":{"how":"input"}}),
-            json!({"event":"page_record","tab":2,"seq":4,"entry":"typed"}),
+            json!({"event":"page_resource","tab":2,"seq":0,"entry":{"how":"input"}}),
+            json!({"event":"page_resource","tab":2,"seq":4,"entry":"typed"}),
             json!({"event":"page_changed","tab":2,"document":4,"fields":[{"element":"d4e2","how":"value"}]}),
             json!({"event":"page_changed","tab":2,"forms":[]}),
         ] {

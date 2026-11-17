@@ -17,7 +17,7 @@
 //! peer's, through the record store's replication frontier as a browser
 //! page's mounts do. The parts of a chain the app keeps beside the record
 //! ([`Chain`](super::Chain)) sync the same way on routes of their own
-//! ([`AttachedView::take_record_changes`], [`AttachedView::merge_record`]),
+//! ([`AttachedView::take_resource_changes`], [`AttachedView::merge_resource`]),
 //! and the app's actions reach them through the chain the view publishes.
 
 use std::cell::{Cell, Ref, RefCell};
@@ -34,7 +34,7 @@ use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
-use ui_core::record::{DocumentCheckout, RecordOwners, RecordStore, RecordSync};
+use ui_core::resource::{DocumentCheckout, DocumentSync, ResourceOwners, ResourceStore};
 
 /// The component instance a view mounts.
 const INSTANCE: u64 = 1;
@@ -100,7 +100,7 @@ pub struct AttachedView {
     /// publishes: a frame, an invocation, a merge, a new standing.
     moves: Cell<u64>,
     /// The record store the view reads and writes.
-    records: RecordStore,
+    records: ResourceStore,
     permissions: SharedPermissions,
     /// Who acts through the view: the invoker its operations are admitted for.
     me: MemberId,
@@ -111,10 +111,10 @@ pub struct AttachedView {
     landed: Landed,
     /// What this member sent of the record, and its own changes set
     /// aside for the next publication.
-    sync: RecordSync,
+    sync: DocumentSync,
     /// Each record the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
-    beside: std::collections::HashMap<ui_core::record::DocumentId, RecordSync>,
+    beside: std::collections::HashMap<ui_core::resource::DocumentId, DocumentSync>,
     /// Where the view keeps its records, and the workspace: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
@@ -273,7 +273,7 @@ impl AttachedView {
         // own writer then; the handle writes what it does through actions.
         cache.hydrate(key, document, None)?;
         let cache_kept = cache.clone();
-        let records = RecordOwners::portable(cache.clone())
+        let records = ResourceOwners::portable(cache.clone())
             .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
         let views = Rc::new(
@@ -329,7 +329,7 @@ impl AttachedView {
                 .with(&checkout.id, ui_core::automerge::AutoCommit::get_heads)
                 .filter(|_| !created)
         });
-        let sync = started.map_or_else(RecordSync::new, RecordSync::delivered);
+        let sync = started.map_or_else(DocumentSync::new, DocumentSync::delivered);
         Ok(Self {
             definition,
             checkout,
@@ -929,7 +929,7 @@ impl AttachedView {
     /// setting them aside, finds the store busy. `None` when the record is
     /// not open. For tests of what a host answers then.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn while_records_busy<R>(&mut self, during: impl FnOnce(&mut Self) -> R) -> Option<R> {
+    pub fn while_resources_busy<R>(&mut self, during: impl FnOnce(&mut Self) -> R) -> Option<R> {
         let records = self.records.clone();
         let id = self.checkout.id.clone();
         records.read(&id, |_| during(self))
@@ -942,7 +942,7 @@ impl AttachedView {
         if let DocumentMutation::Incremental(bytes) = mutation
             && !self
                 .records
-                .with(&self.checkout.id, |doc| RecordSync::builds_on(doc, bytes))
+                .with(&self.checkout.id, |doc| DocumentSync::builds_on(doc, bytes))
                 .unwrap_or(false)
         {
             return Ok(false);
@@ -967,7 +967,7 @@ impl AttachedView {
 
     /// Take the view's records to come from its workspace's hosts, which may
     /// send a record only once it is asked for (a public workspace):
-    /// [`RecordStore::ask_workspace_for_missing`]. A chain the view holds no
+    /// [`ResourceStore::ask_workspace_for_missing`]. A chain the view holds no
     /// part of asks for its head then, and writes to it wait for the answer.
     pub fn ask_workspace_for_missing(&self) {
         self.records.ask_workspace_for_missing();
@@ -978,7 +978,7 @@ impl AttachedView {
     /// record. `None` for a record this view does not hold.
     pub fn changed_keys(
         &self,
-        record: &ui_core::record::DocumentId,
+        record: &ui_core::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         self.settle();
@@ -987,33 +987,33 @@ impl AttachedView {
     }
 
     /// What the view's records ask the workspace's hosts for
-    /// ([`RecordStore::wanted_records`]). Each chain with a part here reads
+    /// ([`ResourceStore::wanted_resources`]). Each chain with a part here reads
     /// first: a chain follows what arrived only when it is read, so the part
     /// just handed to it is taken up, and a chain read whole asks for the
     /// parts before its head. Only the chains are read, not the view's tree.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<ui_core::record::DocumentId> {
+    pub fn wanted_resources(&self) -> Vec<ui_core::resource::DocumentId> {
         // What the records ask for is what the view's last frame asked.
         self.settle();
-        let chains: std::collections::BTreeSet<ui_core::record::DocumentId> = self
+        let chains: std::collections::BTreeSet<ui_core::resource::DocumentId> = self
             .records
-            .open_records()
+            .open_resources()
             .into_iter()
             .filter_map(|checkout| checkout.id.chain_part().map(|(chain, _)| chain))
             .collect();
         for chain in &chains {
             let _ = self.frame().resource(&super::chain_resource_id(chain));
         }
-        self.records.wanted_records()
+        self.records.wanted_resources()
     }
 
     /// The workspace's hosts sent all they hold of `record`, none of it
-    /// ([`RecordStore::note_workspace_answered`]); the view takes it up at its
+    /// ([`ResourceStore::note_workspace_answered`]); the view takes it up at its
     /// next frame.
     pub fn workspace_answered(
         &mut self,
-        record: ui_core::record::DocumentId,
-        answer: ui_core::record::WorkspaceAnswer,
+        record: ui_core::resource::DocumentId,
+        answer: ui_core::resource::WorkspaceAnswer,
     ) {
         self.records.note_workspace_answer(record, answer);
         self.unsettle();
@@ -1032,7 +1032,7 @@ impl AttachedView {
                 let chain = super::chain_of_resource_id(resource.id.as_str())?;
                 Some(DocumentCheckout::new(
                     chain,
-                    ui_core::record::ResourceType::new(resource.kind.clone()),
+                    ui_core::resource::ResourceType::new(resource.kind.clone()),
                 ))
             })
             .collect()
@@ -1042,7 +1042,7 @@ impl AttachedView {
     /// app's chains ([`Self::chains`]), of that chain's kind. `None` for
     /// any other record.
     #[must_use]
-    pub fn beside(&self, record: &ui_core::record::DocumentId) -> Option<DocumentCheckout> {
+    pub fn beside(&self, record: &ui_core::resource::DocumentId) -> Option<DocumentCheckout> {
         let (chain, _) = record.chain_part()?;
         self.chains()
             .into_iter()
@@ -1054,10 +1054,10 @@ impl AttachedView {
     /// chains ([`Self::chains`]) open here, as they sync on routes of their
     /// own.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<DocumentCheckout> {
+    pub fn resources_beside(&self) -> Vec<DocumentCheckout> {
         let chains = self.chains();
         self.records
-            .open_records()
+            .open_resources()
             .into_iter()
             .filter(|checkout| {
                 checkout
@@ -1068,9 +1068,9 @@ impl AttachedView {
             .collect()
     }
 
-    pub fn read_record<R>(
+    pub fn read_resource<R>(
         &self,
-        record: &ui_core::record::DocumentId,
+        record: &ui_core::resource::DocumentId,
         read: impl FnOnce(&ui_core::automerge::AutoCommit) -> R,
     ) -> Option<R> {
         self.beside(record)?;
@@ -1079,14 +1079,14 @@ impl AttachedView {
     }
 
     /// The member's changes to `record`, one the view holds beside
-    /// its own ([`Self::records_beside`]), since the last call: the whole
+    /// its own ([`Self::resources_beside`]), since the last call: the whole
     /// record the first time, for one the member started.
     ///
     /// # Errors
     /// As [`Self::take_changes`].
-    pub fn take_record_changes(
+    pub fn take_resource_changes(
         &mut self,
-        record: &ui_core::record::DocumentId,
+        record: &ui_core::resource::DocumentId,
     ) -> Result<Option<DocumentMutation>, String> {
         self.settle();
         let sync = self.beside.entry(record.clone()).or_default();
@@ -1094,17 +1094,17 @@ impl AttachedView {
     }
 
     /// The member's changes to every record the view holds beside its
-    /// own ([`Self::take_record_changes`]), by record; all or none of them.
+    /// own ([`Self::take_resource_changes`]), by record; all or none of them.
     ///
     /// # Errors
     /// As [`Self::take_changes`], for any one of them: those taken before it
     /// are kept to go with the next call, so a write is never half reported.
-    pub fn take_records_beside_changes(
+    pub fn take_resources_beside_changes(
         &mut self,
-    ) -> Result<Vec<(ui_core::record::DocumentId, DocumentMutation)>, String> {
+    ) -> Result<Vec<(ui_core::resource::DocumentId, DocumentMutation)>, String> {
         let mut taken = Vec::new();
-        for checkout in self.records_beside() {
-            match self.take_record_changes(&checkout.id) {
+        for checkout in self.resources_beside() {
+            match self.take_resource_changes(&checkout.id) {
                 Ok(Some(mutation)) => taken.push((checkout.id, mutation)),
                 Ok(None) => {}
                 Err(error) => {
@@ -1125,9 +1125,9 @@ impl AttachedView {
     /// not yet (a part another device started). Changes that build on
     /// nothing the part holds are left alone: `Ok(false)`. Whether it
     /// changed.
-    pub fn merge_record(
+    pub fn merge_resource(
         &mut self,
-        record: &ui_core::record::DocumentId,
+        record: &ui_core::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<bool, String> {
         let checkout = self.beside(record).ok_or_else(|| {
@@ -1138,7 +1138,7 @@ impl AttachedView {
             )
         })?;
         let opened = !self.records.is_ready(record);
-        if opened && self.records.try_open_record(&checkout).is_err() {
+        if opened && self.records.try_open_resource(&checkout).is_err() {
             // Kept as the peer sent it, then opened as the view's own are.
             let DocumentMutation::Snapshot(bytes) = mutation else {
                 return Ok(false);
@@ -1153,13 +1153,13 @@ impl AttachedView {
                 None,
             )?;
             self.records
-                .try_open_record(&checkout)
+                .try_open_resource(&checkout)
                 .map_err(|error| error.to_string())?;
         }
         if let DocumentMutation::Incremental(bytes) = mutation
             && !self
                 .records
-                .with(record, |doc| RecordSync::builds_on(doc, bytes))
+                .with(record, |doc| DocumentSync::builds_on(doc, bytes))
                 .unwrap_or(false)
         {
             return Ok(false);
@@ -1174,7 +1174,7 @@ impl AttachedView {
         let sync = self
             .beside
             .entry(record.clone())
-            .or_insert_with(move || RecordSync::delivered(heads));
+            .or_insert_with(move || DocumentSync::delivered(heads));
         if sync.snapshotted() {
             sync.set_aside(&self.records, record)
                 .map_err(|error| set_aside_failed(record, &error))?;
@@ -1197,9 +1197,9 @@ impl AttachedView {
 /// write by what this returns, and "nothing changed" would answer one that
 /// was never saved as done.
 fn publish(
-    sync: &mut RecordSync,
-    records: &RecordStore,
-    id: &ui_core::record::DocumentId,
+    sync: &mut DocumentSync,
+    records: &ResourceStore,
+    id: &ui_core::resource::DocumentId,
 ) -> Result<Option<DocumentMutation>, String> {
     let failed = |error: String| {
         format!(
@@ -1221,7 +1221,7 @@ fn publish(
 /// Why a peer's change to `record` was not merged: this member's own
 /// changes to it could not be set aside first, so the record is left as it
 /// was, its own changes still to go out, rather than merged around them.
-fn set_aside_failed(record: &ui_core::record::DocumentId, error: &str) -> String {
+fn set_aside_failed(record: &ui_core::resource::DocumentId, error: &str) -> String {
     format!(
         "a peer's change to {} was not merged: this member's own changes to it \
          could not be set aside first ({error})",
@@ -1292,7 +1292,7 @@ fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, Stri
 /// member joined at `joined_at`, as it opened ([`written_on_open`]).
 fn refuse_written_on_open(
     definition: &ApplicationDefinition,
-    records: &RecordStore,
+    records: &ResourceStore,
     checkout: &DocumentCheckout,
     joined_at: &[ui_core::automerge::ChangeHash],
 ) -> Result<(), String> {

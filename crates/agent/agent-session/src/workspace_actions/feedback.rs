@@ -13,7 +13,7 @@ use tilo_feedback_transport::{
 use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
-use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceRecordsLink, reads, record_of};
+use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceDocumentsLink, reads, resource_of};
 use tilo_relay_protocol::WorkspaceId;
 
 fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
@@ -27,7 +27,7 @@ fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
 /// A prompt that is not exactly the review contract is not asked, and the
 /// model's answer goes back holding only quotes from the texts asked about.
 pub(super) fn answer_and_review(
-    link: &Arc<dyn WorkspaceRecordsLink>,
+    link: &Arc<dyn WorkspaceDocumentsLink>,
     catalogue: AppCatalogue,
     workspace: WorkspaceId,
     caller: Caller,
@@ -65,7 +65,7 @@ pub(super) fn answer_and_review(
 }
 
 pub(super) fn answer(
-    link: &Arc<dyn WorkspaceRecordsLink>,
+    link: &Arc<dyn WorkspaceDocumentsLink>,
     catalogue: AppCatalogue,
     workspace: WorkspaceId,
     caller: Caller,
@@ -79,7 +79,7 @@ pub(super) fn answer(
     destination
         .validate()
         .map_err(|error| unavailable(&error))?;
-    let route = record_of(&destination.provider, &destination.workspace)
+    let route = resource_of(&destination.provider, &destination.workspace)
         .filter(|route| {
             route.app_id == "so.tilo.chat"
                 && route.record.is_empty()
@@ -210,7 +210,7 @@ fn admission(
 }
 
 struct RetainedSource {
-    link: Arc<dyn WorkspaceRecordsLink>,
+    link: Arc<dyn WorkspaceDocumentsLink>,
     catalogue: AppCatalogue,
     workspace: WorkspaceId,
     caller: Caller,

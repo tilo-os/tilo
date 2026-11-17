@@ -57,7 +57,7 @@ fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs) -> LocalFirst {
         crate::collaboration::native_initial::ensure_unoccupied()
             .map_err(LaunchError::Operation)?;
         crate::collaboration::CollaborationManager::join_native(
-            &spec.definition.record_kind,
+            &spec.definition.resource_type,
             native_connection(),
         )
         .map_err(LaunchError::from)
@@ -216,7 +216,7 @@ impl DefinitionDispatch {
 pub(super) enum Unbuilt {
     Failed(LaunchError),
     /// The record is not on this device yet and the manager, still joining its workspace, brings it
-    /// ([`LaunchError::RecordNotHere`]): the manager and the scope it wakes, to build in once the join
+    /// ([`LaunchError::ResourceNotHere`]): the manager and the scope it wakes, to build in once the join
     /// is over.
     NotHere {
         manager: crate::collaboration::CollaborationManager,
@@ -234,7 +234,7 @@ impl Unbuilt {
     pub(crate) fn into_error(self) -> LaunchError {
         match self {
             Self::Failed(error) => error,
-            Self::NotHere { .. } => LaunchError::RecordNotHere,
+            Self::NotHere { .. } => LaunchError::ResourceNotHere,
         }
     }
 }

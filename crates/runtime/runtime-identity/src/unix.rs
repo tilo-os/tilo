@@ -2183,7 +2183,7 @@ mod tests {
                 &wire::Request::CollaborationOp {
                     workspace_id: "workspace".into(),
                     app_id: "so.tilo.notes".into(),
-                    record_id: "record".into(),
+                    document_id: "document".into(),
                     unsigned_op: sent,
                 },
             )

@@ -1316,7 +1316,7 @@ async fn serve(
         || collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
         |ticket| ticket.workspace_id().to_string(),
     );
-    let _tree_record = fs::tree_record::spawn(
+    let _tree_document = fs::tree_document::spawn(
         Arc::clone(&namespace),
         holder,
         credentials.clone(),
@@ -1573,7 +1573,7 @@ async fn mount(
     let namespace = Arc::new(Mutex::new(open_namespace(author, np.as_deref())?));
     // The shared workspace's Files record holds this tree for every member: a mount that has none
     // yet is given it whole.
-    let _tree_record = fs::tree_record::spawn(
+    let _tree_document = fs::tree_document::spawn(
         Arc::clone(&namespace),
         ticket.workspace_id().to_string(),
         credentials.clone(),

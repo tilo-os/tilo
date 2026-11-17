@@ -27,7 +27,7 @@ fn collaboration_probe_factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|_| Ok(()))
+        .initialize_new_resource(|_| Ok(()))
         .map_err(crate::launch::LaunchError::Record)?;
     let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
         "bound-collaboration",
@@ -56,7 +56,7 @@ impl PagedProbe {
         for id in 0..65 {
             let resource = format!("bound:paged:{id}");
             catalog
-                .upsert_record(
+                .upsert_resource(
                     crate::search::SearchRecord::new(
                         &resource,
                         crate::search::SearchResult::for_action(
@@ -649,7 +649,7 @@ fn build_probe(
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(ROOT, "marker", "child").map_err(|e| e.to_string())
             })
             .map_err(crate::launch::LaunchError::Record)?;
@@ -675,7 +675,7 @@ fn bound_components_keep_child_binding() {
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let mut owners = crate::resource::ResourceOwners::new(root.clone());
         let records = owners.open("so.tilo.binding-probe", "A").unwrap();
         let views =
             Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
@@ -683,14 +683,14 @@ fn bound_components_keep_child_binding() {
             app_id: "so.tilo.binding-probe".into(),
             title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
-            record_kind: crate::record::ResourceType::new("probe"),
+            resource_type: crate::resource::ResourceType::new("probe"),
 
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: factory,
         };
         let context = HostContext::prepare(
@@ -842,16 +842,16 @@ fn bound_components_keep_child_binding() {
 struct ActionFixture {
     _temp: tempfile::TempDir,
     app: App,
-    records: crate::record::RecordStore,
+    records: crate::resource::ResourceStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     permissions: crate::permissions::SharedPermissions,
 }
 
 impl ActionFixture {
     fn new() -> Self {
-        Self::with_same_record(false)
+        Self::with_same_resource(false)
     }
-    fn with_same_record(shared: bool) -> Self {
+    fn with_same_resource(shared: bool) -> Self {
         Self::with_authority(shared, false)
     }
     fn with_authority(shared: bool, separate: bool) -> Self {
@@ -875,7 +875,7 @@ impl ActionFixture {
         scope: Option<crate::wake::WakeScope>,
     ) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open(
                 "so.tilo.binding-probe",
@@ -909,14 +909,14 @@ impl ActionFixture {
                 app_id: "so.tilo.binding-probe".into(),
                 title: "Probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: crate::record::ResourceType::new("probe"),
+                resource_type: crate::resource::ResourceType::new("probe"),
 
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                workspace_record: false,
-                member_record: false,
-                opens_before_record: false,
+                workspace_resource: false,
+                member_resource: false,
+                opens_before_resource: false,
                 create,
             };
             let target = if shared && !bindings.is_empty() {
@@ -970,7 +970,7 @@ impl ActionFixture {
         }
     }
     fn broker() -> Self {
-        let mut fixture = Self::with_same_record(true);
+        let mut fixture = Self::with_same_resource(true);
         // This fixture captures broker submission and injects admitted delivery;
         // it does not exercise authenticated native document history.
         fixture.app.collaboration.manager =
@@ -1004,7 +1004,7 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("local_input_capture_tests.rs");
 include!("local_action_persistence_tests.rs");
-include!("bound_record_sync_tests.rs");
+include!("bound_document_sync_tests.rs");
 include!("shared_forest_tests.rs");
 
 #[test]
@@ -1574,7 +1574,7 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
     {
         for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
             COMPOUND_MODE.set(mode);
-            let mut fixture = ActionFixture::with_same_record(true);
+            let mut fixture = ActionFixture::with_same_resource(true);
             let a = fixture.bindings[0].clone();
             let b = fixture.bindings[1].clone();
             a.with_document(&mut fixture.app.state.doc, |doc, _| {
@@ -1654,7 +1654,7 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         for mode in [3, 4, 5, 6] {
             COMPOUND_MODE.set(mode);
             CAPTURES.with_borrow_mut(Vec::clear);
-            let mut fixture = ActionFixture::with_same_record(true);
+            let mut fixture = ActionFixture::with_same_resource(true);
             let a = fixture.bindings[0].clone();
             let b = fixture.bindings[1].clone();
             a.with_document(&mut fixture.app.state.doc, |doc, _| {
@@ -1729,7 +1729,7 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
     {
         for mode in [7, 9, 10] {
             COMPOUND_MODE.set(mode);
-            let mut fixture = ActionFixture::with_same_record(true);
+            let mut fixture = ActionFixture::with_same_resource(true);
             let a = fixture.bindings[0].clone();
             let b = fixture.bindings[1].clone();
             a.with_document(&mut fixture.app.state.doc, |doc, _| {
@@ -1786,7 +1786,7 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
 
     {
         COMPOUND_MODE.set(11);
-        let mut fixture = ActionFixture::with_same_record(true);
+        let mut fixture = ActionFixture::with_same_resource(true);
         let a = fixture.bindings[0].clone();
         let b = fixture.bindings[1].clone();
         a.with_document(&mut fixture.app.state.doc, |doc, _| {
@@ -2332,7 +2332,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
 
     {
         for shared in [true, false] {
-            let mut fixture = ActionFixture::with_same_record(shared);
+            let mut fixture = ActionFixture::with_same_resource(shared);
             let target = fixture.target(1, "apply");
             let first = fixture.bindings[0].clone();
             let outer = fixture.app.state.doc.get_heads();
@@ -2388,7 +2388,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                 assert!(matches!(
                     result,
                     Err(crate::bound_dispatch::BoundActionError::Dispatch(
-                        crate::bound_dispatch::BoundDispatchError::CrossRecordReentry
+                        crate::bound_dispatch::BoundDispatchError::CrossResourceReentry
                     ))
                 ));
                 assert!(
@@ -2426,12 +2426,12 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         wrong_app.route.app_id = "so.tilo.other".into();
         let mut wrong_workspace = matching.clone();
         wrong_workspace.route.cluster_id = uuid::Uuid::nil();
-        let mut wrong_record = matching.clone();
-        wrong_record.route.record = Some("different-record".into());
+        let mut wrong_resource = matching.clone();
+        wrong_resource.route.record = Some("different-record".into());
         for witness in [
             Some(wrong_app),
             Some(wrong_workspace),
-            Some(wrong_record),
+            Some(wrong_resource),
             None,
         ] {
             assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
@@ -2689,7 +2689,7 @@ tilo_test_env::scenario! {
 
         // The tile hosting the component hands the request to the shell once.
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open(
                 "so.tilo.binding-probe",
@@ -2708,10 +2708,10 @@ tilo_test_env::scenario! {
             app_id: "so.tilo.binding-probe".into(),
             title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
-            record_kind: crate::record::ResourceType::new("probe"),
-            workspace_record: true,
-            member_record: false,
-            opens_before_record: false,
+            resource_type: crate::resource::ResourceType::new("probe"),
+            workspace_resource: true,
+            member_resource: false,
+            opens_before_resource: false,
             required: vec![],
             optional: vec![],
             opens: &[],

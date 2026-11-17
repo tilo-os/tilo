@@ -224,7 +224,7 @@ fn replay_source(
     source: &DocumentRoute,
     keys: Option<&key_group::ContentKeys>,
     primary_governor: Option<[u8; 32]>,
-    retained: Vec<crate::workspace_records::RetainedBody>,
+    retained: Vec<crate::workspace_documents::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
     let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
@@ -234,7 +234,7 @@ fn replay_source(
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         }) = tilo_failure::ignored!(
@@ -244,7 +244,9 @@ fn replay_source(
         else {
             continue;
         };
-        if app_id != source.app_id || cluster_id != source.cluster_id || record_id != source.record
+        if app_id != source.app_id
+            || cluster_id != source.cluster_id
+            || document_id != source.record
         {
             continue;
         }

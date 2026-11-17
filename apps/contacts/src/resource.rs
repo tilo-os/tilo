@@ -418,7 +418,7 @@ impl ResourceApp for ContactsShell {
 
     /// The directory of the person's identities Contacts keeps for them and
     /// every app of theirs reads.
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
             tilo_contact_directory::ContactDirectory,
         >()];
@@ -431,7 +431,7 @@ impl ResourceApp for ContactsShell {
         Some(&crate::account_editor::CATALOG)
     }
 
-    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

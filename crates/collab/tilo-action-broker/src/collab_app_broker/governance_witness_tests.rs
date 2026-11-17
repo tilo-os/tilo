@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
             peer_id: 123,
             app_id: "org.example.unrelated".into(),
             cluster_id: uuid::Uuid::new_v4().to_string(),
-            record_id: "main".into(),
+            document_id: "main".into(),
         }]);
         invoke(&state, &owner, &request).expect("unrelated discovery does not revoke consent");
         assert_eq!(service.calls.lock().unwrap().len(), 1);

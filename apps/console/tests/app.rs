@@ -368,7 +368,7 @@ fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
 
     app.harness().click_named("console-action-0-undo").unwrap();
     let requests = asked(&mut app);
-    let one: wire::RecordQuery = argument(&find(&requests, &wire::target(wire::UNDO_RECORD)));
+    let one: wire::ResourceQuery = argument(&find(&requests, &wire::target(wire::UNDO_RECORD)));
     assert_eq!(one.range, run().range, "the run it is part of");
     assert_eq!(
         (one.app_id.as_str(), one.id.as_str()),

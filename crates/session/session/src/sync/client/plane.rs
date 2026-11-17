@@ -31,17 +31,17 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
         NetEvent::HostReady {
             ws,
             peer,
-            records_when_opened,
+            documents_when_opened,
         } => Event::HostReady {
             ws,
             peer,
-            records_when_opened,
+            documents_when_opened,
         },
         NetEvent::HostRecordOpened {
             ws,
             channel,
             answer,
-        } => Event::RecordOpened {
+        } => Event::DocumentOpened {
             ws,
             channel,
             route: None,
@@ -661,23 +661,23 @@ fn heard(
                 (
                     NetEvent::HostReady {
                         ws,
-                        records_when_opened,
+                        documents_when_opened,
                         ..
                     },
                     Some(say),
                 ) => {
-                    let _ = say.send(Taken::Ready(*ws, *records_when_opened));
+                    let _ = say.send(Taken::Ready(*ws, *documents_when_opened));
                 }
                 (
                     NetEvent::HostReady {
                         ws,
-                        records_when_opened,
+                        documents_when_opened,
                         ..
                     },
                     None,
                 ) => {
                     if let Some(link) = &replayed {
-                        link.host_ready(*ws, *records_when_opened);
+                        link.host_ready(*ws, *documents_when_opened);
                     }
                 }
                 _ => {}
@@ -727,7 +727,7 @@ async fn take_in(
         for taken in waiting {
             let input = match taken {
                 Taken::Input(input) => *input,
-                Taken::Ready(ws, records_when_opened) => {
+                Taken::Ready(ws, documents_when_opened) => {
                     admit(
                         std::mem::take(&mut run),
                         link.as_deref(),
@@ -735,7 +735,7 @@ async fn take_in(
                     )
                     .await;
                     if let Some(link) = &link {
-                        link.host_ready(ws, records_when_opened);
+                        link.host_ready(ws, documents_when_opened);
                     }
                     continue;
                 }
@@ -866,8 +866,8 @@ async fn carry_out(
             .is_ok(),
         Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
-        Cmd::OpenRecord { ws, channel, own } => plane
-            .send(NetCmd::OpenRecord { ws, channel, own })
+        Cmd::OpenDocument { ws, channel, own } => plane
+            .send(NetCmd::OpenDocument { ws, channel, own })
             .await
             .is_ok(),
         Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),

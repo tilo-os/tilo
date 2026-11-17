@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::framework::{PersonRecord, ResourceApp, SeedCx, ViewCx};
+use ui::framework::{PersonResource, ResourceApp, SeedCx, ViewCx};
 use ui::prelude::Effect;
 use ui::tilo_resource::{self, Availability, Derived, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
@@ -213,7 +213,7 @@ impl AppliedConfig {
     }
 }
 
-pub(crate) type AppliedOnDevice = (PersonRecord<AppliedConfig>, String);
+pub(crate) type AppliedOnDevice = (PersonResource<AppliedConfig>, String);
 
 /// The stored configuration still to apply on a device that last applied `applied`, keyed
 /// by its canonical form: nothing while there is none, while it is invalid, or once the

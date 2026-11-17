@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
 use super::CHAT;
-use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
+use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};
 use tilo_content::ContentStore;
 use tilo_resource::MemberId;
 
@@ -267,7 +267,7 @@ impl WorkspaceAttachments {
     pub async fn run(self: Arc<Self>) {
         let keeper: Arc<dyn ContentKeeper> = self.clone();
         self.workspaces.keep_content(&keeper);
-        let mut writes = self.workspaces.record_writes();
+        let mut writes = self.workspaces.document_writes();
         let mut again = tokio::time::interval(ASK_AGAIN);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut read = tokio::time::interval(READ_EVERY);
@@ -326,29 +326,29 @@ impl WorkspaceAttachments {
     /// The record of this workspace's Chat `write` went to, if it went to one
     /// that references files: a part of its messages or its own record,
     /// where feedback reports are filed.
-    fn part_of(&self, write: &RecordWrite) -> Option<String> {
+    fn part_of(&self, write: &ResourceWrite) -> Option<String> {
         if write.workspace != self.workspace || write.app != CHAT {
             return None;
         }
         if write.record == CHAT_RECORD {
             return Some(write.record.clone());
         }
-        let id = ui::record::DocumentId::parse(&write.record)?;
+        let id = ui::resource::DocumentId::parse(&write.record)?;
         chat::parts::part_index(&id)
             .is_some()
             .then(|| write.record.clone())
     }
 
     async fn read_all(&self) {
-        let Ok(routes) = self.workspaces.record_routes(&self.workspace).await else {
+        let Ok(routes) = self.workspaces.document_routes(&self.workspace).await else {
             return;
         };
         for (app, record) in routes {
-            let write = RecordWrite {
+            let write = ResourceWrite {
                 workspace: self.workspace.clone(),
                 app,
                 record,
-                carried: tilo_workspace_host::workspaces::repaired_records::Carried::Nothing,
+                carried: tilo_workspace_host::workspaces::repaired_documents::Carried::Nothing,
             };
 
             if let Some(part) = self.part_of(&write) {
@@ -362,7 +362,7 @@ impl WorkspaceAttachments {
     async fn read_part(&self, part: &str) {
         let bytes = match self
             .workspaces
-            .record_document(&self.workspace, CHAT, part)
+            .resource_document(&self.workspace, CHAT, part)
             .await
         {
             Ok(Some(bytes)) => bytes,
@@ -528,7 +528,7 @@ impl ContentKeeper for WorkspaceAttachments {
             return;
         }
         // A file over the cap is not taken in piece by piece either.
-        if let Ok(neighbour_wire::NeighbourMsg::RecordContentPiece { total, .. }) =
+        if let Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. }) =
             postcard::from_bytes(frame)
             && total > self.limits.file_bytes
         {
@@ -544,7 +544,7 @@ impl ContentKeeper for WorkspaceAttachments {
         workspace == self.workspace
             && !matches!(
                 postcard::from_bytes(frame),
-                Ok(neighbour_wire::NeighbourMsg::RecordContentPiece { total, .. })
+                Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. })
                     if total > self.limits.file_bytes
             )
             && self.state.lock_recover().wants.expects(&self.host, frame)

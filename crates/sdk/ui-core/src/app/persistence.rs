@@ -23,9 +23,9 @@ impl App {
     }
 
     #[must_use]
-    pub fn with_records(
+    pub fn with_resources(
         mut self,
-        mut records: crate::record::RecordSet,
+        mut records: crate::resource::ResourceSet,
         workspace_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
@@ -54,7 +54,7 @@ impl App {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
-    pub fn records(&self) -> Option<&crate::record::RecordSet> {
+    pub fn records(&self) -> Option<&crate::resource::ResourceSet> {
         self.persistence.records.as_ref()
     }
 
@@ -133,11 +133,11 @@ impl App {
         }
         let checkout = binding.checkout;
         if self.collaboration.manager.has_native_committed_primary() {
-            if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
+            if let Err(error) = self.collaboration.manager.switch_native_resource(&checkout) {
                 tracing::warn!(%error, "the reopened record collaborates once its route opens");
             }
         } else {
-            self.collaboration.manager = CollaborationManager::for_record(&checkout);
+            self.collaboration.manager = CollaborationManager::for_resource(&checkout);
         }
         if let Some(scope) = self.presence.broadcast_scope.clone() {
             self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
@@ -158,7 +158,7 @@ impl App {
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();
         let initial = if native {
-            let Some(want) = crate::record::capability::record_intent(self.root_widget.as_ref())
+            let Some(want) = crate::resource::capability::record_intent(self.root_widget.as_ref())
             else {
                 return false;
             };
@@ -170,7 +170,7 @@ impl App {
             {
                 return false;
             }
-            let Some(read) = self.collaboration.manager.prepare_native_record(&want) else {
+            let Some(read) = self.collaboration.manager.prepare_native_resource(&want) else {
                 return false;
             };
             Some((want, read))
@@ -201,7 +201,7 @@ impl App {
                 None
             }
         } else {
-            crate::record::tick(
+            crate::resource::tick(
                 set,
                 &mut self.state,
                 self.persistence
@@ -234,22 +234,23 @@ impl App {
                             .primary_route()
                             .map(|witness| witness.route().clone());
                     }
-                    if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
+                    if let Err(error) = self.collaboration.manager.switch_native_resource(&checkout)
+                    {
                         tracing::warn!(%error,"native document route switch remains unavailable");
                         return false;
                     }
                 } else if self.collaboration.workspace_manager.is_none() {
                     let workspace = std::mem::replace(
                         &mut self.collaboration.manager,
-                        CollaborationManager::for_record(&checkout),
+                        CollaborationManager::for_resource(&checkout),
                     );
                     self.collaboration.workspace_manager = Some(workspace);
                 } else {
-                    self.collaboration.manager = CollaborationManager::for_record(&checkout);
+                    self.collaboration.manager = CollaborationManager::for_resource(&checkout);
                 }
                 tracing::debug!(
                     target: "tilo.state",
-                    event = "record_checkout",
+                    event = "resource_checkout",
                     record = checkout.id.as_str(),
                     connected = self.collaboration.manager.is_connected(),
                     "switched document collaboration route"
@@ -297,7 +298,7 @@ impl App {
         }
         // Collect through the same live component boundary used by dispatch.
         // Distinct embedded owners participate; repeated views share one tick.
-        let mut owners: Vec<crate::record::RecordStore> = Vec::new();
+        let mut owners: Vec<crate::resource::ResourceStore> = Vec::new();
         let mut visit = |binding: &crate::bound_dispatch::CallbackBinding,
                          _: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {

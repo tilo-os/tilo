@@ -1,8 +1,8 @@
 use super::*;
-use ui::tilo_resource::MemberId;
 use automerge::{ObjType, ROOT, transaction::Transactable};
 use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
+use ui::tilo_resource::MemberId;
 
 fn submitted() -> (automerge::AutoCommit, Submission, ResourceSpec) {
     submitted_as("visitor")
@@ -161,7 +161,7 @@ struct MountedFixture {
     submission: Submission,
     frame: ui::headless::FrameHarness,
     permissions: ui::permissions::SharedPermissions,
-    records: ui::record::RecordStore,
+    records: ui::resource::ResourceStore,
 }
 
 fn mounted_fixture(author: &str) -> MountedFixture {
@@ -169,18 +169,18 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
-    use ui::record::{DocumentCheckout, RecordOwners, ResourceType};
+    use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 
     let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let temp = tempfile::tempdir().unwrap();
-    let mut owners = RecordOwners::new(temp.path().join("profile"));
+    let mut owners = ResourceOwners::new(temp.path().join("profile"));
     let records = owners
         .open(crate::definition().app_id(), workspace)
         .unwrap();
     let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
     let submission = fixture_submission(workspace);
     records
-        .reserve_record(&checkout)
+        .reserve_resource(&checkout)
         .unwrap()
         .initialize(|doc| {
             crate::testing::apply_as(
@@ -297,7 +297,7 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
     let investigating = serde_json::json!({"status": "investigating"});
     maintainer_role(&fixture, ui::permissions::Role::Commenter);
     assert!(triage(&mut fixture.frame, &fixture.submission.id, &investigating).is_err());
-    let record = fixture.frame.component_record().unwrap().id.clone();
+    let record = fixture.frame.component_resource().unwrap().id.clone();
     assert!(
         fixture
             .records
@@ -324,7 +324,7 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
             .unwrap()
             .is_some()
     );
-    fixture.frame.flush_component_records().unwrap();
+    fixture.frame.flush_component_resources().unwrap();
     let report = fixture
         .records
         .read(&record, |doc| {
@@ -386,7 +386,7 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     )
     .unwrap()
     .unwrap();
-    fixture.frame.flush_component_records().unwrap();
+    fixture.frame.flush_component_resources().unwrap();
     maintainer_role(&fixture, ui::permissions::Role::Viewer);
     let output = fixture
         .frame

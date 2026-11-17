@@ -177,7 +177,7 @@ impl Worker {
                 let app = self.asked_app(target).ok_or_else(super::unknown_action)?;
                 // A workspace has one folder, and Files is it: a file opened
                 // in it is written into the tree, not into an app's record.
-                if app == tilo_fs::tree_record::FILES_APP {
+                if app == tilo_fs::tree_document::FILES_APP {
                     return self.put_in_workspace(workspace_id, caller, request, named);
                 }
                 Some(self.landing_of(workspace_id, &app, file)?)
@@ -186,9 +186,9 @@ impl Worker {
         };
         let kept = landing
             .as_ref()
-            .filter(|(landing, _)| !landing.own_record)
+            .filter(|(landing, _)| !landing.own_resource)
             .and_then(|_| self.asked_app(target))
-            .and_then(|app| Self::kept_record(state, &app));
+            .and_then(|app| Self::kept_document(state, &app));
         let opened = match kept {
             Some(route) => Self::opened_answer(&route),
             None => self.open_asked(workspace_id, caller, named, target)?,
@@ -203,7 +203,7 @@ impl Worker {
 
     /// The record of `app` a file that lands in a record the app already
     /// keeps goes into: the one it shows or changed last, `None` for none.
-    pub(super) fn kept_record(state: &WorkspaceState, app: &str) -> Option<DocumentRoute> {
+    pub(super) fn kept_document(state: &WorkspaceState, app: &str) -> Option<DocumentRoute> {
         state
             .records
             .iter()

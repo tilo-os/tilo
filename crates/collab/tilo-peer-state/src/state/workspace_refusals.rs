@@ -243,7 +243,7 @@ impl PeerWorkspaceMut<'_> {
         let NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -256,11 +256,11 @@ impl PeerWorkspaceMut<'_> {
         let mut refusal = WriteRefusal {
             workspace: self.peer.core.workspace.clone(),
             app: app_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
             author: *envelope.author.as_bytes(),
             seq: envelope.seq,
             operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
-            changes: self.unheld_changes(app_id, record_id, &envelope.payload),
+            changes: self.unheld_changes(app_id, document_id, &envelope.payload),
             reason: RefusalReason::of(reason),
             detail: reason.into(),
             by: caller.device_public_key,
@@ -286,7 +286,7 @@ impl PeerWorkspaceMut<'_> {
     ) -> Result<bool, String> {
         let NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -296,7 +296,7 @@ impl PeerWorkspaceMut<'_> {
         self.clear_own_write_refusal(
             caller,
             app_id,
-            record_id,
+            document_id,
             *envelope.author.as_bytes(),
             envelope.seq,
             key,

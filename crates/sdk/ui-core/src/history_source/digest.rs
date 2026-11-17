@@ -188,7 +188,7 @@ impl ActivityDigest {
                     first_at: group.first_time,
                     last_at: group.last_time,
                     group_id,
-                    work_session_id: group.record_id.clone(),
+                    work_session_id: group.document_id.clone(),
                     entry_ids: slice.iter().map(|entry| entry.id).collect(),
                 }
             })

@@ -152,7 +152,7 @@ fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
     }
     let mut doc = library.doc().clone();
     let mut app = app_with_sample();
-    app.read_record(&doc);
+    app.read_resource(&doc);
     app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
     app.sync(&doc, &automerge::ROOT);
     app.stage_scenario(scenario);
@@ -162,7 +162,7 @@ fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
     while ui::time::now() < deadline {
-        app.read_record(doc);
+        app.read_resource(doc);
         app.settle(&mut Edits::lend(doc), &automerge::ROOT);
         app.sync(doc, &automerge::ROOT);
         if app.import_loading.is_none() {
@@ -414,7 +414,7 @@ fn reader_controls_are_accessible_and_live() {
         let mut doc = library_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Shortcuts;
-        app.read_record(&doc);
+        app.read_resource(&doc);
         app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -592,7 +592,7 @@ fn press_bar(app: &mut BooksApp, doc: &mut AutoCommit, name: &str) {
             .apply_now(&mut Edits::lend(doc), &edit)
             .unwrap();
     }
-    app.read_record(doc);
+    app.read_resource(doc);
     app.sync(doc, &automerge::ROOT);
 }
 
@@ -605,7 +605,7 @@ fn press_bar_back(app: &mut BooksApp, doc: &mut AutoCommit) {
 
 fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let root = automerge::ROOT;
-    app.read_record(doc);
+    app.read_resource(doc);
     app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
@@ -707,7 +707,7 @@ fn ptr_up(app: &mut BooksApp, doc: &mut AutoCommit) {
 /// Draw one settled frame into a `Scene` (for pixel-level assertions).
 fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Scene {
     let root = automerge::ROOT;
-    app.read_record(doc);
+    app.read_resource(doc);
     app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
@@ -1187,7 +1187,7 @@ fn schemes_are_listed_created_and_applied() {
             Action::SetReadTheme(ReadTheme::HighContrast),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let pal = app.resolve_palette(&theme);
         assert!(pal.dark, "high contrast is a dark reading mode");
         assert!(
@@ -1203,7 +1203,7 @@ fn schemes_are_listed_created_and_applied() {
             Action::SetReadTheme(ReadTheme::Sepia),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let hc = Theme::high_contrast();
         let forced = app.resolve_palette(&hc);
         assert_eq!(
@@ -1220,7 +1220,7 @@ fn schemes_are_listed_created_and_applied() {
             Action::SetReadTheme(ReadTheme::Dark),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let dark = app.resolve_palette(&theme);
         assert!(dark.dark);
         assert_eq!(
@@ -1244,7 +1244,7 @@ fn schemes_are_listed_created_and_applied() {
             Action::SetScheme("scheme_z".into()),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let ocean = app.resolve_palette(&theme);
         assert_eq!(
             (ocean.page.r(), ocean.page.g(), ocean.page.b()),
@@ -1484,7 +1484,7 @@ fn font_manager_and_system_picker_set_fonts() {
             .expect("the family is now a registered reading font");
 
         app.dispatch(Action::SetFont(entry.id), &mut Edits::lend(&mut doc));
-        app.read_record(&doc);
+        app.read_resource(&doc);
         assert_eq!(app.active_font().kind, FontKind::Named(fam.clone()));
         let (choice, _mult, _sig, mono) = app.body_font();
         assert_eq!(
@@ -1601,7 +1601,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
             Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
 
         let hls: Vec<_> = TestLibrary::list_annotations(&doc)
             .into_iter()
@@ -2511,7 +2511,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             Action::SetColor(HighlightColor::Green),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let hl = TestLibrary::list_annotations(&doc)
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
@@ -2535,7 +2535,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             blocks: Vec::new(),
         };
         TestLibrary::upsert_annotation(&mut doc, &comment);
-        app.read_record(&doc);
+        app.read_resource(&doc);
 
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let marker_rect = app
@@ -2565,7 +2565,7 @@ fn highlight_markers_reanchor_and_open_comments() {
         );
         ptr_move(&mut app, &mut doc, target_pt);
         ptr_up(&mut app, &mut doc);
-        app.read_record(&doc);
+        app.read_resource(&doc);
 
         // (its id is preserved, proving it went through `MoveAnnotation`, not a
         let moved = TestLibrary::list_annotations(&doc)
@@ -2627,7 +2627,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             Action::SetColor(HighlightColor::Green),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let group = TestLibrary::list_annotations(&doc)
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
@@ -2732,7 +2732,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
             Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         assert_eq!(count(&doc), 1);
         assert_eq!(color_of(&doc), Some(HighlightColor::Yellow));
 
@@ -2741,7 +2741,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
             Action::SetColor(HighlightColor::Green),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         assert_eq!(count(&doc), 1, "different colour replaces (never layers)");
         assert_eq!(color_of(&doc), Some(HighlightColor::Green));
 
@@ -2750,7 +2750,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
             Action::SetColor(HighlightColor::Green),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         assert_eq!(count(&doc), 0, "same colour again removes the highlight");
     }
 }
@@ -3546,7 +3546,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
             !TestLibrary::read_library_entries(&doc)[0].shared,
             "the shared row is not advertised before materialisation commits"
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         assert!(app.book_is_shared(0));
@@ -3647,7 +3647,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
             "the share stops as its caller asked"
         );
         assert!(app.take_effect_result(invocation).is_none());
-        app.read_record(&doc);
+        app.read_resource(&doc);
         app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         assert!(
@@ -3830,7 +3830,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         dispatch(&mut app, &mut doc, Action::SetColor(HighlightColor::Blue));
-        app.read_record(&doc);
+        app.read_resource(&doc);
         assert_eq!(
             TestLibrary::list_annotations(&doc)
                 .iter()
@@ -4337,7 +4337,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             Action::SetColor(HighlightColor::Green),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let hl = TestLibrary::list_annotations(&doc)
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
@@ -4389,7 +4389,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
-        app.read_record(&doc);
+        app.read_resource(&doc);
         let group = TestLibrary::list_annotations(&doc)
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
@@ -4759,7 +4759,7 @@ fn reader_text_rows_fit_at_2x() {
 /// renderer both carry `scale`, exactly as the live host applies it.
 fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64, scale: f32) {
     let root = automerge::ROOT;
-    app.read_record(doc);
+    app.read_resource(doc);
     app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);

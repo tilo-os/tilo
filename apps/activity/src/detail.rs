@@ -185,7 +185,7 @@ fn agent_session(provider: &Provider, range: &wire::Range, run: &wire::Session) 
                 let Some(offer) = &changed.undo else {
                     return Box::new(row);
                 };
-                let query = wire::RecordQuery {
+                let query = wire::ResourceQuery {
                     range: range.clone(),
                     task: None,
                     app_id: changed.app_id.clone(),

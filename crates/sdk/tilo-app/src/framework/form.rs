@@ -194,7 +194,7 @@ pub enum Attached<V, I = V> {
 
 /// Marks the [`Bindable`](super::Bindable) implementation for a record's field.
 #[doc(hidden)]
-pub enum RecordField {}
+pub enum ResourceField {}
 
 /// Marks the [`Bindable`](super::Bindable) implementation for a form's field.
 #[doc(hidden)]

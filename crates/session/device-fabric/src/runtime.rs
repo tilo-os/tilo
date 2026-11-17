@@ -93,7 +93,7 @@ impl FabricRuntime {
             runtime.local = Some(Local {
                 device: device.clone(),
                 label: label.clone(),
-                snapshot: own_record(&device, &label, counter)?,
+                snapshot: own_resource(&device, &label, counter)?,
             });
             runtime.revise()?;
         }
@@ -576,7 +576,7 @@ impl FabricRuntime {
 
 /// A device's record as it first publishes itself: what it is called, what it
 /// does with the fabric, and the revision it says it at.
-fn own_record(
+fn own_resource(
     device: &DeviceId,
     label: &str,
     counter: u64,
@@ -662,14 +662,14 @@ mod tests {
     /// The frame `device` announces itself with, carrying only its record.
     fn announcement(device: &DeviceId, label: &str, counter: u64) -> Vec<u8> {
         let mut own = DeviceFabric::default();
-        own.upsert(own_record(device, label, counter).expect("a valid record"))
+        own.upsert(own_resource(device, label, counter).expect("a valid record"))
             .expect("one device's record");
         own.encode_checkpoint().expect("an encoded checkpoint")
     }
 
     /// The frame a device that shows one screen announces itself with.
     fn announcement_with_screen(device: &DeviceId, label: &str, counter: u64) -> Vec<u8> {
-        let mut record = own_record(device, label, counter).expect("a valid record");
+        let mut record = own_resource(device, label, counter).expect("a valid record");
         record.display = Some(DisplayPlacement {
             device: device.clone(),
             outputs: Vec::new(),

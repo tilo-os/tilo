@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::owner::RecordWrites;
+use tilo_peer_state::owner::DocumentWrites;
 
 use crate::link::{Entry, Failure, FailureKind, LocalState, PeerStatus, TransportPhase};
 
@@ -163,7 +163,7 @@ pub struct RecordRef {
     /// The workspace (its cluster id), named `workspace` in `SessionHealth` v1.
     pub workspace: String,
     /// Record wire name.
-    pub record_id: String,
+    pub document_id: String,
 }
 
 /// `RecordHealth`.
@@ -384,7 +384,7 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
 /// Each record's health: this device's `writes` to it and its local store state.
 fn record_health(
     status: &PeerStatus,
-    writes: &BTreeMap<DocumentRoute, RecordWrites>,
+    writes: &BTreeMap<DocumentRoute, DocumentWrites>,
     blocked: bool,
     connected: bool,
 ) -> Vec<RecordHealth> {
@@ -402,7 +402,7 @@ fn record_health(
             record: RecordRef {
                 app_id: route.app_id.clone(),
                 workspace: route.cluster_id.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
             },
             editing: if blocked {
                 "blocked"
@@ -434,7 +434,7 @@ impl PeerSnapshot {
     /// its replica's custody keeps them.
     pub fn from_status(
         status: &PeerStatus,
-        writes: &BTreeMap<DocumentRoute, RecordWrites>,
+        writes: &BTreeMap<DocumentRoute, DocumentWrites>,
     ) -> Self {
         let waiting_workspaces = status.workspaces.values().filter(|ready| !**ready).count();
         let connected = status.phase == TransportPhase::Connected;

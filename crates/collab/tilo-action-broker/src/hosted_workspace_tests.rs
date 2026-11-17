@@ -188,9 +188,9 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                     forwarded.target.provider,
                     format!(
                         "{}:{}:{}",
-                        tilo_actions::remote::RECORD_PROVIDER,
+                        tilo_actions::remote::RESOURCE_PROVIDER,
                         fixture.route.app_id,
-                        fixture.route.record_id
+                        fixture.route.document_id
                     ),
                     "the host names the record"
                 );

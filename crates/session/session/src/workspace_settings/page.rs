@@ -98,8 +98,8 @@ mod tests {
     use tilo_desktop_surface::{DesktopSurface, TileSource};
     use tilo_sheets::workspace_settings::{WorkspaceSettingsEffect as Ask, WorkspaceSettingsState};
     use ui::permissions::{LivePermissions, MemberId};
-    use ui::record::RecordOwners;
-    use ui::record::workspace::WorkspaceRecords;
+    use ui::resource::ResourceOwners;
+    use ui::resource::workspace::WorkspaceResources;
     use ui::widget::{TileContent, TileHost};
 
     use super::PageAgents;
@@ -116,10 +116,10 @@ mod tests {
     }
 
     /// A page's records of its workspace, as its windows keep them.
-    struct Page(WorkspaceRecords);
+    struct Page(WorkspaceResources);
 
     impl super::Host for Page {
-        fn open(&self, _: &Workspace, _: &UserId) -> (WorkspaceRecords, Option<LivePermissions>) {
+        fn open(&self, _: &Workspace, _: &UserId) -> (WorkspaceResources, Option<LivePermissions>) {
             (self.0.clone(), None)
         }
 
@@ -146,8 +146,8 @@ mod tests {
     fn a_page_makes_bounds_and_retires_the_workspaces_agents() {
         let kept = tempfile::tempdir().unwrap();
         let workspace = Workspace::new(WorkspaceId::new(), "Studio");
-        let records = WorkspaceRecords::in_workspace(
-            RecordOwners::new(kept.path().to_owned()),
+        let records = WorkspaceResources::in_workspace(
+            ResourceOwners::new(kept.path().to_owned()),
             workspace.id().to_string(),
             MemberId::person("ada".to_owned()),
         );

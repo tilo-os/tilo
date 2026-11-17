@@ -1675,14 +1675,14 @@ mod theme_repaint_tests {
 /// left a wake deadline that only its next `draw` moved, so a compositor that
 /// does not paint for a due deadline woke for it on every park.
 #[cfg(test)]
-mod saving_record_wake_tests {
+mod saving_resource_wake_tests {
     use super::theme_repaint_tests::{layout, paint};
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support::{
         ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
     };
-    use crate::record::RecordSaveStatus;
+    use crate::resource::ResourceSaveStatus;
 
     fn bound(tile: &mut EmbeddedApp) -> &mut crate::application::AppComponent {
         &mut tile
@@ -1694,8 +1694,8 @@ mod saving_record_wake_tests {
             .component
     }
 
-    fn sampled(tile: &mut EmbeddedApp) -> Option<RecordSaveStatus> {
-        bound(tile).sampled_record_save().cloned()
+    fn sampled(tile: &mut EmbeddedApp) -> Option<ResourceSaveStatus> {
+        bound(tile).sampled_resource_save().cloned()
     }
 
     /// The host's per-tick pump, as `TileHost` runs it for a tile that keeps
@@ -1760,7 +1760,7 @@ mod saving_record_wake_tests {
             })
             .unwrap();
         sample(&mut tile);
-        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert_eq!(sampled(&mut tile), Some(ResourceSaveStatus::Saving));
         assert_eq!(
             tile.next_wake_deadline(),
             None,
@@ -1773,20 +1773,20 @@ mod saving_record_wake_tests {
             assert!(!pump(&mut tile), "a save still under way paints nothing");
         }
         assert!(!tile.needs_redraw());
-        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert_eq!(sampled(&mut tile), Some(ResourceSaveStatus::Saving));
 
         // The writer finishes off the event loop and its store wakes the tile.
-        binding.records.try_flush_record(&id).unwrap();
+        binding.records.try_flush_resource(&id).unwrap();
         binding.records.await_submitted(&id).unwrap();
         assert_eq!(
             binding.records.save_status(&id).unwrap(),
-            RecordSaveStatus::Saved
+            ResourceSaveStatus::Saved
         );
 
         // The pump, with no draw, takes up the wake and finds it saved: one
         // frame shows the change.
         assert!(pump(&mut tile), "the finished save is shown");
-        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));
+        assert_eq!(sampled(&mut tile), Some(ResourceSaveStatus::Saved));
         assert_eq!(tile.next_wake_deadline(), None);
         assert!(tile.needs_redraw());
         settle(&mut tile, &theme);

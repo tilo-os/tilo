@@ -133,7 +133,7 @@ impl values::Reads for StepReads<'_> {
                     serves: None,
                 };
                 self.member
-                    .existing_record(&finding)?
+                    .existing_document(&finding)?
                     .ok_or_else(|| format!("no {app} document is open to read"))?
             }
         };

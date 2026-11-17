@@ -115,7 +115,7 @@ struct SearchRefreshStats {
     rebuilds: usize,
     skipped: usize,
     buffer_reads: usize,
-    indexed_records: usize,
+    indexed_resources: usize,
 }
 
 #[derive(Default)]
@@ -1174,9 +1174,9 @@ impl CodeApp {
         {
             self.search_refresh_stats.rebuilds =
                 self.search_refresh_stats.rebuilds.saturating_add(1);
-            self.search_refresh_stats.indexed_records = self
+            self.search_refresh_stats.indexed_resources = self
                 .search_refresh_stats
-                .indexed_records
+                .indexed_resources
                 .saturating_add(self.search_entries.len());
         }
     }

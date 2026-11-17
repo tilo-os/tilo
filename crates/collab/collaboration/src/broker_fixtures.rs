@@ -75,7 +75,7 @@ impl CollaborationManager {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         manager
@@ -113,7 +113,7 @@ impl CollaborationManager {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         manager

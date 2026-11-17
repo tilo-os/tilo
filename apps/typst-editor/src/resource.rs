@@ -12,7 +12,7 @@
 use ui::framework::Fixture;
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
@@ -215,7 +215,7 @@ impl ResourceApp for TypstEditorShell {
     }
 
     /// A `.typ` path on the command line opens that file's own workspace.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input.argument().map(DocumentId::identify_file)
     }
 

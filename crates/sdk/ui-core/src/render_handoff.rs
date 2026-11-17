@@ -117,9 +117,9 @@ pub(crate) fn set(recorder: &mut Option<Recorder>, stage: Stage, bounds: Option<
     }
 }
 pub(crate) fn record(recorder: &mut Option<Recorder>, stage: Stage) {
-    record_with(recorder, stage, capture);
+    resource_with(recorder, stage, capture);
 }
-fn record_with(
+fn resource_with(
     recorder: &mut Option<Recorder>,
     stage: Stage,
     clock: impl FnOnce() -> Option<HostClockBracket>,
@@ -151,7 +151,7 @@ mod tests {
                 || panic!("disabled clock"),
                 |_| panic!("disabled JSON emission"),
             );
-            record_with(&mut recorder, Stage::AfterPoolSend, || {
+            resource_with(&mut recorder, Stage::AfterPoolSend, || {
                 panic!("disabled stage clock")
             });
         }
@@ -201,7 +201,7 @@ mod tests {
             .into_iter()
             .enumerate()
             {
-                record_with(&mut recorder, stage, || point(30 + index as u32));
+                resource_with(&mut recorder, stage, || point(30 + index as u32));
             }
             let mut second = None;
             received_with(

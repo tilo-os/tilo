@@ -173,7 +173,7 @@ fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &
 
 /// The chat record as the owner holds it, loaded as its app holds it: under
 /// one actor, as the app's store keeps it across writes and restarts.
-fn app_record(fixture: &Fixture, workspace: crate::owner::WorkspaceId) -> automerge::AutoCommit {
+fn app_document(fixture: &Fixture, workspace: crate::owner::WorkspaceId) -> automerge::AutoCommit {
     let held = fixture
         .owner
         .with_current(workspace, |view| {
@@ -194,7 +194,12 @@ fn signed_write(
     workspace: crate::owner::WorkspaceId,
     key: &str,
 ) -> crate::owner_commit::OwnerCommitRequest {
-    signed_write_to(fixture, workspace, &mut app_record(fixture, workspace), key)
+    signed_write_to(
+        fixture,
+        workspace,
+        &mut app_document(fixture, workspace),
+        key,
+    )
 }
 
 /// [`signed_write`] by an app that keeps `record` open between its writes:
@@ -238,7 +243,7 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
     grant(&fixture, "chat-read").await;
-    testing::start_record(
+    testing::start_resource(
         &fixture.owner,
         workspace,
         "so.tilo.chat",
@@ -283,7 +288,7 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
         .unwrap();
     assert_eq!(
         held.primary(),
-        &crate::InputDisposition::RetryLater(crate::MissingPrerequisite::RecordCheckpoint)
+        &crate::InputDisposition::RetryLater(crate::MissingPrerequisite::DocumentCheckpoint)
     );
     for frame in &frames[0..=2] {
         peer.receive_from_report(origin(&fixture), frame.clone(), fixture.now)
@@ -325,7 +330,7 @@ async fn only_a_governance_change_is_announced_to_authorization() {
     let before = epoch();
     grant(&fixture, "chat-read").await;
     assert_ne!(epoch(), before, "a grant is announced");
-    testing::start_record(
+    testing::start_resource(
         &fixture.owner,
         workspace,
         "so.tilo.chat",
@@ -360,7 +365,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     let fixture = fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    testing::start_record(
+    testing::start_resource(
         &fixture.owner,
         workspace,
         "so.tilo.chat",
@@ -385,7 +390,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     // The app keeps its record open between its keystrokes: read back from
     // the owner before each one, the record's whole history was loaded 2,050
     // times, none of it part of what a write costs the owner.
-    let mut record = app_record(&fixture, workspace);
+    let mut record = app_document(&fixture, workspace);
     let mut wholes = Vec::new();
     let mut costs = Vec::with_capacity(WRITES);
     let mut reads = Vec::with_capacity(WRITES);
@@ -439,7 +444,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
         );
     }
     assert_eq!(
-        app_record(&fixture, workspace).get_heads(),
+        app_document(&fixture, workspace).get_heads(),
         record.get_heads(),
         "the owner holds the record as the app that wrote it does"
     );

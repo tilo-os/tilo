@@ -1459,7 +1459,7 @@ mod identity_admin_tests {
 }
 
 #[cfg(test)]
-mod settings_records_tests {
+mod settings_documents_tests {
     use super::super::AppBrokerState;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{
@@ -1469,7 +1469,7 @@ mod settings_records_tests {
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
     use tilo_actions::remote::{
         ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
-        settings_records,
+        settings_resources,
     };
 
     const APP: &str = ui::apps::SETTINGS;
@@ -1524,7 +1524,7 @@ mod settings_records_tests {
 
     impl HostStepServices for Host {
         fn provider(&self) -> &'static str {
-            settings_records::PROVIDER
+            settings_resources::PROVIDER
         }
 
         fn app_id(&self) -> &'static str {
@@ -1571,7 +1571,7 @@ mod settings_records_tests {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
-                provider: settings_records::PROVIDER.into(),
+                provider: settings_resources::PROVIDER.into(),
                 address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),
             },
             argument: InvokeArgument::Json(

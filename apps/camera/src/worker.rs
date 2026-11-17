@@ -19,7 +19,7 @@ pub struct ScanJob {
     pub generation: u64,
     pub id: String,
     pub source: ScanSource,
-    pub record_history: bool,
+    pub document_history: bool,
 }
 
 pub enum ScanSource {
@@ -30,7 +30,7 @@ pub enum ScanSource {
 pub struct ScanResult {
     pub generation: u64,
     pub id: String,
-    pub record_history: bool,
+    pub document_history: bool,
     pub result: Result<Option<ScannedCode>, String>,
 }
 
@@ -248,7 +248,7 @@ impl WorkerLoop {
                     .send(ScanResult {
                         generation: job.generation,
                         id: job.id,
-                        record_history: job.record_history,
+                        document_history: job.document_history,
                         result: Ok(result),
                     })
                     .is_ok()

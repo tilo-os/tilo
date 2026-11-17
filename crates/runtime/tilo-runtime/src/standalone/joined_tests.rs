@@ -52,7 +52,7 @@ impl HostParts {
         let mut heard = link.heard();
         tilo_rt::app().spawn(async move {
             while let Ok(frame) = heard.recv().await {
-                let NeighbourMsg::RecordContentWant {
+                let NeighbourMsg::DocumentContentWant {
                     requester,
                     app_id,
                     cluster_id,
@@ -62,7 +62,7 @@ impl HostParts {
                 else {
                     continue;
                 };
-                let lacks = NeighbourMsg::RecordContentLacks {
+                let lacks = NeighbourMsg::DocumentContentLacks {
                     responder: host,
                     requester,
                     app_id,
@@ -1183,16 +1183,16 @@ fn the_workspaces_the_desktop_session_enrolled_are_refused() {
 struct Shelf(
     Mutex<
         std::collections::BTreeMap<
-            (tilo_action_broker::record_content::ContentScope, String),
+            (tilo_action_broker::document_content::ContentScope, String),
             Vec<u8>,
         >,
     >,
 );
 
-impl tilo_action_broker::record_content::ContentShelf for Shelf {
+impl tilo_action_broker::document_content::ContentShelf for Shelf {
     fn read(
         &self,
-        scope: &tilo_action_broker::record_content::ContentScope,
+        scope: &tilo_action_broker::document_content::ContentScope,
         hash: &str,
     ) -> Option<Vec<u8>> {
         self.0
@@ -1204,7 +1204,7 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
 
     fn keep(
         &self,
-        scope: &tilo_action_broker::record_content::ContentScope,
+        scope: &tilo_action_broker::document_content::ContentScope,
         hash: &str,
         bytes: &[u8],
     ) -> Result<(), String> {
@@ -1218,7 +1218,7 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
-    use tilo_action_broker::record_content::PIECE_BYTES;
+    use tilo_action_broker::document_content::PIECE_BYTES;
     use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
 
@@ -1277,7 +1277,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
                 loop {
                     if let Ok(heard) = heard.recv().await
                         && heard.author == device.device_public_key
-                        && let NeighbourMsg::RecordContentWant {
+                        && let NeighbourMsg::DocumentContentWant {
                             requester,
                             hash: asked,
                             ..
@@ -1297,7 +1297,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     })
     .await;
     for (index, chunk) in picture.chunks(PIECE_BYTES).enumerate() {
-        let piece = NeighbourMsg::RecordContentPiece {
+        let piece = NeighbourMsg::DocumentContentPiece {
             responder: governor_handle,
             requester: runtime_handle,
             app_id: route.app_id.clone(),
@@ -1322,7 +1322,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     assert_eq!(arrival.bytes, picture);
 
     // The governor's device asks for it in turn; the runtime answers it alone.
-    let want = NeighbourMsg::RecordContentWant {
+    let want = NeighbourMsg::DocumentContentWant {
         requester: governor_handle,
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id.clone(),
@@ -1339,7 +1339,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
             };
             // The host, which keeps none of it, says so: the picture
             // comes from the runtime.
-            let NeighbourMsg::RecordContentPiece {
+            let NeighbourMsg::DocumentContentPiece {
                 requester,
                 offset,
                 bytes,
@@ -1365,7 +1365,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
 /// content arrives: waiting, then fetching, then here.
 #[tokio::test(flavor = "current_thread")]
 async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
-    use tilo_action_broker::record_content::PIECE_BYTES;
+    use tilo_action_broker::document_content::PIECE_BYTES;
     use tilo_content::{ContentState, hash_bytes};
     use tilo_peer_state::peer_handle;
 
@@ -1438,7 +1438,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
         loop {
             if let Ok(heard) = heard.recv().await
                 && heard.author == device.device_public_key
-                && let NeighbourMsg::RecordContentWant {
+                && let NeighbourMsg::DocumentContentWant {
                     requester,
                     hash: asked,
                     ..
@@ -1456,7 +1456,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
         "fetching from the holder"
     );
     for (index, chunk) in book.chunks(PIECE_BYTES).enumerate() {
-        let piece = NeighbourMsg::RecordContentPiece {
+        let piece = NeighbourMsg::DocumentContentPiece {
             responder: governor_handle,
             requester: runtime_handle,
             app_id: route.app_id.clone(),
@@ -1560,14 +1560,14 @@ async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kin
         ("dev.tilo.not-installed", Some("dev.tilo.note")),
     ] {
         let refused = joined
-            .commit_with_record_kind(signed_write(workspace, app, &key), kind.map(str::to_owned))
+            .commit_with_resource_type(signed_write(workspace, app, &key), kind.map(str::to_owned))
             .await
             .unwrap_err();
         assert!(refused.contains("kind"), "{app} {kind:?}: {refused}");
     }
     let stranger = SigningKey::from_bytes(&[7; 32]);
     let refused = joined
-        .commit_with_record_kind(
+        .commit_with_resource_type(
             signed_write(workspace, "dev.tilo.declared", &stranger),
             Some("dev.tilo.note".into()),
         )

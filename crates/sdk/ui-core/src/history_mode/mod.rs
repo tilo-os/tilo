@@ -60,7 +60,7 @@ pub struct HistoryResource {
     pub profile_id: String,
     pub workspace_id: String,
     pub app_id: String,
-    pub record_id: DocumentId,
+    pub document_id: DocumentId,
 }
 
 impl HistoryResource {
@@ -68,13 +68,13 @@ impl HistoryResource {
         profile_id: impl Into<String>,
         workspace_id: impl Into<String>,
         app_id: impl Into<String>,
-        record_id: DocumentId,
+        document_id: DocumentId,
     ) -> Self {
         Self {
             profile_id: profile_id.into(),
             workspace_id: workspace_id.into(),
             app_id: app_id.into(),
-            record_id,
+            document_id,
         }
     }
 }

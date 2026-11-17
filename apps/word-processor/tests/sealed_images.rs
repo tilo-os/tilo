@@ -48,7 +48,8 @@ fn app() -> TestApp<WordProcessorApp> {
 
 fn record(writer: &mut TestApp<WordProcessorApp>) -> automerge::AutoCommit {
     writer.flush().unwrap();
-    automerge::AutoCommit::load(&writer.record_document(&writer.record().clone()).unwrap()).unwrap()
+    automerge::AutoCommit::load(&writer.resource_document(&writer.record().clone()).unwrap())
+        .unwrap()
 }
 
 fn apply(app: &mut TestApp<WordProcessorApp>, action: &RichTextAction) {

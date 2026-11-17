@@ -1547,7 +1547,7 @@ impl TabBar {
             (i, quieter),
             (label_rect, clip_r),
         );
-        self.record_label("TabTitle", label, label_rect.intersect(clip_r));
+        self.resource_label("TabTitle", label, label_rect.intersect(clip_r));
     }
 
     /// A pinned pill's marker: an app icon, else its accent dot, else an empty bubble. Split out of

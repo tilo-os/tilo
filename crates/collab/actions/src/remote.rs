@@ -61,7 +61,7 @@ mod pending;
 pub mod person_accounts;
 pub mod person_models;
 mod providers;
-mod record_read;
+mod resource_read;
 mod search;
 pub mod session_actions;
 mod session_state;
@@ -82,15 +82,15 @@ pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
 pub use application::{
     APPLICATION_PROVIDER, ApplicationLaunch, application_action_target, application_open_target,
-    application_provider, application_provider_record, application_record_target,
+    application_provider, application_provider_resource, application_resource_target,
 };
 pub use confirmation::{
     Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation, argument_digest,
 };
 pub use providers::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX,
-    APPLICATION_START_ACTION, OWN_PROVIDER, RECORD_PROVIDER, SHARE_LINK_ACTION, WORKSPACE_PROVIDER,
-    is_record_provider, record_parts,
+    APPLICATION_START_ACTION, OWN_PROVIDER, RESOURCE_PROVIDER, SHARE_LINK_ACTION,
+    WORKSPACE_PROVIDER, is_resource_provider, resource_parts,
 };
 
 pub use catalogue::{
@@ -98,7 +98,7 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
-pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, RecordChanged};
+pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
 pub use content_link::{
     CONTENT_LINK_TTL_SECS, CONTENT_LINKS_UNAVAILABLE, ContentLink, ContentLinkAsk, ContentLinkFile,
@@ -112,10 +112,10 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
-pub use record_read::{
-    HeldCopies, RECORD_READ_REFUSED, RECORD_READS_FOR_AGENTS, RECORD_READS_UNAVAILABLE,
-    RecordAddress, RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads,
-    RecordWake, answer_read, read_records,
+pub use resource_read::{
+    HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
+    ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
+    ResourceReads, ResourceWake, answer_read, read_resources,
 };
 pub use search::{FOUND_FILE, Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
@@ -234,7 +234,7 @@ pub mod device_pairing;
 /// verbs (`settings:<kind>`), changed through them as that app's window
 /// changes them. It is answered under the host's provider for the person at
 /// this device in the workspace their connection was admitted to.
-pub mod settings_records {
+pub mod settings_resources {
     /// The provider the host answers the person's settings under.
     pub const PROVIDER: &str = "tilo.settings";
 }
@@ -969,14 +969,14 @@ pub trait ActionHost {
         None
     }
 
-    /// Where an agent task reads its workspace's records outside their apps ([`RecordReads`]);
+    /// Where an agent task reads its workspace's records outside their apps ([`ResourceReads`]);
     /// `None` for a host without them.
-    fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
+    fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
         None
     }
 
-    /// Where an agent task's changes go to their records' origin ([`RecordChanges`]).
-    fn record_changes(&self) -> Option<std::sync::Arc<dyn RecordChanges>> {
+    /// Where an agent task's changes go to their records' origin ([`ResourceChanges`]).
+    fn resource_changes(&self) -> Option<std::sync::Arc<dyn ResourceChanges>> {
         None
     }
 
@@ -1054,11 +1054,11 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
-    /// Retired: records are read through the record API ([`Self::RecordRead`]). Kept in
+    /// Retired: records are read through the record API ([`Self::ResourceRead`]). Kept in
     /// place because the variants after it are encoded by position.
-    RetiredRecordRequest,
-    /// Retired with [`Self::RetiredRecordRequest`].
-    RetiredRecordResponse,
+    RetiredResourceRequest,
+    /// Retired with [`Self::RetiredResourceRequest`].
+    RetiredResourceResponse,
     /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
     ConfirmationRequest {
         correlation: u64,
@@ -1133,18 +1133,18 @@ pub enum RemoteActionMessage {
         result: Result<Box<ConfirmedInvocation>, ActionHostError>,
     },
     /// Read a record of the caller's workspace through the one record API
-    /// ([`RecordReads`]), decided as every reader of it is; continuing
+    /// ([`ResourceReads`]), decided as every reader of it is; continuing
     /// `on_behalf_of`, an invocation the host delivered to the caller, it is
     /// that invocation's caller's read.
-    RecordRead {
+    ResourceRead {
         correlation: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on_behalf_of: Option<InvocationId>,
-        read: RecordReadRequest,
+        read: ResourceReadRequest,
     },
-    /// Answer to [`Self::RecordRead`], same correlation: the readings as
-    /// JSON text ([`RecordReadings::readable`]).
-    RecordReading {
+    /// Answer to [`Self::ResourceRead`], same correlation: the readings as
+    /// JSON text ([`ResourceReadings::readable`]).
+    ResourceReading {
         correlation: u64,
         result: Result<String, ActionHostError>,
     },
@@ -1197,7 +1197,7 @@ pub enum RemoteActionMessage {
 /// as the chain of parts whose base it is, once it differs from the revision
 /// `after` or `wait_ms` passed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecordReadRequest {
+pub struct ResourceReadRequest {
     /// The app whose record it is.
     pub app: String,
     /// Its id there; empty for the app's record of the workspace.
@@ -1250,7 +1250,7 @@ impl RemoteActionMessage {
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
-                | Self::RecordRead { .. }
+                | Self::ResourceRead { .. }
                 | Self::FeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
@@ -1455,10 +1455,10 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
         // Read by a host's own reader, which answers through its trait object: what a reading is
         // made of loads with the code that reads records, not with every host's API.
-        RemoteActionMessage::RecordRead {
+        RemoteActionMessage::ResourceRead {
             correlation, read, ..
-        } => host.record_reads().map_or_else(
-            || record_read::unanswered(correlation),
+        } => host.resource_reads().map_or_else(
+            || resource_read::unanswered(correlation),
             |reads| reads.answer_read(caller, correlation, read),
         ),
         // A question is the person's to answer, on the device they are at.
@@ -1483,9 +1483,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RetiredRecordRequest
-        | RemoteActionMessage::RetiredRecordResponse
-        | RemoteActionMessage::RecordReading { .. }
+        | RemoteActionMessage::RetiredResourceRequest
+        | RemoteActionMessage::RetiredResourceResponse
+        | RemoteActionMessage::ResourceReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
@@ -1538,10 +1538,12 @@ pub fn refuse(
             invocation: *invocation,
             result: Err(error),
         },
-        RemoteActionMessage::RecordRead { correlation, .. } => RemoteActionMessage::RecordReading {
-            correlation: *correlation,
-            result: Err(error),
-        },
+        RemoteActionMessage::ResourceRead { correlation, .. } => {
+            RemoteActionMessage::ResourceReading {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
             confirmation::unanswered(*correlation, error)
         }
@@ -1589,9 +1591,9 @@ pub fn refuse(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RetiredRecordRequest
-        | RemoteActionMessage::RetiredRecordResponse
-        | RemoteActionMessage::RecordReading { .. }
+        | RemoteActionMessage::RetiredResourceRequest
+        | RemoteActionMessage::RetiredResourceResponse
+        | RemoteActionMessage::ResourceReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
@@ -1965,9 +1967,9 @@ mod tests {
             ] {
                 assert_eq!(application_provider(other), None, "{other}");
             }
-            assert_eq!(application_provider_record(&target.provider), None);
+            assert_eq!(application_provider_resource(&target.provider), None);
 
-            let target = application_record_target(
+            let target = application_resource_target(
                 "workspace-1",
                 "so.tilo.notes",
                 "uuid:7",
@@ -1979,7 +1981,7 @@ mod tests {
                 Some(("workspace-1", "so.tilo.notes"))
             );
             assert_eq!(
-                application_provider_record(&target.provider),
+                application_provider_resource(&target.provider),
                 Some("uuid:7")
             );
             assert_eq!(target.address, ActionAddress::new("notes.page:1", "open"));
@@ -2681,7 +2683,7 @@ mod tests {
                 after: Option<&str>,
             ) -> Pending<Result<ChangePage, ActionHostError>> {
                 Pending::ready(Ok(ChangePage {
-                    changes: vec![RecordChanged {
+                    changes: vec![ResourceChanged {
                         app: "so.tilo.notes".into(),
                         record: String::new(),
                         entry: serde_json::json!({"change": "abc", "invocation": "i"}),

@@ -211,7 +211,7 @@ impl AgentMember {
     }
 
     /// The records the coordinated task's items made or acted on.
-    pub(super) fn coordinated_records(&self) -> Vec<DocumentRoute> {
+    pub(super) fn coordinated_documents(&self) -> Vec<DocumentRoute> {
         self.coordinator
             .as_ref()
             .map(|coordinator| coordinator.touched.clone())
@@ -429,7 +429,7 @@ impl AgentMember {
             let device = self.news_from.get(&route).copied();
             let from = device.and_then(|device| self.member_name(device));
             arrived.push(Arrival {
-                title: self.record_title(&route),
+                title: self.resource_title(&route),
                 lines: self.shown_lines(&route, lines, from.as_deref()),
                 from,
                 route,

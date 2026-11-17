@@ -236,7 +236,7 @@ pub fn view_operation_permitted(
     contract: &tilo_actions::ActionContract,
 ) -> bool {
     actor.member_id() == Some(local_author)
-        || contract.reads_record()
+        || contract.reads_resource()
         || (contract.is_presence_view()
             && current_invoker()
                 .is_some_and(|invoker| invoker.acting.by == *actor && invoker.presence.is_some()))
@@ -342,7 +342,7 @@ pub(crate) struct PublishedInvocationRuntime {
 use crate::{
     collaboration::RouteSpec,
     history_mode::HistoryOwner,
-    record::{DocumentCheckout, DocumentId, RecordAdmission, RecordStore},
+    resource::{DocumentCheckout, DocumentId, ResourceAdmission, ResourceStore},
 };
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use std::{
@@ -424,7 +424,7 @@ const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
 #[derive(Clone)]
 pub struct ResourceInvocationScope {
     owner: HistoryOwner,
-    admission: RecordAdmission,
+    admission: ResourceAdmission,
     lease: PublishedInvocationLease,
     provenance: Rc<RefCell<InvocationProvenance>>,
     retired: Arc<AtomicBool>,
@@ -1245,43 +1245,43 @@ impl DocumentAuthorization {
 }
 
 struct LoanIdentity {
-    store: RecordStore,
+    store: ResourceStore,
     record: DocumentId,
     document: *const AutoCommit,
 }
 thread_local! {
-    static RECORD_LOANS: RefCell<Vec<LoanIdentity>> = const { RefCell::new(Vec::new()) };
+    static RESOURCE_LOANS: RefCell<Vec<LoanIdentity>> = const { RefCell::new(Vec::new()) };
 }
-struct RecordLoan;
-impl Drop for RecordLoan {
+struct ResourceLoan;
+impl Drop for ResourceLoan {
     fn drop(&mut self) {
-        RECORD_LOANS.with_borrow_mut(|loans| {
+        RESOURCE_LOANS.with_borrow_mut(|loans| {
             loans.pop();
         });
     }
 }
-pub(crate) fn with_record_loan<R>(
-    store: &RecordStore,
+pub(crate) fn with_resource_loan<R>(
+    store: &ResourceStore,
     record: &DocumentId,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    RECORD_LOANS.with_borrow_mut(|loans| {
+    RESOURCE_LOANS.with_borrow_mut(|loans| {
         loans.push(LoanIdentity {
             store: store.clone(),
             record: record.clone(),
             document,
         })
     });
-    let _loan = RecordLoan;
+    let _loan = ResourceLoan;
     callback(document)
 }
 fn record_loan_matches(
-    store: &RecordStore,
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     document: &AutoCommit,
 ) -> bool {
-    RECORD_LOANS.with_borrow(|loans| {
+    RESOURCE_LOANS.with_borrow(|loans| {
         loans.last().is_some_and(|loan| {
             loan.store.same_owner(store)
                 && loan.record == checkout.id
@@ -1292,24 +1292,24 @@ fn record_loan_matches(
 
 /// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RecordStamp {
+pub(crate) struct ResourceStamp {
     pub(crate) workspace: Option<uuid::Uuid>,
     pub(crate) app_id: String,
-    pub(crate) record_id: String,
+    pub(crate) document_id: String,
 }
 
-impl From<&RouteSpec> for RecordStamp {
+impl From<&RouteSpec> for ResourceStamp {
     fn from(route: &RouteSpec) -> Self {
         Self {
             workspace: Some(route.cluster_id),
             app_id: route.app_id.clone(),
-            record_id: route.record.clone().unwrap_or_default(),
+            document_id: route.record.clone().unwrap_or_default(),
         }
     }
 }
 
 struct MountedDocument {
-    stamp: RecordStamp,
+    stamp: ResourceStamp,
     document: *const AutoCommit,
 }
 thread_local! {
@@ -1326,7 +1326,7 @@ impl Drop for MountedLoan {
 
 /// Lend `document` to `callback`, identified as the record `stamp` names.
 fn with_identified_document<R>(
-    stamp: Option<RecordStamp>,
+    stamp: Option<ResourceStamp>,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
@@ -1347,14 +1347,14 @@ pub(crate) fn with_mounted_document<R>(
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    with_identified_document(route.as_ref().map(RecordStamp::from), document, callback)
+    with_identified_document(route.as_ref().map(ResourceStamp::from), document, callback)
 }
 
 /// Lend a component's record document to `callback`, identified only when it is the record store's
 /// current loan of exactly `checkout`'s document: on its canonical `route` when it has one, else as
 /// `app_id`'s local record.
-pub(crate) fn with_loaned_record<R>(
-    store: &RecordStore,
+pub(crate) fn with_loaned_resource<R>(
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     app_id: &str,
     route: Option<RouteSpec>,
@@ -1363,19 +1363,19 @@ pub(crate) fn with_loaned_record<R>(
 ) -> R {
     let stamp = record_loan_matches(store, checkout, document).then(|| {
         route.as_ref().map_or_else(
-            || RecordStamp {
+            || ResourceStamp {
                 workspace: None,
                 app_id: app_id.to_string(),
-                record_id: checkout.id.as_str().to_string(),
+                document_id: checkout.id.as_str().to_string(),
             },
-            RecordStamp::from,
+            ResourceStamp::from,
         )
     });
     with_identified_document(stamp, document, callback)
 }
 
 /// The record the innermost identified document names, when it is exactly `document`.
-pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
+pub(crate) fn identified_resource(document: &AutoCommit) -> Option<ResourceStamp> {
     MOUNTED_DOCUMENTS.with_borrow(|mounted| {
         mounted
             .last()

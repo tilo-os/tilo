@@ -214,7 +214,7 @@ impl ResourceApp for ChatShell {
     const TITLE: &'static str = "Chat";
     const TITLE_KEY: &'static str = "chat-app-title";
     const ICON: Option<&'static str> = Some("chat");
-    const WORKSPACE_RECORD: bool = true;
+    const WORKSPACE_RESOURCE: bool = true;
 
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {

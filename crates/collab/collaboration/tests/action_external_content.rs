@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collaboration::document_content::{ContentLane, DocumentContent};
 use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
 use collaboration::history_source::verbs::step_summary;
 use collaboration::history_source::words::HistoryWords;
-use collaboration::record_content::{ContentLane, RecordContent};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionContext, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport,
@@ -73,14 +73,14 @@ fn registry() -> ActionRegistry {
 /// The content store of record `record`: sealed, and joined to the record's
 /// route, as a window's record content is. A lane belongs to a record of this
 /// process, so the two replicas here name their own.
-fn record_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
+fn resource_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
     let lane = ContentLane::of(&collaboration::RouteSpec::record(
         APP,
         uuid::Uuid::nil(),
         record,
     ));
     (
-        RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
+        DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
         lane,
     )
 }
@@ -91,7 +91,7 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
 
     // Replica A: a window records an action too large to inline.
     let window = WakeScope::new();
-    let (store_a, lane_a) = record_store("the note, on A");
+    let (store_a, lane_a) = resource_store("the note, on A");
     let mut origin = AutoCommit::new();
     {
         let _in_the_window = window.enter();
@@ -134,7 +134,7 @@ fn an_action_over_the_budget_keeps_its_parts_sealed_and_decodes_on_the_replica_t
 
     // Replica B: it holds the change, not the bytes, and decodes through its
     // own record's content store, on no window's thread.
-    let (store_b, lane_b) = record_store("the note, on B");
+    let (store_b, lane_b) = resource_store("the note, on B");
     let mut registry_b = registry();
     registry_b.connect_content(store_b);
     let mut peer = origin.fork();

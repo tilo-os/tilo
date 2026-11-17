@@ -13,7 +13,7 @@ use ui_core::workspace_emoji::{
 };
 
 use super::live::Live;
-use super::workspace::{WorkspaceRecord, WorkspaceState};
+use super::workspace::{WorkspaceResource, WorkspaceState};
 
 // The record checks what the toolkit makes small: one limit for both.
 const _: () =
@@ -30,7 +30,7 @@ pub(crate) struct WindowEmoji {
     state: Rc<WorkspaceState>,
     /// The record, once a view asked for it: a window that draws no emoji
     /// opens none.
-    record: RefCell<Option<WorkspaceRecord<Record>>>,
+    record: RefCell<Option<WorkspaceResource<Record>>>,
     /// The emoji as last read, with the record's revision then.
     read: RefCell<Option<(u64, Rc<WorkspaceEmoji>)>>,
     /// Pictures the person chose, waiting for the chooser's answer.
@@ -54,7 +54,7 @@ impl WindowEmoji {
         })
     }
 
-    fn record(&self) -> Option<WorkspaceRecord<Record>> {
+    fn record(&self) -> Option<WorkspaceResource<Record>> {
         if let Some(record) = self.record.borrow().as_ref() {
             return Some(record.clone());
         }

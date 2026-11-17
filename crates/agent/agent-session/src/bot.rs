@@ -7,7 +7,7 @@ pub mod held;
 pub use tilo_automerge::items as item_json;
 
 use automerge::ChangeHash;
-use tilo_automation::dispatch::{self, RecordEvent};
+use tilo_automation::dispatch::{self, DocumentEvent};
 
 pub use item_json::item_json;
 
@@ -25,7 +25,7 @@ pub fn events_since(
     kind: &str,
     doc: &automerge::Automerge,
     since: &[String],
-) -> Vec<(RecordEvent, Vec<String>)> {
+) -> Vec<(DocumentEvent, Vec<String>)> {
     let since: Vec<ChangeHash> = since.iter().filter_map(|hex| hex.parse().ok()).collect();
     let mut heads: Vec<ChangeHash> = since.clone();
     let mut out = Vec::new();

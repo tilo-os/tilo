@@ -22,8 +22,8 @@ use std::sync::Arc;
 use collab_types::claim::ClaimedAction;
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, DocumentMutation, Ed25519PublicKey,
-    InboundState, OpKind, ReceiptSurface, Record, Role, SignedOp, SurfaceSource, Surfaces,
-    UnitPath, ValidationError, generate_keypair, sign_op, validate_admitted_inbound_op,
+    InboundState, OpKind, ReceiptSurface, Role, SignedOp, SurfaceSource, Surfaces, UnitPath,
+    ValidationError, WrittenDocument, generate_keypair, sign_op, validate_admitted_inbound_op,
 };
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, Grantee, KindSet, Party, TreePath, roles,
@@ -55,7 +55,7 @@ impl ReceiptSurface for Notes {
 impl SurfaceSource for Notes {
     fn surface(
         &self,
-        _: &Record<'_>,
+        _: &WrittenDocument<'_>,
         _: Option<&str>,
         _: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {

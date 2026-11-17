@@ -105,7 +105,7 @@ impl TestGovernor {
                 .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     kind: "chat".into(),
                     bytes: chat.save(),
                 }],

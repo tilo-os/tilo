@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
             assert_eq!(reqs.len(), 1, "one write, on commit");
             let r = &reqs[0];
             assert_eq!(r.label, "Intro rewrite");
-            assert_eq!(r.record_id, None, "nothing was named here before");
+            assert_eq!(r.document_id, None, "nothing was named here before");
             let mut first = [0u8; 16];
             let mut last = [0u8; 16];
             last[0] = 19;
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
             assert_eq!(reqs.len(), 1);
             assert_eq!(reqs[0].label, "", "an empty label is 'remove the name'");
             assert_eq!(
-                reqs[0].record_id.as_deref(),
+                reqs[0].document_id.as_deref(),
                 Some("tilo:group:rec"),
                 "and it addresses the record that already exists"
             );

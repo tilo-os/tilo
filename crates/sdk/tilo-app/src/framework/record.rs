@@ -1,12 +1,12 @@
 //! Records a view edits besides the one its app shows: the person's own
-//! record of a resource ([`PersonRecord`](super::PersonRecord)) and a typed
+//! record of a resource ([`PersonResource`](super::PersonResource)) and a typed
 //! settings section ([`Setting`](super::Setting)).
 //!
 //! Such a record is a resource like the app's own. A view binds its fields by
 //! path and its verbs by reference in a scope of its own
 //! ([`ViewCx::record`](super::ViewCx::record)); a surface binds its controls
 //! and live rows with the record's actions
-//! ([`SurfaceCx::record_actions`](super::SurfaceCx::record_actions)).
+//! ([`SurfaceCx::resource_actions`](super::SurfaceCx::resource_actions)).
 //! It is published beside the app's resource with its field edits and verbs,
 //! so the palette, agents and scripts change it through the same API. Only
 //! the person whose record it is changes it (or software acting for them),
@@ -36,11 +36,11 @@ use ui_core::widget::Element;
 
 /// The operation type a record's published actions are carried out under:
 /// the host applies the action to the record it names.
-pub(crate) const RECORD_ACTION_TYPE: &str = "tilo.app.record-action";
+pub(crate) const RESOURCE_ACTION_TYPE: &str = "tilo.app.record-action";
 
 /// One action of a record, as its published operation carries it.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RecordAction {
+pub(crate) struct ResourceAction {
     pub(crate) record: String,
     pub(crate) action: EncodedAction,
 }
@@ -101,7 +101,7 @@ impl<P: Resource> Held<P> {
     ) -> Self {
         self.read = Some(Box::new(move |payload| {
             let mut answered = Err("the record cannot be read".to_owned());
-            document(&mut |doc| answered = read_record::<P>(doc, payload));
+            document(&mut |doc| answered = read_resource::<P>(doc, payload));
             answered
         }));
         self
@@ -146,7 +146,7 @@ impl<P: Resource> Held<P> {
     }
 
     /// The record as it is published: its field edits and verbs carried out
-    /// through [`RECORD_ACTION_TYPE`], open to the person whatever their
+    /// through [`RESOURCE_ACTION_TYPE`], open to the person whatever their
     /// role in the workspace; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         self.sync();
@@ -181,7 +181,7 @@ impl<P: Resource> Held<P> {
         if P::READABLE && self.read.is_some() && self.live.unreadable().is_none() {
             published
                 .actions
-                .push(tilo_resource::read::record_spec(&self.id));
+                .push(tilo_resource::read::resource_spec(&self.id));
         }
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
@@ -209,11 +209,11 @@ pub(crate) fn route(
 
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
-    let mut spec = route_operation(spec, RECORD_ACTION_TYPE, record);
+    let mut spec = route_operation(spec, RESOURCE_ACTION_TYPE, record);
     // The workspace's roles do not reach a record of the person's own: the host
     // lets only its person change it. It keeps its kind, so a change Undo
     // takes back still runs at once and offers Undo.
-    spec.type_mut().contract.set_own_record();
+    spec.type_mut().contract.set_own_resource();
     spec
 }
 
@@ -226,7 +226,7 @@ pub(crate) fn route_operation(
 ) -> tilo_actions::ActionSpec {
     let record = record.to_owned();
     spec.routed(operation, move |action| {
-        let routed = RecordAction {
+        let routed = ResourceAction {
             record: record.clone(),
             action,
         };
@@ -239,7 +239,7 @@ pub(crate) fn route_operation(
 
 /// A held record with its type erased, as the host publishes and answers
 /// it.
-pub(crate) trait RecordApi {
+pub(crate) trait ResourceApi {
     fn id(&self) -> &str;
     /// Whether this app changes the record; it is read here otherwise.
     fn editable(&self) -> bool;
@@ -284,7 +284,7 @@ pub(crate) trait RecordApi {
     }
 }
 
-impl<P: Resource> RecordApi for Held<P> {
+impl<P: Resource> ResourceApi for Held<P> {
     fn id(&self) -> &str {
         &self.id
     }
@@ -348,11 +348,11 @@ pub(crate) fn acting(me: &tilo_resource::MemberId) -> ActionInvoker {
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
 pub(crate) fn answer(
-    apis: &[Rc<dyn RecordApi>],
+    apis: &[Rc<dyn ResourceApi>],
     me: Option<&tilo_resource::MemberId>,
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
-    let request: RecordAction =
+    let request: ResourceAction =
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
     let api = apis
         .iter()
@@ -376,7 +376,7 @@ pub(crate) fn answer(
 
 /// A `read` of the record `P` whose committed document is `doc`, asked as
 /// `payload`: what it holds through its own read, or from its model tables.
-fn read_record<P: Resource>(
+fn read_resource<P: Resource>(
     doc: &ui_core::automerge::AutoCommit,
     payload: &[u8],
 ) -> Result<serde_json::Value, String> {
@@ -388,12 +388,12 @@ fn read_record<P: Resource>(
 }
 
 /// A record other than the app's own that views and surfaces edit: the
-/// person's own record of `P` ([`PersonRecord`](super::PersonRecord)), or
+/// person's own record of `P` ([`PersonResource`](super::PersonResource)), or
 /// a settings section `P` that is a resource model
 /// ([`Setting`](super::Setting)).
-pub trait OtherRecord<P: Resource>: sealed::Hold<P> {}
+pub trait OtherResource<P: Resource>: sealed::Hold<P> {}
 
-impl<P: Resource, H: sealed::Hold<P>> OtherRecord<P> for H {}
+impl<P: Resource, H: sealed::Hold<P>> OtherResource<P> for H {}
 
 pub(crate) mod sealed {
     use std::rc::Rc;
@@ -409,7 +409,7 @@ pub(crate) mod sealed {
     }
 
     /// A held record as the API publishes and changes it.
-    pub struct Api(pub(crate) Rc<dyn super::RecordApi>);
+    pub struct Api(pub(crate) Rc<dyn super::ResourceApi>);
 
     /// The window's storage, as a record is held in it.
     pub struct Storage<'a>(pub(crate) &'a super::ViewStorage);
@@ -421,7 +421,7 @@ pub(crate) mod sealed {
 /// and agents reach it whether or not a view has shown it, and the app's
 /// committed surface lists it. The person's own shared records are declared
 /// with the app instead
-/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)).
+/// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)).
 pub struct Records<'a> {
     /// The window's storage, where they are opened; `None` while the app's
     /// records are only declared ([`Self::declaring`]).
@@ -435,7 +435,7 @@ pub struct Records<'a> {
     /// The resource types of the chains declared, while declaring.
     chains: Vec<tilo_resource::ResourceKind>,
     /// Where a host without a window keeps the settings sections declared,
-    /// with the app they are the settings of ([`super::SettingsRecords`]).
+    /// with the app they are the settings of ([`super::SettingsResources`]).
     sections: Option<Sections>,
     /// The provider keeping the records being declared, inside
     /// [`Self::kept_by`].
@@ -567,7 +567,7 @@ impl<'a> Records<'a> {
     /// The children of `C` the app's record lists
     /// ([`Children`](super::Children)): each a record of its own, held and
     /// published with the window.
-    pub fn children<C: super::ChildRecord>(&mut self) -> &mut Self {
+    pub fn children<C: super::ChildResource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             return self;
         };
@@ -594,14 +594,14 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The app's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)): one per
+    /// The app's own record of `P` ([`ResourceEnv::person`](super::ResourceEnv::person)): one per
     /// kind in the workspace it is open in, each member's own there, opened with the window and
     /// declared where the app declares its records, so a host that reads it without the window
-    /// ([`super::record_index`]) reads it by its kind.
+    /// ([`super::resource_index`]) reads it by its kind.
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             // Declared, not opened: a host that reads the record without the
-            // window ([`super::record_index`]) reads it by its kind.
+            // window ([`super::resource_index`]) reads it by its kind.
             self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
@@ -616,15 +616,15 @@ impl<'a> Records<'a> {
     pub fn shared_workspace<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             // Declared, not opened: a host that reads the record without the
-            // window ([`super::record_index`]) reads it by its kind.
+            // window ([`super::resource_index`]) reads it by its kind.
             self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
-        storage.workspace_record::<P>();
+        storage.workspace_resource::<P>();
         self
     }
 
-    /// The settings section `T`, a resource model ([`RecordEnv::settings`](super::RecordEnv::settings)).
+    /// The settings section `T`, a resource model ([`ResourceEnv::settings`](super::ResourceEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where
         T: Resource<State = T> + Fields + SettingsSchema,
@@ -656,8 +656,8 @@ impl<'a> Records<'a> {
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view over another record than the app's own — the
-    /// person's own record ([`RecordEnv::person`](super::RecordEnv::person)), a settings section
-    /// ([`RecordEnv::settings`](super::RecordEnv::settings)) — built like a view of that record: its
+    /// person's own record ([`ResourceEnv::person`](super::ResourceEnv::person)), a settings section
+    /// ([`ResourceEnv::settings`](super::ResourceEnv::settings)) — built like a view of that record: its
     /// controls bind the record's paths
     /// (`cx.checkbox("high-contrast", Appearance::paths().high_contrast)`)
     /// and verbs, its edits go to that record as the person, recorded in its
@@ -665,19 +665,19 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// record cannot be held (a view of a past version).
     pub fn record<P: Resource>(
         &self,
-        record: &impl OtherRecord<P>,
+        record: &impl OtherResource<P>,
         part: impl FnOnce(&mut ViewCx<P>) -> Element,
     ) -> Option<Element> {
         let held = record.held(sealed::Storage(&self.storage))?;
         let dispatch = record_dispatch(&self.dispatch, &held);
-        let actions = record_actions(
+        let actions = resource_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            Rc::clone(&held) as Rc<dyn RecordApi>,
+            Rc::clone(&held) as Rc<dyn ResourceApi>,
         );
         let mut cx = ViewCx::<P> {
-            env: super::env::RecordEnv {
+            env: super::env::ResourceEnv {
                 live: held.live().clone(),
                 alive: self.alive.clone(),
                 dispatch,
@@ -716,11 +716,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 /// The published actions of `held`, kept current with the record while
 /// `alive` lives: what a record's view part binds, and a surface's own
 /// controls and live rows ([`Actions::operation`]).
-fn record_actions<P: Resource>(
+fn resource_actions<P: Resource>(
     app: &'static str,
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
-    api: Rc<dyn RecordApi>,
+    api: Rc<dyn ResourceApi>,
 ) -> Actions<P> {
     let actions = Actions::new(app, Rc::new(api.publish())).routed_to(
         api.id(),
@@ -735,7 +735,7 @@ fn record_actions<P: Resource>(
 fn follow_publication(
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
-    api: Rc<dyn RecordApi>,
+    api: Rc<dyn ResourceApi>,
     table: super::controls::ActionTable,
 ) {
     let followed = Cell::new(api.revision());
@@ -752,9 +752,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// controls a view builds outside a part over that record
     /// ([`Self::record`]): a hand widget bound to a settings section's field
     /// edits. `None` where the record cannot be held.
-    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
+    pub fn resource_actions<P: Resource>(
+        &self,
+        record: &impl OtherResource<P>,
+    ) -> Option<Actions<P>> {
         let api = record.api(sealed::Storage(&self.storage))?.0;
-        Some(record_actions(
+        Some(resource_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
@@ -770,9 +773,12 @@ impl<R: Resource> SurfaceCx<R> {
     /// own, submits through [`Actions`]' bindings, and offers them on its
     /// live rows ([`Actions::operation`]). `None` where the record cannot be
     /// held.
-    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
+    pub fn resource_actions<P: Resource>(
+        &self,
+        record: &impl OtherResource<P>,
+    ) -> Option<Actions<P>> {
         let api = record.api(sealed::Storage(&self.storage))?.0;
-        Some(record_actions(
+        Some(resource_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
@@ -789,7 +795,7 @@ fn record_dispatch<R: Resource, P: Resource>(
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(held);
     let me = parent.me().cloned();
-    parent.for_record(held.id(), !held.editable(), move |action| {
+    parent.for_resource(held.id(), !held.editable(), move |action| {
         let held = applying
             .upgrade()
             .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;

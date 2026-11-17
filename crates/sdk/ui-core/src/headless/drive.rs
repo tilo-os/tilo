@@ -65,7 +65,7 @@ pub fn run_component_staged(
     let reports = driver.component_close_reports();
     if reports.iter().any(|report| {
         report.view_error.is_some()
-            || report.record_error.is_some()
+            || report.resource_error.is_some()
             || report.teardown_error.is_some()
     }) {
         tilo_startup_metrics::mark("headless-durability-failed");

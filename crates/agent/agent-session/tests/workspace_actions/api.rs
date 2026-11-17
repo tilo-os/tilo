@@ -1034,7 +1034,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
 
     // The chat holds every one of them, as its host keeps it.
     let kept = workspaces
-        .record_history(&lobby, "so.tilo.chat", chat::parts::part(0).route())
+        .document_history(&lobby, "so.tilo.chat", chat::parts::part(0).route())
         .await
         .unwrap()
         .expect("the host keeps the chat's part");

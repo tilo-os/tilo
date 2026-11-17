@@ -33,7 +33,7 @@ impl TileHost {
                 self.structure_dirty = true;
             }
             Err(error) => {
-                self.record_error = Some(format!("History unavailable: {error}"));
+                self.resource_error = Some(format!("History unavailable: {error}"));
                 self.structure_dirty = true;
             }
         }

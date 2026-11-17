@@ -56,7 +56,7 @@ pub use join_service::OwnerJoinWorkspaces;
 pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
-    HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
+    DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
     custody_run_name, outgoing_bytes, validate_file_layout,
 };
 pub use record::{
@@ -988,7 +988,7 @@ impl NativeWorkspaceOwner {
     /// Publish `workspace`'s record as `change` leaves a copy of it, keeping
     /// this device's live replica: a change of this device's record alone.
     #[cfg(not(target_arch = "wasm32"))]
-    fn change_record<T>(
+    fn change_document<T>(
         &self,
         workspace: WorkspaceId,
         change: impl FnOnce(&NativeCommittedView, &mut record::StoredWorkspace) -> Result<T, String>,
@@ -996,13 +996,13 @@ impl NativeWorkspaceOwner {
         let view = self.view(workspace)?;
         let mut record = view.record.clone();
         let answer = change(&view, &mut record)?;
-        self.publish_record(workspace, &view, record, None)?;
+        self.publish_document(workspace, &view, record, None)?;
         Ok(answer)
     }
 
     /// Publish `record` for `workspace`, leaving this device's live replica as
     /// it is: a change of the record alone.
-    fn publish_record(
+    fn publish_document(
         &self,
         workspace: WorkspaceId,
         view: &NativeCommittedView,
@@ -1094,7 +1094,7 @@ impl NativeWorkspaceOwner {
                 }
             }
         };
-        limits::preflight_record(&record, limits::MAX_AUTHORITY_BYTES)
+        limits::preflight_document(&record, limits::MAX_AUTHORITY_BYTES)
             .map_err(|e| e.to_string())?;
         if changed {
             record.continuity = record
@@ -1173,13 +1173,13 @@ pub struct AppWrite {
     pub peer: u64,
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
     /// The author's standing in the workspace.
     pub author: tilo_action_policy::Standing,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,
     /// The member's own record it changes, as the write said
-    /// ([`collab_types::OwnRecord`]).
-    pub own: Option<collab_types::OwnRecord>,
+    /// ([`collab_types::OwnResource`]).
+    pub own: Option<collab_types::OwnResource>,
 }

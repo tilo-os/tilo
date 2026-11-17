@@ -1742,7 +1742,7 @@ impl App {
                         if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                             self.collaboration
                                 .manager
-                                .send(CollabRequest::RecordLocalEffect {
+                                .send(CollabRequest::ResourceLocalEffect {
                                     address: address.clone(),
                                     update: tilo_actions::InvocationUpdate::Failed {
                                         invocation: operation_invocation,
@@ -1762,7 +1762,7 @@ impl App {
                     if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                         self.collaboration
                             .manager
-                            .send(CollabRequest::RecordLocalEffect {
+                            .send(CollabRequest::ResourceLocalEffect {
                                 address: address.clone(),
                                 update: tilo_actions::InvocationUpdate::Failed {
                                     invocation: operation_invocation,
@@ -1789,7 +1789,7 @@ impl App {
                 if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                     self.collaboration
                         .manager
-                        .send(CollabRequest::RecordLocalEffect {
+                        .send(CollabRequest::ResourceLocalEffect {
                             address: address.clone(),
                             update: tilo_actions::InvocationUpdate::Succeeded {
                                 invocation: operation_invocation,
@@ -1853,7 +1853,7 @@ impl App {
                         };
                         self.collaboration
                             .manager
-                            .send(CollabRequest::RecordLocalEffect {
+                            .send(CollabRequest::ResourceLocalEffect {
                                 address: address.clone(),
                                 update,
                             });
@@ -1882,7 +1882,7 @@ impl App {
             {
                 self.collaboration
                     .manager
-                    .send(CollabRequest::RecordLocalEffect {
+                    .send(CollabRequest::ResourceLocalEffect {
                         address: address.clone(),
                         update: tilo_actions::InvocationUpdate::Succeeded {
                             invocation: operation_invocation,
@@ -2286,7 +2286,7 @@ impl App {
                 };
                 self.collaboration
                     .manager
-                    .send(CollabRequest::RecordLocalEffect { address, update });
+                    .send(CollabRequest::ResourceLocalEffect { address, update });
             }
             changed = true;
         }

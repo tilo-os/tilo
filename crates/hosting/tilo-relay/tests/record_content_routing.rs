@@ -7,7 +7,7 @@
 )]
 use std::time::Duration;
 
-use tilo_relay::transport::MAX_RECORD_CONTENT_FRAME_BYTES;
+use tilo_relay::transport::MAX_DOCUMENT_CONTENT_FRAME_BYTES;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -43,7 +43,7 @@ async fn subscribed(
 }
 
 fn piece(to: [u8; 32], frame: Vec<u8>) -> Envelope {
-    Envelope::RecordContent {
+    Envelope::DocumentContent {
         workspace_id: WS,
         to_device_public_key: to,
         // A sender cannot choose who it claims to be.
@@ -81,7 +81,7 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
         .expect("B timed out")
         .expect("B connection closed")
     {
-        Envelope::RecordContent {
+        Envelope::DocumentContent {
             to_device_public_key,
             from_device_public_key,
             frame,
@@ -98,7 +98,7 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     a_client
         .send(piece(
             b.device_pubkey(),
-            vec![0; MAX_RECORD_CONTENT_FRAME_BYTES + 1],
+            vec![0; MAX_DOCUMENT_CONTENT_FRAME_BYTES + 1],
         ))
         .unwrap();
     a_client.send(piece([0x55; 32], vec![1])).unwrap();

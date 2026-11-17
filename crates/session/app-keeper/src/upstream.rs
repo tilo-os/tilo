@@ -119,7 +119,7 @@ impl Upstream {
         }
     }
 
-    pub(crate) fn record_owner(&self, proxy: &impl Proxy, owner: &ClientId) {
+    pub(crate) fn resource_owner(&self, proxy: &impl Proxy, owner: &ClientId) {
         self.own(proxy, Some(owner));
     }
 

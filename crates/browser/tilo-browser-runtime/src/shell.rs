@@ -1781,7 +1781,7 @@ impl BrowserShell {
             ui::time::now(),
         );
         self.follow_profile_links();
-        offered |= self.chrome.shared.record_actions.follow();
+        offered |= self.chrome.shared.resource_actions.follow();
         let linked = &self.chrome.shared.linked;
         let revision = linked.revision();
         if self.linked_seen.replace(revision) != revision {

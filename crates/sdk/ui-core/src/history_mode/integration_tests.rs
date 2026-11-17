@@ -397,7 +397,7 @@ struct RetainedLifecycleHandles {
     events: std::rc::Rc<std::cell::Cell<usize>>,
     event_value: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     wrong_owner: std::rc::Rc<std::cell::Cell<usize>>,
-    intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::DocumentCheckout>>>,
+    intent: std::rc::Rc<std::cell::RefCell<Option<crate::resource::DocumentCheckout>>>,
     last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     accepted: Accepted,
 }
@@ -498,7 +498,7 @@ impl Widget for RetainedLifecycleProbe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped,
+        dyn crate::resource::capability::ResourceScoped,
         dyn crate::widget::ResourceOperations
     );
 
@@ -650,8 +650,8 @@ impl crate::widget::ResourceOperations for RetainedLifecycleProbe {
     }
 }
 
-impl crate::record::capability::RecordScoped for RetainedLifecycleProbe {
-    fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
+impl crate::resource::capability::ResourceScoped for RetainedLifecycleProbe {
+    fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
         self.handles.intent.borrow().clone()
     }
 }
@@ -685,7 +685,7 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
     let root = crate::widget::TileHost::from_component(component);
     // A save that lands inside a counted pass syncs the component again to show the new status, so
     // store the record's save before the passes this test counts.
-    host.records.try_flush_record(&record).unwrap();
+    host.records.try_flush_resource(&record).unwrap();
     let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
 
     let live = (handles.updates.get(), handles.syncs.get());

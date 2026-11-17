@@ -28,7 +28,7 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, Work};
-use tilo_action_broker::record_content::{ContentState, RouteContent};
+use tilo_action_broker::document_content::{ContentState, RouteContent};
 use tilo_action_broker::route::CrdtRoute;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 use tilo_actions::remote::{InvokeRequest, Pending, pending};

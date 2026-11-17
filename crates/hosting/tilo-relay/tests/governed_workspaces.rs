@@ -790,7 +790,7 @@ params = []
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: APP.into(),
             cluster_id: workspace.workspace.clone(),
-            record_id: String::new(),
+            document_id: String::new(),
             envelope: Box::new(op),
             own: None,
         }
@@ -928,8 +928,8 @@ mod governance_actions;
 #[path = "governed_workspaces/app_records.rs"]
 mod app_records;
 
-#[path = "governed_workspaces/sealed_records.rs"]
-mod sealed_records;
+#[path = "governed_workspaces/sealed_documents.rs"]
+mod sealed_documents;
 
 #[path = "governed_workspaces/shared_desktop.rs"]
 mod shared_desktop;

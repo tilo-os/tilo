@@ -73,7 +73,7 @@ pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
 pub use tilo_peer_state::document_frame::DocumentRoute;
-pub use tilo_relay_protocol::RecordAnswer;
+pub use tilo_relay_protocol::DocumentAnswer;
 
 /// Why an enrollment or an entry gave nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]

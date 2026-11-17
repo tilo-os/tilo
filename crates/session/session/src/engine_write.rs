@@ -22,7 +22,7 @@ pub(crate) struct Polled<T> {
     waker: Waker,
 }
 
-/// One write under way ([`crate::engine::Engine::write_record`]).
+/// One write under way ([`crate::engine::Engine::write_resource`]).
 pub(crate) type Writing = Polled<Written>;
 
 impl Writing {

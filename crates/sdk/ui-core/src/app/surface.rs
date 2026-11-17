@@ -1111,7 +1111,7 @@ impl App {
         // is a different document under the same widgets.
         #[cfg(test)]
         let pump_probe = crate::profiling::frame_probe::span("frame.pump");
-        let record_changed = self.pump_hosted_model_record_changed();
+        let resource_changed = self.pump_hosted_model_record_changed();
         #[cfg(test)]
         drop(pump_probe);
         // The model's pass took in what landed from elsewhere; the frame
@@ -1215,7 +1215,7 @@ impl App {
         };
         let full = [
             (replaced, "another component"),
-            (record_changed, "another record"),
+            (resource_changed, "another record"),
             (structure_rebuilt && !described, "a rebuilt tree"),
             (moved.is_none(), "moved geometry"),
             (self.debug_mode, "debug outlines"),
@@ -1890,7 +1890,7 @@ mod tests {
         _: crate::application::RestoreInput,
     ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
         context
-            .initialize_new_record(|_| Ok(()))
+            .initialize_new_resource(|_| Ok(()))
             .map_err(crate::launch::LaunchError::Record)?;
         let clicks = Rc::new(RefCell::new(Vec::new()));
         CLICKS.with_borrow_mut(|slot| *slot = Some(Rc::clone(&clicks)));

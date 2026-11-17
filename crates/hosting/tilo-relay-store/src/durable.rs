@@ -273,7 +273,7 @@ impl GenerationGc {
             sync_dir_once(&self.lineage)?;
         }
         let active = current(&self.lineage)?.ok_or_else(|| invalid("missing CURRENT during GC"))?;
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             if let Some((path, entries)) = &mut self.child {
                 if *path == active {
                     self.child = None;

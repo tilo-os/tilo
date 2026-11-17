@@ -75,7 +75,7 @@ impl Frame {
     pub fn of(message: &NeighbourMsg) -> Result<Self, Refusal> {
         let NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -93,7 +93,7 @@ impl Frame {
             .map(|since| u64::try_from(since.as_nanos()).unwrap_or(u64::MAX))
             .unwrap_or_default();
         Ok(Self {
-            lineage: Lineage::of(app_id, record_id, *envelope.author.as_bytes()),
+            lineage: Lineage::of(app_id, document_id, *envelope.author.as_bytes()),
             seq: envelope.seq,
             authored_at_ns,
             retention,

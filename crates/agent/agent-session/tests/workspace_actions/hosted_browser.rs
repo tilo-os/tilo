@@ -218,7 +218,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     assert_eq!(started.len(), 1, "the window's environment was opened");
     let record = started[0].record.clone();
     assert!(
-        ui::record::DocumentId::parse(&record).is_some(),
+        ui::resource::DocumentId::parse(&record).is_some(),
         "the open made the record it hands the session ({record})"
     );
     assert_eq!(started[0].workspace, WORKSPACE);

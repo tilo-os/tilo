@@ -873,7 +873,7 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
 impl Chained for ChatPart {
     type Base = Chat;
 
-    fn chain() -> ui::record::DocumentId {
+    fn chain() -> ui::resource::DocumentId {
         parts::chain()
     }
 
@@ -1288,7 +1288,12 @@ impl Messages {
     /// reader holds it, in the same order as [`Self::first_unread`]: the
     /// part's own.
     #[must_use]
-    pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &tilo_resource::MemberId) -> usize {
+    pub fn unread_by_others(
+        &self,
+        channel: &Id,
+        mark: parts::ReadMark,
+        author: &tilo_resource::MemberId,
+    ) -> usize {
         let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
         let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
         let mut unread = 0;

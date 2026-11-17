@@ -7,7 +7,7 @@
 //! only its app.
 
 use tilo_desktop_model::TabId;
-use tilo_relay_protocol::live::LiveRecord;
+use tilo_relay_protocol::live::LiveResource;
 use ui::kurbo::Rect;
 
 use super::Mount;
@@ -22,7 +22,7 @@ impl Mount {
     pub(super) fn live_place_value(&self) -> Option<serde_json::Value> {
         let Some(desktop) = self.desktop.as_ref() else {
             let (app, checkout) = self.app.as_ref().zip(self.checkout.as_ref())?;
-            let record = tilo_desktop_surface::host::records::wire_record(&checkout.id);
+            let record = tilo_desktop_surface::host::records::wire_document(&checkout.id);
             return Some(serde_json::json!({
                 "focus": named(app.clone(), record.to_owned()),
                 "place": null,
@@ -51,7 +51,7 @@ impl Mount {
         let (app, record) = focus.unwrap_or_else(|| {
             (
                 crate::desktop::DESKTOP_PACKAGE.to_owned(),
-                crate::replicated::DESKTOP_RECORD.to_owned(),
+                crate::replicated::DESKTOP_DOCUMENT.to_owned(),
             )
         });
         Some(serde_json::json!({
@@ -63,12 +63,12 @@ impl Mount {
 }
 
 /// `{app, document}` naming one window the way the rest of the presence does:
-/// the app and the 16-hex [`LiveRecord::short_digest`] of its record, never
+/// the app and the 16-hex [`LiveResource::short_digest`] of its record, never
 /// the record id, so that a receiver matches it against what it holds and
 /// learns nothing more than the app of a window on something not shared with
 /// it.
 fn named(app: String, record: String) -> serde_json::Value {
-    let named = LiveRecord { app, record };
+    let named = LiveResource { app, record };
     let short = hex::encode(named.short_digest());
     serde_json::json!({"app": named.app, "document": short})
 }
@@ -77,15 +77,15 @@ fn named(app: String, record: String) -> serde_json::Value {
 /// windows: [{app, document, rect, focused}]}`, `document` the 16-hex short
 /// digest, laid out in the content `area` (the strip's, under the bar) by the
 /// placement rule every host uses ([`tilo_session::sync::layout::placed`]).
-/// `record_of` names a tab's live record; a window without one is left out.
+/// `resource_of` names a tab's live record; a window without one is left out.
 /// `None` for an area of no size.
 pub(super) fn layout_value(
     area: Rect,
     shown: &[(TabId, Rect)],
-    record_of: impl Fn(TabId) -> Option<(String, String)>,
+    resource_of: impl Fn(TabId) -> Option<(String, String)>,
     focused: Option<TabId>,
 ) -> Option<serde_json::Value> {
-    let layout = tilo_session::sync::layout::placed(Some(area), shown, record_of, focused)?;
+    let layout = tilo_session::sync::layout::placed(Some(area), shown, resource_of, focused)?;
     Some(serde_json::json!({
         "size": layout.size,
         "windows": layout.windows.iter().map(|window| serde_json::json!({
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn a_focused_window_is_named_by_its_short_digest() {
         let value = named("so.tilo.notes".into(), "a record id".into());
-        let record = LiveRecord {
+        let record = LiveResource {
             app: "so.tilo.notes".into(),
             record: "a record id".into(),
         };

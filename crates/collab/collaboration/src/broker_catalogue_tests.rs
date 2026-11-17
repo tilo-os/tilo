@@ -302,7 +302,7 @@ fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
         app_id: "so.tilo.notes".into(),
         cluster_id: cluster,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     let admission = manager.await_primary_route();

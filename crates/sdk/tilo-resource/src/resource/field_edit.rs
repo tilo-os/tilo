@@ -47,7 +47,7 @@ pub(super) fn rooted_edit_spec(
     let mut spec = edit_spec(vocabulary, schema, label, description, judged);
     spec.type_mut().contract.tags.extend(tags);
     let takes_reactions = vocabulary
-        .record_table
+        .resource_table
         .is_some_and(|table| table.holds(<crate::Reactions as crate::Model>::TABLE));
     if !takes_reactions {
         return spec;

@@ -204,7 +204,7 @@ impl FileLock {
     ///
     /// The record is diagnostic only. It can be stale or momentarily empty,
     /// so never use it to decide whether the lock is free.
-    pub fn record_owner(&self) -> io::Result<()> {
+    pub fn resource_owner(&self) -> io::Result<()> {
         if self.mode != LockMode::Exclusive {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -262,7 +262,7 @@ pub fn open_lock_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// The process id a holder recorded with [`FileLock::record_owner`], if the
+/// The process id a holder recorded with [`FileLock::resource_owner`], if the
 /// lock file holds one. Diagnostic only: the process may have exited.
 pub fn owner_pid(path: &Path) -> Option<u32> {
     let mut text = String::new();

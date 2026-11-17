@@ -110,7 +110,7 @@ fn every_web_apps_record_reads_with_no_window_open() {
             Seed::New,
         )
         .unwrap_or_else(|error| panic!("{app} did not open: {error}"));
-        let root = definition.record_kind.clone();
+        let root = definition.resource_type.clone();
         let Some(descriptor) = replica.survey().into_iter().find(|descriptor| {
             descriptor.address.action == "read" && descriptor.address.resource == root.as_str()
         }) else {

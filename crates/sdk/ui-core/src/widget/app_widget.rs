@@ -128,14 +128,14 @@ pub trait AppWidget: Widget {
     }
 
     /// Framework-owned durability, delivered only after the record loan ends.
-    fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
+    fn resource_save_status(&mut self, _status: crate::resource::ResourceSaveStatus) {}
 
     /// The workspace refused a change this record made, and the record withdrew it: the action is refused as
     /// one refused on this device is.
-    fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
+    fn record_refused(&mut self, _refusal: &crate::resource::ResourceRefusal) {}
 
     /// What the app said it did since last asked ("Added Buy milk"), for the record to hold until the
-    /// workspace keeps it ([`crate::record::RecordStore::hold_notice`]).
+    /// workspace keeps it ([`crate::resource::ResourceStore::hold_notice`]).
     fn take_notices(&mut self) -> Vec<String> {
         Vec::new()
     }
@@ -168,7 +168,7 @@ pub trait AppWidget: Widget {
     }
 
     /// The component to show in this one's place, built now: what a root shown before its record
-    /// ([`crate::application::HostContext::record_opening`]) answers once the record is had.
+    /// ([`crate::application::HostContext::resource_opening`]) answers once the record is had.
     fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
@@ -349,9 +349,9 @@ mod component_adapter {
             }
             let sync_root = |component: &mut AppComponent| {
                 binding
-                    .read_document(state, |document, record_root| {
+                    .read_document(state, |document, resource_root| {
                         if let Some(root) = component.root.as_deref_mut() {
-                            root.sync(document, record_root);
+                            root.sync(document, resource_root);
                         }
                     })
                     .unwrap_or(());
@@ -360,7 +360,7 @@ mod component_adapter {
             // The record's durability, sampled once the root has synced. A
             // change is shown by syncing the root again with it, so the frame
             // needs no rebuilt tree (which repaints the whole window).
-            if self.component.project_record_save_status() {
+            if self.component.project_resource_save_status() {
                 sync_root(&mut self.component);
             }
         }
@@ -370,16 +370,16 @@ mod component_adapter {
         fn settle_root(&mut self, edits: &mut crate::widget::Edits<'_>) {
             let binding = self.component.callback_binding();
             binding
-                .with_settlement(edits.document_mut(), |document, record_root| {
+                .with_settlement(edits.document_mut(), |document, resource_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
                     let before = crate::doc::settle_mark(document);
-                    root.settle(&mut crate::widget::Edits::lend(document), record_root);
+                    root.settle(&mut crate::widget::Edits::lend(document), resource_root);
                     let _ = binding.drain_owned_tree(root, document);
                     if crate::doc::settle_mark(document) != before {
-                        root.update(document, record_root);
-                        root.sync(document, record_root);
+                        root.update(document, resource_root);
+                        root.sync(document, resource_root);
                     }
                 })
                 .unwrap_or(());
@@ -499,7 +499,7 @@ mod component_adapter {
                         owner: crate::bound_dispatch::OwnerStanding {
                             save: self
                                 .component
-                                .sampled_record_save()
+                                .sampled_resource_save()
                                 .cloned()
                                 .ok_or_else(String::new),
                             ..now.standing.owner
@@ -522,11 +522,15 @@ mod component_adapter {
             let binding = self.component.callback_binding();
             binding.note_input();
             binding
-                .with_document(edits.document_mut(), |document, record_root| {
+                .with_document(edits.document_mut(), |document, resource_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return R::default();
                     };
-                    f(root, &mut crate::widget::Edits::lend(document), record_root)
+                    f(
+                        root,
+                        &mut crate::widget::Edits::lend(document),
+                        resource_root,
+                    )
                 })
                 .unwrap_or_default()
         }
@@ -566,10 +570,10 @@ mod component_adapter {
         ) -> Option<crate::collaboration::ContinuationMetadata> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(state, |document, record_root| {
+                .read_document(state, |document, resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::widget::capability::capability::<dyn Continuable>(root)?
-                        .continuation_metadata(document, record_root)
+                        .continuation_metadata(document, resource_root)
                 })
                 .unwrap_or(None)
         }
@@ -580,13 +584,13 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
+            self.with_root_edits(state, |root, edits, resource_root| {
                 let Some(continuable) =
                     crate::widget::capability::capability_mut::<dyn Continuable>(&mut *root)
                 else {
                     return false;
                 };
-                continuable.restore_continuation_metadata(metadata, edits, record_root)
+                continuable.restore_continuation_metadata(metadata, edits, resource_root)
             })
         }
 
@@ -599,14 +603,14 @@ mod component_adapter {
             self.owes_sync = true;
             let binding = self.component.callback_binding();
             binding
-                .read_document(state, |document, record_root| {
+                .read_document(state, |document, resource_root| {
                     self.component.root.as_deref_mut().is_some_and(|root| {
                         crate::widget::capability::capability_mut::<dyn Continuable>(root)
                             .is_some_and(|continuable| {
                                 continuable.restore_live_continuation_metadata(
                                     metadata,
                                     document,
-                                    record_root,
+                                    resource_root,
                                 )
                             })
                     })
@@ -670,13 +674,13 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
+            self.with_root_edits(state, |root, edits, resource_root| {
                 root.perform_floating_surface_accessibility_action(
                     id,
                     target,
                     action,
                     edits,
-                    record_root,
+                    resource_root,
                 )
             })
         }
@@ -777,8 +781,8 @@ mod component_adapter {
             _path: &ObjId,
         ) -> bool {
             self.owes_sync = true;
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.handle_audience_presentation_event(event, edits, record_root)
+            self.with_root_edits(state, |root, edits, resource_root| {
+                root.handle_audience_presentation_event(event, edits, resource_root)
             })
         }
 
@@ -910,7 +914,7 @@ mod component_adapter {
             dyn crate::search::capability::SearchSource,
             dyn crate::permissions::capability::PermissionGated,
             dyn crate::presence::capability::PublishesPresence,
-            dyn crate::record::capability::RecordScoped,
+            dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
@@ -1092,11 +1096,11 @@ mod component_adapter {
                         .is_some_and(|root| root.update(state, &automerge::ROOT));
                 }
                 binding
-                    .read_document(state, |document, record_root| {
+                    .read_document(state, |document, resource_root| {
                         component
                             .root
                             .as_deref_mut()
-                            .is_some_and(|root| root.update(document, record_root))
+                            .is_some_and(|root| root.update(document, resource_root))
                     })
                     .unwrap_or(false)
             };
@@ -1198,7 +1202,7 @@ mod component_adapter {
                 .as_deref()
                 .is_some_and(|root| root.view_only_scroll(event));
             binding
-                .with_document(ctx.state.document_mut(), |document, record_root| {
+                .with_document(ctx.state.document_mut(), |document, resource_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
@@ -1211,7 +1215,7 @@ mod component_adapter {
                                 scale_factor: ctx.scale_factor,
                                 modifiers: ctx.modifiers,
                                 state: crate::widget::Edits::lend(document),
-                                path: record_root,
+                                path: resource_root,
                                 handled: ctx.handled,
                                 focus_target: ctx.focus_target,
                                 node_id: *child,
@@ -1327,8 +1331,8 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_action(action, key_path, edits, record_root)
+            self.with_root_edits(state, |root, edits, resource_root| {
+                root.perform_action(action, key_path, edits, resource_root)
             })
         }
         fn perform_semantic_action(
@@ -1338,8 +1342,8 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.perform_semantic_action(target, action, edits, record_root)
+            self.with_root_edits(state, |root, edits, resource_root| {
+                root.perform_semantic_action(target, action, edits, resource_root)
             })
         }
         fn is_enabled(&self) -> bool {
@@ -1407,8 +1411,8 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _root: &crate::widget::ModelPath,
         ) {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.on_external_event(payload, edits, record_root);
+            self.with_root_edits(state, |root, edits, resource_root| {
+                root.on_external_event(payload, edits, resource_root);
             });
         }
         fn on_nav_gesture(
@@ -1421,11 +1425,11 @@ mod component_adapter {
             self.owes_sync = true;
             let binding = self.component.callback_binding();
             binding
-                .read_document(state, |document, record_root| {
+                .read_document(state, |document, resource_root| {
                     self.component
                         .root
                         .as_deref_mut()
-                        .is_some_and(|root| root.on_nav_gesture(dir, document, record_root))
+                        .is_some_and(|root| root.on_nav_gesture(dir, document, resource_root))
                 })
                 .unwrap_or(false)
         }
@@ -1583,7 +1587,7 @@ mod component_adapter {
             let binding = self.component.callback_binding();
             binding.note_input();
             let result = binding
-                .with_document(doc.document_mut(), |document, record_root| {
+                .with_document(doc.document_mut(), |document, resource_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return Err("component callback refused".into());
                     };
@@ -1591,7 +1595,7 @@ mod component_adapter {
                         &mut *root,
                         op,
                         &mut crate::widget::Edits::lend(document),
-                        record_root,
+                        resource_root,
                     )
                 })
                 .unwrap_or_else(|_| Err("component callback refused".into()));
@@ -1612,14 +1616,14 @@ mod component_adapter {
         ) -> Option<tilo_actions::InvocationUpdate> {
             let binding = self.component.callback_binding();
             let update = binding
-                .read_document(doc, |document, record_root| {
+                .read_document(doc, |document, resource_root| {
                     let root = self.component.root.as_deref_mut()?;
                     crate::widget::poll_resource_operation(
                         &mut *root,
                         invocation,
                         cancellation_requested,
                         document,
-                        record_root,
+                        resource_root,
                     )
                 })
                 .unwrap_or(None);
@@ -1699,13 +1703,13 @@ mod component_adapter {
         }
     }
 
-    impl crate::record::capability::RecordScoped for BoundAppWidget {
-        fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
-            self.in_root(|root| crate::record::capability::record_intent(root))
+    impl crate::resource::capability::ResourceScoped for BoundAppWidget {
+        fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
+            self.in_root(|root| crate::resource::capability::record_intent(root))
                 .flatten()
         }
-        fn set_record_scope(&mut self, record: &crate::record::DocumentId) {
-            self.in_root_mut(|root| crate::record::capability::set_record_scope(root, record));
+        fn set_resource_scope(&mut self, record: &crate::resource::DocumentId) {
+            self.in_root_mut(|root| crate::resource::capability::set_resource_scope(root, record));
         }
     }
 
@@ -1752,12 +1756,12 @@ mod component_adapter {
             doc: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) {
-            self.with_root_edits(doc, |root, edits, record_root| {
+            self.with_root_edits(doc, |root, edits, resource_root| {
                 crate::search::capability::activate_search_result(
                     root,
                     action_id,
                     edits,
-                    record_root,
+                    resource_root,
                 );
             });
         }
@@ -1767,7 +1771,7 @@ mod component_adapter {
         fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
@@ -1783,7 +1787,7 @@ mod component_adapter {
         ) -> Option<ActionDirectoryResourcePage> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::resources::action_directory_resource_page(
                         root,
@@ -1797,7 +1801,7 @@ mod component_adapter {
         fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::resources::action_directory_revision(root, document)
                 })
@@ -1809,7 +1813,7 @@ mod component_adapter {
         ) -> crate::widget::ActionDirectoryInvocationDomain {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     self.component
                         .root
                         .as_deref()
@@ -1823,7 +1827,7 @@ mod component_adapter {
         fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::resources::resource(root, document, id)
                 })
@@ -1839,7 +1843,7 @@ mod component_adapter {
         ) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
@@ -1855,7 +1859,7 @@ mod component_adapter {
         ) -> Option<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::resources::resource_for(root, presence, document, id)
                 })
@@ -1868,7 +1872,7 @@ mod component_adapter {
         ) -> Option<tilo_actions::ActionAddress> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(doc, |document, _record_root| {
+                .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
                     crate::resources::action_directory_visibility(root, document, resource_id)
                 })
@@ -2013,7 +2017,7 @@ mod component_adapter {
         fn presences(&self, state: &AutoCommit) -> Vec<crate::widget::ViewPresence> {
             let binding = self.component.callback_binding();
             binding
-                .read_document(state, |document, _record_root| {
+                .read_document(state, |document, _resource_root| {
                     self.component
                         .root
                         .as_deref()

@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{EffectAnswer, Effected, PersonRecord, Publishes, Setting, ViewCx};
+use ui::framework::{EffectAnswer, Effected, PersonResource, Publishes, Setting, ViewCx};
 use ui::widget::{AppModel, Decorator, Element, ModelPath, Widget};
 
 use crate::actions::{OskEffect, SetPreference};
@@ -46,7 +46,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
 pub struct OskSurface {
     keyboard: OskWidget,
     preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
-    learned: Option<(PersonRecord<Learned>, u64)>,
+    learned: Option<(PersonResource<Learned>, u64)>,
     vocabulary: Option<ui::personal_dictionary::Snapshot>,
     vocabulary_identity: (Option<[u8; 32]>, u64),
     focus: Option<service::FocusChanges>,

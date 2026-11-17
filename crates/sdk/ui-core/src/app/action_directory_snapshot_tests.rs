@@ -67,7 +67,7 @@ tilo_test_env::scenario! {
             )
             .unwrap()
         };
-        let review = view("review").reads_record();
+        let review = view("review").reads_resource();
         let session = ResourceSpec::new("session", "test.session", "Session")
             .with_action(view("render"))
             .with_action(view("history"))
@@ -1275,7 +1275,7 @@ tilo_test_env::scenario! {
             publish_declared_directory(&mut app);
             let revision = app.action_directory_revision();
             catalog
-                .upsert_record(
+                .upsert_resource(
                     crate::search::SearchRecord::new(
                         "test.item:1",
                         crate::search::SearchResult::for_action(

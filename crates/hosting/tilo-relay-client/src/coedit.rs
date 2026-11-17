@@ -182,7 +182,7 @@ pub enum Inbound {
     /// A piece of a record's content another device of the workspace
     /// addressed to this one. The relay stamped the sender from its
     /// authenticated connection.
-    RecordContent {
+    DocumentContent {
         /// The sending device's public key.
         from: [u8; 32],
         /// The piece, as the sender encoded it.
@@ -203,7 +203,7 @@ pub enum Inbound {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
         /// This workspace sends records only when opened.
-        records_when_opened: bool,
+        documents_when_opened: bool,
     },
     /// The workspace's governor answered about one of its calls.
     Voice(VoiceEvent),
@@ -211,10 +211,10 @@ pub enum Inbound {
     /// everything it retains of it, as [`Inbound::Delta`]s before this event,
     /// and its changes keep arriving from now on; or the record is not this
     /// device's to open.
-    RecordOpened {
+    DocumentOpened {
         /// The record's retained channel.
         channel: [u8; 32],
-        answer: tilo_relay_protocol::RecordAnswer,
+        answer: tilo_relay_protocol::DocumentAnswer,
     },
     /// The host keeps the write this session sent as commit `op`: it is
     /// durable there. A resent commit it already kept is answered so too.

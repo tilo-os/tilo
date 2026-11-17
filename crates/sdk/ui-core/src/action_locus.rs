@@ -246,8 +246,8 @@ fn interaction_address(
     )
 }
 
-fn record_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
-    let id = crate::a11y_tree::component_record(id)
+fn resource_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
+    let id = crate::a11y_tree::component_resource(id)
         .or_else(|| id.as_str().strip_prefix("r:"))
         .unwrap_or(id.as_str());
     tilo_actions::logical_resource_id(id)
@@ -281,14 +281,14 @@ pub(crate) fn interaction_bounds(
     } else {
         crate::a11y_tree::SemanticId(format!("r:{}", address.resource))
     };
-    let stands_for_record = |node: &crate::a11y_tree::SemanticNode| {
+    let stands_for_resource = |node: &crate::a11y_tree::SemanticNode| {
         node.action(&address.action).is_some()
             && (node.durable_identity || !address.resource.starts_with("ui:"))
     };
-    let published = tree.node(&canonical_id).is_some_and(stands_for_record)
+    let published = tree.node(&canonical_id).is_some_and(stands_for_resource)
         || tree
             .iter()
-            .any(|node| stands_for_record(node) && record_of(&node.id) == address.resource);
+            .any(|node| stands_for_resource(node) && resource_of(&node.id) == address.resource);
     if !published {
         return None;
     }

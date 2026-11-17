@@ -313,12 +313,12 @@ pub mod mentions;
 pub mod own_paint;
 pub mod published;
 pub mod reader_hud;
-pub mod record;
 pub mod remote_actions;
 pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
+pub mod resource;
 pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
@@ -449,14 +449,15 @@ pub use profiling::{
 pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
-pub use record::{
-    DocumentCheckout, DocumentId, DocumentRef, RecordRefusal, RecordSet, RecordStore, ResourceType,
-};
 pub use remote_actions::{
     CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,
 };
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
+};
+pub use resource::{
+    DocumentCheckout, DocumentId, DocumentRef, ResourceRefusal, ResourceSet, ResourceStore,
+    ResourceType,
 };
 pub use search::{
     FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,

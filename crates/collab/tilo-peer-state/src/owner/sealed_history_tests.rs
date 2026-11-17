@@ -924,14 +924,14 @@ async fn delivered(
         owner
             .retire_answered(workspace, &BTreeMap::from([(id, answer)]))
             .unwrap();
-        let (in_record, runs) = owner
+        let (in_resource, runs) = owner
             .with_current(workspace, |view| {
-                Ok(crate::owner::publication::hosted_in_record(view))
+                Ok(crate::owner::publication::hosted_in_document(view))
             })
             .unwrap();
         assert!(
-            in_record < crate::owner::publication::MAX_ENTRIES,
-            "the record holds {in_record} of the host's writes itself"
+            in_resource < crate::owner::publication::MAX_ENTRIES,
+            "the record holds {in_resource} of the host's writes itself"
         );
         host.mirrored_runs = host.mirrored_runs.max(runs);
         if until_refused && !refused.is_empty() {
@@ -1223,7 +1223,7 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
         if asked {
             assert_eq!(
                 owner
-                    .compact_record(workspace, (APP, ""), &member_key(), now)
+                    .compact_document(workspace, (APP, ""), &member_key(), now)
                     .await,
                 Ok(1),
                 "a member holding the keys compacts the record"

@@ -540,8 +540,8 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
 
     // A peer holds the change and not its parts: decoding asks the record's route, and once what
     // was offered there arrives, the action reproduces its change there too.
-    let lane = std::sync::Arc::new(collaboration::record_content::ContentLane::default());
-    let theirs = collaboration::record_content::RecordContent::store(
+    let lane = std::sync::Arc::new(collaboration::document_content::ContentLane::default());
+    let theirs = collaboration::document_content::DocumentContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),
     );

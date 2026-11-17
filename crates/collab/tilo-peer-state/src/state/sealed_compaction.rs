@@ -300,7 +300,7 @@ impl PeerPublicationMut<'_> {
                 app_id: app.into(),
                 cluster_id: self.peer.core.workspace.clone(),
                 own: self.peer.core.own_write(app, record, op.author.as_bytes()),
-                record_id: record.into(),
+                document_id: record.into(),
                 envelope: Box::new(op),
             })
             .collect())
@@ -499,7 +499,7 @@ pub(super) fn merge_sealed(
 /// A sealed record as its channel's key holder reads it
 /// ([`PeerPublication::opened_document`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpenedRecord {
+pub struct OpenedDocument {
     /// The record's cleartext base with every sealed write that merges
     /// merged over it, saved.
     pub document: Vec<u8>,
@@ -509,7 +509,7 @@ pub struct OpenedRecord {
     pub unmerged: Vec<UnmergedWrite>,
 }
 
-/// A sealed write [`OpenedRecord::document`] leaves out.
+/// A sealed write [`OpenedDocument::document`] leaves out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnmergedWrite {
     pub author: [u8; 32],
@@ -838,7 +838,7 @@ fn missing_dependencies(
 pub(super) fn open_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-) -> Result<OpenedRecord, String> {
+) -> Result<OpenedDocument, String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
@@ -869,7 +869,7 @@ pub(super) fn open_sealed(
     )?;
     unmerged.extend(left.into_iter().map(|(index, reason, _)| (index, reason)));
     unmerged.sort_by_key(|(index, _)| *index);
-    Ok(OpenedRecord {
+    Ok(OpenedDocument {
         document: merged.save_with_options(automerge::SaveOptions {
             retain_orphans: false,
             ..automerge::SaveOptions::default()
@@ -952,7 +952,7 @@ impl PeerPublication<'_> {
 
     /// `record` of `app` as its channel's key holder reads it: the cleartext
     /// base with every sealed write `open` opens merged over it, and the
-    /// writes it leaves out (see [`OpenedRecord`]). A record that is not
+    /// writes it leaves out (see [`OpenedDocument`]). A record that is not
     /// encrypted reads as [`StatePeer::document`]. `None` for a record this state
     /// does not hold.
     pub fn opened_document(
@@ -960,7 +960,7 @@ impl PeerPublication<'_> {
         app: &str,
         record: &str,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-    ) -> Result<Option<OpenedRecord>, String> {
+    ) -> Result<Option<OpenedDocument>, String> {
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -972,7 +972,7 @@ impl PeerPublication<'_> {
             return Ok(self
                 .peer
                 .document(app, record)
-                .map(|document| OpenedRecord {
+                .map(|document| OpenedDocument {
                     document,
                     unmerged: Vec::new(),
                 }));
@@ -983,7 +983,7 @@ impl PeerPublication<'_> {
     /// Whether `record` of `app` is encrypted here: its writes are sealed,
     /// and a write in the clear is refused as a downgrade.
     #[must_use]
-    pub fn is_sealed_record(self, app: &str, record: &str) -> bool {
+    pub fn is_sealed_document(self, app: &str, record: &str) -> bool {
         self.peer.sealed_route(&Route {
             app: app.into(),
             record: record.into(),
@@ -1078,7 +1078,7 @@ impl PeerPublicationMut<'_> {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: self.peer.core.workspace.clone(),
-            record_id: record.into(),
+            document_id: record.into(),
             own: self.peer.core.own_write(app, record, author.as_bytes()),
             envelope: Box::new(op),
         })
@@ -1123,7 +1123,7 @@ impl PeerPublication<'_> {
     /// of its bound, as `(app, record)`: its key holder compacts it before
     /// new writes are refused.
     #[must_use]
-    pub fn sealed_records_to_compact(self) -> Vec<(String, String)> {
+    pub fn sealed_to_compact(self) -> Vec<(String, String)> {
         let mut due: Vec<(String, String)> = self
             .peer
             .core
@@ -1185,7 +1185,7 @@ impl StatePeer {
                         peer: peer_handle(author.as_bytes()),
                         app_id: route.app.clone(),
                         cluster_id: self.core.workspace.clone(),
-                        record_id: route.record.clone(),
+                        document_id: route.record.clone(),
                         envelope: Box::new(op.clone()),
                         own: self
                             .core

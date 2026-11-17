@@ -306,7 +306,7 @@ pub fn app_write(
         peer,
         app_id,
         cluster_id,
-        record_id,
+        document_id,
         envelope,
         own,
     } = msg
@@ -327,11 +327,11 @@ pub fn app_write(
         peer: *peer,
         app_id: app_id.clone(),
         cluster_id: cluster_id.clone(),
-        record_id: record_id.clone(),
+        document_id: document_id.clone(),
         author: standing,
         replayed,
         envelope: (**envelope).clone(),
-        own: own.clone().filter(|own| own.names(record_id)),
+        own: own.clone().filter(|own| own.names(document_id)),
     })
 }
 

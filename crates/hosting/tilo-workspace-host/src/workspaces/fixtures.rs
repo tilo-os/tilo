@@ -76,8 +76,8 @@ impl TestHost {
 
     /// The durable records of its workspaces.
     #[must_use]
-    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
-        self.host.workspace_records()
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.host.workspace_documents()
     }
 
     /// What a member dials.

@@ -25,7 +25,7 @@ const fn is_false(value: &bool) -> bool {
 }
 
 /// The record unit, as footprints and unit indexes name it.
-pub const RECORD_UNIT: &str = "record";
+pub const RESOURCE_UNIT: &str = "record";
 
 /// The record kind in which the framework keeps each member's actions waiting
 /// for the part of a chain they go to (an app whose records are a chain's
@@ -43,7 +43,7 @@ pub struct Surface {
     pub version: u32,
     /// A record of the person's own, kept in their store rather than the
     /// workspace of the window showing it: one the app declares with itself
-    /// (its `ResourceApp::PERSON_RECORDS`). Only the kinds an app's surface
+    /// (its `ResourceApp::PERSON_RESOURCES`). Only the kinds an app's surface
     /// marks so may it keep in, or read from, the person's store.
     #[serde(default, skip_serializing_if = "is_false")]
     pub person: bool,
@@ -92,7 +92,7 @@ pub struct VerbSurface {
     pub returns: Option<ReturnsSurface>,
     /// The units it writes (`tilo_resource::footprint`), when more than the
     /// record unit.
-    #[serde(default = "record_unit", skip_serializing_if = "only_record")]
+    #[serde(default = "record_unit", skip_serializing_if = "only_resource")]
     pub writes: Vec<String>,
     /// The field it sits under in the tree (`#[action(field = "...")]`): a
     /// comment verb under the comments it writes.
@@ -108,11 +108,11 @@ fn stored_value() -> String {
 pub const STORED_VALUE: &str = "value";
 
 fn record_unit() -> Vec<String> {
-    vec![RECORD_UNIT.to_owned()]
+    vec![RESOURCE_UNIT.to_owned()]
 }
 
-fn only_record(units: &[String]) -> bool {
-    units == [RECORD_UNIT]
+fn only_resource(units: &[String]) -> bool {
+    units == [RESOURCE_UNIT]
 }
 
 /// One parameter of a verb.
@@ -333,7 +333,7 @@ impl Surface {
         verb.writes
             .iter()
             .map(|unit| {
-                if unit == RECORD_UNIT {
+                if unit == RESOURCE_UNIT {
                     return Vec::new();
                 }
                 match unit.strip_suffix(".*") {

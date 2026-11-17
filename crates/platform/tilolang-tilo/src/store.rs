@@ -250,7 +250,7 @@ fn write_edit(
     let _lent = author
         .and_then(crate::runtime::Actor::member_id)
         .cloned()
-        .map(tilo_resource::action::RecordActorScope::enter);
+        .map(tilo_resource::action::ResourceActorScope::enter);
     apply_edits(doc, app, std::slice::from_ref(edit), &edit_seed(index))
 }
 

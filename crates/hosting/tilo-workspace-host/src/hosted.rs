@@ -134,7 +134,7 @@ impl Hosting {
         }
     }
 
-    fn record_path(&self, workspace: &str) -> PathBuf {
+    fn resource_path(&self, workspace: &str) -> PathBuf {
         self.dir.join(format!("{workspace}.json"))
     }
 
@@ -180,7 +180,7 @@ impl Hosting {
         let hint = self.serve(Some(caller), request, false).await?;
         let record = HostedRecord::of(request)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-        write_durably(&self.dir, &self.record_path(&request.workspace), &bytes)?;
+        write_durably(&self.dir, &self.resource_path(&request.workspace), &bytes)?;
         tracing::info!(workspace = %request.workspace, workspace_id = %request.workspace_id, "serving a workspace for its governor");
         Ok(hint)
     }
@@ -198,7 +198,7 @@ impl Hosting {
         caller: &DeviceCert,
         workspace: &str,
     ) -> Result<bool, String> {
-        let path = self.record_path(workspace);
+        let path = self.resource_path(workspace);
         // No record: the workspace was not hosted here. One that does not read
         // is an error, never "not hosted": that would forget the workspace while
         // it went on being served.
@@ -355,7 +355,7 @@ impl Hosting {
             workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
             governor: authority.device_public_key,
-            record: self.record_path(&request.workspace),
+            record: self.resource_path(&request.workspace),
             peer,
             replica,
             named,

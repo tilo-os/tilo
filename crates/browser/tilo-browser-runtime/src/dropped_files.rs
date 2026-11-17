@@ -206,7 +206,7 @@ mod tests {
             .count();
         assert_eq!(folders, 2);
         // What the page wrote is what any device reads from the record.
-        assert_eq!(Tree::of_record(&doc.save()).unwrap(), tree);
+        assert_eq!(Tree::of_document(&doc.save()).unwrap(), tree);
         let plan = tree.node(&placed.files[0].node).unwrap();
         assert_eq!(
             plan.hash.as_deref(),

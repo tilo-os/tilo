@@ -20,7 +20,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let mut entry = json!({
                     "provider": provider.provider,
                     "app_id": provider.app_id,
-                    "record_id": provider.record_id,
+                    "document_id": provider.document_id,
                 });
                 if let (Some(peer), Some(fields)) = (peer, entry.as_object_mut()) {
                     fields.insert("peer_id".to_owned(), json!(peer));

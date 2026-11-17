@@ -48,7 +48,7 @@ impl LargeDirectoryProvider {
         // One bulk snapshot, as a provider rebuilding its whole corpus
         // publishes it; later `upsert`s keep their incremental semantics.
         catalog
-            .replace_all_records((0..records).map(|index| {
+            .replace_all_resources((0..records).map(|index| {
                 let resource = format!("test.item:{index}");
                 let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
                 crate::search::SearchRecord::new(
@@ -650,7 +650,7 @@ impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::ResourceType,
+        _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }

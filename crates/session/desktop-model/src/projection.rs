@@ -4,8 +4,8 @@
 //! Pure functions over an [`AutoCommit`] the host owns: the workspace's
 //! governance, people, shortcuts, receipts and record index. Its layout
 //! (strips, groups and windows) is the workspace's layout record, kept at
-//! the document's root in [`crate::shared_record`]'s shape, which every
-//! device writes and folds ([`crate::shared_record::device`]). Admission —
+//! the document's root in [`crate::shared_resource`]'s shape, which every
+//! device writes and folds ([`crate::shared_resource::device`]). Admission —
 //! deciding whether a peer's batch may land at all — and the documents'
 //! lifetimes stay with the host.
 //!
@@ -440,7 +440,7 @@ pub const WORKSPACE_RECORDS_KEY: &str = "records";
 ///
 /// The document's error when a map this projection needs cannot be
 /// created.
-pub fn project_workspace_records(
+pub fn project_workspace_documents(
     doc: &mut AutoCommit,
     held: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), automerge::AutomergeError> {
@@ -562,11 +562,11 @@ pub fn apply_admitted_workspace(
     let presets = workspace_presets_of(doc);
     let reprofiled = workspace.presets != presets;
     workspace.presets = presets;
-    let changed = crate::shared_record::device::fold(
+    let changed = crate::shared_resource::device::fold(
         doc,
         workspace,
         "",
-        &crate::shared_record::device::Kept::NOTHING,
+        &crate::shared_resource::device::Kept::NOTHING,
     );
     Ok(changed || renamed || reshortcut || reprofiled)
 }
@@ -674,8 +674,8 @@ mod tests {
             base.commit();
             let mut a = base.fork();
             let mut b = base.fork();
-            project_workspace_records(&mut a, &held(("file:/a.md", "document"))).unwrap();
-            project_workspace_records(&mut b, &held(("file:/b.md", "document"))).unwrap();
+            project_workspace_documents(&mut a, &held(("file:/a.md", "document"))).unwrap();
+            project_workspace_documents(&mut b, &held(("file:/b.md", "document"))).unwrap();
             a.merge_incoming(&mut b).unwrap();
             let ids: Vec<String> = workspace_records_of(&a)
                 .into_iter()

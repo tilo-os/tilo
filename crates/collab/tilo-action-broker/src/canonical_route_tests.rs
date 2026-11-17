@@ -23,7 +23,7 @@ fn canonical_query(
         canonical_route: Some(tilo_actions::remote::CanonicalActionRoute {
             workspace: workspace.route.cluster_id.clone(),
             app_id: workspace.route.app_id.clone(),
-            record_id: workspace.route.record_id.clone(),
+            document_id: workspace.route.document_id.clone(),
         }),
         max_results: 0,
         ..Default::default()
@@ -375,10 +375,10 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
                     .await
                     .is_err()
             );
-            let mut other_record = canonical_query(&workspace);
-            other_record.canonical_route.as_mut().unwrap().record_id = "other-record".into();
+            let mut other_document = canonical_query(&workspace);
+            other_document.canonical_route.as_mut().unwrap().document_id = "other-record".into();
             assert!(
-                canonical_pending(&workspace, host.query(&caller, other_record))
+                canonical_pending(&workspace, host.query(&caller, other_document))
                     .await
                     .unwrap()
                     .providers

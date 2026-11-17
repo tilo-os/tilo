@@ -34,7 +34,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
-    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
+    use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     tokio::task::LocalSet::new()
         .run_until(async {
             let directions = Arc::new(Mutex::new(Vec::new()));
@@ -44,10 +44,10 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     let definition = settings::definition();
                     let record = DocumentId::for_tab(1);
                     let mut document = automerge::AutoCommit::new();
-                    assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, workspace, Some(workspace)));
+                    assert!(ui::resource::init_scoped(&mut document, &record, &definition.resource_type, workspace, Some(workspace)));
                     Ok(vec![tilo_peer_state::SeedDocument {
-                        app_id: definition.app_id().into(), record_id: record.as_str().into(),
-                        kind: definition.record_kind.as_str().into(), bytes: document.save(),
+                        app_id: definition.app_id().into(), document_id: record.as_str().into(),
+                        kind: definition.resource_type.as_str().into(), bytes: document.save(),
                     }])
                 })
             });
@@ -59,7 +59,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let private = env.root.path().canonicalize().unwrap();
             std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
             env.route.app_id = "so.tilo.settings".into();
-            env.route.record_id = DocumentId::for_tab(1).as_str().to_owned();
+            env.route.document_id = DocumentId::for_tab(1).as_str().to_owned();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let broker = crate::collab_broker::spawn_native_peer_with_services(
@@ -80,7 +80,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 socket.into_raw_fd(),
                 &env.route.app_id,
                 env.route.cluster_id.parse().unwrap(),
-                Some(env.route.record_id.clone()),
+                Some(env.route.document_id.clone()),
                 None,
                 CertifiedEndpointIdentity::new(
                     presentation(&env.route.cluster_id, &env.cert, &env.key),
@@ -89,9 +89,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             )
             .unwrap();
             let definition = settings::definition();
-            let record = DocumentId::parse(&env.route.record_id).unwrap();
+            let record = DocumentId::parse(&env.route.document_id).unwrap();
             let mut initial = automerge::AutoCommit::new();
-            assert!(ui::record::init_scoped(&mut initial, &record, &definition.record_kind, &env.route.cluster_id, Some(&env.route.cluster_id)));
+            assert!(ui::resource::init_scoped(&mut initial, &record, &definition.resource_type, &env.route.cluster_id, Some(&env.route.cluster_id)));
             let cache = PortableStorage::new("keyboard-read-authority", "device").unwrap();
             cache
                 .hydrate(
@@ -104,7 +104,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     Some(env.cert.device_public_key.to_vec()),
                 )
                 .unwrap();
-            let mut owners = RecordOwners::portable(cache.clone());
+            let mut owners = ResourceOwners::portable(cache.clone());
             let records = owners
                 .open(definition.app_id(), &env.route.cluster_id)
                 .unwrap();
@@ -113,7 +113,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     .unwrap(),
             );
             let target = LaunchTarget::Record {
-                checkout: DocumentCheckout::new(record.clone(), definition.record_kind.clone()),
+                checkout: DocumentCheckout::new(record.clone(), definition.resource_type.clone()),
                 reveal: None,
             };
             let actor = person_id_for_root(env.cert.user_public_key);

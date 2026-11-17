@@ -1,0 +1,184 @@
+//! A record's save state: its on-disk copy in a workspace this device governs,
+//! and whether what the record holds has reached it.
+//!
+//! The copy is the store's (`app_state`): one document per record,
+//! keyed by package, workspace and record, written by its [`DocWriter`]. The
+//! toolkit's record store (`ui::resource`) opens and reports records through
+//! these; a process without the toolkit does the same.
+
+use std::rc::Rc;
+
+use app_state::{DocStore, DocWriter, StoreError};
+use automerge::AutoCommit;
+use automerge::transaction::Transactable as _;
+use durable_store::{DurableStore, StorageKey};
+
+use crate::portable_storage::{self, PortableStorage};
+
+/// Whether a record's changes are stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResourceSaveStatus {
+    Saved,
+    Saving,
+    Failed(String),
+    MemoryOnly,
+}
+
+impl ResourceSaveStatus {
+    /// The save state of `doc` against the writer of its on-disk copy,
+    /// without closing a typing transaction or scheduling work.
+    #[must_use]
+    pub fn of_writer(doc: &AutoCommit, writer: &DocWriter) -> Self {
+        let snapshot = writer.durability_snapshot();
+        if let Some(error) = snapshot.error {
+            return Self::Failed(error);
+        }
+        // A record that was never written holds nothing durable; while
+        // it has no changes either (a pristine record) there is nothing
+        // to save, so it reads as saved rather than saving.
+        let durable = snapshot.durable_heads.unwrap_or_default();
+        if doc.pending_ops() == 0 && durable == doc.base_heads() {
+            Self::Saved
+        } else {
+            Self::Saving
+        }
+    }
+
+    /// The save state of `doc`, kept under `key` in a portable cache (a
+    /// browser's, acknowledged by its host).
+    #[must_use]
+    pub fn of_portable(
+        cache: &PortableStorage,
+        key: &portable_storage::StorageKey,
+        doc: &AutoCommit,
+    ) -> Self {
+        if doc.pending_ops() != 0 {
+            return Self::Saving;
+        }
+        let Some(heads) = cache.document_heads(key) else {
+            return Self::Saving;
+        };
+        let Ok(heads) = heads else {
+            return Self::Failed("cached document is corrupt".into());
+        };
+        if heads != doc.base_heads() {
+            return Self::Saving;
+        }
+        match cache.flush(key) {
+            Ok(()) => Self::Saved,
+            Err(message) if message == portable_storage::PENDING_ACKNOWLEDGEMENT => Self::Saving,
+            Err(message) => Self::Failed(message),
+        }
+    }
+}
+
+/// The on-disk copy of the record `resource_key` of `package` in the workspace
+/// `home`, as a shared writer in `documents`.
+pub fn resource_document(
+    documents: &Rc<dyn DurableStore>,
+    package: &str,
+    home: &str,
+    resource_key: &str,
+) -> Result<DocStore, StoreError> {
+    app_state::validate_document_identity(package, home, resource_key)?;
+    DocStore::shared(
+        Rc::clone(documents),
+        StorageKey::document(package, home, resource_key),
+    )
+}
+
+/// The on-disk copy of the workspace document of `package` in the workspace `workspace`:
+/// what an app that keeps one record for the workspace ([`StorageKey::workspace_index`])
+/// holds there, as a shared writer in `documents`.
+pub fn workspace_document(
+    documents: &Rc<dyn DurableStore>,
+    package: &str,
+    workspace: &str,
+) -> Result<DocStore, StoreError> {
+    app_state::validate_workspace_identity(package, workspace)?;
+    DocStore::shared(
+        Rc::clone(documents),
+        StorageKey::workspace_index(package, workspace),
+    )
+}
+
+/// Open the document `store` holds, as a workspace this device governs reads it:
+/// from its on-disk copy, with a writer that keeps it there. A document that
+/// left the workspace ([`super::retirement`]) starts over.
+pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
+    let mut doc = store.load_or_new();
+    // The app's document moved to another workspace, which now holds it
+    // with its history; this workspace's app starts over.
+    if super::retirement::is_retired(&doc) {
+        doc = store.new_document();
+        if let Err(error) = store.save(&mut doc) {
+            tracing::error!(%error, "could not start a new app document after a move");
+        }
+    }
+    let mut autosave = store.writer();
+    autosave.seed(&doc);
+    (doc, autosave)
+}
+
+/// [`open_stored`] for a member's own record of an app ([`collab_types::OwnResource`]),
+/// which may have kept its records in the workspace's record before: when this
+/// device holds no copy of the person's record yet and holds the workspace's
+/// record of the app (`workspace`), the person's record starts as that copy,
+/// its history and ids with it, so what they saw there is theirs from then on.
+/// The workspace's record is only read: nothing in it changes or goes. Once the
+/// person's record has a copy, it is opened as it is.
+pub fn open_stored_adopting(
+    mut store: DocStore,
+    workspace: Option<DocStore>,
+) -> (AutoCommit, DocWriter) {
+    // A record this device holds no copy of, complete and readable: a store
+    // that cannot read its copy says so in the load itself.
+    let fresh = matches!(store.load_complete(), Ok(None));
+    if fresh
+        && let Some(mut workspace) = workspace
+        && let Ok(Some(mut doc)) = workspace.load_complete()
+    {
+        doc.set_actor(store.actor());
+        let mut writer = store.writer();
+        // Nothing of it is on disk under the person's record yet: the first write keeps it.
+        writer.request(&doc);
+        return (doc, writer);
+    }
+    open_stored(store)
+}
+
+/// Open the document `store` holds, as a workspace another host governs reads it:
+/// the broker's committed read of the workspace (`read`) merged into the on-disk
+/// copy, which keeps the merged graph from then on.
+pub fn open_with_committed_read(
+    mut store: DocStore,
+    read: &crate::CommittedDocument,
+) -> Result<(AutoCommit, DocWriter), String> {
+    use tilo_automerge::ApplyIncoming as _;
+    let stored = store.load_complete().map_err(|e| e.to_string())?;
+    let had_stored = stored.is_some();
+    let mut doc = stored.unwrap_or_else(|| {
+        // The workspace's record carries its own genesis, schema version and
+        // all: a stamp made here would be a second, unnamed creation of it.
+        let mut fresh = store.new_document();
+        fresh.rollback();
+        fresh
+    });
+    let mut writer = store.writer();
+    // Only the previously stored heads are durable. The captured graph must
+    // remain a pending local-cache write even without a subsequent user edit.
+    if had_stored {
+        writer.seed(&doc);
+    }
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native initial snapshot missing".to_string());
+        };
+        let mut actual = AutoCommit::load(bytes).map_err(|e| e.to_string())?;
+        doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })??;
+    writer.request(&doc);
+    read.applied();
+    Ok((doc, writer))
+}

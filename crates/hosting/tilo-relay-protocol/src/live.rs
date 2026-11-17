@@ -124,7 +124,7 @@ fn object_id(bytes: &[u8]) -> Result<()> {
 /// Record reference shared by every member: application and record id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LiveRecord {
+pub struct LiveResource {
     #[serde(deserialize_with = "text128")]
     pub app: String,
     /// Record identifier within the application; empty names its package-primary record.
@@ -132,7 +132,7 @@ pub struct LiveRecord {
     pub record: String,
 }
 
-impl LiveRecord {
+impl LiveResource {
     /// Stable digest naming this record's ordered stream.
     pub fn digest(&self) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
@@ -302,20 +302,20 @@ pub enum OpsFrame {
     Preview {
         /// Monotonic per-publisher, per-record sequence.
         seq: u64,
-        record: LiveRecord,
+        record: LiveResource,
         /// 1..=[`MAX_PREVIEW_OPS`] operations.
         ops: Vec<PreviewOp>,
     },
     /// The publisher's previews for `record` are over.
     End {
         /// Record whose previews end.
-        record: LiveRecord,
+        record: LiveResource,
     },
     /// Semantic invocation activity, separate from pointers and text previews.
     /// Appended for wire compatibility: older receivers reject this variant.
     Semantic {
         /// Explicit audience and presentation record.
-        record: LiveRecord,
+        record: LiveResource,
         /// Inert event that still requires authenticated consumer admission.
         event: SemanticFrame,
     },
@@ -323,7 +323,7 @@ pub enum OpsFrame {
 
 impl OpsFrame {
     /// The record this frame concerns.
-    pub fn record(&self) -> &LiveRecord {
+    pub fn record(&self) -> &LiveResource {
         match self {
             Self::Preview { record, .. } | Self::End { record } | Self::Semantic { record, .. } => {
                 record
@@ -465,7 +465,7 @@ pub struct SealedLiveFrame {
     /// The presence sequence, or the preview's per-record sequence (0 when
     /// previews end).
     pub seq: u64,
-    /// [`LiveRecord::digest`] of the record the frame is bound to.
+    /// [`LiveResource::digest`] of the record the frame is bound to.
     pub record: [u8; 32],
     /// The content-key epoch the frame is sealed under.
     pub epoch: u64,
@@ -477,7 +477,7 @@ pub struct SealedLiveFrame {
 impl LiveFrame {
     /// The kind, sequence and record a sealed form names in the clear, or
     /// `None` when the frame names no record.
-    pub fn seal_tags(&self) -> Option<(LiveKind, u64, &LiveRecord)> {
+    pub fn seal_tags(&self) -> Option<(LiveKind, u64, &LiveResource)> {
         match self {
             Self::RetiredPresence => None,
             Self::Ops(OpsFrame::Preview { seq, record, .. }) => Some((LiveKind::Ops, *seq, record)),
@@ -500,7 +500,7 @@ impl SealedLiveFrame {
     /// authentication or canonical-frame failure from [`Self::open`].
     pub fn open_in_record<E: std::fmt::Display>(
         &self,
-        record: &LiveRecord,
+        record: &LiveResource,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
         if self.record != record.digest() {
@@ -657,8 +657,8 @@ mod object_bytes {
 mod tests {
     use super::*;
 
-    fn record() -> LiveRecord {
-        LiveRecord {
+    fn record() -> LiveResource {
+        LiveResource {
             app: "so.tilo.notes".into(),
             record: "r1".into(),
         }
@@ -764,7 +764,7 @@ mod tests {
             let opened =
                 sealed.open_in_record(&expected, |_, _, bytes| Ok::<_, String>(bytes.to_vec()));
             assert_eq!(opened.unwrap(), semantic());
-            let other = LiveRecord {
+            let other = LiveResource {
                 record: "other".into(),
                 ..expected
             };
@@ -778,7 +778,7 @@ mod tests {
 
         phase a_live_frame_is_sealed_and_bound_to_its_exact_record;
         {
-            let primary = LiveRecord {
+            let primary = LiveResource {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
             };
@@ -808,7 +808,7 @@ mod tests {
                     .unwrap(),
                 frame
             );
-            let named = LiveRecord {
+            let named = LiveResource {
                 record: "other".into(),
                 ..primary
             };
@@ -822,7 +822,7 @@ mod tests {
                 Err(LiveSealError::Mismatch)
             ));
             assert!(
-                LiveRecord {
+                LiveResource {
                     app: String::new(),
                     record: String::new()
                 }

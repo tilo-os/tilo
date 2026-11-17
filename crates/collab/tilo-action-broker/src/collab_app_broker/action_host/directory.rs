@@ -72,7 +72,7 @@ impl AppBrokerState {
                 provider: token,
                 app_id: root.app_id,
                 workspace: root.cluster_id,
-                record_id: root.record_id,
+                document_id: root.document_id,
                 browsable: true,
             });
         }
@@ -347,7 +347,7 @@ impl AppBrokerState {
             route: CrdtRoute {
                 app_id: root.app_id.clone(),
                 cluster_id: root.cluster_id.clone(),
-                record_id: root.record_id.clone(),
+                document_id: root.document_id.clone(),
             },
             actions: vec![offered.clone()],
             live: true,

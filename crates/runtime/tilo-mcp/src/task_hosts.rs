@@ -22,7 +22,7 @@ use tilo_lock::MutexRecover as _;
 pub struct Catalogue {
     pub apps: Vec<App>,
     /// The id each app keeps its records under, when it was renamed from an earlier one.
-    pub records_under: BTreeMap<String, String>,
+    pub documents_under: BTreeMap<String, String>,
     /// The apps whose records the API changes itself, rather than invoking their actions.
     pub changed_at_record: BTreeSet<String>,
 }
@@ -68,7 +68,7 @@ impl crate::TaskHosts for TaskHosts {
             workspace: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
-            records_under: catalogue.records_under,
+            documents_under: catalogue.documents_under,
             changed_at_record: catalogue.changed_at_record,
         };
         std::thread::Builder::new()

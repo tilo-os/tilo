@@ -12,7 +12,7 @@ pub struct NativeMediaRequestContext {
     peer_id: u64,
     app_id: String,
     workspace_id: String,
-    record_id: String,
+    document_id: String,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -26,8 +26,8 @@ impl NativeMediaRequestContext {
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
-    pub fn record_id(&self) -> &str {
-        &self.record_id
+    pub fn document_id(&self) -> &str {
+        &self.document_id
     }
     /// Re-checks that the admitted connection, process and route are still live.
     pub fn revalidate(&self) -> Result<(), String> {
@@ -70,7 +70,7 @@ pub(super) struct LocalAppConnection {
     pub(super) windowless: bool,
     /// The ids the launched app had before, as the launcher's catalogue believes them (the same
     /// publisher signed them): the app keeps using the record of its earliest
-    /// ([`tilo_action_policy::EarlierIds::records_under`]).
+    /// ([`tilo_action_policy::EarlierIds::documents_under`]).
     pub(super) earlier: Vec<String>,
     process: PeerProcess,
     /// What Files hands over on its connection's descriptor lane: the only
@@ -268,7 +268,7 @@ impl LocalAppConnection {
         })
     }
     /// Whether `app` is the launched app's id, or one it had before: a route of either is its own.
-    pub(super) fn keeps_records_of(&self, app: &str) -> bool {
+    pub(super) fn keeps_documents_of(&self, app: &str) -> bool {
         self.app_id == app || self.earlier.iter().any(|old| old == app)
     }
     pub(super) fn current(&self) -> bool {
@@ -486,7 +486,7 @@ impl JoinedChannel {
             peer_id: self.connection_id,
             app_id: route.app_id,
             workspace_id: route.cluster_id,
-            record_id: route.record_id,
+            document_id: route.document_id,
             revalidate,
         })
     }

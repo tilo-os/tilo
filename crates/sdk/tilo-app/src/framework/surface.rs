@@ -144,7 +144,7 @@ impl SurfaceScope {
 ///   gesture that is several edits goes in one [`Dispatcher::group`] (or
 ///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
 ///   Ctrl+Z takes all of it back.
-/// * **Permissions** — [`RecordEnv::read_only`](super::RecordEnv::read_only) says the presence may
+/// * **Permissions** — [`ResourceEnv::read_only`](super::ResourceEnv::read_only) says the presence may
 ///   only view; present accordingly. It follows role changes while the app
 ///   runs, and [`read_only_changed`](Self::read_only_changed) announces each
 ///   one. Refused actions change nothing.
@@ -166,8 +166,8 @@ impl SurfaceScope {
 ///   ([`Dispatcher::effect`]), the palette, an agent — reaches it the same
 ///   way; [`effects`](Self::effects) says which are unavailable right now.
 /// * **Run mode** — start work that reaches outside the process (a decoder
-///   service, a socket, a probe) only when [`RecordEnv::mode`](super::RecordEnv::mode) is live. A
-///   capture reads [`RecordEnv::fixture`](super::RecordEnv::fixture) instead; a past version starts
+///   service, a socket, a probe) only when [`ResourceEnv::mode`](super::ResourceEnv::mode) is live. A
+///   capture reads [`ResourceEnv::fixture`](super::ResourceEnv::fixture) instead; a past version starts
 ///   nothing. Work still in flight that the frame shows (a page render, a
 ///   decode) is reported by the toolkit's `Widget::has_pending_visual_work`;
 ///   a capture waits for it.
@@ -389,7 +389,7 @@ pub(crate) trait SurfacePublication {
 
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
-    pub(crate) env: super::env::RecordEnv<R>,
+    pub(crate) env: super::env::ResourceEnv<R>,
     pub(crate) jobs: Jobs<R>,
     pub(crate) actions: Actions<R>,
     pub(crate) stages: super::stage::Stages,
@@ -409,8 +409,8 @@ impl<R: Resource> Clone for SurfaceCx<R> {
 }
 
 impl<R: Resource> std::ops::Deref for SurfaceCx<R> {
-    type Target = super::env::RecordEnv<R>;
-    fn deref(&self) -> &super::env::RecordEnv<R> {
+    type Target = super::env::ResourceEnv<R>;
+    fn deref(&self) -> &super::env::ResourceEnv<R> {
         &self.env
     }
 }

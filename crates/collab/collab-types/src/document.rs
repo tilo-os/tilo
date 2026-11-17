@@ -2,7 +2,7 @@
 //! ([`DocumentId`]), what it references ([`DocumentRef`]) and the checkout that
 //! names all three ([`DocumentCheckout`]). The id travels on the collaboration
 //! wire and names a file on disk; the toolkit's document store
-//! (`ui::record`) keeps the documents these name.
+//! (`ui::resource`) keeps the documents these name.
 
 use std::path::{Path, PathBuf};
 
@@ -43,7 +43,7 @@ pub const MAX_FORMER_IDS: usize = 8;
 /// - **Identical bytes are not the same file.** Nothing here is derived from
 ///   content, so two files with the same bytes never share edits by accident.
 ///   Content that *should* be shared by bytes is a blob reference instead
-///   (`ui::record::add_blob_reference`).
+///   (`ui::resource::add_blob_reference`).
 ///
 /// The prefix is part of the id, not a tag beside it: the id travels on the
 /// wire and names a file on disk, so it must be self-describing.
@@ -175,19 +175,19 @@ impl DocumentId {
         (id.storage_key() == storage_key).then_some(id)
     }
 
-    /// A member's own document ([`crate::OwnRecord`]): only that person's
+    /// A member's own document ([`crate::OwnResource`]): only that person's
     /// devices read or change it.
     #[must_use]
-    pub fn of_own(own: &crate::OwnRecord) -> Self {
-        Self(own.record_id())
+    pub fn of_own(own: &crate::OwnResource) -> Self {
+        Self(own.document_id())
     }
 
     /// The id of the own document of `kind` of the person `person` names (the
-    /// hex of their user root key, [`crate::OwnRecord::of_person`]); `None`
+    /// hex of their user root key, [`crate::OwnResource::of_person`]); `None`
     /// when either is not one.
     #[must_use]
     pub fn of_member(person: &str, kind: &str) -> Option<Self> {
-        crate::OwnRecord::of_person(person, kind).map(|own| Self::of_own(&own))
+        crate::OwnResource::of_person(person, kind).map(|own| Self::of_own(&own))
     }
 
     /// The document of the pair two people share in a workspace
@@ -196,7 +196,7 @@ impl DocumentId {
     /// key that names no pair.
     #[must_use]
     pub fn of_direct(pair: &str) -> Option<Self> {
-        crate::canonical_pair(pair).then(|| Self(crate::direct_record(pair)))
+        crate::canonical_pair(pair).then(|| Self(crate::direct_resource(pair)))
     }
 
     /// Identity of the document that plays `role` for `of` — "the annotations
@@ -211,7 +211,7 @@ impl DocumentId {
     /// workspace's host replays a joining device only the chain's head, the
     /// highest part it holds; every earlier part is sent to a device when
     /// it opens it. Two writers that start part `n + 1` start the same
-    /// document. The wire form is `neighbour_wire::record_part`'s.
+    /// document. The wire form is `neighbour_wire::document_part`'s.
     #[must_use]
     pub fn part(&self, index: u64) -> Self {
         Self::derived(&format!("part.{index}"), self)
@@ -327,7 +327,7 @@ impl DocumentId {
 
     /// `self` declared on-demand: a workspace's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
-    /// form is `neighbour_wire::on_demand_record`'s.
+    /// form is `neighbour_wire::on_demand_document`'s.
     #[must_use]
     pub fn on_demand(&self) -> Self {
         Self::derived("on-demand", self)
@@ -655,7 +655,7 @@ impl DocumentId {
     /// device that holds no part asks for to be sent the newest one, or an
     /// [`Self::on_demand`] document. Opening one reads what this device holds
     /// or asks for it, and never waits for it to arrive
-    /// (`ui::record::RecordOpenError::Arriving`).
+    /// (`ui::resource::ResourceOpenError::Arriving`).
     #[must_use]
     pub fn arrives_on_demand(&self) -> bool {
         self.chain_part().is_some()

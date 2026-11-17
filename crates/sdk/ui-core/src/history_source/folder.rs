@@ -64,7 +64,7 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
             }
             _ => "/".to_owned(),
         };
-        let versions: Vec<_> = history::record_versions(doc, document_id)
+        let versions: Vec<_> = history::document_versions(doc, document_id)
             .into_values()
             .collect();
         if versions.is_empty() {

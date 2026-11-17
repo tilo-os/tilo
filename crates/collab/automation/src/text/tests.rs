@@ -360,7 +360,7 @@ tilo_test_env::scenario! {
             TriggerSpec::DeviceConnected {
                 device_class: "camera".into(),
             },
-            TriggerSpec::RecordChanged {
+            TriggerSpec::ResourceChanged {
                 kind: "notes.note".into(),
                 actions: vec!["file".into()],
                 fields: vec!["title".into()],

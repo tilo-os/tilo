@@ -163,7 +163,7 @@ async fn chat_read_by_guest(
     let events = page.events();
     page.send(Cmd::Join(workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
-    page.send(Cmd::OpenRecordAt(workspace_id, head.clone()))
+    page.send(Cmd::OpenDocumentAt(workspace_id, head.clone()))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(120);
     let (mut shown, mut answered, mut refusals) = (false, false, Vec::new());
@@ -183,7 +183,7 @@ async fn chat_read_by_guest(
                         Err(error) => refusals.push(error),
                     }
                 }
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     route: Some(route), ..
                 } if route == head => answered = true,
                 _ => {}
@@ -245,7 +245,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: neighbour_wire::record_part(CHAT_CHAIN, 0),
+        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
     };
 
     // The first member writes the chat; the rest of the crowd came through

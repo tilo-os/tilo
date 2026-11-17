@@ -587,7 +587,7 @@ impl QuickFS {
                 }
                 self.write_snapshot(rel, snapshot, mtime_ms)?;
                 if let Some((ino, _)) = self.lookup_kind(parent, name) {
-                    self.record_version(ino, fs_protocol::FileProvenance::Create, None);
+                    self.document_version(ino, fs_protocol::FileProvenance::Create, None);
                 }
                 Ok(())
             }
@@ -624,7 +624,7 @@ impl QuickFS {
             ino
         };
         self.publish();
-        self.record_version(ino, fs_protocol::FileProvenance::Create, None);
+        self.document_version(ino, fs_protocol::FileProvenance::Create, None);
         if data.is_empty() {
             return Ok(());
         }

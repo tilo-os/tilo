@@ -1110,7 +1110,7 @@ mod tests {
             .iter()
             .filter(|surface| {
                 surface.app_id == APP
-                    && surface.route.record_id == RECORD
+                    && surface.route.document_id == RECORD
                     && surface.route.cluster_id == workspace
             })
             .collect::<Vec<_>>();
@@ -1130,7 +1130,7 @@ mod tests {
             .iter()
             .filter(|surface| {
                 surface.app_id == APP
-                    && surface.route.record_id == RECORD
+                    && surface.route.document_id == RECORD
                     && surface.route.cluster_id == workspace
             })
             .flat_map(|surface| &surface.actions)

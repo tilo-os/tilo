@@ -1,6 +1,6 @@
 use super::*;
 use crate::owner::fixture::{Fixture, fixture};
-use crate::owner::testing::record_on_disk;
+use crate::owner::testing::document_on_disk;
 use ed25519_dalek::SigningKey;
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 use tilo_user_identity::DeviceCert;
@@ -21,7 +21,7 @@ tilo_test_env::scenario! {
             .commit_effect_receipt(&operation, fixture.now)
             .unwrap();
         original.validate_for(&operation).unwrap();
-        let committed = record_on_disk(&path);
+        let committed = document_on_disk(&path);
         let reopened = crate::owner::open_file(&path).unwrap();
         let retry = reopened
             .commit_effect_receipt(&operation, fixture.now)
@@ -29,7 +29,7 @@ tilo_test_env::scenario! {
         assert_eq!(retry.binding, original.binding);
         assert_eq!(retry.generation, original.generation);
         assert_eq!(retry.aggregate_hash, original.aggregate_hash);
-        assert_eq!(record_on_disk(&path), committed);
+        assert_eq!(document_on_disk(&path), committed);
         assert!(
             reopened
                 .commit_effect_receipt(
@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
                 .is_err(),
             "a member records no one else's receipt"
         );
-        assert_eq!(record_on_disk(&path), committed);
+        assert_eq!(document_on_disk(&path), committed);
         let frames = reopened
             .with_outgoing(workspace, fixture.now, |_, outgoing| {
                 Ok(outgoing
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
             let receipt = commit(&fixture, &operation).unwrap();
             receipt.validate_for(&operation).unwrap();
             let path = fixture.directory.path().join("owner.json");
-            let bytes = record_on_disk(&path);
+            let bytes = document_on_disk(&path);
             let reopened = crate::owner::open_file(&path).unwrap();
             let retry = reopened
                 .commit_effect_receipt(&operation, fixture.now)
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
             assert_eq!(retry.binding, receipt.binding);
             assert_eq!(retry.generation, receipt.generation);
             assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
-            assert_eq!(record_on_disk(&path), bytes);
+            assert_eq!(document_on_disk(&path), bytes);
             let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
             let frames = reopened
                 .with_outgoing(workspace, fixture.now, |_, outgoing| {
@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
                 *redacted = serde_json::to_vec(&conflict).unwrap();
             }
             assert!(commit(&fixture, &changed).is_err());
-            assert_eq!(record_on_disk(&path), bytes);
+            assert_eq!(document_on_disk(&path), bytes);
         }
     }
 }
@@ -224,7 +224,7 @@ fn rewrite_stored_receipt(
     path: &std::path::Path,
     rewrite: impl FnOnce(&mut String, &mut serde_json::Value) -> (String, serde_json::Value),
 ) {
-    let (part, bytes) = record_on_disk(path)
+    let (part, bytes) = document_on_disk(path)
         .into_iter()
         .find(|(_, bytes)| {
             serde_json::from_slice::<serde_json::Value>(bytes)
@@ -504,10 +504,10 @@ tilo_test_env::scenario! {
         use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         let fixture = fixture();
         let path = fixture.directory.path().join("owner.json");
-        let bytes = record_on_disk(&path);
+        let bytes = document_on_disk(&path);
         let operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
         assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &operation)).is_err());
-        assert_eq!(record_on_disk(&path), bytes);
+        assert_eq!(document_on_disk(&path), bytes);
         fixture
             .owner
             .with_current(
@@ -525,7 +525,7 @@ tilo_test_env::scenario! {
     {
         let fixture = fixture();
         let path = fixture.directory.path().join("owner.json");
-        let bytes = record_on_disk(&path);
+        let bytes = document_on_disk(&path);
         let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
         if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
             redacted.resize(16 * 1024 + 1, 0);
@@ -536,14 +536,14 @@ tilo_test_env::scenario! {
             *invocation = uuid::Uuid::new_v4();
         }
         assert!(commit(&fixture, &operation).is_err());
-        assert_eq!(record_on_disk(&path), bytes);
+        assert_eq!(document_on_disk(&path), bytes);
     }
 
     phase effect_private_facets_and_unbounded_context_refuse_without_publication;
     {
         let fixture = fixture();
         let path = fixture.directory.path().join("owner.json");
-        let bytes = record_on_disk(&path);
+        let bytes = document_on_disk(&path);
         for variant in 0..4 {
             let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
             let mut effect = decode(&operation).unwrap();
@@ -569,7 +569,7 @@ tilo_test_env::scenario! {
                 *redacted = serde_json::to_vec(&effect).unwrap();
             }
             assert!(commit(&fixture, &operation).is_err());
-            assert_eq!(record_on_disk(&path), bytes);
+            assert_eq!(document_on_disk(&path), bytes);
         }
     }
 }
@@ -587,7 +587,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
         .unwrap();
     }
     let path = fixture.directory.path().join("owner.json");
-    let bytes = record_on_disk(&path);
+    let bytes = document_on_disk(&path);
     for _ in 128..160 {
         commit(
             &fixture,
@@ -596,14 +596,14 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
         .unwrap();
     }
     assert_archived_file_layout(&path);
-    assert_ne!(record_on_disk(&path), bytes);
-    let bytes = record_on_disk(&path);
+    assert_ne!(document_on_disk(&path), bytes);
+    let bytes = document_on_disk(&path);
     let reopened = crate::owner::open_file(&path).unwrap();
     let retry = reopened.commit_effect_receipt(&first, fixture.now).unwrap();
     assert_eq!(retry.binding, accepted.binding);
     assert_eq!(retry.generation, accepted.generation);
     assert_eq!(retry.aggregate_hash, accepted.aggregate_hash);
-    assert_eq!(record_on_disk(&path), bytes);
+    assert_eq!(document_on_disk(&path), bytes);
     reopened
         .with_current(
             WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap(),
@@ -646,7 +646,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
             .commit_effect_receipt(&changed, fixture.now)
             .is_err()
     );
-    assert_eq!(record_on_disk(&path), bytes);
+    assert_eq!(document_on_disk(&path), bytes);
 }
 
 /// Hand the governor every frame `owner` has outgoing, and check the effect
@@ -711,15 +711,15 @@ fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
         .unwrap();
     }
     let path = fixture.directory.path().join("owner.json");
-    let bytes = record_on_disk(&path);
+    let bytes = document_on_disk(&path);
     let content = fixture.directory.path().join("content");
     std::fs::write(&content, b"not a directory").unwrap();
     let next = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     assert!(commit(&fixture, &next).is_err());
-    assert_eq!(record_on_disk(&path), bytes);
+    assert_eq!(document_on_disk(&path), bytes);
     std::fs::remove_file(&content).unwrap();
     assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &next)).is_err());
-    assert_eq!(record_on_disk(&path), bytes);
+    assert_eq!(document_on_disk(&path), bytes);
     let retry = commit(&fixture, &first).unwrap();
     assert_eq!(retry.generation, original.generation);
     assert_eq!(retry.aggregate_hash, original.aggregate_hash);
@@ -755,7 +755,7 @@ fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore()
         .join(&address);
     let block_bytes = std::fs::read(&block).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let state_bytes = record_on_disk(&path);
+    let state_bytes = document_on_disk(&path);
     std::fs::remove_file(&block).unwrap();
     assert!(commit(&fixture, &first).is_err());
     assert!(
@@ -766,11 +766,11 @@ fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore()
         .is_err()
     );
     assert!(crate::owner::open_file(&path).is_err());
-    assert_eq!(record_on_disk(&path), state_bytes);
+    assert_eq!(document_on_disk(&path), state_bytes);
     std::fs::write(&block, b"corrupt").unwrap();
     assert!(commit(&fixture, &first).is_err());
     assert!(crate::owner::open_file(&path).is_err());
-    assert_eq!(record_on_disk(&path), state_bytes);
+    assert_eq!(document_on_disk(&path), state_bytes);
     std::fs::write(&block, block_bytes).unwrap();
     assert!(crate::owner::open_file(&path).is_ok());
 }

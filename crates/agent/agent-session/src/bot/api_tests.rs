@@ -371,16 +371,16 @@ fn a_bot_reads_the_records_it_holds_through_the_record_api() {
         ..FakeMember::default()
     };
     let api = api(fake, vec![]);
-    let reads = api.record_reads().unwrap();
-    let ask = |record: &str| tilo_actions::remote::RecordAsk {
-        address: RecordAddress {
+    let reads = api.resource_reads().unwrap();
+    let ask = |record: &str| tilo_actions::remote::ResourceAsk {
+        address: ResourceAddress {
             app: "so.tilo.notes".into(),
             record: record.into(),
         },
         joined: false,
     };
     let now = tilo_clock::now();
-    let read = tilo_actions::remote::read_records(
+    let read = tilo_actions::remote::read_resources(
         reads.as_ref(),
         &bot(),
         &[ask("rec-1"), ask("rec-9")],
@@ -399,11 +399,11 @@ fn a_bot_reads_the_records_it_holds_through_the_record_api() {
     );
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
-        tilo_actions::remote::read_records(reads.as_ref(), &person, &[ask("rec-1")], None, now),
+        tilo_actions::remote::read_resources(reads.as_ref(), &person, &[ask("rec-1")], None, now),
         Err(ActionHostError::NotPermitted)
     ));
     assert!(matches!(
-        tilo_actions::remote::read_records(reads.as_ref(), &bot(), &[ask("secret")], None, now),
+        tilo_actions::remote::read_resources(reads.as_ref(), &bot(), &[ask("secret")], None, now),
         Err(ActionHostError::Refused { .. })
     ));
 }

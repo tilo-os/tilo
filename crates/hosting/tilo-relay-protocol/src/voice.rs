@@ -58,19 +58,19 @@ pub struct Directions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallOperation {
     /// Open the call of voice channel `channel_id` of the chat record
-    /// `record_id` of app `app_id`, to join it: its active call, the call it
+    /// `document_id` of app `app_id`, to join it: its active call, the call it
     /// had restarted, or a new one where members publish and subscribe.
     /// Any member may open a channel's call.
     Open {
         app_id: String,
-        record_id: String,
+        document_id: String,
         channel_id: String,
     },
     /// Start a call on voice channel `channel_id` of the chat record
-    /// `record_id` of app `app_id`.
+    /// `document_id` of app `app_id`.
     Start {
         app_id: String,
-        record_id: String,
+        document_id: String,
         channel_id: String,
         /// What members may do.
         allowed: Directions,
@@ -140,7 +140,7 @@ pub struct CallSummary {
     /// The call as governance records it.
     pub state: CallState,
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub channel_id: String,
     pub members: Vec<VoiceMember>,
 }

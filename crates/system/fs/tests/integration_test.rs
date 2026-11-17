@@ -2000,7 +2000,7 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
-    use fs::availability::{RecordAvailability, RecordKind, TransferError};
+    use fs::availability::{DocumentAvailability, EntryKind, TransferError};
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -2027,7 +2027,7 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     assert!(!availability().unavailable());
     let (watcher, events) = watch_folder(&docs);
 
-    let mut unavailable = RecordAvailability::new(record, RecordKind::File);
+    let mut unavailable = DocumentAvailability::new(record, EntryKind::File);
     unavailable.transfer.last_error = Some(TransferError {
         message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
         occurred_at_ms: 12,

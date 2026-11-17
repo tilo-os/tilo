@@ -5,7 +5,7 @@ use tilo_agent_session::ReplicaActor;
 use tilo_session_client::Outbox;
 use ui::feedback::{Destination, Draft, Submission};
 
-async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
+async fn create_feedback_document(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: browser.cluster_id.clone(),
@@ -22,7 +22,7 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     }
     let source = browser.mount(&route);
     assert_eq!(
-        source.wire_record(),
+        source.wire_document(),
         "",
         "workspace-primary storage ids never cross the wire"
     );
@@ -116,7 +116,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         )
         .await
         .unwrap();
-    let route = create_feedback_record(&mut browser).await;
+    let route = create_feedback_document(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
     let mut queued = member(&mut browser, &route, &person);
@@ -301,7 +301,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .await
         .unwrap();
     let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
-    let route = create_feedback_record(&mut browser).await;
+    let route = create_feedback_document(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
     let prompt = ui::feedback::model_review::prompt([(0, "Thanks Ada, \u{2039}email\u{203A}")]);
@@ -379,7 +379,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .unwrap();
     let mut owner_browser =
         Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
-    let route = create_feedback_record(&mut owner_browser).await;
+    let route = create_feedback_document(&mut owner_browser).await;
     owner_browser
         .peer
         .barrier()
@@ -607,7 +607,7 @@ fn member(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica
         &MemberId::person(person),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: ui::record::DocumentId::package_primary(),
+            record: ui::resource::DocumentId::package_primary(),
             changes,
         },
     )

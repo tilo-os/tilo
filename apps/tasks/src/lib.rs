@@ -106,7 +106,7 @@ impl Window {
                 parts: Parts::<IssuePart>::default(),
             }),
         };
-        let actions = chain.as_ref().and_then(|chain| cx.record_actions(chain));
+        let actions = chain.as_ref().and_then(|chain| cx.resource_actions(chain));
         Self {
             tasks,
             chain,
@@ -216,7 +216,7 @@ impl ResourceApp for App {
     }
 
     /// Issues a migration brought from Linear join the tracker when it opens.
-    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 

@@ -1,7 +1,7 @@
 //! What the attested launch of an app may do on a route it joins: its own
 //! route, or another app's read-only as its surface declares.
 use super::{
-    ActionKind, AdmittedJoinIdentity, Answer, CrdtRoute, WorkspaceTreeHandle, person_record_join,
+    ActionKind, AdmittedJoinIdentity, Answer, CrdtRoute, WorkspaceTreeHandle, person_document_join,
 };
 
 /// What the attested launch of an app may do on a route it joins.
@@ -20,25 +20,25 @@ pub(super) enum RouteAccess {
 /// What the attested launch of `app` may do on `route`: its own route, or
 /// one of the workspace's records
 /// ([`collab_types::WORKSPACE_DOCUMENTS`]); or, read-only, a record of another app whose kinds its surface declares it
-/// reads, when the person may read that record (`reads_record`). In the
+/// reads, when the person may read that record (`reads_resource`). In the
 /// person's own workspace only the records of theirs its surface declares
-/// ([`person_record_join`]). Anything else is refused: no app writes on
+/// ([`person_document_join`]). Anything else is refused: no app writes on
 /// another app's route.
 pub(super) fn attested_route_access(
     app: &str,
     route: &CrdtRoute,
     personal_cluster: bool,
-    reads_record: impl FnOnce() -> bool,
+    reads_resource: impl FnOnce() -> bool,
 ) -> Result<RouteAccess, String> {
     if personal_cluster {
-        person_record_join(app, route)?;
+        person_document_join(app, route)?;
     }
     if route.app_id.is_empty() || route.app_id == app {
         return Ok(RouteAccess::Own);
     }
     // A workspace record is changed from any app's window of its workspace; the
     // workspace's grants on its owner decide each change.
-    if collab_types::workspace_document(&route.app_id, &route.record_id).is_some() {
+    if collab_types::workspace_document(&route.app_id, &route.document_id).is_some() {
         return Ok(RouteAccess::Own);
     }
     if !personal_cluster && !ui::app_surface::reads_app(app, &route.app_id) {
@@ -48,7 +48,7 @@ pub(super) fn attested_route_access(
             route.app_id
         ));
     }
-    if !reads_record() {
+    if !reads_resource() {
         return Err(format!(
             "the person may not read the record of {} that {app} reads",
             route.app_id
@@ -59,14 +59,17 @@ pub(super) fn attested_route_access(
 
 /// Whether `identity` may read the record `route` names, as the workspace's
 /// committed authority decides now.
-pub(super) fn identity_reads_record(
+pub(super) fn identity_reads_document(
     membership: Option<&WorkspaceTreeHandle>,
     identity: &AdmittedJoinIdentity,
     route: &CrdtRoute,
     now: u64,
 ) -> bool {
-    let node =
-        collab_types::validator::document_node(&route.cluster_id, &route.app_id, &route.record_id);
+    let node = collab_types::validator::document_node(
+        &route.cluster_id,
+        &route.app_id,
+        &route.document_id,
+    );
     identity
         .with_current_authority(membership, &route.cluster_id, |authority| {
             authority
@@ -89,7 +92,7 @@ mod tests {
         CrdtRoute {
             app_id: app.into(),
             cluster_id: "4f2c1a64-0d7e-4b8e-9b55-2a6f3c9d1e10".into(),
-            record_id: "record-1".into(),
+            document_id: "record-1".into(),
         }
     }
 
@@ -98,7 +101,7 @@ mod tests {
         CrdtRoute {
             app_id: app.into(),
             cluster_id: collab_types::personal_cluster(&[7; 32]).to_string(),
-            record_id: record.into(),
+            document_id: record.into(),
         }
     }
 
@@ -173,7 +176,7 @@ mod tests {
             "nor another app's record it declares no read of"
         );
         let emoji = CrdtRoute {
-            record_id: collab_types::workspace_document_id("tilo.workspace.emoji"),
+            document_id: collab_types::workspace_document_id("tilo.workspace.emoji"),
             ..workspace_route("so.tilo.chat")
         };
         assert_eq!(
@@ -206,7 +209,7 @@ mod tests {
     /// Another app's record of the person's is joined to be read, never
     /// written.
     fn person_records_are_read_never_written() {
-        let accounts = collab_types::person_record_id("test-person.accounts");
+        let accounts = collab_types::person_document_id("test-person.accounts");
         ui::app_surface::register_package("test.person-reader", TERMINAL);
         assert_eq!(
             attested_route_access(

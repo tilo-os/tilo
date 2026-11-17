@@ -565,7 +565,10 @@ fn passage(text: &str, from: usize, to: usize) -> Option<String> {
 /// The id a plan names to open the record at `route`.
 #[must_use]
 pub fn open_id(route: &DocumentRoute) -> String {
-    surface::encode_address(&surface::open_record_address(&route.app_id, &route.record))
+    surface::encode_address(&surface::open_document_address(
+        &route.app_id,
+        &route.record,
+    ))
 }
 
 /// What a record is shown as: its title, or how its text starts.

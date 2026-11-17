@@ -45,7 +45,7 @@ pub(super) type JoinedRoute = (RouteSpec, Result<SdkRoute, String>);
 pub(super) fn start_route_join(
     inputs: JoinInputs,
     spec: RouteSpec,
-    record_kind: String,
+    resource_type: String,
     joined: tokio_mpsc::UnboundedSender<JoinedRoute>,
 ) {
     tokio::task::spawn_local(async move {
@@ -60,17 +60,19 @@ pub(super) fn start_route_join(
             inbound_tx: &inputs.inbound_tx,
             media_routes: &inputs.media_routes,
         };
-        let result =
-            match tokio::time::timeout(ROUTE_JOIN_WAIT, join_route(&context, &spec, &record_kind))
-                .await
-            {
-                Ok(result) => result,
-                Err(_) => Err(format!(
-                    "{}: the record did not load within {} s",
-                    crate::ROUTE_JOIN_FAILED,
-                    ROUTE_JOIN_WAIT.as_secs()
-                )),
-            };
+        let result = match tokio::time::timeout(
+            ROUTE_JOIN_WAIT,
+            join_route(&context, &spec, &resource_type),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "{}: the record did not load within {} s",
+                crate::ROUTE_JOIN_FAILED,
+                ROUTE_JOIN_WAIT.as_secs()
+            )),
+        };
         let _ = joined.send((spec, result));
     });
 }
@@ -110,7 +112,7 @@ pub(super) fn refuse_unjoined(command: SdkCommand, reason: &str, state: &BridgeS
 pub(super) async fn join_route(
     context: &SdkJoinContext<'_>,
     spec: &RouteSpec,
-    record_kind: &str,
+    resource_type: &str,
 ) -> Result<SdkRoute, String> {
     let SdkJoinContext {
         asks_channel_keys,
@@ -142,7 +144,7 @@ pub(super) async fn join_route(
             identity_bytes,
             member_handle.unwrap_or(""),
             broker_member_kind(member_kind),
-            record_kind,
+            resource_type,
         )
         .await
     {
@@ -204,7 +206,7 @@ pub(super) async fn join_route(
             presentation: identity_bytes.to_vec(),
             member_handle: member_handle.unwrap_or("").into(),
             member_kind: member_kind.into(),
-            record_kind: record_kind.into(),
+            resource_type: resource_type.into(),
         },
     )
     .await?;

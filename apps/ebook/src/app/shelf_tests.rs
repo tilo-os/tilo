@@ -113,7 +113,7 @@ fn sorting_and_hiding_finished_books_treat_books_elsewhere_as_books_here() {
 
 #[test]
 fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
-    use ui::collaboration::record_content::{ContentLane, RecordContent};
+    use ui::collaboration::document_content::{ContentLane, DocumentContent};
 
     let mut app = fresh();
     let bytes = crate::test_epub::long_classic(6, 3);
@@ -134,7 +134,7 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
         .unwrap();
     app.settle();
     let lane = std::sync::Arc::new(ContentLane::default());
-    books(&mut app).content = Some(RecordContent::store(
+    books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),
     ));
@@ -217,7 +217,7 @@ fn tile_status(app: &mut TestApp<EbookShell>, title: &str) -> Option<(String, Op
 
 #[test]
 fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
-    use ui::collaboration::record_content::{ContentLane, RecordContent};
+    use ui::collaboration::document_content::{ContentLane, DocumentContent};
 
     let mut app = fresh();
     let bytes = crate::test_epub::long_classic(6, 3);
@@ -239,7 +239,7 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
         .unwrap();
     app.settle();
     let lane = std::sync::Arc::new(ContentLane::default());
-    books(&mut app).content = Some(RecordContent::store(
+    books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),
     ));

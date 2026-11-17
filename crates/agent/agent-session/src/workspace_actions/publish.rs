@@ -2,7 +2,7 @@
 //! record index kept with it.
 //!
 //! A workspace holds a record by naming it in its app's index
-//! ([`ui::record::index`]): the document every window of the app reads its
+//! ([`ui::resource::index`]): the document every window of the app reads its
 //! workspace's records from, and what a person's search finds them by. A
 //! window names the record it opens there itself; a record the host makes
 //! or changes for someone (an agent's, with no window open) is named there
@@ -242,7 +242,7 @@ impl Worker {
             .push(Written::of(route, mutation));
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
-        self.index_record(workspace_id, route);
+        self.index_document(workspace_id, route);
         Ok(())
     }
 
@@ -424,18 +424,18 @@ impl Worker {
 
     /// What the record at `route` is called in its app's index of the
     /// workspace, when the index names it.
-    pub(super) fn record_name(
+    pub(super) fn document_name(
         &self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
     ) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        let checkout = ui::record::identity(&document(&workspace.peer, route).0)?;
+        let checkout = ui::resource::identity(&document(&workspace.peer, route).0)?;
         let index = DocumentRoute {
             record: String::new(),
             ..route.clone()
         };
-        ui::record::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
+        ui::resource::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
     }
 
     /// Name the record at `route` in its app's index of the workspace,
@@ -448,7 +448,7 @@ impl Worker {
     /// at once (an answer that says done means the index lists it), and a
     /// record written since is named again once, [`RENAME_AFTER`] after it
     /// last was, however many writes it took meanwhile.
-    pub(super) fn index_record(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
+    pub(super) fn index_document(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()
             || is_part(&route.record)
             || collab_types::workspace_document(&route.app_id, &route.record).is_some()
@@ -466,7 +466,7 @@ impl Worker {
     }
 
     /// Read what the record at `route` is called and name it so in its app's
-    /// index ([`Self::index_record`]).
+    /// index ([`Self::index_document`]).
     pub(super) fn rename(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         self.shared.renaming.lock_recover().remove(route);
         self.named.insert(route.clone(), Instant::now());
@@ -493,7 +493,7 @@ impl Worker {
                 .ok_or("the workspace was not joined")?;
             document(&workspace.peer, route).0
         };
-        let Some(checkout) = ui::record::identity(&record) else {
+        let Some(checkout) = ui::resource::identity(&record) else {
             return Ok(());
         };
         // What the app calls the record is the app's to say: read in its
@@ -532,9 +532,9 @@ impl Worker {
             .map_err(|error| error.to_string())?;
         let (mut index, held) = document(&workspace.peer, &index_route);
         let _ = index.save();
-        let named = ui::record::index::reference(&mut index, &checkout.id, &checkout.kind);
+        let named = ui::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
         let renamed = name.is_some()
-            && ui::record::index::set_name(&mut index, &checkout.id, name.as_deref());
+            && ui::resource::index::set_name(&mut index, &checkout.id, name.as_deref());
         if !named && !renamed {
             return Ok(());
         }
@@ -562,7 +562,7 @@ impl Worker {
 const RENAME_AFTER: Duration = Duration::from_secs(2);
 
 /// Have the record at `route` named again in `wait`, unless that is asked
-/// already ([`Worker::index_record`]).
+/// already ([`Worker::index_document`]).
 fn queue_rename(
     shared: &Arc<Shared>,
     workspace_id: WorkspaceId,

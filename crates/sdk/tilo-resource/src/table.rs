@@ -3,7 +3,7 @@
 //! What a record does with its fields — read them, write them, compare them,
 //! edit, check and describe them — is the same walk for every record, over
 //! each field's own type. `#[derive(Model)]` describes a record as a table
-//! of its fields ([`RecordDesc`]) and three small functions reaching into it
+//! of its fields ([`ResourceDesc`]) and three small functions reaching into it
 //! (a field by position, the same mutably, and building one from its
 //! fields), and every [`Model`] operation of a record is one function here,
 //! compiled once into the runtime. A field's type is reached through
@@ -24,7 +24,7 @@ use crate::path::{Edit, EditOp, OpDescription, Segment};
 use crate::resource::Place;
 
 /// A model type's [`Model`] functions, its type erased. Each takes the table
-/// it was reached through, which for a record carries its [`RecordDesc`].
+/// it was reached through, which for a record carries its [`ResourceDesc`].
 /// A value is handed over as `&dyn Any` of the type; a value made is put
 /// into an `&mut dyn Any` of `Option` of the type.
 #[allow(
@@ -94,7 +94,7 @@ enum Desc {
     /// Its own functions do everything.
     Own,
     /// A record of fields.
-    Record(&'static RecordDesc),
+    Record(&'static ResourceDesc),
     /// An `Option` of a value.
     Option(&'static OptionDesc),
     /// A collection of items.
@@ -112,7 +112,7 @@ enum Desc {
 }
 
 impl ModelTable {
-    pub(crate) const fn record(&self) -> Option<&'static RecordDesc> {
+    pub(crate) const fn record(&self) -> Option<&'static ResourceDesc> {
         match self.desc {
             Desc::Record(record) => Some(record),
             _ => None,
@@ -215,7 +215,7 @@ pub trait PublishedItems: crate::collection::ItemList + ItemSource + 'static {
     const ITEM_TABLE: &'static ModelTable;
 }
 
-/// One field of a record, as [`RecordDesc`] lists it.
+/// One field of a record, as [`ResourceDesc`] lists it.
 pub struct FieldDesc {
     /// The key it is stored under.
     pub key: &'static str,
@@ -232,7 +232,7 @@ pub struct FieldDesc {
 }
 
 /// Read a record, boxed, from the map it is stored in.
-pub type ReadRecord = fn(&Doc, &ObjId) -> Result<Box<dyn Any>, ModelError>;
+pub type ReadResource = fn(&Doc, &ObjId) -> Result<Box<dyn Any>, ModelError>;
 
 /// A record's own invariant (`#[model(check = path)]`).
 pub struct OwnCheck {
@@ -240,7 +240,7 @@ pub struct OwnCheck {
     pub check: fn(&dyn Any) -> Result<(), Refusal>,
     /// Read a record from the map it is stored in, to check it after an
     /// edit of one of its fields.
-    pub read: ReadRecord,
+    pub read: ReadResource,
     /// What the check reads (`#[model(check_reads, check_items)]`); `None`
     /// when it may read anything, so every edit inside the record checks it.
     pub reads: Option<CheckReads>,
@@ -275,7 +275,7 @@ impl CheckReads {
 
 /// A record type as `#[derive(Model)]` describes it. See the [module
 /// docs](self).
-pub struct RecordDesc {
+pub struct ResourceDesc {
     /// Its stored fields, in declaration order.
     pub fields: &'static [FieldDesc],
     /// The field at a position of a record.
@@ -989,9 +989,9 @@ fn atom_get_at<'a>(_: &ModelTable, value: &'a dyn Any, path: &[Segment]) -> Opti
     path.is_empty().then_some(value)
 }
 
-/// The functions of every record, over its [`RecordDesc`].
-pub static RECORD_OPS: ModelOps = ModelOps {
-    without_absent: crate::shape::record_without_absent,
+/// The functions of every record, over its [`ResourceDesc`].
+pub static RESOURCE_OPS: ModelOps = ModelOps {
+    without_absent: crate::shape::resource_without_absent,
     to_json: |table, value| match table.record() {
         Some(record) => to_json(record, value),
         None => serde_json::Value::Null,
@@ -1049,9 +1049,9 @@ pub static RECORD_OPS: ModelOps = ModelOps {
 impl ModelTable {
     /// The table of the record `record`.
     #[must_use]
-    pub const fn of_record(record: &'static RecordDesc) -> Self {
+    pub const fn of_resource(record: &'static ResourceDesc) -> Self {
         Self {
-            ops: &RECORD_OPS,
+            ops: &RESOURCE_OPS,
             desc: Desc::Record(record),
             checks: record.checks,
             has_ops: record.has_ops,
@@ -1060,13 +1060,13 @@ impl ModelTable {
     }
 }
 
-fn described(table: &ModelTable) -> Result<&'static RecordDesc, ModelError> {
+fn described(table: &ModelTable) -> Result<&'static ResourceDesc, ModelError> {
     table.record().ok_or_else(mismatch)
 }
 
 /// The value of the field at `index` of `record`.
 fn field_of<'a>(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &'a dyn Any,
     index: usize,
 ) -> Result<&'a dyn Any, ModelError> {
@@ -1075,7 +1075,7 @@ fn field_of<'a>(
 
 /// The same, mutably.
 fn field_of_mut<'a>(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &'a mut dyn Any,
     index: usize,
 ) -> Result<&'a mut dyn Any, ModelError> {
@@ -1084,7 +1084,7 @@ fn field_of_mut<'a>(
 
 /// [`Model::to_json`] of a record.
 #[must_use]
-pub fn to_json(record: &RecordDesc, value: &dyn Any) -> serde_json::Value {
+pub fn to_json(record: &ResourceDesc, value: &dyn Any) -> serde_json::Value {
     let mut fields = serde_json::Map::new();
     for (index, field) in record.fields.iter().enumerate() {
         if let Some(inner) = (record.field)(value, index) {
@@ -1099,7 +1099,7 @@ pub fn to_json(record: &RecordDesc, value: &dyn Any) -> serde_json::Value {
 
 /// Fields read from a record's JSON form.
 struct JsonSource<'a> {
-    record: &'a RecordDesc,
+    record: &'a ResourceDesc,
     fields: &'a serde_json::Map<String, serde_json::Value>,
     index: usize,
 }
@@ -1122,7 +1122,7 @@ impl FieldSource for JsonSource<'_> {
 
 /// The missing value of each field of a record.
 struct MissingSource<'a> {
-    record: &'a RecordDesc,
+    record: &'a ResourceDesc,
     index: usize,
 }
 
@@ -1140,7 +1140,7 @@ impl FieldSource for MissingSource<'_> {
 
 /// Fields read from what each key of a record's map holds.
 struct DocSource<'a> {
-    record: &'a RecordDesc,
+    record: &'a ResourceDesc,
     doc: &'a Doc,
     slots: Vec<crate::model::MapSlot>,
     index: usize,
@@ -1171,7 +1171,7 @@ impl FieldSource for DocSource<'_> {
 /// # Errors
 /// Why `value` is not the record's JSON form.
 pub fn from_json(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &serde_json::Value,
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
@@ -1190,13 +1190,13 @@ pub fn from_json(
 }
 
 /// [`Model::missing`] of a record, put into `out`.
-pub fn missing(record: &RecordDesc, out: &mut dyn Any) -> Result<(), ModelError> {
+pub fn missing(record: &ResourceDesc, out: &mut dyn Any) -> Result<(), ModelError> {
     (record.build)(&mut MissingSource { record, index: 0 }, out)
 }
 
 /// [`Model::load`] of a record, put into `out`.
 pub fn load(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &Doc,
     value: &Value<'_>,
     id: &ObjId,
@@ -1211,7 +1211,7 @@ pub fn load(
 /// [`Fields::read_fields`](crate::Fields::read_fields), put into `out`:
 /// every stored field read in one walk of the map.
 pub fn read_fields(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &Doc,
     obj: &ObjId,
     out: &mut dyn Any,
@@ -1225,7 +1225,7 @@ pub fn read_fields(
 /// one key; this reads them as one item, so a field only the losing map
 /// holds is not lost.
 pub(crate) fn read_fields_merged(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &Doc,
     objs: &[ObjId],
     out: &mut dyn Any,
@@ -1235,7 +1235,7 @@ pub(crate) fn read_fields_merged(
 
 /// Read the record from `objs`, each field from the first map holding it.
 fn read_fields_over(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &Doc,
     objs: &[ObjId],
     out: &mut dyn Any,
@@ -1270,7 +1270,7 @@ fn read_fields_over(
 }
 
 fn reload(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     target: &mut dyn Any,
     doc: &Doc,
     slot: Option<(&Value<'_>, &ObjId)>,
@@ -1287,7 +1287,7 @@ fn reload(
 
 /// [`Fields::write_fields`](crate::Fields::write_fields) of a record.
 pub fn write_fields(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
     obj: &ObjId,
@@ -1300,7 +1300,7 @@ pub fn write_fields(
 /// just now (`fresh`), every such field; in one that was there, only those
 /// whose key it does not hold, which read the same without a write.
 fn write_fields_leaving(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
     obj: &ObjId,
@@ -1328,7 +1328,7 @@ fn write_fields_leaving(
 
 /// [`Model::store`] of a record.
 pub fn store(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
     slot: Slot<'_>,
@@ -1340,7 +1340,7 @@ pub fn store(
 
 /// [`Model::stores_as`] of a record.
 #[must_use]
-pub fn stores_as(record: &RecordDesc, value: &dyn Any, before: &dyn Any) -> bool {
+pub fn stores_as(record: &ResourceDesc, value: &dyn Any, before: &dyn Any) -> bool {
     for (index, field) in record.fields.iter().enumerate() {
         let (Some(now), Some(was)) = ((record.field)(value, index), (record.field)(before, index))
         else {
@@ -1356,7 +1356,7 @@ pub fn stores_as(record: &RecordDesc, value: &dyn Any, before: &dyn Any) -> bool
 /// [`Fields::write_changed_fields`](crate::Fields::write_changed_fields) of
 /// a record: each field written as `write_key_changed` writes it.
 pub fn write_changed_fields(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     before: &dyn Any,
     doc: &mut Doc,
@@ -1396,7 +1396,7 @@ pub(crate) fn write_key_changed(
 
 /// [`Model::store_changed`] of a record.
 pub fn store_changed(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     before: &dyn Any,
     doc: &mut Doc,
@@ -1416,7 +1416,7 @@ pub fn store_changed(
 
 /// [`Model::refresh`] of a record.
 pub fn refresh(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     target: &mut dyn Any,
     doc: &Doc,
     value: &Value<'_>,
@@ -1432,7 +1432,7 @@ pub fn refresh(
 /// [`Fields::refresh_fields`](crate::Fields::refresh_fields) of a record:
 /// a map changed all over is read anew, else each touched field.
 pub fn refresh_fields(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     target: &mut dyn Any,
     doc: &Doc,
     obj: &ObjId,
@@ -1516,7 +1516,7 @@ pub(crate) fn load_slot(
 
 /// [`Model::edit`] of a record.
 pub fn edit(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &mut Doc,
     slot: Slot<'_>,
     path: &[Segment],
@@ -1531,7 +1531,7 @@ pub fn edit(
 /// segment routes the edit to its field; a `set` of the record replaces it
 /// whole; the record's own check runs after.
 pub fn edit_fields(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &mut Doc,
     obj: &ObjId,
     path: &[Segment],
@@ -1628,7 +1628,7 @@ pub fn edit_fields(
 /// Whether an edit at `path` skips `record`'s own check, by what the check
 /// declares it reads.
 #[cfg(debug_assertions)]
-fn skips_check(record: &RecordDesc, path: &[Segment]) -> bool {
+fn skips_check(record: &ResourceDesc, path: &[Segment]) -> bool {
     record
         .own_check
         .as_ref()
@@ -1638,7 +1638,7 @@ fn skips_check(record: &RecordDesc, path: &[Segment]) -> bool {
 
 /// Whether the record at `obj` passes its own check.
 #[cfg(debug_assertions)]
-fn valid_at(record: &RecordDesc, doc: &Doc, obj: &ObjId) -> bool {
+fn valid_at(record: &ResourceDesc, doc: &Doc, obj: &ObjId) -> bool {
     record.own_check.as_ref().is_none_or(|own| {
         (own.read)(doc, obj).is_ok_and(|current| (own.check)(current.as_ref()).is_ok())
     })
@@ -1649,7 +1649,7 @@ fn valid_at(record: &RecordDesc, doc: &Doc, obj: &ObjId) -> bool {
 /// declaration leaves out a field the check reads.
 #[cfg(debug_assertions)]
 fn guard_declared_reads(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     doc: &Doc,
     obj: &ObjId,
     path: &[Segment],
@@ -1689,7 +1689,7 @@ fn undeclared_read(name: &str, at: &str, refusal: &Refusal) -> ! {
 }
 
 /// [`Model::check`] of a record: its own invariant, then its fields'.
-pub fn check(record: &RecordDesc, value: &dyn Any) -> Result<(), Refusal> {
+pub fn check(record: &ResourceDesc, value: &dyn Any) -> Result<(), Refusal> {
     if !record.checks {
         return Ok(());
     }
@@ -1707,7 +1707,7 @@ pub fn check(record: &RecordDesc, value: &dyn Any) -> Result<(), Refusal> {
 }
 
 /// The first non-empty line of the text the field at `index` carries.
-fn first_line(record: &RecordDesc, value: &dyn Any, index: usize) -> Option<String> {
+fn first_line(record: &ResourceDesc, value: &dyn Any, index: usize) -> Option<String> {
     let field = record.fields.get(index)?;
     let inner = (record.field)(value, index)?;
     let mut text = Vec::new();
@@ -1719,7 +1719,7 @@ fn first_line(record: &RecordDesc, value: &dyn Any, index: usize) -> Option<Stri
 /// texts of its label fields joined by spaces, else its `#[model(label)]`
 /// field.
 #[must_use]
-pub fn label(record: &RecordDesc, value: &dyn Any) -> Option<String> {
+pub fn label(record: &ResourceDesc, value: &dyn Any) -> Option<String> {
     if let Some(name) = record.label_with {
         return name(value).filter(|label| !label.is_empty());
     }
@@ -1740,7 +1740,7 @@ pub fn label(record: &RecordDesc, value: &dyn Any) -> Option<String> {
 /// The field `key` of `record`, with `rest`, when `path` starts at a field
 /// whose type has a vocabulary of its own.
 fn ops_field<'p>(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     path: &'p [Segment],
 ) -> Option<(usize, &'static FieldDesc, &'p [Segment])> {
     let Some((Segment::Field(key), rest)) = path.split_first() else {
@@ -1757,7 +1757,7 @@ fn ops_field<'p>(
 /// [`Model::op_coalesces`] of a record.
 #[must_use]
 pub fn op_coalesces(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     path: &[Segment],
     previous: &serde_json::Value,
     next: &serde_json::Value,
@@ -1769,7 +1769,7 @@ pub fn op_coalesces(
 /// [`Model::op_continuable`] of a record.
 #[must_use]
 pub fn op_continuable(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     path: &[Segment],
     op: &serde_json::Value,
 ) -> Option<bool> {
@@ -1780,7 +1780,7 @@ pub fn op_continuable(
 /// [`Model::op_describe`] of a record.
 #[must_use]
 pub fn op_describe(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     path: &[Segment],
     op: &serde_json::Value,
 ) -> Option<OpDescription> {
@@ -1791,7 +1791,7 @@ pub fn op_describe(
 /// [`Model::op_lands`] of a record.
 #[must_use]
 pub fn op_lands(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     path: &[Segment],
     op: &serde_json::Value,
@@ -1803,7 +1803,7 @@ pub fn op_lands(
 
 /// [`Model::op_schemas`] of a record: only a field whose type has a
 /// vocabulary of its own is visited.
-pub fn op_schemas(record: &RecordDesc, prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+pub fn op_schemas(record: &ResourceDesc, prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
     // A type nested in itself has no vocabulary of its own deeper than
     // this.
     if prefix.matches('.').count() > 16 {
@@ -1819,7 +1819,7 @@ pub fn op_schemas(record: &RecordDesc, prefix: &str, out: &mut Vec<(String, serd
 /// [`Model::get_at`] of a record.
 #[must_use]
 pub fn get_at<'a>(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &'a dyn Any,
     path: &[Segment],
 ) -> Option<&'a dyn Any> {
@@ -1839,7 +1839,7 @@ pub fn get_at<'a>(
 }
 
 /// [`Model::collect_text`] of a record.
-pub fn collect_text(record: &RecordDesc, value: &dyn Any, out: &mut Vec<String>) {
+pub fn collect_text(record: &ResourceDesc, value: &dyn Any, out: &mut Vec<String>) {
     for (index, field) in record.fields.iter().enumerate() {
         if let Some(inner) = (record.field)(value, index) {
             (field.table.ops.collect_text)(field.table, inner, out);
@@ -1853,7 +1853,7 @@ pub fn collect_text(record: &RecordDesc, value: &dyn Any, out: &mut Vec<String>)
 /// for it, nothing turned into JSON. The path of a field compared further
 /// is made once, in one buffer.
 pub fn diff(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     before: &dyn Any,
     after: &dyn Any,
     path: &[Segment],
@@ -1886,7 +1886,7 @@ pub fn diff(
 /// record: each collection field's first page, then the collections inside
 /// their items.
 #[must_use]
-pub fn item_collections(record: &RecordDesc, value: &dyn Any) -> Vec<ItemCollection> {
+pub fn item_collections(record: &ResourceDesc, value: &dyn Any) -> Vec<ItemCollection> {
     let mut out = Vec::new();
     for (index, field) in record.fields.iter().enumerate() {
         if let (Some(items), Some(inner)) = (field.items, (record.field)(value, index))
@@ -1908,7 +1908,7 @@ pub fn item_collections(record: &RecordDesc, value: &dyn Any) -> Vec<ItemCollect
 /// collection keeps them. Nothing is left out: [`item_collections`] is the
 /// page a publication carries, which a record with thousands of items is not.
 #[must_use]
-pub fn record_items(
+pub fn resource_items(
     table: &'static ModelTable,
     record: &dyn Any,
 ) -> Vec<(&'static str, Vec<(crate::Id, String)>)> {
@@ -1942,7 +1942,7 @@ pub fn record_items(
 /// [`Fields::item_collection_sizes`](crate::Fields::item_collection_sizes)
 /// of a record.
 #[must_use]
-pub fn item_collection_sizes(record: &RecordDesc, value: &dyn Any) -> Vec<(&'static str, usize)> {
+pub fn item_collection_sizes(record: &ResourceDesc, value: &dyn Any) -> Vec<(&'static str, usize)> {
     let mut out = Vec::new();
     for (index, field) in record.fields.iter().enumerate() {
         if let Some(items) = field.items {
@@ -1956,7 +1956,7 @@ pub fn item_collection_sizes(record: &RecordDesc, value: &dyn Any) -> Vec<(&'sta
 /// [`Fields::item_label`](crate::Fields::item_label) of a record.
 #[must_use]
 pub fn item_label(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     value: &dyn Any,
     name: &str,
     id: &crate::Id,
@@ -1972,7 +1972,7 @@ pub fn item_label(
 
 /// [`Fields::item_search`](crate::Fields::item_search) of a record.
 #[must_use]
-pub fn item_search(record: &RecordDesc, value: &dyn Any) -> Vec<ItemText> {
+pub fn item_search(record: &ResourceDesc, value: &dyn Any) -> Vec<ItemText> {
     let mut found = Vec::new();
     for (index, field) in record.fields.iter().enumerate() {
         if let (Some(items), Some(inner)) = (field.items, (record.field)(value, index)) {
@@ -1984,7 +1984,7 @@ pub fn item_search(record: &RecordDesc, value: &dyn Any) -> Vec<ItemText> {
 
 /// [`Model::diff`] of a record into edits of the record `E`.
 pub fn diff_into<E>(
-    record: &RecordDesc,
+    record: &ResourceDesc,
     before: &dyn Any,
     after: &dyn Any,
     path: &[Segment],
@@ -3599,7 +3599,7 @@ pub static MAP_OPS: ModelOps = ModelOps {
 /// looked into item by item over their first published page, as a
 /// publication lists them.
 #[must_use]
-pub fn holds_nested_items(record: &RecordDesc, value: &dyn Any, path: &[&str]) -> bool {
+pub fn holds_nested_items(record: &ResourceDesc, value: &dyn Any, path: &[&str]) -> bool {
     let Some((name, rest)) = path.split_first() else {
         return false;
     };
@@ -3657,7 +3657,7 @@ fn steps<'a>(kind: &str, resource_id: &'a str) -> Option<Vec<Step<'a>>> {
 }
 
 /// The position and description of the field named `name` of `record`.
-fn field_named<'a>(record: &'a RecordDesc, name: &str) -> Option<(usize, &'a FieldDesc)> {
+fn field_named<'a>(record: &'a ResourceDesc, name: &str) -> Option<(usize, &'a FieldDesc)> {
     record
         .fields
         .iter()

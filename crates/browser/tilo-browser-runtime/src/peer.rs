@@ -34,7 +34,7 @@ use tilo_relay_client::https::{HttpClient, HttpFuture};
 use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_client::{DeviceSigner, Host, SignError, SignFuture};
 use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
+use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::device::{Device, HostRefusal};
@@ -1204,15 +1204,15 @@ enum JsPreviewOp {
     Delete { at: String, len: u32 },
 }
 
-fn record_to_js(record: LiveRecord) -> JsRecord {
+fn record_to_js(record: LiveResource) -> JsRecord {
     JsRecord {
         app: record.app,
         record: record.record,
     }
 }
 
-fn record_from_js(record: JsRecord) -> LiveRecord {
-    LiveRecord {
+fn record_from_js(record: JsRecord) -> LiveResource {
+    LiveResource {
         app: record.app,
         record: record.record,
     }
@@ -1524,7 +1524,7 @@ fn voice_event(
                                 active: summary.state.active,
                                 allowed: summary.state.allowed.into(),
                                 app: summary.app_id,
-                                record: summary.record_id,
+                                record: summary.document_id,
                                 channel: summary.channel_id,
                                 members: voice_members(summary.members),
                             })
@@ -1618,7 +1618,7 @@ impl JsCallOperation {
                 channel,
             } => CallOperation::Open {
                 app_id: app,
-                record_id: record,
+                document_id: record,
                 channel_id: channel,
             },
             Self::Start {
@@ -1628,7 +1628,7 @@ impl JsCallOperation {
                 allowed,
             } => CallOperation::Start {
                 app_id: app,
-                record_id: record,
+                document_id: record,
                 channel_id: channel,
                 allowed: Directions {
                     publish: allowed.publish,
@@ -2835,7 +2835,7 @@ impl WasmPeer {
     /// The workspace's records this page holds, as JSON `[{app, record}]`, so a
     /// page can hand a guest the record its desktop created.
     #[wasm_bindgen(js_name = workspaceRecords)]
-    pub fn workspace_records(&self) -> String {
+    pub fn workspace_resources(&self) -> String {
         let records: Vec<JsRecord> = crate::replication::records(self.id)
             .into_iter()
             .map(|(app, record)| JsRecord { app, record })

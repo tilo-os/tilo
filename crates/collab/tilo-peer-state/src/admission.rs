@@ -129,7 +129,7 @@ impl DocumentAdmission {
 pub enum MissingPrerequisite {
     Governance,
     Certificate,
-    RecordCheckpoint,
+    DocumentCheckpoint,
     CheckpointCoverage,
     CausalDependencies,
     PersistedMls,
@@ -147,7 +147,7 @@ impl std::fmt::Display for MissingPrerequisite {
         f.write_str(match self {
             Self::Governance => "the workspace's governance",
             Self::Certificate => "its author's certificate",
-            Self::RecordCheckpoint => "its record's checkpoint",
+            Self::DocumentCheckpoint => "its record's checkpoint",
             Self::CheckpointCoverage => "the governance covering its checkpoint",
             Self::CausalDependencies => "the changes it builds on",
             Self::PersistedMls => "its record's encryption state",

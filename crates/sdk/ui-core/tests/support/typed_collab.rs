@@ -223,8 +223,8 @@ struct Connection {
 
 fn verify_routed_envelope(channel: &str, envelope: &collab_types::SignedOp) -> Result<(), String> {
     collab_types::verify_op(envelope).map_err(|error| format!("bad signature: {error:?}"))?;
-    let (app_id, cluster_id, record_id) = tilo_ui::collaboration::channel_key::parse(channel);
-    collab_types::validate_document_payload_route(&app_id, &cluster_id, &record_id, envelope)
+    let (app_id, cluster_id, document_id) = tilo_ui::collaboration::channel_key::parse(channel);
+    collab_types::validate_document_payload_route(&app_id, &cluster_id, &document_id, envelope)
         .map(|_| ())
         .map_err(|error| format!("envelope does not match its route: {error}"))
 }

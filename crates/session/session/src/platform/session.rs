@@ -659,20 +659,20 @@ impl Session {
         // and noted where every write lands — the records' store, and the
         // index of what the broker receives from the apps and from peers.
         changes.waking(options.wake.handle());
-        let record_index = engine.as_ref().map(|engine| {
-            crate::record_index::RecordIndex::start(
+        let resource_index = engine.as_ref().map(|engine| {
+            crate::resource_index::RecordIndex::start(
                 std::sync::Arc::clone(engine)
-                    as std::sync::Arc<dyn crate::record_index::RecordSource>,
-                std::sync::Arc::new(crate::record_index::AppReader::of_device()),
+                    as std::sync::Arc<dyn crate::resource_index::RecordSource>,
+                std::sync::Arc::new(crate::resource_index::AppReader::of_device()),
                 Some(std::sync::Arc::clone(&options.content)),
                 crate::platform::records::Changes::clone(&changes),
             )
         });
-        let record_changes = record_index.clone().map(|index| {
-            index as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
+        let resource_changes = resource_index.clone().map(|index| {
+            index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         });
         let channels = engine.as_ref().and_then(|engine| {
-            let settled = record_index.clone();
+            let settled = resource_index.clone();
             // Keys that arrived open records the loop read sealed: it reads the layouts again.
             let keys = engine.keys();
             let mut keyed = keys.generation();
@@ -697,7 +697,7 @@ impl Session {
         });
         // What this device holds is read once the channel service that opens its sealed records
         // runs: read before it, every sealed record reads as nothing.
-        if let Some(index) = &record_index {
+        if let Some(index) = &resource_index {
             index.sweep();
         }
         // The MCP server toward the person's other devices: answered on this device's
@@ -706,7 +706,7 @@ impl Session {
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
             std::sync::Arc::clone(&channels_fanout),
-            record_changes.clone(),
+            resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
         let sync = start_collaboration(
@@ -728,13 +728,13 @@ impl Session {
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
-        let record_content = crate::content::Plane::open(options.state.as_deref());
+        let document_content = crate::content::Plane::open(options.state.as_deref());
         if let Some(sync) = &sync {
-            sync.attach_content(std::sync::Arc::clone(&record_content));
+            sync.attach_content(std::sync::Arc::clone(&document_content));
             // What this session says when another of the person's devices
             // offers it work: the inputs its own content already keeps.
             if let Some(actions) = sync.device_actions() {
-                actions.attach_content(std::sync::Arc::clone(&record_content));
+                actions.attach_content(std::sync::Arc::clone(&document_content));
             }
         }
         // What other members send here is the workspaces' to admit: their
@@ -1208,8 +1208,8 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
-                content: Some(std::sync::Arc::clone(&record_content)),
-                records: record_index,
+                content: Some(std::sync::Arc::clone(&document_content)),
+                records: resource_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
@@ -1298,7 +1298,7 @@ impl Session {
         );
         let undo_api: std::sync::Arc<dyn crate::task_undo::UndoApi> = host.clone();
         activity.attach_api(undo_api);
-        activity.attach_content(std::sync::Arc::clone(&record_content));
+        activity.attach_content(std::sync::Arc::clone(&document_content));
         let control = crate::test_control::Control::open(&options, host);
         tilo_startup_metrics::mark("control-socket-open");
         let server = crate::mcp_server::mount_named(
@@ -1848,7 +1848,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
-            content: record_content,
+            content: document_content,
             control,
             liveness,
             automation,
@@ -2708,7 +2708,7 @@ impl Session {
             )
         });
         self.shared.notes.read(
-            &broker.state().window_records(),
+            &broker.state().window_resources(),
             &|instance| apps.get(&instance).cloned(),
             &live,
         );

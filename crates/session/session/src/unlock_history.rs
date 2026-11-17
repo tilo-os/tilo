@@ -3,7 +3,7 @@
 //! An answer is a fact the answering device signs and publishes in its own part of
 //! the person's device fabric ([`crate::platform::fabric::unlock`]); every one of their
 //! devices carries it. What the person reads is their own record of kind `device.unlock`
-//! ([`collab_types::OwnRecord`]), one document whose changes are those answers, so the activity history lists them
+//! ([`collab_types::OwnResource`]), one document whose changes are those answers, so the activity history lists them
 //! beside everything else that happened.
 //! The record is a projection of the fabric: each device writes the answers it
 //! hears under the answering device's actor, at the time it decided.
@@ -22,7 +22,7 @@ use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
 use tilo_actions::{ActionApp, ActionContext, ActionFacet, ActionItem, ActionKey, Did, Scalar};
 use tilo_desktop_surface::activity::DetachedRecordHistory;
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 use crate::i18n::t;
 use crate::network::slot_name;

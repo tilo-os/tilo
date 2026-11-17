@@ -101,7 +101,7 @@ impl SettingsApp {
     pub fn attach(
         &mut self,
         cx: &ui::framework::ViewCx<crate::resource::Settings>,
-        accounts: Option<ui::framework::PersonRecord<accounts::person::PersonAccounts>>,
+        accounts: Option<ui::framework::PersonResource<accounts::person::PersonAccounts>>,
     ) {
         let launcher_admin = crate::take_launcher_provider_admin();
         self.provider_admin = if cx.mode().is_live() {

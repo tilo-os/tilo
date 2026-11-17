@@ -77,29 +77,29 @@ fn a_verb_answers_the_ids_it_created() {
 /// Chat's records as the bridge's program reads them through the record api:
 /// its record of the workspace, and the newest part of its messages' chain.
 fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
-    use ui::tilo_actions::remote::{Caller, HeldCopies, RecordAddress, RecordAsk};
+    use ui::tilo_actions::remote::{Caller, HeldCopies, ResourceAddress, ResourceAsk};
     let own = app.record().clone();
     let mut held = HeldCopies::default();
     held.0
-        .insert(String::new(), app.record_document(&own).unwrap());
+        .insert(String::new(), app.resource_document(&own).unwrap());
     for part in (0..).map(chat::parts::part) {
-        let Some(bytes) = app.record_document(&part) else {
+        let Some(bytes) = app.resource_document(&part) else {
             break;
         };
         held.0.insert(part.route().to_owned(), bytes);
     }
     let api = |record: String| {
-        let address = RecordAddress {
+        let address = ResourceAddress {
             app: "so.tilo.chat".into(),
             record,
         };
-        let ask = RecordAsk {
+        let ask = ResourceAsk {
             address,
             joined: false,
         };
         held.readable(&Caller::local_agent("bot"), &[ask]).unwrap()
     };
-    let newest = ui::tilo_actions::record_sync::chain_head(chat::parts::chain().route());
+    let newest = ui::tilo_actions::document_sync::chain_head(chat::parts::chain().route());
     tilo::ChatRead::of(&json!({
         "chat": api(String::new()),
         "messages": api(newest),

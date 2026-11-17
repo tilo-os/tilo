@@ -170,7 +170,7 @@ fn assert_receipt_substitution_refused(
                 }
             }
             "app" => altered.app_id.push('x'),
-            "record" => altered.record_id.push('x'),
+            "record" => altered.document_id.push('x'),
             "resource" => altered.resource.push('x'),
             "action" => altered.action.push('x'),
             "revision" => altered.revision = None,
@@ -233,7 +233,7 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
                     env.cert.user_public_key,
                 )),
                 app_id: env.route.app_id.clone(),
-                record_id: env.route.record_id.clone(),
+                document_id: env.route.document_id.clone(),
                 resource: "workspace:atlas".into(),
                 action: "open".into(),
                 revision: Some("original-r1".into()),

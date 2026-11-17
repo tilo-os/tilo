@@ -172,7 +172,7 @@ impl InvocationJournal {
         self.ready()?;
         let prepared = PreparedEffect::new(update, request)?;
         let (at, record) = self
-            .record_mut(key)
+            .document_mut(key)
             .map_err(|_| "unknown prepared invocation")?;
         prepared.validate(record)?;
         if let Some(previous) = &record.prepared_effect {
@@ -200,7 +200,7 @@ impl InvocationJournal {
     ) -> Result<(DurableInvocation, Durable), String> {
         self.ready()?;
         let (at, record) = self
-            .record_mut(key)
+            .document_mut(key)
             .map_err(|_| "unknown prepared invocation")?;
         if record.prepared_effect.as_ref() != Some(prepared) {
             return Err("prepared effect reconciliation changed".into());

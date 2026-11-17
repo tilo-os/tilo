@@ -9,7 +9,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::permissions::{Acting, KindSet, MemberId, Role, policy};
-use ui::record::{DocumentCheckout, RecordOwners};
+use ui::resource::{DocumentCheckout, ResourceOwners};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const ID: &str = "0123456789abcdef0123456789abcdef";
@@ -140,19 +140,19 @@ fn startup(current: Enrollment) -> Startup {
     .unwrap()
 }
 
-fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
+fn canonical(profile: &Path) -> (ResourceStore, FrameHarness) {
     let admitted = enrollment();
-    let mut owners = RecordOwners::new(profile.to_owned());
+    let mut owners = ResourceOwners::new(profile.to_owned());
     let records = owners.open(chat::definition().app_id(), WORKSPACE).unwrap();
-    let checkout = DocumentCheckout::package_primary(chat::definition().record_kind.clone());
-    let missing = match records.try_open_record(&checkout) {
+    let checkout = DocumentCheckout::package_primary(chat::definition().resource_type.clone());
+    let missing = match records.try_open_resource(&checkout) {
         Ok(_) => false,
-        Err(ui::record::RecordOpenError::MissingRecord) => true,
+        Err(ui::resource::ResourceOpenError::MissingResource) => true,
         Err(error) => panic!("canonical existing record could not open: {error}"),
     };
     if missing {
         records
-            .reserve_record(&checkout)
+            .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 let reporter = hex::encode([12; 32]);
@@ -234,7 +234,7 @@ impl ReceiptSigner for FixtureSigner {
     }
 }
 
-fn endpoint(records: RecordStore) -> CanonicalDestination {
+fn endpoint(records: ResourceStore) -> CanonicalDestination {
     CanonicalDestination::new(
         enrollment().owner,
         enrollment().destination,
@@ -292,10 +292,7 @@ fn canonical_owner_process() {
             let reports = chat::feedback::reports(doc).unwrap();
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
-            assert_eq!(
-                reports[0].author,
-                MemberId::person(hex::encode([12; 32]))
-            );
+            assert_eq!(reports[0].author, MemberId::person(hex::encode([12; 32])));
             let message = chat::feedback::message_id(ID);
             assert_eq!(
                 chat::projection::read(doc)

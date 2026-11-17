@@ -1,7 +1,7 @@
 //! Read a workspace record a relay wrote (version 4), field by field, to say
 //! exactly which field a build's decoder stops at.
 //!
-//! usage: `workspace_record_probe FILE`
+//! usage: `workspace_document_probe FILE`
 #![allow(clippy::expect_used, reason = "an example fails loudly")]
 
 use serde::Deserialize;

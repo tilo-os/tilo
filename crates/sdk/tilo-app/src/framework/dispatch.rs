@@ -439,8 +439,8 @@ impl DispatchCore {
     }
 
     /// The core of the dispatcher of another record than this resource's,
-    /// published at `id` ([`Dispatcher::for_record`]).
-    fn for_record(
+    /// published at `id` ([`Dispatcher::for_resource`]).
+    fn for_resource(
         &self,
         id: &str,
         (kind, label): (&'static str, &'static str),
@@ -772,7 +772,7 @@ impl DispatchCore {
 
     /// The workspace refused what `refusal` names after this device applied it;
     /// the record withdrew it.
-    pub(crate) fn refuse_by_workspace(&self, refusal: &ui_core::record::RecordRefusal) {
+    pub(crate) fn refuse_by_workspace(&self, refusal: &ui_core::resource::ResourceRefusal) {
         self.refused.set(Some(Refused {
             action: refusal.action.clone(),
             item: refusal.item.clone(),
@@ -1092,7 +1092,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// The dispatcher of the record the workspace names by `route` (empty for
     /// the app's own record of the workspace).
-    pub(crate) fn on_record(mut self, route: &str) -> Self {
+    pub(crate) fn on_resource(mut self, route: &str) -> Self {
         self.core.record = Rc::from(route);
         self
     }
@@ -1464,18 +1464,18 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Read `read`, a record of the window's workspace, through the host's
     /// record API, continuing `parent` as [`Self::call_published`] does.
-    pub(crate) fn read_record(
+    pub(crate) fn read_resource(
         &self,
         parent: Option<tilo_actions::InvocationId>,
-        read: tilo_actions::remote::RecordReadRequest,
-    ) -> Result<ui_core::remote_actions::RecordReadCall, String> {
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Result<ui_core::remote_actions::ResourceReadCall, String> {
         if self.core.past {
             return Err("a past version reads nothing".into());
         }
         if let Some(custody) = &self.core.custody {
             custody.check()?;
         }
-        Ok(self.core.opener.read_record(parent, read))
+        Ok(self.core.opener.read_resource(parent, read))
     }
 
     /// Invoke an action published on a nested resource, such as one item of
@@ -1854,14 +1854,14 @@ impl<R: Resource> Dispatcher<R> {
     /// queued invocations go through the same API as this resource's, and
     /// what it applies now `apply` applies to that record. The workspace's roles
     /// do not reach it; only its person changes it.
-    pub(crate) fn for_record<C: Resource>(
+    pub(crate) fn for_resource<C: Resource>(
         &self,
         id: &str,
         read_only: bool,
         apply: impl Fn(&C::Action) -> Result<(), ActionError> + 'static,
     ) -> Dispatcher<C> {
         Dispatcher {
-            core: self.core.for_record(id, (C::KIND, C::LABEL), read_only),
+            core: self.core.for_resource(id, (C::KIND, C::LABEL), read_only),
             group: Rc::default(),
             permission_of: Rc::new(|_: &C::Action| ActionNeed::of(tilo_actions::ActionKind::Read)),
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
@@ -1876,13 +1876,13 @@ impl<R: Resource> Dispatcher<R> {
     /// addressed to `id`, `apply` applies one now, and what an action needs
     /// is its own declared need, checked against the member's roles in
     /// the workspace as this resource's actions are.
-    pub(crate) fn for_workspace_record<C: Resource>(
+    pub(crate) fn for_workspace_resource<C: Resource>(
         &self,
         id: &str,
         read_only: bool,
         apply: impl Fn(&C::Action) -> Result<(), ActionError> + 'static,
     ) -> Dispatcher<C> {
-        let mut core = self.core.for_record(id, (C::KIND, C::LABEL), read_only);
+        let mut core = self.core.for_resource(id, (C::KIND, C::LABEL), read_only);
         core.permissions = Rc::clone(&self.core.permissions);
         Dispatcher {
             core,

@@ -288,7 +288,7 @@ impl PermissionContext {
                 Scope::FsPath("/".into()),
                 Scope::Device(collab_types::caps::EVERY.into()),
                 Scope::NetHost(collab_types::caps::EVERY.into()),
-                Scope::FsRecord(collab_types::caps::EVERY.into()),
+                Scope::FsResource(collab_types::caps::EVERY.into()),
             ]
             .into_iter()
             .enumerate()
@@ -693,7 +693,7 @@ impl PermissionContext {
             (named(policy::Level::App), named(policy::Level::Resource))
             && let Some(person) = self.own_person(app, record)
         {
-            cx = cx.with_own_record(record, person);
+            cx = cx.with_own_resource(record, person);
         }
         let sampled;
         let held = match &self.action_authority {
@@ -941,22 +941,22 @@ impl PermissionContext {
             permissions: self,
             app_id,
             answers,
-            own_record: None,
+            own_resource: None,
             resource: std::cell::RefCell::new(None),
         }
     }
 
     /// [`Self::action_decider`] for the actions a window on the record
     /// `record` publishes. The actor's own record
-    /// ([`collab_types::OwnRecord`]) is theirs alone whatever their role, so
+    /// ([`collab_types::OwnResource`]) is theirs alone whatever their role, so
     /// every action such a window publishes is decided on that record, where
     /// the policy lets its person do anything and no one else anything.
     pub fn action_decider_on<'a>(&'a self, app_id: &'a str, record: &'a str) -> ActionDecider<'a> {
         let mut decider = self.action_decider(app_id);
         if let Some(person) = self.own_person(app_id, record) {
-            decider.own_record = Some(record);
+            decider.own_resource = Some(record);
             if let Some(answers) = &mut decider.answers {
-                answers.cx = answers.cx.with_own_record(record, person);
+                answers.cx = answers.cx.with_own_resource(record, person);
             }
         }
         decider
@@ -964,12 +964,12 @@ impl PermissionContext {
 
     /// The actor's person (the hex of their user root key) when `record` of
     /// `app_id` is their own record, of a kind the app's manifest declares
-    /// each member's own ([`collab_types::OwnRecord::recognise`]).
+    /// each member's own ([`collab_types::OwnResource::recognise`]).
     fn own_person(&self, app_id: &str, record: &str) -> Option<&str> {
         let person = self.standing.person_id()?;
         let mut root = [0; 32];
         hex::decode_to_slice(person, &mut root).ok()?;
-        collab_types::OwnRecord::recognise(app_id, record, root).map(|_| person)
+        collab_types::OwnResource::recognise(app_id, record, root).map(|_| person)
     }
 
     /// `decide` with one authority for the standing as it is, for answers
@@ -999,7 +999,7 @@ pub struct ActionDecider<'a> {
     answers: Option<PublishedAnswers<'a>>,
     /// The member's own record the window shows, which every action it
     /// publishes is decided on ([`PermissionContext::action_decider_on`]).
-    own_record: Option<&'a str>,
+    own_resource: Option<&'a str>,
     resource: std::cell::RefCell<Option<(String, String, TreePath)>>,
 }
 
@@ -1012,7 +1012,7 @@ impl ActionDecider<'_> {
         resource_id: &str,
         action: &tilo_actions::ActionSpec,
     ) -> bool {
-        let resource_id = self.own_record.unwrap_or(resource_id);
+        let resource_id = self.own_resource.unwrap_or(resource_id);
         let Some(answers) = &self.answers else {
             return self.permissions.permits_action(
                 self.app_id,
@@ -1376,7 +1376,7 @@ pub fn admit_in_window(
 mod policy_time_tests;
 
 #[cfg(test)]
-mod own_record_tests {
+mod own_resource_tests {
     use super::*;
     use tilo_actions::{ActionSpec, OperationKind};
 
@@ -1386,9 +1386,9 @@ mod own_record_tests {
     #[test]
     fn a_window_on_a_members_own_record_is_its_persons_alone() {
         let ada = "ad".repeat(32);
-        let own = collab_types::OwnRecord::of_person(&ada, "mail.mailbox")
+        let own = collab_types::OwnResource::of_person(&ada, "mail.mailbox")
             .unwrap()
-            .record_id();
+            .document_id();
         let effect =
             ActionSpec::operation("add", "Add", OperationKind::Effect, "t.add", &()).unwrap();
         let mut edit =

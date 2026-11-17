@@ -3,9 +3,9 @@
 //!
 //! A workspace's file truth is its Files app's record: the tree, one Automerge
 //! document ([`tilo_fs::namespace`]), published on the workspace's session by
-//! every device that holds it ([`tilo_fs::tree_record`]), and the bytes its
+//! every device that holds it ([`tilo_fs::tree_document`]), and the bytes its
 //! files are made of, which travel beside the record on the record's own route
-//! ([`tilo_action_broker::record_content`]). The workspace's host keeps the
+//! ([`tilo_action_broker::document_content`]). The workspace's host keeps the
 //! record with the workspace's other records and hands it whole to a device
 //! that joins, and it carries content requests between the members. A device
 //! taking part needs nothing else: no ticket, no peer addresses, no sync plane
@@ -40,7 +40,7 @@ use std::{
 use bytes::Bytes;
 use iroh_blobs::Hash;
 use tilo_action_broker::{
-    record_content::{ContentState, RouteContent},
+    document_content::{ContentState, RouteContent},
     route::CrdtRoute,
 };
 use tilo_fs::{
@@ -48,7 +48,7 @@ use tilo_fs::{
     identity::PeerCredentials,
     namespace::Namespace,
     sync_folder::Watch,
-    tree_record::FILES_APP,
+    tree_document::FILES_APP,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -121,7 +121,7 @@ impl ReplicaFiles {
         let namespace = Arc::clone(&files.namespace.namespace);
         let runtime = tilo_rt::app().handle().clone();
         let _entered = runtime.enter();
-        let publisher = tilo_fs::tree_record::spawn(
+        let publisher = tilo_fs::tree_document::spawn(
             Arc::clone(&namespace),
             parts.workspace.to_owned(),
             parts.credentials,

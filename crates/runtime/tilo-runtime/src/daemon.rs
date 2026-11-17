@@ -1271,7 +1271,7 @@ fn default_launch_guard(
         }
         match advisory_lock::FileLock::try_exclusive(unix::private_file(&path)?) {
             Ok(guard) => {
-                guard.record_owner()?;
+                guard.resource_owner()?;
                 return Ok(Some(guard));
             }
             Err(advisory_lock::TryLockError::Error(error)) => return Err(error),

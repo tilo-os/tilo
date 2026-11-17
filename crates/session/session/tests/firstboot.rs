@@ -173,8 +173,8 @@ tilo_test_env::scenario! {
     phase a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced;
     {
         let machine = machine();
-        let record_path = record();
-        let record_before = std::fs::read(&record_path).expect("the identity record");
+        let resource_path = record();
+        let resource_before = std::fs::read(&resource_path).expect("the identity record");
         // The markers this leaves in the environment are this test's alone.
         let mut markers = tilo_test_env::ScopedEnv::new();
         markers
@@ -202,8 +202,8 @@ tilo_test_env::scenario! {
             "recovery offers the step that repairs a damaged chain"
         );
         assert_eq!(
-            std::fs::read(&record_path).expect("the identity record"),
-            record_before,
+            std::fs::read(&resource_path).expect("the identity record"),
+            resource_before,
             "recovery replaced the identity record"
         );
         assert_eq!(
@@ -219,9 +219,9 @@ tilo_test_env::scenario! {
     phase a_record_that_does_not_even_parse_starts_setup_without_replacing_it;
     {
         let _machine = machine();
-        let record_path = record();
+        let resource_path = record();
         let damaged = b"{ not an identity".to_vec();
-        std::fs::write(&record_path, &damaged).expect("the damaged record");
+        std::fs::write(&resource_path, &damaged).expect("the damaged record");
 
         assert_eq!(
             startup::identity(),
@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
             "setup validates what is there and asks its person, and is not what starts a session"
         );
         assert_eq!(
-            std::fs::read(&record_path).expect("the identity record"),
+            std::fs::read(&resource_path).expect("the identity record"),
             damaged,
             "setup replaced the record it could not read"
         );
@@ -421,8 +421,8 @@ tilo_test_env::scenario! {
             "provisioning said: {}",
             String::from_utf8_lossy(&provisioned.stdout)
         );
-        let record_path = record();
-        assert!(record_path.is_file(), "provisioning wrote no record");
+        let resource_path = record();
+        assert!(resource_path.is_file(), "provisioning wrote no record");
 
         let verified = run_session(
             &machine,
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
 
         // A second provisioning proves the identity that is there, and leaves it as it is: nobody is
         // minted a second identity onto a used machine.
-        let record_before = std::fs::read(&record_path).expect("the identity record");
+        let resource_before = std::fs::read(&resource_path).expect("the identity record");
         let certificate_before = machine.certificate();
         let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);
         assert!(
@@ -449,8 +449,8 @@ tilo_test_env::scenario! {
             String::from_utf8_lossy(&again.stderr)
         );
         assert_eq!(
-            std::fs::read(&record_path).expect("the identity record"),
-            record_before,
+            std::fs::read(&resource_path).expect("the identity record"),
+            resource_before,
             "a second provisioning replaced the identity record"
         );
         assert_eq!(

@@ -120,7 +120,7 @@ mod tests {
                 ActionAddress::new(&id, "open"),
             );
             catalog
-                .upsert_record(
+                .upsert_resource(
                     SearchRecord::new(&id, hit)
                         .field(format!("{}{extra_text}", row.text), FieldWeight::UNRANKED),
                 )

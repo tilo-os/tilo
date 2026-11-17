@@ -415,7 +415,7 @@ impl PersonalSync {
 fn carried_by(documents: &[NeighbourMsg], message: &NeighbourMsg) -> bool {
     let NeighbourMsg::AppDocument {
         app_id,
-        record_id,
+        document_id,
         envelope,
         ..
     } = message
@@ -427,10 +427,10 @@ fn carried_by(documents: &[NeighbourMsg], message: &NeighbourMsg) -> bool {
             document,
             NeighbourMsg::AppDocument {
                 app_id: sent_app,
-                record_id: sent_record,
+                document_id: sent_document,
                 envelope: sent,
                 ..
-            } if sent_app == app_id && sent_record == record_id && sent.seq >= envelope.seq
+            } if sent_app == app_id && sent_document == document_id && sent.seq >= envelope.seq
         )
     })
 }
@@ -439,7 +439,7 @@ fn carried_by(documents: &[NeighbourMsg], message: &NeighbourMsg) -> bool {
 fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     let NeighbourMsg::AppDocument {
         app_id,
-        record_id,
+        document_id,
         envelope,
         ..
     } = message
@@ -447,12 +447,12 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
         return None;
     };
     // The record of the person's devices is the store's own: no app has it.
-    if super::PersonalStore::is_devices_record(app_id, record_id) {
+    if super::PersonalStore::is_devices_document(app_id, document_id) {
         return None;
     }
     Some(AdmittedFrame {
         app: app_id.clone(),
-        record: record_id.clone(),
+        record: document_id.clone(),
         envelope: envelope.as_ref().clone(),
     })
 }

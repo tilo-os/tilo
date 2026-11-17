@@ -12,12 +12,12 @@
 //! record's id and kind, and what it runs adds this workspace's reference
 //! to that record in the workspace's record index — no bytes move and no id
 //! is minted. Copying a record is a different, deliberate verb
-//! (`ui::record::index::duplicate`).
+//! (`ui::resource::index::duplicate`).
 //!
 //! The rows come from the workspaces' record indexes: the source only ranks
 //! the list a host collected, so it never reads a workspace's state itself.
 
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use ui::search::FieldWeight;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
@@ -46,7 +46,7 @@ const LISTED: usize = 6;
 
 /// A record a workspace holds, as that workspace's record index names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeldRecord {
+pub struct HeldDocument {
     /// The record's identity, as the collaboration wire carries it.
     pub id: String,
     /// What kind of record it is; empty when the index does not say.
@@ -70,7 +70,7 @@ pub struct HeldRecord {
     pub contents: std::sync::Arc<[IndexEntry]>,
 }
 
-impl HeldRecord {
+impl HeldDocument {
     /// The record, as its index names it.
     #[must_use]
     pub fn checkout(&self) -> Option<DocumentCheckout> {
@@ -157,7 +157,7 @@ pub struct Records {
     /// The workspace search was opened in: where a chosen row brings its
     /// record, and which rows say "in this workspace".
     workspace: String,
-    held: Vec<HeldRecord>,
+    held: Vec<HeldDocument>,
     /// What this workspace's records hold, as one row per entry: made at the first query
     /// and ranked from one index for every key typed after it, not indexed again each time.
     contents: std::sync::OnceLock<Vec<Vec<(String, FieldWeight)>>>,
@@ -166,7 +166,7 @@ pub struct Records {
 
 impl Records {
     #[must_use]
-    pub fn new(workspace: impl Into<String>, held: Vec<HeldRecord>) -> Self {
+    pub fn new(workspace: impl Into<String>, held: Vec<HeldDocument>) -> Self {
         Self {
             workspace: workspace.into(),
             held,
@@ -177,7 +177,7 @@ impl Records {
 
     /// The entries this workspace's records hold, each with its record, in the order of
     /// [`Self::contents`]'s rows.
-    fn held_here(&self) -> impl Iterator<Item = (&HeldRecord, &IndexEntry)> {
+    fn held_here(&self) -> impl Iterator<Item = (&HeldDocument, &IndexEntry)> {
         self.held
             .iter()
             .filter(|record| record.here)
@@ -187,7 +187,7 @@ impl Records {
     /// The row of `record`, ranked `score`: one this workspace holds opens in its app, one of
     /// another workspace is brought here. A file is the exception: bringing it here opens it as
     /// the document it is, wherever it was held.
-    fn hit(&self, record: &HeldRecord, score: i32) -> Option<Hit> {
+    fn hit(&self, record: &HeldDocument, score: i32) -> Option<Hit> {
         let facts = record.facts();
         let checkout = record.checkout()?;
         let target = if record.here && checkout.id.file_path().is_none() {
@@ -222,7 +222,7 @@ impl Records {
 
     /// The row of `entry`, a resource `record` holds as its app tells search, ranked `score`:
     /// it opens that resource in the record's app, as the app's own published entry does.
-    fn content_hit(&self, record: &HeldRecord, entry: &IndexEntry, score: i32) -> Hit {
+    fn content_hit(&self, record: &HeldDocument, entry: &IndexEntry, score: i32) -> Hit {
         Hit {
             row: None,
             preview: None,
@@ -254,7 +254,7 @@ impl Records {
     /// in this order while nothing is typed, and what the person brought
     /// here before rises above them.
     fn browse(&self) -> Vec<Hit> {
-        let mut records: Vec<&HeldRecord> =
+        let mut records: Vec<&HeldDocument> =
             self.held.iter().filter(|record| !record.here).collect();
         records.sort_by(|a, b| {
             b.workspace
@@ -342,8 +342,8 @@ const fn field_weight(weight: IndexWeight) -> FieldWeight {
 mod tests {
     use super::*;
 
-    fn held(id: &str, kind: &str, here: bool, workspace: Option<&str>) -> HeldRecord {
-        HeldRecord {
+    fn held(id: &str, kind: &str, here: bool, workspace: Option<&str>) -> HeldDocument {
+        HeldDocument {
             id: id.into(),
             kind: kind.into(),
             name: None,

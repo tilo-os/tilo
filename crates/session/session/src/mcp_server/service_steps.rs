@@ -100,7 +100,7 @@ pub(crate) fn invoke_service_step(
 pub(super) fn change_through(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
     actor: &tilo_action_policy::Acting,
-    change: &tilo_actions::remote::RecordChange,
+    change: &tilo_actions::remote::ResourceChange,
 ) -> Option<Result<serde_json::Value, ActionHostError>> {
     // Who the change is attributed to: the agent acting for its person, or the person.
     let invoker = if let Some(agent) = actor.agent_id() {

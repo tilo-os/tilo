@@ -86,7 +86,7 @@ impl AppBrokerState {
             drop(roots);
             if registered.app_id != checkout.route.app_id
                 || registered.cluster_id != checkout.route.cluster_id
-                || registered.record_id != checkout.route.record_id
+                || registered.document_id != checkout.route.document_id
             {
                 continue;
             }

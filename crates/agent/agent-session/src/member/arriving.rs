@@ -8,7 +8,7 @@
 //! have: it is asked for ([`Cmd::OpenRoute`](tilo_session_client::Cmd::OpenRoute), which asks the host
 //! for it and delivers it as an ordinary change when it comes), and it is
 //! the agent's to make only once the host answered it holds none of it
-//! ([`Event::RecordOpened`] with no frames). Without that, an agent
+//! ([`Event::DocumentOpened`] with no frames). Without that, an agent
 //! opening a record before it arrived founded one of its own, and the first
 //! change it published forked the workspace's document.
 
@@ -18,24 +18,26 @@ use tilo_session_client::{Cmd, Outbox};
 impl AgentMember {
     /// Take the workspace's answer about a record this agent asked for: the
     /// host sent `frames` of it, and none means the workspace holds none of
-    /// it, so it is the agent's to make ([`Self::record_on_its_way`]).
+    /// it, so it is the agent's to make ([`Self::document_on_its_way`]).
     pub(super) fn record_answered(
         &mut self,
         route: DocumentRoute,
-        answer: tilo_session_client::RecordAnswer,
+        answer: tilo_session_client::DocumentAnswer,
     ) {
         // Answered once: it is not asked again, whatever the answer.
-        if !self.asked_records.contains(&route) {
+        if !self.asked_documents.contains(&route) {
             return;
         }
         let told = match answer {
             // Another person's own record: never this agent's, never one it founds, and what
             // asked for it is told so rather than left waiting.
-            tilo_session_client::RecordAnswer::NotYours => ui::record::WorkspaceAnswer::NotYours,
-            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
-                ui::record::WorkspaceAnswer::HoldsNone
+            tilo_session_client::DocumentAnswer::NotYours => {
+                ui::resource::WorkspaceAnswer::NotYours
             }
-            tilo_session_client::RecordAnswer::Sent { .. } => return,
+            tilo_session_client::DocumentAnswer::Sent { frames: 0 } => {
+                ui::resource::WorkspaceAnswer::HoldsNone
+            }
+            tilo_session_client::DocumentAnswer::Sent { .. } => return,
         };
         tracing::debug!(
             app = %route.app_id,
@@ -45,7 +47,7 @@ impl AgentMember {
         );
         // What a held record asked for of what it keeps beside it (a chain's head or part) is
         // told to it.
-        if let Some(record) = ui::record::DocumentId::parse(&route.record) {
+        if let Some(record) = ui::resource::DocumentId::parse(&route.record) {
             for (held, app) in &self.apps {
                 if held.app_id == route.app_id
                     && let Err(error) = app.workspace_answered(&record, told)
@@ -55,8 +57,8 @@ impl AgentMember {
             }
         }
         match told {
-            ui::record::WorkspaceAnswer::NotYours => self.not_yours.insert(route),
-            ui::record::WorkspaceAnswer::HoldsNone => self.absent_records.insert(route),
+            ui::resource::WorkspaceAnswer::NotYours => self.not_yours.insert(route),
+            ui::resource::WorkspaceAnswer::HoldsNone => self.absent_documents.insert(route),
         };
     }
 
@@ -88,7 +90,7 @@ impl AgentMember {
             .apps
             .iter()
             .flat_map(|(held, app)| {
-                app.wanted_records()
+                app.wanted_resources()
                     .into_iter()
                     .map(|record| DocumentRoute {
                         app_id: held.app_id.clone(),
@@ -98,7 +100,8 @@ impl AgentMember {
             })
             .collect();
         for route in wanted {
-            if self.absent_records.contains(&route) || !self.asked_records.insert(route.clone()) {
+            if self.absent_documents.contains(&route) || !self.asked_documents.insert(route.clone())
+            {
                 continue;
             }
             if let Err(error) = self.peer.send(Cmd::OpenRoute(route)) {
@@ -112,17 +115,17 @@ impl AgentMember {
     /// opened, and its host has not answered that it holds none of it. The
     /// host is asked for it the first time. A caller takes the record as new
     /// only when this is `false`.
-    pub(super) fn record_on_its_way(&mut self, route: &DocumentRoute) -> bool {
+    pub(super) fn document_on_its_way(&mut self, route: &DocumentRoute) -> bool {
         if self.apps.contains_key(route) || self.unopened.changed(route).is_some() {
             return false;
         }
         if !self.when_opened
-            || self.absent_records.contains(route)
+            || self.absent_documents.contains(route)
             || self.not_yours.contains(route)
         {
             return false;
         }
-        if self.asked_records.insert(route.clone())
+        if self.asked_documents.insert(route.clone())
             && let Err(error) = self.peer.send(Cmd::OpenRoute(route.clone()))
         {
             tracing::warn!(%error, "agent: a record the workspace may hold was not asked for");
@@ -131,14 +134,14 @@ impl AgentMember {
     }
 
     /// Whether `step` acts on a record the workspace may still send this
-    /// agent ([`Self::record_on_its_way`]): it is asked for, and the step
+    /// agent ([`Self::document_on_its_way`]): it is asked for, and the step
     /// waits for it, so what it writes lands in the workspace's document
     /// rather than in one founded here. A step naming no record waits on an
     /// app that keeps one record per workspace
-    /// ([`ui::application::ApplicationDefinition::keeps_workspace_record`]),
+    /// ([`ui::application::ApplicationDefinition::keeps_workspace_resource`]),
     /// whose record the workspace may already hold.
     pub(super) fn step_record_arriving(&mut self, step: &Step) -> bool {
-        let record = match (&step.record, self.keeps_workspace_record(&step.app)) {
+        let record = match (&step.record, self.keeps_workspace_resource(&step.app)) {
             (Some(record), _) if !parts::is_part(record) => record.clone(),
             (None, true) => String::new(),
             _ => return false,
@@ -148,20 +151,20 @@ impl AgentMember {
             cluster_id: self.workspace.clone(),
             record,
         };
-        self.record_on_its_way(&route)
+        self.document_on_its_way(&route)
     }
 
     /// Whether a record of an app `task` names is one the workspace may still
-    /// send this agent ([`Self::record_on_its_way`]), asked for now: the task
+    /// send this agent ([`Self::document_on_its_way`]), asked for now: the task
     /// waits for it, so it is planned with what the workspace holds. Only an
     /// app that keeps one record per workspace is asked about: what other
     /// apps' records are is a listing, and a task naming none of them makes
     /// its own.
-    pub(super) fn task_records_arriving(&mut self, task: &str) -> bool {
+    pub(super) fn task_documents_arriving(&mut self, task: &str) -> bool {
         let apps: Vec<String> = self
             .catalogue
             .iter()
-            .filter(|definition| definition.keeps_workspace_record())
+            .filter(|definition| definition.keeps_workspace_resource())
             .map(|definition| definition.app_id.to_string())
             .filter(|app| self.identity.delegation.permits_app(app))
             .filter(|app| crate::model::task_names_app(task, app))
@@ -173,16 +176,16 @@ impl AgentMember {
                 cluster_id: self.workspace.clone(),
                 record: String::new(),
             };
-            arriving = self.record_on_its_way(&route) || arriving;
+            arriving = self.document_on_its_way(&route) || arriving;
         }
         arriving
     }
 
     /// Whether `app` keeps one record per workspace, which the workspace may
     /// already hold.
-    pub(super) fn keeps_workspace_record(&self, app: &str) -> bool {
+    pub(super) fn keeps_workspace_resource(&self, app: &str) -> bool {
         self.catalogue
             .get(app)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_resource)
     }
 }

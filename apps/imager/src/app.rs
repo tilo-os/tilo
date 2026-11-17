@@ -3238,7 +3238,7 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
                 recovery: None,
                 view_error: None,
                 view_retry: None,
-                record_error: None,
+                resource_error: None,
                 record_retry: None,
                 record_retry_target: None,
                 teardown_error: Some(error),
@@ -5029,7 +5029,7 @@ mod tests {
                 .iter()
                 .all(|report| {
                     report.view_error.is_none()
-                        && report.record_error.is_none()
+                        && report.resource_error.is_none()
                         && report.teardown_error.is_none()
                 }),
             "a component closed with an error (view, record, teardown): {:?}",
@@ -5038,7 +5038,7 @@ mod tests {
                 .iter()
                 .map(|report| (
                     &report.view_error,
-                    &report.record_error,
+                    &report.resource_error,
                     &report.teardown_error
                 ))
                 .collect::<Vec<_>>()

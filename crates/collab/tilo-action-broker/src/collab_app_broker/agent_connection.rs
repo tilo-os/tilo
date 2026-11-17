@@ -295,16 +295,16 @@ impl Drop for Asking {
 /// desktop applies no task's changes at a record's origin").
 struct SessionRecords {
     connection: AgentConnection,
-    reads: Option<Arc<dyn tilo_actions::remote::RecordReads>>,
-    changes: Option<Arc<dyn tilo_actions::remote::RecordChanges>>,
+    reads: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
+    changes: Option<Arc<dyn tilo_actions::remote::ResourceChanges>>,
 }
 
-impl tilo_actions::remote::RecordReads for SessionRecords {
+impl tilo_actions::remote::ResourceReads for SessionRecords {
     fn read(
         &self,
         caller: &Caller,
-        address: &tilo_actions::remote::RecordAddress,
-    ) -> Result<tilo_actions::remote::RecordCopy, ActionHostError> {
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionHostError> {
         self.connection.check(caller)?;
         self.reads
             .as_ref()
@@ -316,7 +316,7 @@ impl tilo_actions::remote::RecordReads for SessionRecords {
         self: Arc<Self>,
         caller: &Caller,
         correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
     ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
         // Every reading is answered through `read`, which checks the session goes and reads as
         // its caller.
@@ -326,8 +326,8 @@ impl tilo_actions::remote::RecordReads for SessionRecords {
     fn watch(
         &self,
         caller: &Caller,
-        address: &tilo_actions::remote::RecordAddress,
-        wake: &tilo_actions::remote::RecordWake,
+        address: &tilo_actions::remote::ResourceAddress,
+        wake: &tilo_actions::remote::ResourceWake,
     ) -> Result<(), ActionHostError> {
         self.connection.check(caller)?;
         self.reads
@@ -337,11 +337,11 @@ impl tilo_actions::remote::RecordReads for SessionRecords {
     }
 }
 
-impl tilo_actions::remote::RecordChanges for SessionRecords {
+impl tilo_actions::remote::ResourceChanges for SessionRecords {
     fn apply(
         &self,
         caller: &Caller,
-        change: &tilo_actions::remote::RecordChange,
+        change: &tilo_actions::remote::ResourceChange,
     ) -> Result<serde_json::Value, ActionHostError> {
         self.connection.check(caller)?;
         self.changes
@@ -355,20 +355,20 @@ impl AgentConnection {
     fn session_records(&self) -> SessionRecords {
         SessionRecords {
             connection: self.clone(),
-            reads: self.state().record_reads(),
-            changes: self.state().record_changes(),
+            reads: self.state().resource_reads(),
+            changes: self.state().resource_changes(),
         }
     }
 }
 
 impl ActionHost for AgentConnection {
-    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         let records = self.session_records();
         records.reads.as_ref()?;
         Some(Arc::new(records))
     }
 
-    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         let records = self.session_records();
         records.changes.as_ref()?;
         Some(Arc::new(records))

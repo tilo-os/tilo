@@ -35,7 +35,7 @@
 //! page as a picture kept in the workspace's content store ([`Held::picture`]). The picture
 //! is kept only for a hold that waits.
 //!
-//! The tab's record says all of it ([`crate::page_record`]). The engine sets down that a
+//! The tab's record says all of it ([`crate::page_resource`]). The engine sets down that a
 //! departure was held, under the actor whose action reached it, and how it ended. It cannot
 //! know who answered, so each answer the window sends says ([`AnsweredBy`]):
 //!
@@ -462,7 +462,8 @@ impl BrowserWidget {
     pub(crate) fn answering(&mut self, invoker: Option<&ActionInvoker>) -> AnsweredBy {
         let actor = invoker.and_then(|invoker| PageActor::of(&invoker.acting.by));
         let working = self.working_in_page();
-        self.page_record.acts_as(actor.as_ref(), invoker, &working);
+        self.page_resource
+            .acts_as(actor.as_ref(), invoker, &working);
         AnsweredBy::admitted(actor)
     }
 

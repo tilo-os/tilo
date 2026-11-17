@@ -63,9 +63,9 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         NeighbourMsg::SyncReq { .. }
         | NeighbourMsg::ScrollbackRequest { .. }
         | NeighbourMsg::ScrollbackResponse { .. }
-        | NeighbourMsg::RecordContentWant { .. }
-        | NeighbourMsg::RecordContentPiece { .. }
-        | NeighbourMsg::RecordContentLacks { .. }
+        | NeighbourMsg::DocumentContentWant { .. }
+        | NeighbourMsg::DocumentContentPiece { .. }
+        | NeighbourMsg::DocumentContentLacks { .. }
         // A viewer asking for a keyframe of a stream it receives; the owner checks it is one.
         | NeighbourMsg::SurfaceKeyframeRequest { .. }
         // A member saying which of the receiving device's windows it views: it may see the
@@ -272,7 +272,7 @@ mod tests {
                     peer: 1,
                     app_id: "so.tilo.notes".into(),
                     cluster_id: WORKSPACE.into(),
-                    record_id: "notes".into(),
+                    document_id: "notes".into(),
                     envelope: envelope(),
                     own: None,
                 },
@@ -387,7 +387,7 @@ mod tests {
                 None,
             ),
             (
-                NeighbourMsg::RecordContentWant {
+                NeighbourMsg::DocumentContentWant {
                     requester: 1,
                     app_id: "so.tilo.notes".into(),
                     cluster_id: WORKSPACE.into(),
@@ -397,7 +397,7 @@ mod tests {
                 Some(read()),
             ),
             (
-                NeighbourMsg::RecordContentPiece {
+                NeighbourMsg::DocumentContentPiece {
                     responder: 1,
                     requester: 2,
                     app_id: "so.tilo.notes".into(),
@@ -410,7 +410,7 @@ mod tests {
                 Some(read()),
             ),
             (
-                NeighbourMsg::RecordContentLacks {
+                NeighbourMsg::DocumentContentLacks {
                     responder: 1,
                     requester: 2,
                     app_id: "so.tilo.notes".into(),

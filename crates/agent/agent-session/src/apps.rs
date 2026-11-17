@@ -30,7 +30,7 @@ use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, ResourceSelection};
 use ui::permissions::{PermissionContext, Role, policy};
 use ui::portable_storage::PortableStorage;
-use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
 use ui::tilo_resource::{MemberId, Place, ResourceKind};
 
 /// An app whose records this host keeps and whose windows another device
@@ -156,7 +156,7 @@ impl AppCatalogue {
     ) -> Vec<ActionDescriptor> {
         // A part of a chain the app keeps beside its record (a chat's
         // messages) is of the part's own resource, as its identity names it.
-        let part = ui::record::identity(doc)
+        let part = ui::resource::identity(doc)
             .filter(|checkout| checkout.id.chain_part().is_some())
             .and_then(|checkout| {
                 ui::framework::hosted_kinds()
@@ -175,7 +175,7 @@ impl AppCatalogue {
     #[must_use]
     pub fn app_for_kind(&self, kind: &str) -> Option<&'static str> {
         self.iter()
-            .find(|definition| definition.record_kind.as_str() == kind)
+            .find(|definition| definition.resource_type.as_str() == kind)
             .map(ApplicationDefinition::app_id)
     }
 
@@ -196,7 +196,7 @@ impl AppCatalogue {
     fn kind(&self, app_id: &str) -> Option<ResourceKind> {
         let definition = self.get(app_id)?;
         ui::framework::hosted_kinds()
-            .get(definition.record_kind.as_str())
+            .get(definition.resource_type.as_str())
             .copied()
     }
 }
@@ -530,12 +530,12 @@ impl Replica {
     /// Collaboration route of this record ([`DocumentId::route`]): the record
     /// id a `DocumentRoute` names it by.
     #[must_use]
-    pub fn wire_record(&self) -> &str {
+    pub fn wire_document(&self) -> &str {
         self.view.checkout().id.route()
     }
 
     #[must_use]
-    pub const fn record_id(&self) -> &DocumentId {
+    pub const fn document_id(&self) -> &DocumentId {
         &self.view.checkout().id
     }
 
@@ -850,7 +850,7 @@ impl Replica {
     #[must_use]
     pub fn changed_keys(
         &self,
-        record: &ui::record::DocumentId,
+        record: &ui::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         self.view.changed_keys(record, mutation)
@@ -864,7 +864,7 @@ impl Replica {
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
         let in_chains: std::collections::HashSet<String> =
-            ui::record::chain_of_resource_id(address.resource.as_str())
+            ui::resource::chain_of_resource_id(address.resource.as_str())
                 .map(|_| address.resource.as_str().to_owned())
                 .into_iter()
                 .collect();
@@ -1180,7 +1180,7 @@ impl Replica {
     /// Whether `record` is one the app keeps beside this one — a part of a
     /// chain it publishes ([`ui::framework::Chain`]), such as a chat's
     /// messages — which the replica holds with its own
-    /// ([`Self::apply_record`]) and the app's actions reach through the
+    /// ([`Self::apply_document`]) and the app's actions reach through the
     /// chain, as in a window.
     #[must_use]
     pub fn keeps_beside(&self, record: &DocumentId) -> bool {
@@ -1190,28 +1190,32 @@ impl Replica {
     /// Take this replica's records to come from its workspace's hosts, which
     /// send a public workspace's records only once they are asked for: a
     /// chain it holds no part of asks for its head, and writes to it wait
-    /// for the answer ([`Self::wanted_records`]).
+    /// for the answer ([`Self::wanted_resources`]).
     pub fn ask_workspace_for_missing(&self) {
         self.view.ask_workspace_for_missing();
     }
 
     /// What this replica's records ask the workspace's hosts for.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<DocumentId> {
-        self.view.wanted_records()
+    pub fn wanted_resources(&self) -> Vec<DocumentId> {
+        self.view.wanted_resources()
     }
 
     /// The workspace's hosts answered `record`, which this replica asked for: they hold none
     /// of it, or it is another person's own, which never reaches this replica.
-    pub fn workspace_answered(&mut self, record: DocumentId, answer: ui::record::WorkspaceAnswer) {
+    pub fn workspace_answered(
+        &mut self,
+        record: DocumentId,
+        answer: ui::resource::WorkspaceAnswer,
+    ) {
         self.view.workspace_answered(record, answer);
     }
 
     /// The records held beside this one ([`Self::keeps_beside`]), by id.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<DocumentId> {
+    pub fn resources_beside(&self) -> Vec<DocumentId> {
         self.view
-            .records_beside()
+            .resources_beside()
             .into_iter()
             .map(|checkout| checkout.id)
             .collect()
@@ -1227,16 +1231,16 @@ impl Replica {
     ///
     /// Returns [`AppError::Merge`] when the record is neither, or refuses
     /// the change.
-    pub fn apply_record(
+    pub fn apply_document(
         &mut self,
         record: &DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<(), AppError> {
-        if record == self.record_id() {
+        if record == self.document_id() {
             return self.apply(mutation);
         }
         self.view
-            .merge_record(record, mutation)
+            .merge_resource(record, mutation)
             .map(drop)
             .map_err(AppError::Merge)
     }
@@ -1249,24 +1253,24 @@ impl Replica {
     ///
     /// As [`Self::take_mutation`]: none is taken then, every part's changes
     /// go with the next call.
-    pub fn take_record_mutations(
+    pub fn take_document_mutations(
         &mut self,
     ) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
         self.view
-            .take_records_beside_changes()
+            .take_resources_beside_changes()
             .map_err(AppError::Merge)
     }
 
     /// Read `record`: this replica's own, or one held beside it.
-    pub fn read_record<R>(
+    pub fn read_resource<R>(
         &self,
         record: &DocumentId,
         read: impl FnOnce(&automerge::AutoCommit) -> R,
     ) -> Option<R> {
-        if record == self.record_id() {
+        if record == self.document_id() {
             self.read(read)
         } else {
-            self.view.read_record(record, read)
+            self.view.read_resource(record, read)
         }
     }
 }
@@ -1278,7 +1282,7 @@ fn chain_resources(resources: &[tilo_actions::ResourceSpec]) -> std::collections
         .iter()
         .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
     {
-        if ui::record::chain_of_resource_id(resource.id.as_str()).is_some() {
+        if ui::resource::chain_of_resource_id(resource.id.as_str()).is_some() {
             chain_ids(resource, &mut in_chains);
         }
     }
@@ -1378,26 +1382,26 @@ fn seeded(
 ) -> Result<(DocumentCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
         Seed::New => {
-            let checkout = if definition.keeps_workspace_record() {
-                DocumentCheckout::package_primary(definition.record_kind.clone())
+            let checkout = if definition.keeps_workspace_resource() {
+                DocumentCheckout::package_primary(definition.resource_type.clone())
             } else {
-                DocumentCheckout::new(DocumentId::minted(), definition.record_kind.clone())
+                DocumentCheckout::new(DocumentId::minted(), definition.resource_type.clone())
             };
             let bytes = genesis(definition, workspace, &checkout, kind, member)?;
             (checkout, bytes, true)
         }
         Seed::NewAt(record) => {
-            if definition.keeps_workspace_record() != record.is_package_primary() {
+            if definition.keeps_workspace_resource() != record.is_package_primary() {
                 return Err(AppError::Merge(
                     "record route does not match the app's workspace scope".into(),
                 ));
             }
-            let checkout = DocumentCheckout::new(record, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(record, definition.resource_type.clone());
             let bytes = genesis(definition, workspace, &checkout, kind, member)?;
             (checkout, bytes, true)
         }
         Seed::Existing { record, changes } => {
-            if definition.keeps_workspace_record() != record.is_package_primary() {
+            if definition.keeps_workspace_resource() != record.is_package_primary() {
                 return Err(AppError::Merge(
                     "record route does not match the app's workspace scope".into(),
                 ));
@@ -1407,7 +1411,7 @@ fn seeded(
                 tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
             }
-            let checkout = DocumentCheckout::new(record, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(record, definition.resource_type.clone());
             (checkout, doc.save(), false)
         }
     };
@@ -1429,15 +1433,15 @@ fn genesis(
 ) -> Result<Vec<u8>, AppError> {
     let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
     let cache = PortableStorage::new("agent-records", DEVICE).map_err(|e| launch(&e))?;
-    let records = RecordOwners::portable(cache)
+    let records = ResourceOwners::portable(cache)
         .open(definition.app_id(), workspace)
         .map_err(|e| launch(&e))?;
     records
-        .reserve_record(checkout)
+        .reserve_resource(checkout)
         .map_err(|e| launch(&e))?
         .initialize_seeded(
             |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-            |doc| ui::framework::seed_record(kind.kind(), doc, creator, DEVICE),
+            |doc| ui::framework::seed_resource(kind.kind(), doc, creator, DEVICE),
         )
         .map_err(|e| launch(&e))?;
     records

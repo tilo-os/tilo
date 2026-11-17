@@ -4,10 +4,11 @@ use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
 use fs_protocol::projection::{
-    MAX_RECORD_INDEX_PAGE_BYTES, RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES,
-    RECORD_INDEX_V2_VERSION, RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR,
-    RecordIndexEntryV1, RecordIndexExactV2, RecordIndexManifestV2, RecordIndexManifestV3,
-    RecordIndexPageV2, RecordIndexPageV3, valid_record_index_revision,
+    DocumentIndexEntryV1, DocumentIndexExactV2, DocumentIndexManifestV2, DocumentIndexManifestV3,
+    DocumentIndexPageV2, DocumentIndexPageV3, MAX_RECORD_INDEX_PAGE_BYTES,
+    RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
+    RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR,
+    valid_document_index_revision,
 };
 use fs_protocol::{
     AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
@@ -97,7 +98,7 @@ pub struct WorkspaceRecordIndexPager {
     source_roots: Vec<PathBuf>,
     roots: Vec<PathBuf>,
     root_index: usize,
-    cursor: Option<RecordIndexCursor>,
+    cursor: Option<DocumentIndexCursor>,
     opaque_cursor: Option<(String, String, Option<fs_protocol::FileDocumentId>)>,
     discovered: bool,
     reset_pending: bool,
@@ -118,7 +119,7 @@ struct TestV2Source {
 }
 
 #[derive(Clone, Debug)]
-struct RecordIndexCursor {
+struct DocumentIndexCursor {
     revision: String,
     offset: usize,
     last_document_id: Option<fs_protocol::FileDocumentId>,
@@ -145,14 +146,14 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
     Some(root.join(path))
 }
 
-fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
+fn read_record_index_manifest_v2(root: &Path) -> Option<DocumentIndexManifestV2> {
     let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let manifest = RecordIndexManifestV2::from_json(&bytes).ok()?;
+    let manifest = DocumentIndexManifestV2::from_json(&bytes).ok()?;
     if manifest.schema_version != RECORD_INDEX_V2_VERSION
-        || !valid_record_index_revision(&manifest.revision)
+        || !valid_document_index_revision(&manifest.revision)
         || manifest.page_entries != RECORD_INDEX_PAGE_ENTRIES
     {
         return None;
@@ -162,15 +163,15 @@ fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
 
 fn read_record_index_page_v2(
     root: &Path,
-    manifest: &RecordIndexManifestV2,
+    manifest: &DocumentIndexManifestV2,
     offset: usize,
-) -> Option<RecordIndexPageV2> {
+) -> Option<DocumentIndexPageV2> {
     let name = format!("{RECORD_INDEX_V2_XATTR}.{}.{}", manifest.revision, offset);
     let bytes = xattr::get(root, &name).ok()??;
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let page = RecordIndexPageV2::from_json(&bytes).ok()?;
+    let page = DocumentIndexPageV2::from_json(&bytes).ok()?;
     if page.schema_version != RECORD_INDEX_V2_VERSION
         || page.revision != manifest.revision
         || page.offset != offset
@@ -185,14 +186,14 @@ fn read_record_index_page_v2(
     Some(page)
 }
 
-fn read_record_index_manifest_v3(root: &Path) -> Option<RecordIndexManifestV3> {
+fn read_record_index_manifest_v3(root: &Path) -> Option<DocumentIndexManifestV3> {
     let bytes = xattr::get(root, RECORD_INDEX_V3_XATTR).ok()??;
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let value = RecordIndexManifestV3::from_json(&bytes).ok()?;
+    let value = DocumentIndexManifestV3::from_json(&bytes).ok()?;
     (value.schema_version == RECORD_INDEX_V3_VERSION
-        && valid_record_index_revision(&value.revision)
+        && valid_document_index_revision(&value.revision)
         && uuid::Uuid::parse_str(&value.initial_cursor).is_ok()
         && value.page_entries == RECORD_INDEX_PAGE_ENTRIES)
         .then_some(value)
@@ -200,15 +201,15 @@ fn read_record_index_manifest_v3(root: &Path) -> Option<RecordIndexManifestV3> {
 
 fn read_record_index_page_v3(
     root: &Path,
-    manifest: &RecordIndexManifestV3,
+    manifest: &DocumentIndexManifestV3,
     cursor: &str,
-) -> Option<RecordIndexPageV3> {
+) -> Option<DocumentIndexPageV3> {
     let name = format!("{RECORD_INDEX_V3_XATTR}.{}.{}", manifest.revision, cursor);
     let bytes = xattr::get(root, name).ok()??;
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let value = RecordIndexPageV3::from_json(&bytes).ok()?;
+    let value = DocumentIndexPageV3::from_json(&bytes).ok()?;
     (value.schema_version == RECORD_INDEX_V3_VERSION
         && value.revision == manifest.revision
         && value.records.len() <= manifest.page_entries
@@ -235,11 +236,11 @@ pub fn resolve_workspace_record(
         if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
             continue;
         }
-        let Ok(projection) = RecordIndexExactV2::from_json(&bytes) else {
+        let Ok(projection) = DocumentIndexExactV2::from_json(&bytes) else {
             continue;
         };
         if projection.schema_version != RECORD_INDEX_V2_VERSION
-            || !valid_record_index_revision(&projection.revision)
+            || !valid_document_index_revision(&projection.revision)
             || projection.record.document_id.0 != document_id
         {
             continue;
@@ -294,7 +295,7 @@ fn root_generation(root: &Path) -> String {
 
 fn project_record_entries(
     root: &Path,
-    entries: Vec<RecordIndexEntryV1>,
+    entries: Vec<DocumentIndexEntryV1>,
 ) -> (Vec<WorkspaceRecord>, bool) {
     let mut truncated = false;
     let mut records = Vec::with_capacity(entries.len());
@@ -370,12 +371,12 @@ impl WorkspaceRecordIndexPager {
             reason = "the receiver is used by the test-only synthetic authority seam"
         )
     )]
-    fn v2_manifest(&self, root: &Path) -> Option<RecordIndexManifestV2> {
+    fn v2_manifest(&self, root: &Path) -> Option<DocumentIndexManifestV2> {
         #[cfg(test)]
         if let Some(source) = &self.test_v2
             && source.root == root
         {
-            return Some(RecordIndexManifestV2 {
+            return Some(DocumentIndexManifestV2 {
                 schema_version: RECORD_INDEX_V2_VERSION,
                 revision: source.revision.clone(),
                 records: source.records,
@@ -395,9 +396,9 @@ impl WorkspaceRecordIndexPager {
     fn v2_page(
         &self,
         root: &Path,
-        manifest: &RecordIndexManifestV2,
+        manifest: &DocumentIndexManifestV2,
         offset: usize,
-    ) -> Option<RecordIndexPageV2> {
+    ) -> Option<DocumentIndexPageV2> {
         #[cfg(test)]
         if let Some(source) = &self.test_v2
             && source.root == root
@@ -407,7 +408,7 @@ impl WorkspaceRecordIndexPager {
                 .checked_add(RECORD_INDEX_PAGE_ENTRIES)?
                 .min(source.records);
             let records = ((offset + 1)..=end)
-                .map(|ordinal| RecordIndexEntryV1 {
+                .map(|ordinal| DocumentIndexEntryV1 {
                     document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(
                         ordinal as u128,
                     )),
@@ -419,7 +420,7 @@ impl WorkspaceRecordIndexPager {
                     is_dir: false,
                 })
                 .collect();
-            return Some(RecordIndexPageV2 {
+            return Some(DocumentIndexPageV2 {
                 schema_version: RECORD_INDEX_V2_VERSION,
                 revision: source.revision.clone(),
                 offset,
@@ -601,7 +602,7 @@ impl WorkspaceRecordIndexPager {
                     continue;
                 }
                 None => {
-                    self.cursor = Some(RecordIndexCursor {
+                    self.cursor = Some(DocumentIndexCursor {
                         revision: manifest.revision.clone(),
                         offset: 0,
                         last_document_id: None,
@@ -656,7 +657,7 @@ impl WorkspaceRecordIndexPager {
             let (records, malformed) = project_record_entries(&root, page.records);
             truncated |= malformed;
             if let Some(next) = next {
-                self.cursor = Some(RecordIndexCursor {
+                self.cursor = Some(DocumentIndexCursor {
                     revision: manifest.revision,
                     offset: next,
                     last_document_id,

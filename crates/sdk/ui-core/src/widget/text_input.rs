@@ -6060,7 +6060,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         if !self.is_focused || self.holds_secret() || self.text.trim().is_empty() {
             return None;
         }
-        let (app, id, kind) = self.submit_action.as_ref()?.binding().shared_record()?;
+        let (app, id, kind) = self.submit_action.as_ref()?.binding().shared_resource()?;
         Some((
             PresenceKey::resource(app, id, kind),
             std::hash::BuildHasher::hash_one(&rustc_hash::FxBuildHasher, &self.text),

@@ -1529,7 +1529,7 @@ mod tests {
                 "the device serving the workspace admits"
             );
             let mut elsewhere = grant(workspace, &mine);
-            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
             assert!(
                 !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
                 "a scope this session carries no plane for is refused"
@@ -1763,7 +1763,7 @@ mod tests {
                 Some("endpoint-not-the-device")
             );
             let mut elsewhere = grant(workspace, &other);
-            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
             assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
             assert_eq!(
                 why([1; 32], &grant(workspace, &mine), [2; 32]),

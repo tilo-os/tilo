@@ -79,7 +79,7 @@ impl From<NativeMediaRequestContext> for Caller {
             peer: value.peer_id(),
             app: value.app_id().into(),
             workspace: value.workspace_id().into(),
-            record: value.record_id().into(),
+            record: value.document_id().into(),
             current: Arc::new(move || value.revalidate()),
         }
     }
@@ -767,7 +767,7 @@ impl NativeMediaServices for NativeMediaService {
         let route = (
             context.workspace_id().to_owned(),
             context.app_id().to_owned(),
-            context.record_id().to_owned(),
+            context.document_id().to_owned(),
         );
         if let (true, Command::Watch { revision }) = (request.dispatch_valid(), &request.command) {
             return self.watch(context.into(), *revision, route);

@@ -21,7 +21,7 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
     let definition = crate::application_test_support::runner_probe_definition();
     let temp = tempfile::tempdir().unwrap();
     let workspace_id = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
     let records = owners.open(&definition.app_id, &workspace_id).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
@@ -65,7 +65,7 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
         let _entry = app.enter_wake_scope();
         CollaborationManager::native_joining_fixture_for_test(
             owner.broker_route().unwrap(),
-            definition.record_kind.as_str(),
+            definition.resource_type.as_str(),
             committed.save(),
             workspace,
         )

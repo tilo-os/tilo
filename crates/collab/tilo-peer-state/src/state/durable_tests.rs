@@ -119,11 +119,11 @@ fn kept_pending() -> VecDeque<([u8; 32], NeighbourMsg, bool)> {
 
 /// One member's own record, kept with what it is.
 fn kept_document() -> DurableDocument {
-    let own = collab_types::OwnRecord::new("settings.root", [2; 32]).unwrap();
+    let own = collab_types::OwnResource::new("settings.root", [2; 32]).unwrap();
     DurableDocument {
         route: Route {
             app: "so.tilo.settings".into(),
-            record: own.record_id(),
+            record: own.document_id(),
         },
         bytes: b"\x85\x6f\x4a\x83".to_vec(),
         watermarks: vec![([3; 32], 4)],

@@ -65,7 +65,7 @@ pub const UNDO: &str = "undo";
 pub const RESTORE: &str = "restore";
 /// Undo the agent session a [`Range`] belongs to.
 pub const UNDO_SESSION: &str = "undo-session";
-/// Undo one record's share of that session ([`RecordQuery`]).
+/// Undo one record's share of that session ([`ResourceQuery`]).
 pub const UNDO_RECORD: &str = "undo-record";
 /// Open a [`Target`] in its app.
 pub const OPEN: &str = "open";
@@ -582,9 +582,9 @@ pub struct SessionRecord {
     pub record: String,
     /// The app it belongs to.
     pub app: String,
-    /// The record's own id, which [`RecordQuery`] names to undo just it.
+    /// The record's own id, which [`ResourceQuery`] names to undo just it.
     pub id: String,
-    /// The app's id, which [`RecordQuery`] names to undo just it.
+    /// The app's id, which [`ResourceQuery`] names to undo just it.
     pub app_id: String,
     /// What the session did to it, as a sentence.
     pub change: String,
@@ -597,7 +597,7 @@ pub struct SessionRecord {
 /// One record of an agent session, as [`UNDO_RECORD`] names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct RecordQuery {
+pub struct ResourceQuery {
     /// The session, by its range in the history.
     pub range: Range,
     /// The session, by the task it worked (`task:<id>`, or a Tasks issue's address), in place
@@ -795,7 +795,7 @@ pub struct SessionAction {
     /// What it did, as a sentence.
     pub summary: String,
     pub view: ActionView,
-    /// The app and record it changed, as [`RecordQuery`] names them to undo
+    /// The app and record it changed, as [`ResourceQuery`] names them to undo
     /// just this action.
     pub app_id: String,
     pub record: String,

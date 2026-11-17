@@ -1,6 +1,6 @@
 //! The Emoji tab: the workspace's own emoji, which every app of the workspace draws for `:name:` .
 //! They are one record of the workspace, kept by Chat ([`tilo_app::tilo_workspace_emoji::OWNER`])
-//! and opened here the way every app of the workspace opens it ([`WorkspaceRecord`]): in the store
+//! and opened here the way every app of the workspace opens it ([`WorkspaceResource`]): in the store
 //! this device's apps keep, as the person sitting here. Adding and removing are the record's own
 //! actions, decided by the workspace's grants on Chat's node — the decision the app windows and the
 //! action broker take — so the tab, the apps and the person's other devices hold the one record,
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_action_policy::Standing;
-use tilo_app::framework::WorkspaceRecord;
+use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
@@ -79,7 +79,7 @@ struct Open {
     /// opens the record again.
     policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
-    record: Option<WorkspaceRecord<Record>>,
+    record: Option<WorkspaceResource<Record>>,
 }
 
 /// What the tab drew at one frame.
@@ -223,7 +223,7 @@ impl Emoji {
         else {
             return false;
         };
-        let revision = open.record.as_ref().map_or(0, WorkspaceRecord::revision);
+        let revision = open.record.as_ref().map_or(0, WorkspaceResource::revision);
         let now = Seen {
             revision,
             version: self.version.get(),
@@ -237,7 +237,7 @@ impl Emoji {
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-    ) -> Option<WorkspaceRecord<Record>> {
+    ) -> Option<WorkspaceResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
         let author = ui::permissions::MemberId::person(person.clone());
@@ -257,7 +257,7 @@ impl Emoji {
         ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self.records.in_workspace(&workspace_id, author.clone());
-        let record = WorkspaceRecord::<Record>::open(
+        let record = WorkspaceResource::<Record>::open(
             &records,
             OWNER,
             SETTINGS_APP,
@@ -276,7 +276,7 @@ impl Emoji {
     /// How `person` may remove an emoji `added_by` added: their own by the plain removal, anyone's
     /// as a moderator, when the grants let them.
     fn would_remove(
-        record: &WorkspaceRecord<Record>,
+        record: &WorkspaceResource<Record>,
         added_by: &tilo_app::tilo_resource::MemberId,
         me: &tilo_app::tilo_resource::MemberId,
     ) -> Option<emoji_pane::Removal> {

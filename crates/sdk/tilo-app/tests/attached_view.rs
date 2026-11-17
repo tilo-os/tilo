@@ -9,7 +9,7 @@ use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
-use tilo_app::record::DocumentCheckout;
+use tilo_app::resource::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 
 use crate::kinds::{Tally, TallyApp};
@@ -29,7 +29,7 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
     AttachedView::open(
         definition,
         TEST_WORKSPACE,
-        DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person(AGENT),
         permissions,
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open_for(
             definition,
             TEST_WORKSPACE,
-            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
             app.read_document(|doc| doc.clone().save()),
             &agent,
             writer(),
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
                 app.read_document(|doc| doc.clone().save()),
                 &MemberId::person(AGENT),
                 PermissionContext::permissive(),
@@ -289,7 +289,7 @@ tilo_test_env::scenario! {
         let mut view = attached(&app, writer());
         view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
 
-        let taken = view.while_records_busy(AttachedView::take_changes).unwrap();
+        let taken = view.while_resources_busy(AttachedView::take_changes).unwrap();
         let error = taken.expect_err("a change that could not be collected is not 'nothing changed'");
         assert!(error.contains("could not be collected"), "{error}");
 
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
         app.invoke(Tally::BUMP.invoke()).unwrap();
         let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
 
-        let merged = view.while_records_busy(|view| view.merge(&theirs)).unwrap();
+        let merged = view.while_resources_busy(|view| view.merge(&theirs)).unwrap();
         assert!(merged.is_err(), "the peer's change waits");
         assert_eq!(count(&view), 0, "nothing of the peer's was merged");
 
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open(
             definition,
             TEST_WORKSPACE,
-            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
             app.read_document(|doc| doc.clone().save()),
             &MemberId::person(AGENT),
             PermissionContext::permissive(),
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
                 saved.clone(),
                 &MemberId::person(AGENT),
                 writer(),

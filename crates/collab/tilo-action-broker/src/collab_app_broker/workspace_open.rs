@@ -162,7 +162,7 @@ impl AppBrokerState {
         }
     }
 
-    /// `surface` was published on a record the app joined as `record_kind`.
+    /// `surface` was published on a record the app joined as `resource_type`.
     /// Once it offers that record, the `open` that started its connection is
     /// done, opened at the route that published: an app publishes while it
     /// starts too, before its view holds its record, and what a caller reads
@@ -171,10 +171,10 @@ impl AppBrokerState {
     pub(super) fn launch_published(
         &self,
         surface: &super::PublishedSurface,
-        record_kind: Option<&str>,
+        resource_type: Option<&str>,
     ) {
         let offers = |action: &super::PublishedAction| {
-            record_kind.is_none_or(|kind| action.resource_kind == kind)
+            resource_type.is_none_or(|kind| action.resource_kind == kind)
         };
         if !surface.actions.iter().any(offers) {
             return;

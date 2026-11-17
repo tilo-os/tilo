@@ -15,7 +15,7 @@ use super::{ChatApp, unread_mentions};
 /// The chat record `doc` holds, or nothing when it does not read. A record
 /// that does not read is not an empty chat: the framework says why in place
 /// of the view, and nothing is shown, introduced or marked read from it.
-fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
+fn read_resource(doc: &AutoCommit) -> Option<crate::record::Chat> {
     <crate::record::Chat as ui::tilo_resource::Resource>::read(doc).ok()
 }
 
@@ -76,7 +76,7 @@ impl ChatApp {
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         let Some(chat) =
-            ui::tilo_resource::profiling::measure("chat.reload.read", || read_record(doc))
+            ui::tilo_resource::profiling::measure("chat.reload.read", || read_resource(doc))
         else {
             return;
         };
@@ -378,7 +378,7 @@ impl ChatApp {
             return;
         }
         // The introduction waits for a record that reads.
-        let Some(chat) = read_record(doc) else {
+        let Some(chat) = read_resource(doc) else {
             return;
         };
         let Some(me) = self.announce.take() else {
@@ -413,7 +413,7 @@ impl ChatApp {
         if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
-        let Some(chat) = read_record(doc) else {
+        let Some(chat) = read_resource(doc) else {
             return;
         };
         self.mark_conversation_read(&chat);

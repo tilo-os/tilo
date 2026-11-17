@@ -731,7 +731,7 @@ impl Shell {
     /// Where the shell's record is kept on this device: the document a test reads back to prove a
     /// shell choice was persisted. `None` on a session that keeps no copy.
     #[must_use]
-    pub fn record_path(&self) -> Option<&std::path::Path> {
+    pub fn resource_path(&self) -> Option<&std::path::Path> {
         self.record_kept.path()
     }
 
@@ -769,7 +769,7 @@ impl Shell {
     ///
     /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
     /// in no plane of the person's.
-    pub(crate) fn sync_record(&self, personal: &tilo_peer_state::PersonalSync) {
+    pub(crate) fn sync_resource(&self, personal: &tilo_peer_state::PersonalSync) {
         let id = self.record_kept.id().to_owned();
         let app = self.app.as_str();
         // The store's revision, which moves when it takes a write from any of the person's devices,
@@ -1534,7 +1534,7 @@ impl crate::Session {
         // The record is the person's on every device of theirs: what they arranged here reaches
         // their others through their own store, and what they arranged there reaches this session.
         if let Some(personal) = personal {
-            shell.sync_record(personal);
+            shell.sync_resource(personal);
         }
     }
 
@@ -1694,7 +1694,7 @@ impl crate::Session {
     /// shell does not run or keeps no copy.
     #[must_use]
     pub fn shell_record_path(&self) -> Option<&std::path::Path> {
-        self.shell.as_ref().and_then(Shell::record_path)
+        self.shell.as_ref().and_then(Shell::resource_path)
     }
 
     /// The shell's own record as a setting's value, by the field's name in its type (`dock_edge`,

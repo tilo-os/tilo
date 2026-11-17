@@ -11,7 +11,7 @@
 //! load by applying each in turn.
 //!
 //! Counted here, for a guest that opens the chat as Chat does as it enters:
-//! - the writes the host sends it of the chat ([`Event::RecordOpened`]'s frames),
+//! - the writes the host sends it of the chat ([`Event::DocumentOpened`]'s frames),
 //! - the writes its replica takes in ([`tilo_session_client::arrivals`]),
 //! - the reads the page makes, once per batch of landings, as the page's replication reads,
 //! - the bytes of the whole read the page hands its windows (and its mentions, and its store).
@@ -41,7 +41,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -168,9 +168,9 @@ async fn guest_takes_in(
     for route in [chat, part] {
         page.send(Cmd::OpenRoute(route.clone())).unwrap();
     }
-    page.send(Cmd::OpenRecordAt(workspace_id, chat.clone()))
+    page.send(Cmd::OpenDocumentAt(workspace_id, chat.clone()))
         .unwrap();
-    page.send(Cmd::OpenRecordAt(workspace_id, head.clone()))
+    page.send(Cmd::OpenDocumentAt(workspace_id, head.clone()))
         .unwrap();
     let mut work = Work::default();
     let mut read_so_far: BTreeMap<String, (Vec<[u8; 32]>, AutoCommit)> = BTreeMap::new();
@@ -182,9 +182,9 @@ async fn guest_takes_in(
                 Event::Landed { route, .. } if route == *chat || route == *part => {
                     landed.insert(route.record.clone());
                 }
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     route: Some(route),
-                    answer: tilo_session_client::RecordAnswer::Sent { frames },
+                    answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } if route == *chat || route == head => {
                     work.sent.insert(route.record.clone(), frames);
@@ -209,18 +209,18 @@ async fn guest_takes_in(
                 continue;
             };
             match read {
-                RecordReading::Captured { bytes, heads, .. } => {
+                ResourceReading::Captured { bytes, heads, .. } => {
                     if record == part.record {
                         work.whole_read = bytes.len();
                     }
                     read_so_far.insert(record, (heads, AutoCommit::load(&bytes).unwrap()));
                 }
-                RecordReading::Changes { bytes, heads, .. } => {
+                ResourceReading::Changes { bytes, heads, .. } => {
                     let (kept, doc) = read_so_far.get_mut(&record).unwrap();
                     doc.load_incoming(&bytes).unwrap();
                     *kept = heads;
                 }
-                RecordReading::Unchanged(_) | RecordReading::Pending => {}
+                ResourceReading::Unchanged(_) | ResourceReading::Pending => {}
             }
         }
         let read_whole = |record: &str, keys: usize| {
@@ -278,7 +278,7 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
         record: String::new(),
     };
     let part = DocumentRoute {
-        record: neighbour_wire::record_part(CHAT_CHAIN, 0),
+        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
         ..chat.clone()
     };
 

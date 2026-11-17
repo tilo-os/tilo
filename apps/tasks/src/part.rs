@@ -940,14 +940,14 @@ mod tests;
 
 /// The chain the parts belong to, beside the tracker's own record.
 #[must_use]
-pub fn chain() -> ui::record::DocumentId {
-    ui::record::DocumentId::derived("issues", &ui::record::DocumentId::workspace_default())
+pub fn chain() -> ui::resource::DocumentId {
+    ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())
 }
 
 impl ui::framework::Chained for IssuePart {
     type Base = Tracker;
 
-    fn chain() -> ui::record::DocumentId {
+    fn chain() -> ui::resource::DocumentId {
         chain()
     }
 

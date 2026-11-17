@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
                     &Scope::FsPath("/".into()),
                     &Scope::Device("*".into()),
                     &Scope::NetHost("*".into()),
-                    &Scope::FsRecord("*".into()),
+                    &Scope::FsResource("*".into()),
                 ]
             );
             assert!(

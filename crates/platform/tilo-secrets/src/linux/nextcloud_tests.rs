@@ -70,7 +70,7 @@ impl Fixture {
         items: Vec<OwnedObjectPath>,
         session: OwnedObjectPath,
     ) -> Result<HashMap<OwnedObjectPath, WireSecret>, Error> {
-        let (item, reads) = self.record_read(items, &session);
+        let (item, reads) = self.resource_read(items, &session);
         match self.scenario.as_str() {
             "read-stale" if reads == 1 => {
                 return Err(Error::NoSession("restarted".into()));
@@ -116,7 +116,7 @@ impl Fixture {
         evidence.searches
     }
 
-    fn record_read(
+    fn resource_read(
         &self,
         items: Vec<OwnedObjectPath>,
         session: &OwnedObjectPath,

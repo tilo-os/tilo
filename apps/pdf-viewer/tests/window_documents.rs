@@ -7,8 +7,8 @@ use pdf_viewer::PdfViewerShell;
 use pdf_viewer::app::{PdfApp, WorkspaceDocument};
 use pdf_viewer::markup::PdfMarkup;
 
-fn markup_record(path: &str) -> ui::record::DocumentId {
-    ui::record::DocumentId::derived("annotations", &ui::record::DocumentId::for_file(path))
+fn markup_record(path: &str) -> ui::resource::DocumentId {
+    ui::resource::DocumentId::derived("annotations", &ui::resource::DocumentId::for_file(path))
 }
 
 fn paper(pages: usize, hash: [u8; 32], len: u64, name: &str) -> ui::tilo_resource::Doc {
@@ -41,7 +41,11 @@ fn apply(doc: &mut ui::tilo_resource::Doc, action: ui::tilo_resource::Invoke<Pdf
     *doc = std::mem::take(replica.doc_mut());
 }
 
-fn application_pdf() -> (&'static str, ui::record::DocumentId, ui::tilo_resource::Doc) {
+fn application_pdf() -> (
+    &'static str,
+    ui::resource::DocumentId,
+    ui::tilo_resource::Doc,
+) {
     (
         "application.pdf",
         markup_record("/papers/application.pdf"),
@@ -52,7 +56,7 @@ fn application_pdf() -> (&'static str, ui::record::DocumentId, ui::tilo_resource
 #[test]
 fn the_empty_reader_offers_the_workspaces_pdf_and_a_click_opens_it() {
     let (name, id, doc) = application_pdf();
-    let mut app = TestApp::<PdfViewerShell>::with_named_records(&mut [(name, id.clone(), doc)])
+    let mut app = TestApp::<PdfViewerShell>::with_named_resources(&mut [(name, id.clone(), doc)])
         .expect("a window on the workspace the paper is in");
     app.settle();
     assert!(
@@ -118,7 +122,7 @@ fn an_empty_workspace_keeps_the_empty_state_it_had() {
 fn capture_the_empty_state_with_and_without_the_workspaces_documents() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (name, id, doc) = application_pdf();
-    let mut with = TestApp::<PdfViewerShell>::with_named_records(&mut [
+    let mut with = TestApp::<PdfViewerShell>::with_named_resources(&mut [
         (name, id, doc),
         (
             "contract-2026.pdf",

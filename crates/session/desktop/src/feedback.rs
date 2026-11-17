@@ -7,7 +7,7 @@ use std::{cell::RefCell, rc::Rc};
 use tilo_desktop_model::{AppKind, GroupId, Layout, StripId, TabId, TileContent, WorkspaceId};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
-pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownRecord, Subject};
+pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownResource, Subject};
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
@@ -400,7 +400,7 @@ mod focus_tests {
         {
             use tilo_app::feedback::report::{Pick, ReportDraft};
             let notes = Subject {
-                record: Some(ShownRecord {
+                record: Some(ShownResource {
                     workspace: "w".into(),
                     record: "note-1".into(),
                 }),

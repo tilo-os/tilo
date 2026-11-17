@@ -8,7 +8,7 @@ use crate::peer::{
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery, Subscribed,
     Subscription, answered_as_replay, audit_subscriber_access, buffered_retention_prefix,
     commit_run_key, eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix,
-    handle_envelope, mpsc, resume_record, subscribe, trace_native_publication, unserved_private,
+    handle_envelope, mpsc, resume_document, subscribe, trace_native_publication, unserved_private,
 };
 use std::collections::VecDeque;
 
@@ -54,7 +54,8 @@ fn lag_resume(session: &SessionCtx<'_>, subscribed: &[WorkspaceId]) -> Option<En
             continue;
         }
         crate::timing::window("state.lag_resume", crate::timing::start());
-        if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
+        if let Some(Envelope::Position { position, .. }) =
+            resume_document(session, workspace_id, [])
         {
             return Some(Envelope::SubscribeFrom {
                 workspace_id,

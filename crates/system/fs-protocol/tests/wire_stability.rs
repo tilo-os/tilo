@@ -118,8 +118,8 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             source_name: "source.txt".into(),
             destination_parent,
             destination_name: "destination.txt".into(),
-            source_record: record(0x201),
-            replaced_record: record(0x202),
+            source_document: record(0x201),
+            replaced_document: record(0x202),
         },
         files,
     };
@@ -154,11 +154,11 @@ fn atomic_save_appends_wire_variants_without_renumbering_legacy_roles() {
         );
     }
     let operation = FileMutationOperation::AtomicSave {
-        parent_record: record(1),
+        parent_document: record(1),
         document_name: FileNameV1(b"document.txt".to_vec()),
         temporary_name: FileNameV1(b"temporary".to_vec()),
-        document_record: record(2),
-        temporary_record: record(3),
+        file_document: record(2),
+        temporary_document: record(3),
         prior_document_version: version(4),
     };
     let bytes = postcard::to_allocvec(&operation).unwrap();

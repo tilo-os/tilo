@@ -73,7 +73,7 @@ fn record(index: usize) -> (InstanceRecord, RouteSpec) {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(format!("person-{index}")),
     });
     let _ = manager.poll();

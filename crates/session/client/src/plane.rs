@@ -7,7 +7,7 @@
 use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::RecordAnswer;
+use tilo_relay_protocol::DocumentAnswer;
 
 /// A host's own transport of the plane: the client says `outgoing`, reads `arrived` and what became
 /// of what it asked a host for, and the transport holds the other ends.
@@ -174,23 +174,23 @@ pub enum Event {
         device: EndpointId,
         active: bool,
     },
-    /// A host of `ws` finished subscribing to this workspace. `records_when_opened`: it sends a
+    /// A host of `ws` finished subscribing to this workspace. `documents_when_opened`: it sends a
     /// device only the workspace's governance, its shared desktop and the heads of its chained
     /// records, and every other record once the device opens it.
     HostReady {
         ws: Topic,
         peer: EndpointId,
-        records_when_opened: bool,
+        documents_when_opened: bool,
     },
     /// A host of `ws` answered a record this device opened on `channel`: it sent everything it
     /// retains of it — none when the workspace has none of it — each landed before this, and its
     /// changes keep arriving from now on; or the record is another person's own, and nothing of it
     /// is sent. `route` names the record where the host carrying it opens records by route.
-    RecordOpened {
+    DocumentOpened {
         ws: Topic,
         channel: [u8; 32],
         route: Option<DocumentRoute>,
-        answer: RecordAnswer,
+        answer: DocumentAnswer,
     },
     /// A write to `route` landed in this device's replica of its workspace — `author`'s, or
     /// `None` when keys arrived that open what it held sealed: read it again from the
@@ -223,8 +223,8 @@ pub enum Event {
     /// one this device sent could not be delivered.
     Remote(crate::remote::Heard),
     /// A piece of content `ws`'s records reference, which `from` sent this device alone: a
-    /// postcard-encoded `NeighbourMsg::RecordContentPiece`.
-    RecordContent {
+    /// postcard-encoded `NeighbourMsg::DocumentContentPiece`.
+    DocumentContent {
         ws: Topic,
         from: [u8; 32],
         frame: Vec<u8>,
@@ -368,7 +368,7 @@ pub enum Cmd {
     Replay(Topic),
     /// Ask the hosts of the joined workspace on `ws` for the record on `channel`: what they hold of
     /// it, and their changes to it from then on; `own` names it this device's person's own record.
-    OpenRecord {
+    OpenDocument {
         ws: Topic,
         channel: [u8; 32],
         own: Option<tilo_relay_protocol::OwnedChannel>,
@@ -384,9 +384,9 @@ pub enum Cmd {
     /// governs it: a host first asked to govern it creates it unless it does.
     JoinPlaced(String, String),
     /// Open a route, an on-demand record of the joined workspace on the topic that a join does not
-    /// replay: its history lands, then [`Event::RecordOpened`], and it is opened again on every
+    /// replay: its history lands, then [`Event::DocumentOpened`], and it is opened again on every
     /// reconnect.
-    OpenRecordAt(Topic, DocumentRoute),
+    OpenDocumentAt(Topic, DocumentRoute),
     /// Take part in a route's encrypted channel: ask its members for access.
     OpenRoute(DocumentRoute),
     /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
@@ -404,7 +404,7 @@ pub enum Cmd {
     /// Send one remote-action frame to a device of the workspace on the topic.
     RemoteAction(Topic, [u8; 32], Vec<u8>),
     /// Ask the workspace on the topic for content its records reference: a postcard-encoded
-    /// `NeighbourMsg::RecordContentWant`. The pieces come back as [`Event::RecordContent`].
+    /// `NeighbourMsg::DocumentContentWant`. The pieces come back as [`Event::DocumentContent`].
     WantContent(Topic, Vec<u8>),
     /// Answer the members of the workspace on the topic that ask for content from what is kept.
     KeepContent(Topic, std::sync::Arc<dyn crate::content::Kept>),

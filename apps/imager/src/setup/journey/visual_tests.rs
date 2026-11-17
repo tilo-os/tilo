@@ -2879,9 +2879,9 @@ fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
                 report.view_error
             );
             assert!(
-                report.record_error.is_none(),
+                report.resource_error.is_none(),
                 "{scenario}: record close: {:?}",
-                report.record_error
+                report.resource_error
             );
             assert!(
                 report.teardown_error.is_none(),
@@ -2913,9 +2913,9 @@ fn image_writer_progress_capture_closes_through_the_canonical_lifecycle() {
             report.view_error
         );
         assert!(
-            report.record_error.is_none(),
+            report.resource_error.is_none(),
             "writer progress record: {:?}",
-            report.record_error
+            report.resource_error
         );
         assert!(
             report.teardown_error.is_none(),

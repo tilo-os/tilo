@@ -1228,7 +1228,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
                 "`{mode}` is not a focus mode; `{FOCUS_DO_NOT_DISTURB}` and `{FOCUS_SCHEDULE}` are"
             ))
         }
-        TriggerSpec::RecordChanged { kind, .. } if kind.trim().is_empty() => {
+        TriggerSpec::ResourceChanged { kind, .. } if kind.trim().is_empty() => {
             Err("a record trigger names the record kind it watches".into())
         }
         TriggerSpec::AppEvent { app_id, .. } if app_id.trim().is_empty() => {
@@ -1245,7 +1245,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::WorkspaceJoined { .. }
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
-        | TriggerSpec::RecordChanged { .. }
+        | TriggerSpec::ResourceChanged { .. }
         | TriggerSpec::IncomingMessage { .. }
         | TriggerSpec::AppEvent { .. } => Ok(()),
         other => Err(format!(
@@ -1585,7 +1585,7 @@ mod tests {
         {
             use tilo_automation::ActorFilter;
             assert!(
-                validate_trigger(&TriggerSpec::RecordChanged {
+                validate_trigger(&TriggerSpec::ResourceChanged {
                     kind: "chat.workspace".into(),
                     actions: vec![],
                     fields: vec![],
@@ -1601,7 +1601,7 @@ mod tests {
                 .is_ok()
             );
             assert!(
-                validate_trigger(&TriggerSpec::RecordChanged {
+                validate_trigger(&TriggerSpec::ResourceChanged {
                     kind: " ".into(),
                     actions: vec![],
                     fields: vec![],

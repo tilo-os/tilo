@@ -74,7 +74,7 @@ pub(crate) fn messages(doc: &Workspace, channel: &str) -> Vec<Message> {
 }
 
 /// The parts of the chat's messages a mount's store holds.
-pub(crate) fn stored_messages(records: &ui::record::RecordStore) -> crate::messages::Messages {
+pub(crate) fn stored_messages(records: &ui::resource::ResourceStore) -> crate::messages::Messages {
     use ui::tilo_resource::Resource as _;
     crate::messages::Messages::new(
         records
@@ -93,10 +93,10 @@ pub(crate) fn stored_messages(records: &ui::record::RecordStore) -> crate::messa
 }
 
 /// The messages of `channel` a mount's store holds, oldest first.
-pub(crate) fn messages_in(records: &ui::record::RecordStore, channel: &str) -> Vec<Message> {
+pub(crate) fn messages_in(records: &ui::resource::ResourceStore, channel: &str) -> Vec<Message> {
     let chat = records
         .read(
-            &ui::record::DocumentId::package_primary(),
+            &ui::resource::DocumentId::package_primary(),
             crate::projection::read,
         )
         .unwrap_or_default();
@@ -104,7 +104,7 @@ pub(crate) fn messages_in(records: &ui::record::RecordStore, channel: &str) -> V
 }
 
 /// How many top-level messages of `channel` a mount's store holds.
-pub(crate) fn top_level_in(records: &ui::record::RecordStore, channel: &str) -> usize {
+pub(crate) fn top_level_in(records: &ui::resource::ResourceStore, channel: &str) -> usize {
     stored_messages(records).top_level(&Id::from_raw(channel))
 }
 

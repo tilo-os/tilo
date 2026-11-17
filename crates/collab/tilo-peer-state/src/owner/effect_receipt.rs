@@ -275,7 +275,7 @@ impl NativeWorkspaceOwner {
             }
             Ok(receipt)
         })?;
-        self.publish_record(workspace, &candidate, record, None)?;
+        self.publish_document(workspace, &candidate, record, None)?;
         Ok(receipt)
     }
 }

@@ -1264,7 +1264,7 @@ fn notes(
         let channel = tilo_action_broker::route::CrdtRoute {
             app_id: NOTES_APP.into(),
             cluster_id: workspace.into(),
-            record_id: collab_types::person_record_id(NOTEBOOK),
+            document_id: collab_types::person_document_id(NOTEBOOK),
         }
         .channel_key();
         let mine = client

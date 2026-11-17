@@ -16,7 +16,7 @@ use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::Caller;
 use tilo_relay_protocol::WorkspaceId;
 
-use super::{AppCatalogue, DocumentRoute, WorkspaceRecordsLink, reads};
+use super::{AppCatalogue, DocumentRoute, WorkspaceDocumentsLink, reads};
 
 /// Prepared reads kept at most: each is a worker process.
 const KEPT: usize = 8;
@@ -52,7 +52,7 @@ impl CanonicalReads {
     pub(super) fn operations(
         &mut self,
         catalogue: &AppCatalogue,
-        link: &dyn WorkspaceRecordsLink,
+        link: &dyn WorkspaceDocumentsLink,
         (workspace, caller): (WorkspaceId, &Caller),
         route: &DocumentRoute,
         heads: Option<&[[u8; 32]]>,

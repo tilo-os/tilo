@@ -14,8 +14,8 @@
 //! page), a scratch directory, blobs in the content store, versions of the
 //! resource written by other people at other times, and members shown
 //! where they are in it. Views read the values with
-//! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
-//! [`RecordEnv::fixture`](super::RecordEnv::fixture).
+//! [`ResourceEnv::fixture`](super::ResourceEnv::fixture), surfaces with
+//! [`ResourceEnv::fixture`](super::ResourceEnv::fixture).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -100,7 +100,7 @@ pub(crate) struct Run {
 #[derive(Default)]
 pub(crate) struct Launched {
     /// The record selected by the host for this launch.
-    pub(crate) record: Option<ui_core::record::DocumentId>,
+    pub(crate) record: Option<ui_core::resource::DocumentId>,
     pub(crate) arguments: Vec<String>,
     pub(crate) options: Vec<ui_core::application::LaunchOption>,
     pub(crate) file: Option<ui_core::application::OpenFile>,
@@ -304,7 +304,7 @@ struct Version<R: Resource> {
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
     /// The member the capture's window reads as
-    /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
+    /// ([`ResourceEnv::me`](super::ResourceEnv::me)), for a scene with
     /// something of their own in it.
     person: tilo_resource::MemberId,
     values: HashMap<TypeId, Rc<dyn Any>>,
@@ -343,7 +343,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// Who the capture's window is for: the member the view reads as
-    /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
+    /// its own ([`ResourceEnv::me`](super::ResourceEnv::me)). A scene that holds
     /// something of the person's own — a seat at the table, an issue
     /// assigned to them — stages it for them.
     pub fn person(&self) -> &tilo_resource::MemberId {
@@ -358,7 +358,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// Stand `value` in for what another provider's action at `target`
-    /// answers: a view's [`RecordEnv::query`](super::RecordEnv::query) of
+    /// answers: a view's [`ResourceEnv::query`](super::ResourceEnv::query) of
     /// it reads `value`, as the action's result, in this capture.
     pub fn answer(
         &mut self,
@@ -395,7 +395,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// The content store the capture's views read from
-    /// ([`RecordEnv::content`](super::RecordEnv::content)), for the blobs a scene
+    /// ([`ResourceEnv::content`](super::ResourceEnv::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
     pub fn content(&mut self) -> &tilo_content::ContentStore {

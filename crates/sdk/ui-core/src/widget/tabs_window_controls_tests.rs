@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
         let (width, height) = text.measure_style("DuckDuckGo", None, &style);
         let x = title_x0(pill, ICON_W + ICON_GAP);
         let y = pill.center().y - f64::from(height) / 2.0;
-        b.record_label(
+        b.resource_label(
             "TabTitle",
             "DuckDuckGo",
             Rect::new(x, y, x + f64::from(width), y + f64::from(height)),

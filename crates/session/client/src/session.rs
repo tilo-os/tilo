@@ -169,7 +169,7 @@ enum Command {
 enum Sealing {
     Sealed(Vec<u8>),
     /// This device holds no keys for the record yet.
-    NoKeys(tilo_relay_protocol::live::LiveRecord),
+    NoKeys(tilo_relay_protocol::live::LiveResource),
     /// Names no record, or does not seal: never sent.
     Dropped,
 }
@@ -613,11 +613,11 @@ impl Task {
             }
             Envelope::Ready {
                 workspace_id,
-                records_when_opened,
+                documents_when_opened,
                 ..
             } => {
-                if *records_when_opened {
-                    self.records_when_opened(*workspace_id, Some(client));
+                if *documents_when_opened {
+                    self.documents_when_opened(*workspace_id, Some(client));
                 }
                 self.announce(client, *workspace_id)
             }
@@ -731,7 +731,7 @@ impl Task {
         match self
             .replicas
             .owner()
-            .compact_record(
+            .compact_document(
                 workspace,
                 (&route.app_id, &route.record),
                 self.signer.as_ref(),
@@ -1466,7 +1466,7 @@ impl Task {
         let Some(client) = client else {
             return;
         };
-        let _ = client.send(Envelope::RecordContentWant {
+        let _ = client.send(Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: self.config.cert.device_public_key,
             frame: request,
@@ -1518,8 +1518,8 @@ impl Task {
                     true
                 }
             }
-            Command::Client(Cmd::OpenRecordAt(workspace_id, route)) => {
-                self.open_record(workspace_id, route, client)
+            Command::Client(Cmd::OpenDocumentAt(workspace_id, route)) => {
+                self.open_resource(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Command::PlaneJoined(workspace_id, joined) => {
@@ -1686,7 +1686,7 @@ impl Task {
         let (Some(client), Ok(frame)) = (client, postcard::to_allocvec(msg)) else {
             return;
         };
-        let _ = client.send(Envelope::RecordContent {
+        let _ = client.send(Envelope::DocumentContent {
             workspace_id,
             to_device_public_key: *target.as_bytes(),
             from_device_public_key: self.config.cert.device_public_key,
@@ -1957,7 +1957,7 @@ impl Task {
         let Ok(workspace_id) = route.workspace_id() else {
             return;
         };
-        let record = tilo_relay_protocol::live::LiveRecord {
+        let record = tilo_relay_protocol::live::LiveResource {
             app: route.app_id.clone(),
             record: route.record.clone(),
         };
@@ -1977,7 +1977,7 @@ impl Task {
             return Sealing::Dropped;
         };
         let keys = self.keyed_routes().find_map(|route| {
-            let names = tilo_relay_protocol::live::LiveRecord {
+            let names = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
@@ -2005,7 +2005,7 @@ impl Task {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_relay_protocol::live::LiveRecord {
+            let record = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
@@ -2036,7 +2036,7 @@ impl Task {
     /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
     /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
     fn content_wanted(&self, envelope: &Envelope, client: &RelayClient) -> bool {
-        let Envelope::RecordContentWant {
+        let Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: from,
             frame,
@@ -2053,7 +2053,7 @@ impl Task {
                 kept.read(app, workspace, hash)
             });
         for piece in pieces {
-            let _ = client.send(Envelope::RecordContent {
+            let _ = client.send(Envelope::DocumentContent {
                 workspace_id: *workspace_id,
                 to_device_public_key: *from,
                 from_device_public_key: device,

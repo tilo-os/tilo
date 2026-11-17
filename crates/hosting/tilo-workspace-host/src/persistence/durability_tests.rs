@@ -713,7 +713,7 @@ async fn a_failed_group_barrier_fails_every_commit_it_covers() {
 
 /// Leave `index`'s record as a power loss may: `cut` truncates it, else it
 /// is gone. Returns its path.
-fn lose_record(store: &WorkspaceStore, ordinal: u64, cut: bool) -> std::path::PathBuf {
+fn lose_document(store: &WorkspaceStore, ordinal: u64, cut: bool) -> std::path::PathBuf {
     let path = active_generation(store).join(format!("{ordinal:016x}.delta"));
     if cut {
         std::fs::OpenOptions::new()
@@ -741,8 +741,8 @@ fn opening_the_store_restores_grouped_records_a_crash_lost() {
     state.group.flush().unwrap();
     // Their files were never synced: a power loss may leave them missing
     // or empty, with the journal's barrier holding.
-    let cut = lose_record(&state.store, 2, true);
-    lose_record(&state.store, 4, false);
+    let cut = lose_document(&state.store, 2, true);
+    lose_document(&state.store, 4, false);
     // A torn append of a group whose commits were never acknowledged.
     let journal = active_generation(&state.store).join(crate::store::retained::journal::JOURNAL);
     let mut torn = std::fs::read(&journal).unwrap();

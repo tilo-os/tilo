@@ -43,7 +43,7 @@ async fn checkout_channel(
         peer_id: peer,
         connection_id: peer,
         verified_identity: identity,
-        record_kind: None,
+        resource_type: None,
         route_access: RouteAccess::Own,
         lease: Some(Rc::new(ConnectionLease {
             local_media: local.clone(),
@@ -98,8 +98,8 @@ async fn certified_native_checkout_uses_actual_registered_route_and_rejects_wron
                     start,
                 )
                 .unwrap();
-            assert_eq!(root.record_id, workspace.route.record_id);
-            assert_ne!(root.record_id, "derived:default@tab:0000000000000049");
+            assert_eq!(root.document_id, workspace.route.document_id);
+            assert_ne!(root.document_id, "derived:default@tab:0000000000000049");
             for (app, cluster, instance, process, began) in [
                 (
                     "foreign",
@@ -198,7 +198,7 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                         .unwrap()
                         .get_mut(&71)
                         .unwrap()
-                        .record_id = "different-current-record".into();
+                        .document_id = "different-current-record".into();
                 }
                 let (pid, start) = checkout_process();
                 assert!(
@@ -259,7 +259,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 peer_id: peer,
                 connection_id: peer,
                 verified_identity: identity,
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::ReadOnly,
                 lease: None,
                 _hold: None,
@@ -267,11 +267,11 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
             let route = &workspace.route;
             let op = collab_types::SignedOp::new_unsigned(
                 b"any op".to_vec(),
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::Ed25519PublicKey::from_bytes(
                     workspace.key.verifying_key().to_bytes(),
                 ),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,

@@ -20,7 +20,7 @@ use tilo_desktop_model::WorkspaceId;
 
 use super::journal;
 use super::record::{StoredPendingEnrollment, StoredWorkspace};
-use super::{Change, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, limits::preflight_record};
+use super::{Change, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, limits::preflight_document};
 
 /// The index's place among the parts.
 const INDEX_NAME: &str = "index";
@@ -272,7 +272,7 @@ impl Journaled {
         revision: u64,
         stored: &StoredWorkspace,
     ) -> Result<(), String> {
-        preflight_record(stored, MAX_AUTHORITY_BYTES).map_err(|error| error.to_string())?;
+        preflight_document(stored, MAX_AUTHORITY_BYTES).map_err(|error| error.to_string())?;
         let snapshot = serde_json::to_vec(stored).map_err(|error| error.to_string())?;
         let name = snapshot_name(workspace, revision);
         let log = journal_name(workspace, revision);
@@ -407,7 +407,7 @@ mod tests {
         Ok(cert)
     }
 
-    fn workspace_record(
+    fn workspace_resource(
         workspace: WorkspaceId,
         peer: &[u8],
         revision: u64,
@@ -466,7 +466,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let workspace = WorkspaceId::from_u128(7);
         let parts = Memory::default();
-        let first = workspace_record(workspace, b"page-one", 1)?;
+        let first = workspace_resource(workspace, b"page-one", 1)?;
         let mut journaled = Journaled::start(&first);
         journaled.publish(
             &parts,
@@ -490,7 +490,7 @@ mod tests {
             "nothing to append yet",
         )?;
 
-        let second = workspace_record(workspace, b"page-onepage-two", 2)?;
+        let second = workspace_resource(workspace, b"page-onepage-two", 2)?;
         *parts.appended.lock().map_err(|error| error.to_string())? = 0;
         let replaced_before = parts
             .replaced
@@ -530,7 +530,7 @@ mod tests {
         )?;
         check(reopened.revision() == 2, "the revision was kept")?;
 
-        let third = workspace_record(workspace, b"page-onepage-twopage-three", 3)?;
+        let third = workspace_resource(workspace, b"page-onepage-twopage-three", 3)?;
         *parts.appended.lock().map_err(|error| error.to_string())? = 0;
         reopened_journal.publish(
             &parts,
@@ -557,7 +557,7 @@ mod tests {
     fn a_released_workspace_leaves_no_part_behind() -> Result<(), Box<dyn std::error::Error>> {
         let workspace = WorkspaceId::from_u128(9);
         let parts = Memory::default();
-        let record = workspace_record(workspace, b"page", 1)?;
+        let record = workspace_resource(workspace, b"page", 1)?;
         let mut journaled = Journaled::start(&record);
         journaled.publish(
             &parts,

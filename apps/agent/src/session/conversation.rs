@@ -168,7 +168,7 @@ impl Session {
     /// what it did in its app's words (what the action declares it did, or
     /// its label, with the title of what it acted on: "Showed on the canvas: All inboxes"),
     /// and what came of it.
-    pub(super) fn record_action(
+    pub(super) fn resource_action(
         &mut self,
         run: &Asked,
         action: &TaskAction,

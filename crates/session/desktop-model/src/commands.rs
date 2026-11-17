@@ -333,7 +333,7 @@ mod decimal {
 #[serde(rename_all = "camelCase")]
 pub struct OpenedWindow {
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     #[serde(with = "decimal")]
     pub strip: u64,
     #[serde(with = "decimal")]
@@ -1267,7 +1267,7 @@ mod command_id_tests {
                 5,
                 vec![OpenedWindow {
                     app_id: "so.tilo.notes".into(),
-                    record_id: "r".into(),
+                    document_id: "r".into(),
                     strip: u64::MAX,
                     group: 2,
                     tab: 3,

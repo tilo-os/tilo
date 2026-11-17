@@ -268,12 +268,12 @@ impl HistoryHost {
         self.name_draft_for = None;
         self.toolbar_dirty = true;
         let request = crate::GroupNameRequest {
-            record_id: self.selected_name().map(|named| named.id.clone()),
+            document_id: self.selected_name().map(|named| named.id.clone()),
             start,
             end,
             label: self.name_draft.get().trim().to_owned(),
         };
-        if request.label.is_empty() && request.record_id.is_none() {
+        if request.label.is_empty() && request.document_id.is_none() {
             return false;
         }
         self.write_selected(

@@ -1099,7 +1099,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // A record a device serves whoever has it open (a host serving its
         // workspace's records) is the app, live, as a window of it is.
         let is_window = |provider: &str| {
-            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_record_provider(provider)
+            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_resource_provider(provider)
         };
         let ids_where = |window: bool| {
             running
@@ -1813,7 +1813,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// whose resource no record provider answers leaves the last one named:
     /// the agent still acts there.
     fn acted_in(&self, resolved: &Resolved) {
-        let Some((app, record)) = tilo_actions::remote::record_parts(&resolved.provider) else {
+        let Some((app, record)) = tilo_actions::remote::resource_parts(&resolved.provider) else {
             return;
         };
         if app != resolved.app_id {
@@ -1980,7 +1980,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 entries.push((line, Some(row)));
             }
             let (mut lines, mut rows) = (Vec::new(), Vec::new());
-            (self.other_records(&parsed, &resolved, (&mut lines, &mut rows))).await;
+            (self.other_resources(&parsed, &resolved, (&mut lines, &mut rows))).await;
             entries.extend(lines.into_iter().zip(rows.into_iter().map(Some)));
         }
         if want_actions {
@@ -2110,7 +2110,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // and has no window.
             let windowed = running.iter().any(|(provider, app)| {
                 (provider.parse::<u64>().is_ok()
-                    || tilo_actions::remote::is_record_provider(provider))
+                    || tilo_actions::remote::is_resource_provider(provider))
                     && app["app_id"].as_str() == Some(app_id)
             });
             let name = app_names(std::slice::from_ref(app_id)).join("");
@@ -2183,7 +2183,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
-        if let Some((app, record)) = tilo_actions::remote::record_parts(&args.path) {
+        if let Some((app, record)) = tilo_actions::remote::resource_parts(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
             return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
         }
@@ -2859,7 +2859,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                         value
                             .pointer("/update/output/value/provider")
                             .and_then(Value::as_str)
-                            .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                            .filter(|provider| tilo_actions::remote::is_resource_provider(provider))
                             .map(str::to_owned)
                     })
                     .ok_or_else(|| format!("{app_id} started, but named no instance of it"))

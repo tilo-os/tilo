@@ -57,8 +57,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@29"
-tilo-fs = "optional@29"
+collab = "optional@30"
+tilo-fs = "optional@30"
 shell-ui   = "optional@34"
 
 [entrypoint]

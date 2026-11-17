@@ -23,7 +23,7 @@ use ui::tilo_actions::remote::{
     ResourceViewLocator,
 };
 use ui::tilo_actions::{InvocationId, InvocationUpdate, ResourceSpec};
-use ui::tilo_reference::link::{AppId, Link, Mode, RecordSegment, Scope, WebEntries, WebEntry};
+use ui::tilo_reference::link::{AppId, Link, Mode, ResourceSegment, Scope, WebEntries, WebEntry};
 use ui::{RemoteActions, RemoteActionsGuard};
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
@@ -341,7 +341,7 @@ fn a_sessions_link_parses_back_to_that_run() {
     assert_eq!(target.app, Some(AppId::new(App::ID)), "{url}");
     assert_eq!(
         target.record,
-        Some(RecordSegment::new(app.record().as_str()).unwrap()),
+        Some(ResourceSegment::new(app.record().as_str()).unwrap()),
         "{url}"
     );
     let resource = target.resource.as_ref().expect("the run's address");

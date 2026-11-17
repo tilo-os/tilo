@@ -1152,28 +1152,28 @@ fn an_import_naming_no_record_goes_only_to_a_blank_record_the_task_made() {
     running.touched.push(theirs.clone());
     let open = [other.clone(), theirs.clone()];
     assert_eq!(
-        running.record_for(&import, &open, none_blank, none_foreign),
+        running.document_for(&import, &open, none_blank, none_foreign),
         None,
         "a new record"
     );
     assert_eq!(
-        running.record_for(&append, &open, none_blank, none_foreign),
+        running.document_for(&append, &open, none_blank, none_foreign),
         Some(theirs.clone())
     );
     let fresh = Running::new("t2".into(), "x".into(), Vec::new(), Vec::new());
     assert_eq!(
-        fresh.record_for(&append, &open, none_blank, none_foreign),
+        fresh.document_for(&append, &open, none_blank, none_foreign),
         Some(other.clone())
     );
     // Another member's written document is passed over, whether the
     // task acted on it or only has it open.
     let theirs_foreign = |route: &DocumentRoute| *route == theirs;
     assert_eq!(
-        running.record_for(&append, &open, none_blank, theirs_foreign),
+        running.document_for(&append, &open, none_blank, theirs_foreign),
         Some(other.clone())
     );
     assert_eq!(
-        running.record_for(
+        running.document_for(
             &append,
             std::slice::from_ref(&theirs),
             none_blank,
@@ -1184,7 +1184,7 @@ fn an_import_naming_no_record_goes_only_to_a_blank_record_the_task_made() {
     );
     let other_blank = |route: &DocumentRoute| *route == other;
     assert_eq!(
-        fresh.record_for(&append, &open, other_blank, none_foreign),
+        fresh.document_for(&append, &open, other_blank, none_foreign),
         Some(theirs.clone()),
         "a written record before a blank one"
     );
@@ -1193,17 +1193,17 @@ fn an_import_naming_no_record_goes_only_to_a_blank_record_the_task_made() {
     let mine_blank = |route: &DocumentRoute| *route == mine;
     running.made.push(mine.clone());
     assert_eq!(
-        running.record_for(&import, &open, mine_blank, none_foreign),
+        running.document_for(&import, &open, mine_blank, none_foreign),
         Some(mine.clone()),
         "the blank record the host opened for the task"
     );
     assert_eq!(
-        running.record_for(&import, &open, none_blank, none_foreign),
+        running.document_for(&import, &open, none_blank, none_foreign),
         None,
         "the task's record holds content: a new one"
     );
     assert_eq!(
-        running.record_for(&append, &open, none_blank, none_foreign),
+        running.document_for(&append, &open, none_blank, none_foreign),
         Some(mine.clone())
     );
     assert!(running.holds(&mine) && running.holds(&theirs) && !running.holds(&other));

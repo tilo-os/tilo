@@ -98,7 +98,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
         .unwrap();
     assert_eq!(created.len(), 2);
     assert!(
-        matches!(&created[1], NeighbourMsg::AppDocument { app_id, record_id, envelope, .. } if app_id == "new.app" && record_id == "new-record" && matches!(collab_types::DocumentMutation::decode(&envelope.payload).unwrap(), collab_types::DocumentMutation::Snapshot(_)))
+        matches!(&created[1], NeighbourMsg::AppDocument { app_id, document_id, envelope, .. } if app_id == "new.app" && document_id == "new-record" && matches!(collab_types::DocumentMutation::decode(&envelope.payload).unwrap(), collab_types::DocumentMutation::Snapshot(_)))
     );
     tail.extend(created);
     let mut fresh = StatePeer::new(

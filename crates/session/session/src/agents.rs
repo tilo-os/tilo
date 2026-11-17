@@ -18,13 +18,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{Standing, WorkspacePolicy};
-use tilo_app::framework::WorkspaceRecord;
+use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::workspace::WorkspaceResources;
 
 /// How this session names a record it opened, where the record's history is told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
@@ -104,9 +104,9 @@ struct Opened {
     /// The grants the record was opened with: a workspace whose grants changed has it opened again,
     /// so its people's reads follow.
     policy: WorkspacePolicy,
-    records: WorkspaceRecords,
+    records: WorkspaceResources,
     /// `None` until it opens: the workspace's agents record, opened once and kept.
-    record: Option<WorkspaceRecord<Record>>,
+    record: Option<WorkspaceResource<Record>>,
 }
 
 /// What a workspace's record of its agents is to a reader this pass.
@@ -115,7 +115,7 @@ enum Held {
     None,
     /// The record could not be opened or read now: what it says is not known this pass.
     Unknown,
-    Open(WorkspaceRecord<Record>),
+    Open(WorkspaceResource<Record>),
 }
 
 impl Agents {
@@ -297,7 +297,7 @@ impl Agents {
         });
         if opened.record.is_none() {
             let id = collab_types::workspace_document_id(KIND);
-            match opened.records.holds_record(OWNER, &id, KIND) {
+            match opened.records.holds_resource(OWNER, &id, KIND) {
                 Ok(false) => return Held::None,
                 Ok(true) => {}
                 Err(error) => {
@@ -310,7 +310,7 @@ impl Agents {
                 person.to_owned(),
             ))
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-            opened.record = WorkspaceRecord::<Record>::open(
+            opened.record = WorkspaceResource::<Record>::open(
                 &opened.records,
                 OWNER,
                 SESSION_APP,

@@ -138,7 +138,7 @@ pub(crate) struct Collaboration<'a> {
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
     /// The records' content in search's index, read from the records.
-    pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
+    pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     /// The programs agents write in this session's tasks, run by it.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions, offered to a turn's agent as the broker's steps.
@@ -330,7 +330,7 @@ pub(crate) fn start_action_plane(
             agent_sessions: seams.agent_sessions,
             sealed,
             own_device,
-            record_content: content,
+            document_content: content,
             action_offload,
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its collaboration plane holds.

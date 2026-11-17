@@ -77,9 +77,9 @@ pub(super) async fn admit_person(
 
 /// The ids of the messages `page` holds in the parts of its chat's messages.
 pub(super) fn message_ids(page: &super::Replica) -> Vec<String> {
-    page.records_beside()
+    page.resources_beside()
         .iter()
-        .filter_map(|record| page.read_record(record, chat::messages::read_part))
+        .filter_map(|record| page.read_resource(record, chat::messages::read_part))
         .flat_map(|part| {
             part.messages
                 .ids()
@@ -98,7 +98,10 @@ pub(super) fn on_messages(
 ) -> String {
     let before = message_ids(page);
     page.invoke(
-        &super::ActionAddress::new(ui::record::chain_resource_id(&chat::parts::chain()), action),
+        &super::ActionAddress::new(
+            ui::resource::chain_resource_id(&chat::parts::chain()),
+            action,
+        ),
         arguments.as_object().unwrap(),
         false,
     )
@@ -135,7 +138,10 @@ pub(super) fn published_message(page: &super::Replica, message: &str) -> (String
 }
 
 /// The route of `record`, one of the chat's message parts, in `workspace`.
-pub(super) fn part_route(workspace: &str, record: &ui::record::DocumentId) -> super::DocumentRoute {
+pub(super) fn part_route(
+    workspace: &str,
+    record: &ui::resource::DocumentId,
+) -> super::DocumentRoute {
     super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_owned(),

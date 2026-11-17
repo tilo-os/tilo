@@ -13,7 +13,7 @@ pub struct Landing {
     /// Whether the file lands in a record of its own: the app opens one
     /// first, and its import fills it. An app that keeps many files in the
     /// record it already has says no.
-    pub own_record: bool,
+    pub own_resource: bool,
     /// What the action is handed of the file.
     pub takes: Takes,
 }
@@ -50,37 +50,37 @@ pub const HEAD_BYTES: usize = 8 * 1024;
 const PDF: Landing = Landing {
     app: "pdf-viewer",
     action: "import-pdf-content",
-    own_record: true,
+    own_resource: true,
     takes: Takes::ContentNamed,
 };
 const WRITER: Landing = Landing {
     app: "word-processor",
     action: "import-docx-content",
-    own_record: true,
+    own_resource: true,
     takes: Takes::ContentNamed,
 };
 const SHEETS: Landing = Landing {
     app: "sheets",
     action: "import-xlsx-content",
-    own_record: true,
+    own_resource: true,
     takes: Takes::ContentTitled,
 };
 const SLIDES: Landing = Landing {
     app: "slides",
     action: "import-pptx-content",
-    own_record: true,
+    own_resource: true,
     takes: Takes::Content,
 };
 const PHOTOS: Landing = Landing {
     app: "photos",
     action: "import-photo",
-    own_record: false,
+    own_resource: false,
     takes: Takes::Image,
 };
 const NOTES: Landing = Landing {
     app: "notes",
     action: "import-markdown-content",
-    own_record: false,
+    own_resource: false,
     takes: Takes::Text,
 };
 

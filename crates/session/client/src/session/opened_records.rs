@@ -1,8 +1,8 @@
 //! The records this session opened: those a workspace sends a device only
-//! once it asks ([`Task::open_record`]), and the host's answer that it sent
-//! all it holds of one ([`Task::record_opened`]). In a workspace that sends
+//! once it asks ([`Task::open_resource`]), and the host's answer that it sent
+//! all it holds of one ([`Task::resource_opened`]). In a workspace that sends
 //! every record when opened (a public one), each route this session opens
-//! is asked for that way ([`Task::records_when_opened`]).
+//! is asked for that way ([`Task::documents_when_opened`]).
 
 use super::{DocumentRoute, Envelope, RelayClient, Task};
 use tilo_relay_protocol::WorkspaceId;
@@ -11,7 +11,7 @@ impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
     /// keys at the same time. Returns `false` when the session could not
     /// take the request.
-    pub(super) fn open_record(
+    pub(super) fn open_resource(
         &mut self,
         workspace_id: WorkspaceId,
         route: DocumentRoute,
@@ -21,8 +21,8 @@ impl Task {
         // A chain's head names a part and holds nothing of its own: the
         // part's keys are asked for as it arrives, like a replayed head's.
         if !matches!(
-            neighbour_wire::record_sync(&route.record),
-            neighbour_wire::RecordSync::ChainHead { .. }
+            neighbour_wire::document_sync(&route.record),
+            neighbour_wire::DocumentSync::ChainHead { .. }
         ) {
             self.open_channel(&route);
         }
@@ -30,7 +30,7 @@ impl Task {
         self.opened_records.insert(channel, (workspace_id, route));
         client.is_none_or(|client| {
             client
-                .send(Envelope::OpenRecord {
+                .send(Envelope::OpenDocument {
                     workspace_id,
                     channel,
                     own,
@@ -39,7 +39,7 @@ impl Task {
         })
     }
 
-    /// Open `route` as a record ([`Self::open_record`]) unless this session
+    /// Open `route` as a record ([`Self::open_resource`]) unless this session
     /// opened it already; the shared desktop is replayed to every device
     /// and is never asked for.
     pub(super) fn open_record_once(
@@ -51,16 +51,16 @@ impl Task {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
         if self.opened_records.contains_key(&channel)
             || (route.app_id == tilo_desktop_model::ownership::DESKTOP_APP
-                && route.record == tilo_desktop_model::ownership::DESKTOP_RECORD)
+                && route.record == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
         {
             return true;
         }
-        self.open_record(workspace_id, route.clone(), client)
+        self.open_resource(workspace_id, route.clone(), client)
     }
 
     /// `workspace_id`'s host said it sends records only when they are opened
     /// (its `Ready`): every route opened in it so far is opened as a record.
-    pub(super) fn records_when_opened(
+    pub(super) fn documents_when_opened(
         &mut self,
         workspace_id: WorkspaceId,
         client: Option<&RelayClient>,
@@ -98,7 +98,7 @@ impl Task {
         let mut sent_ok = true;
         for (channel, (workspace_id, route)) in &self.opened_records {
             sent_ok &= client
-                .send(Envelope::OpenRecord {
+                .send(Envelope::OpenDocument {
                     workspace_id: *workspace_id,
                     channel: *channel,
                     own: self.own_channel(route),
@@ -110,16 +110,16 @@ impl Task {
 
     /// The host answered a record this page opened: it sent everything it holds of it, or it is
     /// not this page's.
-    pub(super) fn record_opened(
+    pub(super) fn resource_opened(
         &mut self,
         workspace_id: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::RecordAnswer,
+        answer: tilo_relay_protocol::DocumentAnswer,
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
         if let Some((_, route)) = self.opened_records.get(&channel) {
-            self.reports.emit(&crate::Event::RecordOpened {
+            self.reports.emit(&crate::Event::DocumentOpened {
                 ws: workspace_id,
                 channel,
                 route: Some(route.clone()),

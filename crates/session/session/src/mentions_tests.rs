@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use super::*;
 use crate::platform::records::Changes;
 use ui::mentions::{MARK, reading_nothing};
-use ui::record::{DocumentId, ResourceType};
+use ui::resource::{DocumentId, ResourceType};
 
 const ADA: &str = "u-ada";
 const BEA: &str = "u-bea";
@@ -80,7 +80,7 @@ impl Device {
     /// `app`'s index names `route` as a record of `kind`, as its app writes it.
     fn kind(&self, app: &str, route: &str, kind: &str) {
         let mut doc = AutoCommit::new();
-        let named = ui::record::index::reference(
+        let named = ui::resource::index::reference(
             &mut doc,
             &DocumentId::parse(route).expect("a record id"),
             &ResourceType::new(kind),
@@ -175,7 +175,7 @@ fn notebook_at(
     by: &str,
 ) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    ui::record::init(
+    ui::resource::init(
         &mut doc,
         id,
         &ResourceType::new("notes.notebook"),
@@ -477,7 +477,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         .part(0)
         .as_str()
         .to_owned();
-    ui::record::init(
+    ui::resource::init(
         &mut part,
         &DocumentId::parse(&part_route).expect("a record id"),
         &ResourceType::new("chat.part"),
@@ -588,7 +588,7 @@ impl Records for Counted {
 /// before this device followed it; issue 7's thread mentions Bea.
 fn tracker(issues: usize) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    ui::record::init(
+    ui::resource::init(
         &mut doc,
         &DocumentId::parse(TRACKER).unwrap(),
         &ResourceType::new("tasks.tracker"),

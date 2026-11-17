@@ -187,7 +187,7 @@ fn main() {
     let began = Instant::now();
     let mut log = ui::history_source::HistoryLog::default();
     ui::HistorySource::new()
-        .without_record_genesis()
+        .without_resource_genesis()
         .with_max_entries(16)
         .entries_since(&mut copy, &mut log);
     println!("history           {:8.1}", ms(began));

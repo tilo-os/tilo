@@ -5,7 +5,7 @@
 //! handed ([`DesktopSession`], a remote action host) and the desktop's end of it ([`Openings`]),
 //! which opens each admitted app as the desktop's own launch.
 //! A window may also ask to open a resource another app keeps, by its record
-//! ([`tilo_actions::remote::application_record_target`]), as Chat's shared windows do: the desktop
+//! ([`tilo_actions::remote::application_resource_target`]), as Chat's shared windows do: the desktop
 //! opens that app on that record. Any other action of an app's resource
 //! ([`tilo_actions::remote::application_action_target`]) is delivered the same way: the desktop
 //! opens the app, and once its window is up the host invokes the action there ([`Reveal`]), as the
@@ -34,7 +34,7 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
-    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_record,
+    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
     identity_admin, mcp_server, pending, person_accounts, person_models, provider_workspace,
     session_actions, workspace_activity as wire,
 };
@@ -359,7 +359,7 @@ impl DesktopSession {
                 reason: "That workspace isn't open here".into(),
             });
         }
-        Ok(application_provider_record(&request.target.provider))
+        Ok(application_provider_resource(&request.target.provider))
     }
 }
 

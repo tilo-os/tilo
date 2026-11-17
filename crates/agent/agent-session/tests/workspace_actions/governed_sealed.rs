@@ -36,7 +36,7 @@ async fn retained_by(
 ) -> Vec<bool> {
     hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace)
         .await
         .unwrap()
@@ -46,10 +46,10 @@ async fn retained_by(
             |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
-                    record_id,
+                    document_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => {
+                }) if app_id == route.app_id && document_id == route.record => {
                     Some(envelope.encryption.as_ref().is_some())
                 }
                 _ => None,

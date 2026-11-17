@@ -9,7 +9,7 @@
 //! - **Which part is current.** The part with the highest number a device
 //!   holds is the chain's head. A workspace's host replays a joining device the
 //!   chat record and the head only; every earlier part is on-demand
-//!   (`neighbour_wire::record_sync`): a device opens it, through the normal
+//!   (`neighbour_wire::document_sync`): a device opens it, through the normal
 //!   record sync and the chat record's grants, when someone scrolls back to
 //!   it.
 //! - **Where a post goes.** To the head, unless the head is full
@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::{self, Collection, Model};
 
 use crate::record::Message;
@@ -153,8 +153,8 @@ mod tests {
             assert_eq!(part_index(&chain()), None);
             assert_eq!(part_index(&DocumentId::workspace_default().part(3)), None);
             assert_eq!(
-                neighbour_wire::record_sync(first.as_str()),
-                neighbour_wire::RecordSync::Part {
+                neighbour_wire::document_sync(first.as_str()),
+                neighbour_wire::DocumentSync::Part {
                     base: chain().as_str(),
                     index: 0
                 }

@@ -1026,7 +1026,7 @@ impl State {
         if let Some(buffer) = attach {
             let up_buffer = buffer.and_then(|key| self.buffers.upstream(key, up));
             if let (Some(made), Some(owner)) = (&up_buffer, &owner) {
-                up.record_owner(made, owner);
+                up.resource_owner(made, owner);
             }
             let (dx, dy) = delta.unwrap_or_default();
             if version >= 5 {
@@ -1512,12 +1512,12 @@ impl UpRole {
     fn own(&self, up: &Upstream, owner: &smithay::reexports::wayland_server::backend::ClientId) {
         match self {
             Self::Plain => {}
-            Self::Sub(sub) => up.record_owner(sub, owner),
+            Self::Sub(sub) => up.resource_owner(sub, owner),
             Self::Xdg(xdg) => {
-                up.record_owner(&xdg.xdg, owner);
+                up.resource_owner(&xdg.xdg, owner);
                 match &xdg.kind {
-                    UpXdgKind::Toplevel(toplevel) => up.record_owner(toplevel, owner),
-                    UpXdgKind::Popup(popup) => up.record_owner(popup, owner),
+                    UpXdgKind::Toplevel(toplevel) => up.resource_owner(toplevel, owner),
+                    UpXdgKind::Popup(popup) => up.resource_owner(popup, owner),
                 }
             }
         }

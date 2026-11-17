@@ -13,11 +13,11 @@ use std::rc::Rc;
 use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
 use ui::permissions::{MemberId, SharedPermissions};
-use ui::record::{RecordOwners, RecordStore};
+use ui::resource::{ResourceOwners, ResourceStore};
 use wasm_bindgen::JsValue;
 
 use super::{Config, Presentation, Root, error};
-use crate::workspace_records::in_page;
+use crate::workspace_resources::in_page;
 
 /// A page showing one application, and the record it opens there.
 ///
@@ -34,10 +34,10 @@ pub(super) struct AppPage {
     permissions: SharedPermissions,
     /// Every record owner the page opened, so the apps a window opens beside it
     /// share what it has.
-    owners: RefCell<RecordOwners>,
+    owners: RefCell<ResourceOwners>,
     /// The app's store, kept with what the workspace replicates into it: the
     /// same store a waiting window comes back to.
-    stores: Rc<RefCell<Vec<RecordStore>>>,
+    stores: Rc<RefCell<Vec<ResourceStore>>>,
     /// The content store the page lends the app's window.
     content: tilo_content::ContentStore,
 }
@@ -53,7 +53,7 @@ impl AppPage {
             definition,
             content: super::prepare::content(&config),
             config,
-            owners: RefCell::new(RecordOwners::with_store(Rc::clone(&dyn_store))),
+            owners: RefCell::new(ResourceOwners::with_store(Rc::clone(&dyn_store))),
             dyn_store,
             permissions,
             stores: Rc::default(),
@@ -61,7 +61,7 @@ impl AppPage {
     }
 
     /// The app's store, whose records come from the workspace.
-    fn store(&self) -> Result<RecordStore, JsValue> {
+    fn store(&self) -> Result<ResourceStore, JsValue> {
         crate::app_page::store(
             &mut self.owners.borrow_mut(),
             self.definition,
@@ -137,7 +137,7 @@ impl AppPage {
             action_context: tilo_actions::ActionContext::default(),
         };
         let prepared = match named_new {
-            Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+            Some(id) => HostContext::prepare_new_resource(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         };
         let mut context = match prepared.map_err(crate::app_page::Unbuilt::of) {
@@ -149,14 +149,14 @@ impl AppPage {
         };
         context.provide_models(config.models()?);
         context.provide_content(self.content.clone());
-        context.provide_workspace_records(in_page(
+        context.provide_workspace_resources(in_page(
             &self.owners.borrow(),
             &self.stores,
             &config.workspace,
             config.author(),
             config.peer.is_some(),
         ));
-        crate::person_records::provide(&mut context, &self.dyn_store).map_err(error)?;
+        crate::person_resources::provide(&mut context, &self.dyn_store).map_err(error)?;
         config.lend_provider_admin(&mut context)?;
         let loaders = Rc::new(RefCell::new(Vec::new()));
         let image_owners = crate::page_content::ImageOwners::default();

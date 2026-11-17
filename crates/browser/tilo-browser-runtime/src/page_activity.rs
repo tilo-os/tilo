@@ -167,7 +167,7 @@ pub(super) fn writers(people: People, author: &str, here: tilo_desktop::here::He
     let mine = author.to_owned();
     Writers {
         noted: tilo_session::platform::authors::new_noted(move |actor| {
-            ui::history_source::note_record_mount(Some(actor), &mine, None);
+            ui::history_source::note_resource_mount(Some(actor), &mine, None);
         }),
         register: tilo_session::platform::authors::new_register(move |authors| {
             authors.register_noted_mounts(&[], &*people);

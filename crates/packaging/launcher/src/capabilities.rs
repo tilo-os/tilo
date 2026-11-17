@@ -167,7 +167,7 @@ impl CapabilityPlan {
                 }
                 // A collaborative-file record is reached through the workspace's documents, not the
                 // kernel — inert here, never permissive.
-                Scope::FsRecord(_) => {}
+                Scope::FsResource(_) => {}
             }
         }
 

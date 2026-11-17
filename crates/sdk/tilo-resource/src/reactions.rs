@@ -225,7 +225,7 @@ impl Reactions {
 /// opts in by holding the field, nothing else; the first such field
 /// counts.
 ///
-/// `table` is the record's own ([`Resource::RECORD_TABLE`](crate::Resource::RECORD_TABLE)),
+/// `table` is the record's own ([`Resource::RESOURCE_TABLE`](crate::Resource::RESOURCE_TABLE)),
 /// so code that does not know the record's type reads it.
 #[must_use]
 pub fn record_reactions<'a>(

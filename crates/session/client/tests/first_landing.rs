@@ -139,9 +139,9 @@ impl Reader {
     /// Read every landing the page was told of since the last call.
     fn take(&mut self, page: &Link) {
         for event in self.events.drain() {
-            if let Event::RecordOpened {
+            if let Event::DocumentOpened {
                 route: Some(route),
-                answer: tilo_session_client::RecordAnswer::Sent { frames },
+                answer: tilo_session_client::DocumentAnswer::Sent { frames },
                 ..
             } = event
             {
@@ -216,10 +216,10 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();
-    let written_record = notes(&lounge.workspace, "");
+    let written_document = notes(&lounge.workspace, "");
     let fresh_record = notes(
         &lounge.workspace,
-        &neighbour_wire::on_demand_record("uuid:fresh"),
+        &neighbour_wire::on_demand_document("uuid:fresh"),
     );
 
     // A member wrote one record whole before anyone else came: one snapshot, and nothing after.
@@ -227,16 +227,16 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     author.send(Cmd::Join(workspace_id)).unwrap();
     let mut doc = automerge::AutoCommit::new();
     let whole = say(&mut doc, "supplier", "A contract");
-    written(&author, &written_record, &whole).await;
+    written(&author, &written_document, &whole).await;
 
     // A page comes in holding nothing and opens both records, one of which the workspace has
     // none of yet.
     let page = arrive(page_host(), &host_device.cert, &lounge.workspace, "Guest").await;
-    let mut reader = Reader::of(&page, vec![written_record.clone(), fresh_record.clone()]);
+    let mut reader = Reader::of(&page, vec![written_document.clone(), fresh_record.clone()]);
     page.send(Cmd::Join(workspace_id)).unwrap();
-    page.send(Cmd::OpenRecordAt(workspace_id, written_record.clone()))
+    page.send(Cmd::OpenDocumentAt(workspace_id, written_document.clone()))
         .unwrap();
-    page.send(Cmd::OpenRecordAt(workspace_id, fresh_record.clone()))
+    page.send(Cmd::OpenDocumentAt(workspace_id, fresh_record.clone()))
         .unwrap();
     // What a window on the first record shows: the member's note, arrived whole in the landing
     // the page read it at.
@@ -244,7 +244,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         "read the record written whole",
         &mut reader,
         &page,
-        |_, page| Reader::holds(page, &written_record) == ["supplier"],
+        |_, page| Reader::holds(page, &written_document) == ["supplier"],
     )
     .await;
     // The workspace answered the page's second record with nothing: it is one nobody wrote.

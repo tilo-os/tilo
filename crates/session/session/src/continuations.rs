@@ -3,7 +3,7 @@
 //!
 //! A window's app holds the record it shows, and the session's broker knows
 //! every record each window holds, by the window instance the shell launched
-//! it for ([`tilo_action_broker::collab_broker::AppActionBroker::window_records`]).
+//! it for ([`tilo_action_broker::collab_broker::AppActionBroker::window_resources`]).
 //! A window's instance is the id of its tab — the session tells the app so
 //! when it starts it — so a note is about a tab, and every place that names a
 //! window can read it.
@@ -121,9 +121,9 @@ impl Continuations {
             let mut records = routes.into_iter().filter(|route| {
                 // The route a window's app speaks to the session on names the window's instance,
                 // not a record the window shows.
-                !route.record_id.is_empty()
+                !route.document_id.is_empty()
                     && route
-                        .record_id
+                        .document_id
                         .strip_prefix("continuation:")
                         .is_none_or(|named| named != instance.to_string())
                     // A window shows the record of the app it runs; another app's record it holds
@@ -146,7 +146,7 @@ impl Continuations {
                 Showing {
                     workspace,
                     app: Some(record.app_id.clone()),
-                    record: record.record_id.clone(),
+                    record: record.document_id.clone(),
                 },
             );
         }

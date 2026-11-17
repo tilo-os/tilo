@@ -42,9 +42,11 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
         NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == device,
         // The frames carrying no signature of their own name their author in
         // the handle the workspace knows it by.
-        NeighbourMsg::RecordContentWant { requester, .. } => *requester == peer_handle(&device),
-        NeighbourMsg::RecordContentPiece { responder, .. }
-        | NeighbourMsg::RecordContentLacks { responder, .. } => *responder == peer_handle(&device),
+        NeighbourMsg::DocumentContentWant { requester, .. } => *requester == peer_handle(&device),
+        NeighbourMsg::DocumentContentPiece { responder, .. }
+        | NeighbourMsg::DocumentContentLacks { responder, .. } => {
+            *responder == peer_handle(&device)
+        }
         NeighbourMsg::LivePresence { peer, .. } | NeighbourMsg::Heartbeat { peer, .. } => {
             *peer == peer_handle(&device)
         }

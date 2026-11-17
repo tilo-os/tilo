@@ -90,7 +90,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     // channel's own id, the one the chat minted, active.
     assert!(calls[0].state.active);
     assert_eq!(calls[0].app_id, crate::call::CHAT);
-    assert_eq!(calls[0].record_id, "");
+    assert_eq!(calls[0].document_id, "");
     assert_eq!(calls[0].channel_id, workspace.channel);
     assert!(calls[0].members.is_empty());
 

@@ -269,7 +269,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     };
     reader
         .peer
-        .send(Cmd::OpenRecordAt(
+        .send(Cmd::OpenDocumentAt(
             WorkspaceId::parse(&workspace).unwrap(),
             ask.clone(),
         ))
@@ -278,9 +278,9 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     let mut frames = None;
     loop {
         for event in reader.events.drain() {
-            if let Event::RecordOpened {
+            if let Event::DocumentOpened {
                 route: Some(route),
-                answer: tilo_session_client::RecordAnswer::Sent { frames: sent },
+                answer: tilo_session_client::DocumentAnswer::Sent { frames: sent },
                 ..
             } = event
                 && route == ask

@@ -218,7 +218,7 @@ impl PendingRemote {
 /// A route an owner holds that the transport is not yet joined to, and the kind its record holds.
 pub(crate) struct RouteJoin {
     pub(crate) route: RouteSpec,
-    pub(crate) record_kind: crate::record::ResourceType,
+    pub(crate) resource_type: crate::resource::ResourceType,
 }
 
 pub(crate) struct OwnerRoute {
@@ -232,7 +232,7 @@ pub(crate) struct OwnerRoute {
     pub(crate) pending: PendingRemote,
     /// Why local changes on this route are not reaching peers.
     pub(crate) outbound_failure: Option<String>,
-    /// A record kept beside the shown document ([`Widget::record_owners`]): no host replays its route,
+    /// A record kept beside the shown document ([`Widget::resource_owners`]): no host replays its route,
     /// so a snapshot that leaves this replica ahead of its sender is answered with this replica's own.
     pub(crate) answers_snapshots: bool,
     /// Joined, and not yet open for documents: its first publication waits for the route instead of
@@ -240,9 +240,9 @@ pub(crate) struct OwnerRoute {
     pub(crate) opening: bool,
 }
 struct TreeRecord {
-    store: crate::record::RecordStore,
-    checkout: crate::record::DocumentCheckout,
-    lifetime: std::rc::Rc<super::owner::RecordOwnerLifetime>,
+    store: crate::resource::ResourceStore,
+    checkout: crate::resource::DocumentCheckout,
+    lifetime: std::rc::Rc<super::owner::ResourceOwnerLifetime>,
 }
 
 #[derive(Default)]
@@ -273,7 +273,7 @@ impl OwnerDocumentRoutes {
     /// Give every record of a live owner's tree its own owner: a chat's message parts, a container's
     /// child records. Without this a part only one device wrote never left it.
     fn hold_trees(&mut self, current: &mut Vec<(HistoryOwner, bool)>) {
-        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+        let mut stores: Vec<crate::resource::ResourceStore> = Vec::new();
         for (owner, _) in current.iter() {
             let (store, _) = owner.store_checkout();
             if !stores.iter().any(|known| known.same_owner(store)) {
@@ -299,7 +299,7 @@ impl OwnerDocumentRoutes {
                     None => TreeRecord {
                         store: store.clone(),
                         checkout,
-                        lifetime: super::owner::RecordOwnerLifetime::new(),
+                        lifetime: super::owner::ResourceOwnerLifetime::new(),
                     },
                 };
                 held.push(entry);
@@ -346,7 +346,10 @@ impl OwnerDocumentRoutes {
     ) -> Vec<RouteJoin> {
         fn collect(root: &dyn Widget, owners: &mut Vec<(HistoryOwner, bool)>) {
             let held = root.history_owner().map(|owner| (owner, false));
-            let beside = root.record_owners().into_iter().map(|owner| (owner, true));
+            let beside = root
+                .resource_owners()
+                .into_iter()
+                .map(|owner| (owner, true));
             for (owner, answers) in held.into_iter().chain(beside) {
                 if !owners
                     .iter()
@@ -418,7 +421,7 @@ impl OwnerDocumentRoutes {
             if self.retired.contains(&route) {
                 continue;
             }
-            let record_kind = owner.record_kind();
+            let resource_type = owner.resource_type();
             if let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) {
                 if !entry
                     .owners
@@ -434,9 +437,9 @@ impl OwnerDocumentRoutes {
                 }
                 joins.push(RouteJoin {
                     route: route.clone(),
-                    record_kind: record_kind.clone(),
+                    resource_type: resource_type.clone(),
                 });
-                let publishes = owner.publishes_record();
+                let publishes = owner.publishes_resource();
                 self.owners.push(OwnerRoute {
                     route,
                     owners: vec![owner],

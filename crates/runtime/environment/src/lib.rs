@@ -669,7 +669,7 @@ impl Environment {
         Some(Self::REVERT.with(undoing.minted.first()?.clone()))
     }
 
-    pub fn write_record(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
+    pub fn write_resource(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
         tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
         // A fresh record is at today's version: without the stamp it would read
         // as the first one and wait for a migration it never needs.
@@ -987,7 +987,7 @@ mod tests {
     fn replica() -> Replica<Environment> {
         let mut doc = tilo_resource::Doc::new();
         Environment::new("Work", "2026.10", "x86_64", &image(1))
-            .write_record(&mut doc)
+            .write_resource(&mut doc)
             .unwrap();
         doc.commit();
         Replica::from_doc(doc)
@@ -1079,7 +1079,7 @@ mod tests {
             workspace: "w1".into(),
             ..Environment::new("Work", "2026.10", "x86_64", &image(1))
         }
-        .write_record(&mut doc)
+        .write_resource(&mut doc)
         .unwrap();
         doc.commit();
         assert_eq!(

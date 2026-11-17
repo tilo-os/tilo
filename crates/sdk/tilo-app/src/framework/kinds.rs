@@ -74,7 +74,7 @@ fn seed<A: ResourceApp>(
 /// Seed a record of `kind` its genesis just created, as `me` creating it on
 /// `device` without a window: the app's [`ResourceApp::seed`] with no host,
 /// applied as in a window. A kind no app registered has nothing to seed.
-pub fn seed_record(
+pub fn seed_resource(
     kind: &str,
     doc: &mut Doc,
     me: &tilo_resource::MemberId,

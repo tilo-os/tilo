@@ -249,7 +249,7 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: agent.record_id().clone(),
+            record: agent.document_id().clone(),
             changes: vec![snapshot],
         },
     )

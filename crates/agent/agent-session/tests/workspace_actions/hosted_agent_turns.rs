@@ -134,7 +134,7 @@ async fn make_agent(
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     while workspaces
-        .record_document(workspace, CHAT, &record)
+        .resource_document(workspace, CHAT, &record)
         .await
         .ok()
         .flatten()
@@ -158,7 +158,7 @@ async fn file_issue(
     (governor, browser): (&crate::support::Device, &crate::support::Device),
 ) -> String {
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_relay::workspace_bots::workspace_record(&catalogue, TASKS);
+    let tracker = tilo_relay::workspace_bots::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(workspace, &governor.cert, &catalogue, TASKS, &tracker)
         .await
@@ -181,7 +181,7 @@ async fn file_issue(
         &host,
         &person,
         &route,
-        &ui::record::chain_resource_id(&tasks::part::chain()),
+        &ui::resource::chain_resource_id(&tasks::part::chain()),
         "create",
         arguments.as_object().unwrap().clone(),
     )
@@ -197,7 +197,7 @@ async fn tracker(
     record: &str,
 ) -> tasks::part::IssuePart {
     let bytes = workspaces
-        .record_document(workspace, TASKS, record)
+        .resource_document(workspace, TASKS, record)
         .await
         .unwrap()
         .unwrap();
@@ -224,7 +224,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let person = hex::encode(root.verifying_key().to_bytes());
 
     // The person makes an agent that runs on the host, as the Agents tab in a browser does.
-    let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let agents_document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
     // They write an issue and give it to the agent.
@@ -306,7 +306,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
-            .record_document(&workspace, CHAT, &agents_record)
+            .resource_document(&workspace, CHAT, &agents_document)
             .await
             .unwrap()
             .unwrap();

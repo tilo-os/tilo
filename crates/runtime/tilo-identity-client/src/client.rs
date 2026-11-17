@@ -115,13 +115,13 @@ impl BrokerSigningIdentity {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::CollaborationOp {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
-            record_id: record_id.to_owned(),
+            document_id: document_id.to_owned(),
             unsigned_op: unsigned_op.to_vec(),
         })
     }
@@ -133,13 +133,13 @@ impl BrokerSigningIdentity {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         known_generation: u64,
     ) -> Result<wire::ChannelKeysReply, NotAvailable> {
         channel_keys_reply(self.exchange(&wire::Request::GroupKeys {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
-            record_id: record_id.to_owned(),
+            document_id: document_id.to_owned(),
             known_generation,
         })?)
     }
@@ -465,14 +465,14 @@ mod tests {
             wire::Request::GroupKeys {
                 workspace_id,
                 app_id,
-                record_id,
+                document_id,
                 known_generation,
             } => {
                 assert_eq!(
                     (
                         workspace_id.as_str(),
                         app_id.as_str(),
-                        record_id.as_str(),
+                        document_id.as_str(),
                         known_generation
                     ),
                     ("workspace", "so.tilo.notes", "record", 0)
@@ -554,12 +554,12 @@ mod tests {
                 wire::Request::CollaborationOp {
                     workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     unsigned_op,
                 } => {
                     assert_eq!(workspace_id, "workspace");
                     assert_eq!(app_id, "so.tilo.notes");
-                    assert_eq!(record_id, "record");
+                    assert_eq!(document_id, "record");
                     assert_eq!(unsigned_op, b"op");
                 }
                 _ => panic!("wrong operation request"),

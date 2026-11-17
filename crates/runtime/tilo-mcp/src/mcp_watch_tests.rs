@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
-    Completer, Here, InvocationReceipt, InvocationState, InvokeRequest, Pending, RecordChanged,
+    Completer, Here, InvocationReceipt, InvocationState, InvokeRequest, Pending, ResourceChanged,
     WatchScope, pending,
 };
 
@@ -50,7 +50,7 @@ struct Watched {
     records: Wakes,
     roster: Wakes,
     /// The changes the workspace's feed reports, oldest first.
-    feed: Arc<Mutex<Vec<RecordChanged>>>,
+    feed: Arc<Mutex<Vec<ResourceChanged>>>,
 }
 
 impl Watched {
@@ -68,7 +68,7 @@ impl Watched {
     fn wrote(&self, change: &str) {
         let entry = json!({"change": change, "sentence": "added one", "time_ms": 1});
         self.notes.changed(entry.clone());
-        self.feed.lock().unwrap().push(RecordChanged {
+        self.feed.lock().unwrap().push(ResourceChanged {
             app: "so.tilo.notes".into(),
             record: "notes.page:1".into(),
             entry,

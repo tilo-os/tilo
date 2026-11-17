@@ -60,10 +60,10 @@ impl Draw {
 /// random and, with `second_root`, one of which starts from nothing, merged
 /// into one admitted record.
 fn record(seed: u64, writers: usize, edits: usize) -> AutoCommit {
-    record_from(seed, writers, edits, true)
+    document_from(seed, writers, edits, true)
 }
 
-fn record_from(seed: u64, writers: usize, edits: usize, second_root: bool) -> AutoCommit {
+fn document_from(seed: u64, writers: usize, edits: usize, second_root: bool) -> AutoCommit {
     let mut draw = Draw(seed);
     let mut replicas = (0..writers)
         .map(|writer| {
@@ -189,7 +189,7 @@ fn an_extended_history_is_the_walked_history_byte_for_byte() {
             }
             alone
         } else {
-            record_from(seed, writers, 40, seed % 2 == 0)
+            document_from(seed, writers, 40, seed % 2 == 0)
         };
         forget();
         let before = rebuilds();

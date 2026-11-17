@@ -355,7 +355,7 @@ fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::ta
     .expect("this device's certificate is valid")
     .into_parts()
     .1;
-    fs::tree_record::spawn(
+    fs::tree_document::spawn(
         Arc::clone(namespace),
         cluster.to_owned(),
         credentials,

@@ -21,7 +21,7 @@
 //! shrinks as slices land, and is empty when the migration is done: a new app, or an added use,
 //! that has any of it fails here rather than arriving unnoticed.
 //!
-//! `RecordStore` is deliberately not a marker: it names the SDK's read-only handle to a record
+//! `ResourceStore` is deliberately not a marker: it names the SDK's read-only handle to a record
 //! *another* process keeps, which is how a client of the document host reads; what is counted
 //! is opening a store (`DocStore`) or acquiring a document (`DocOwner`), which only the host may
 //! do.
@@ -77,7 +77,7 @@ impl Binges {
                 "join_native",
                 "sdk_join_identity",
                 "NativeJoin",
-                "CollaborationManager::for_record",
+                "CollaborationManager::for_resource",
             ],
             Self::Keys => &["group_keys", "KeyProvider", "install_channel_keys"],
             Self::Storage => &["DocStore", "DocOwner", "app_state::"],

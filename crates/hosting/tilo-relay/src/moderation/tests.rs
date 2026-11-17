@@ -102,7 +102,7 @@ fn flooded_workspace() -> Replica {
             Some(tilo_actions::ActionInvoker::person(author)),
             None,
             &tilo_actions::api::ActionAddress::new(
-                ui::record::chain_resource_id(&chat::parts::chain()),
+                ui::resource::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             post.as_object().unwrap(),
@@ -133,7 +133,7 @@ fn flooded_workspace() -> Replica {
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What the page did is the workspace's now.
     let _ = page.take_mutation();
-    let _ = page.take_record_mutations();
+    let _ = page.take_document_mutations();
     page
 }
 
@@ -149,11 +149,11 @@ fn message_ids(replica: &Replica) -> Vec<String> {
 fn messages(replica: &Replica) -> chat::messages::Messages {
     chat::messages::Messages::new(
         replica
-            .records_beside()
+            .resources_beside()
             .into_iter()
             .filter_map(|record| {
                 let index = chat::parts::part_index(&record)?;
-                let part = replica.read_record(&record, chat::messages::read_part)?;
+                let part = replica.read_resource(&record, chat::messages::read_part)?;
                 Some((index, std::rc::Rc::new(part)))
             })
             .collect(),
@@ -188,14 +188,16 @@ fn bot_replica(page: &Replica) -> Replica {
             standing,
         },
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![page.read(|doc| doc.clone().save()).unwrap()],
         },
     )
     .unwrap();
-    for record in page.records_beside() {
-        let saved = page.read_record(&record, |doc| doc.clone().save()).unwrap();
-        bot.apply_record(&record, &DocumentMutation::Snapshot(saved))
+    for record in page.resources_beside() {
+        let saved = page
+            .read_resource(&record, |doc| doc.clone().save())
+            .unwrap();
+        bot.apply_document(&record, &DocumentMutation::Snapshot(saved))
             .unwrap();
     }
     bot
@@ -246,8 +248,8 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
 
     // What the bot did reaches the workspace like anyone's change.
     page.apply(&bot.take_mutation().unwrap().unwrap()).unwrap();
-    for (record, mutation) in bot.take_record_mutations().unwrap() {
-        page.apply_record(&record, &mutation).unwrap();
+    for (record, mutation) in bot.take_document_mutations().unwrap() {
+        page.apply_document(&record, &mutation).unwrap();
     }
     assert!(
         texts_by(&messages(&page), MALLORY).is_empty(),

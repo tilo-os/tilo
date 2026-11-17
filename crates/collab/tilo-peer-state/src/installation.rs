@@ -85,7 +85,7 @@ pub use registry_types::DirectoryRef;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArmedRecord {
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     /// Automerge change hashes, hex.
     pub heads: Vec<String>,
 }

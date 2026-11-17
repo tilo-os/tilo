@@ -20,7 +20,7 @@ use fs_protocol::{
 use iroh_blobs::Hash;
 use tilo_lock::MutexRecover as _;
 
-use crate::availability::{AvailabilityRegistry, RecordAvailability, RecordKind, TransferError};
+use crate::availability::{AvailabilityRegistry, DocumentAvailability, EntryKind, TransferError};
 use crate::hydration::Hydrator;
 
 #[derive(Clone)]
@@ -162,7 +162,7 @@ async fn write_stored(
             for (file, bytes) in whole {
                 let resident = Residency::Resident { bytes };
                 let mut record = registry.get(file.document_id).cloned().unwrap_or_else(|| {
-                    let mut record = RecordAvailability::new(file.document_id, RecordKind::File);
+                    let mut record = DocumentAvailability::new(file.document_id, EntryKind::File);
                     record.current_version = Some(file.version);
                     record
                 });
@@ -191,7 +191,7 @@ impl UnavailableNote {
         let mut record = registry
             .get(self.document_id)
             .cloned()
-            .unwrap_or_else(|| RecordAvailability::new(self.document_id, RecordKind::File));
+            .unwrap_or_else(|| DocumentAvailability::new(self.document_id, EntryKind::File));
         if record.transfer.phase != TransferPhase::Idle
             || record.transfer.retry_count > 0
             || record.transfer.last_error.is_some()
@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn a_transfer_that_owns_the_record_keeps_its_own_state() {
         let (_dir, note) = note();
-        let mut record = RecordAvailability::new(note.document_id, RecordKind::File);
+        let mut record = DocumentAvailability::new(note.document_id, EntryKind::File);
         record.transfer.phase = TransferPhase::Downloading;
         note.registry.lock_recover().put(record).unwrap();
 
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(state.transfer.phase, TransferPhase::Downloading);
         assert_eq!(state.transfer.last_error, None);
 
-        let mut retrying = RecordAvailability::new(note.document_id, RecordKind::File);
+        let mut retrying = DocumentAvailability::new(note.document_id, EntryKind::File);
         retrying.transfer.phase = TransferPhase::Queued;
         retrying.transfer.retry_count = 1;
         retrying.transfer.retry_at_ms = Some(9_000);
@@ -569,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn bytes_after_a_retry_that_ended_make_the_file_available_again() {
         let (_dir, note) = note();
-        let mut retried = RecordAvailability::new(note.document_id, RecordKind::File);
+        let mut retried = DocumentAvailability::new(note.document_id, EntryKind::File);
         retried.transfer.retry_count = 1;
         retried.transfer.last_error = Some(TransferError {
             message: NO_PEER_DELIVERED_ERROR.into(),

@@ -76,7 +76,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
 async fn stop(hosted: Hosted) {
     let retained = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace())
         .await
         .unwrap();
@@ -119,7 +119,7 @@ impl Browser {
                     &MemberId::person("ada"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_record(&route.record),
+                        record: route_document(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 ) {
@@ -403,11 +403,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
 /// The record a document route names. A workspace-record app (Notes, Chat)
 /// publishes its package-primary record under the empty record id.
-fn route_record(record: &str) -> ui::record::DocumentId {
+fn route_document(record: &str) -> ui::resource::DocumentId {
     if record.is_empty() {
-        ui::record::DocumentId::package_primary()
+        ui::resource::DocumentId::package_primary()
     } else {
-        ui::record::DocumentId::parse(record).unwrap()
+        ui::resource::DocumentId::parse(record).unwrap()
     }
 }
 
@@ -447,7 +447,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
-            record: page.wire_record().to_owned(),
+            record: page.wire_document().to_owned(),
         };
         browser
             .peer
@@ -477,7 +477,7 @@ impl Page {
                     &MemberId::person("bea"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_record(&creator.route.record),
+                        record: route_document(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 )
@@ -647,7 +647,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 &MemberId::person("ada"),
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: route_record(&page.route.record),
+                    record: route_document(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             );

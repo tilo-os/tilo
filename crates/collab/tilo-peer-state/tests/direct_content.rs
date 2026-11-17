@@ -102,9 +102,9 @@ async fn next_content(
             let frame = heard.recv().await.expect("the link stays open");
             if matches!(
                 frame.message,
-                NeighbourMsg::RecordContentWant { .. }
-                    | NeighbourMsg::RecordContentPiece { .. }
-                    | NeighbourMsg::RecordContentLacks { .. }
+                NeighbourMsg::DocumentContentWant { .. }
+                    | NeighbourMsg::DocumentContentPiece { .. }
+                    | NeighbourMsg::DocumentContentLacks { .. }
             ) {
                 return frame;
             }
@@ -168,7 +168,7 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
         .unwrap();
 
     // The host asks the workspace for a surface the changes it decides name.
-    let ask = NeighbourMsg::RecordContentWant {
+    let ask = NeighbourMsg::DocumentContentWant {
         requester: peer_handle(&host_cert.device_public_key),
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_string(),
@@ -194,7 +194,7 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
     );
 
     // The member answers it over the same link, and the host hears the answer.
-    let answer = NeighbourMsg::RecordContentLacks {
+    let answer = NeighbourMsg::DocumentContentLacks {
         responder: peer_handle(&member_cert.device_public_key),
         requester: peer_handle(&host_cert.device_public_key),
         app_id: "so.tilo.chat".into(),

@@ -38,7 +38,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
         provider: None,
         app_id: app.into(),
         cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
+        document_id: String::new(),
         live: true,
         actions,
     }

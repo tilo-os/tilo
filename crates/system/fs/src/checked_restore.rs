@@ -6,9 +6,9 @@
 //! tree document is the only record, so an interrupted restore either
 //! happened whole or not at all.
 use super::{
-    Access, EBUSY, EINVAL, EIO, ENOENT, EROFS, Hash, Namespace, QuickFS, RecordKind, now_ms,
+    Access, EBUSY, EINVAL, EIO, ENOENT, EROFS, EntryKind, Hash, Namespace, QuickFS, now_ms,
 };
-use crate::content_kind::RecordContentKind;
+use crate::content_kind::DocumentContentKind;
 use crate::namespace::history::VersionMetadataDigest;
 use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
@@ -91,9 +91,9 @@ impl QuickFS {
     pub(super) fn restore_kind(
         namespace: &Namespace,
         ino: u64,
-    ) -> Result<RecordContentKind, Outcome> {
-        match RecordContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)? {
-            RecordContentKind::NamespaceDocument { codec } => Err(Outcome::UnsupportedOwner {
+    ) -> Result<DocumentContentKind, Outcome> {
+        match DocumentContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)? {
+            DocumentContentKind::NamespaceDocument { codec } => Err(Outcome::UnsupportedOwner {
                 mapping: format!(
                     "document codec {}: no checked content-owner restore route",
                     codec.chars().take(64).collect::<String>()
@@ -135,7 +135,7 @@ impl QuickFS {
     /// must find unchanged, as one hash.
     fn reviewed_frontier(
         &self,
-        state: &crate::namespace::history::RecordHistorySnapshot,
+        state: &crate::namespace::history::DocumentHistorySnapshot,
         revision: &ContentRevisionV1,
         path: &str,
     ) -> Result<Review, Outcome> {
@@ -203,7 +203,7 @@ impl QuickFS {
         Self::restore_kind(&namespace, ino)?;
         let document_id = namespace.document_id_for(ino).ok_or(Outcome::NotVisible)?;
         let state = namespace
-            .record_history(document_id)
+            .document_history(document_id)
             .ok_or(Outcome::Unavailable)?;
         let revision = namespace
             .observed_content_revision(ino)
@@ -234,7 +234,7 @@ impl QuickFS {
                 &path,
                 Access::Read,
             )?;
-            let Some((_, receipt)) = namespace.restore_record(intent_id) else {
+            let Some((_, receipt)) = namespace.restore_document(intent_id) else {
                 // Not admitted yet: its content may still be hydrating.
                 return Err(
                     if matches!(
@@ -319,7 +319,7 @@ impl QuickFS {
             let parent = namespace
                 .parent_ino(ino)
                 .and_then(|parent| namespace.document_id_for(parent));
-            let _ = registry.track_current_revision(revision, RecordKind::File, parent, now_ms());
+            let _ = registry.track_current_revision(revision, EntryKind::File, parent, now_ms());
         }
     }
 
@@ -338,7 +338,7 @@ impl QuickFS {
             } => {
                 let (prior_request, receipt) = self
                     .ns()
-                    .restore_record(restore_intent)
+                    .restore_document(restore_intent)
                     .ok_or(Outcome::InvalidRequest)?;
                 if !matches!(
                     (request.operation, prior_request.operation),
@@ -394,7 +394,7 @@ impl QuickFS {
         }
         // An admitted request answers with its own receipt, whatever the
         // mount has done since.
-        let known = self.ns().restore_record(request.intent_id);
+        let known = self.ns().restore_document(request.intent_id);
         if let Some((admitted, receipt)) = known {
             if admitted != request {
                 return Err(Outcome::InvalidRequest);
@@ -409,7 +409,7 @@ impl QuickFS {
         let (selected, kind, current_hash) = {
             let namespace = self.ns();
             let selected = namespace
-                .record_version(request.review.document_id, selected_id)
+                .document_version(request.review.document_id, selected_id)
                 .0
                 .ok_or(Outcome::InvalidRequest)?;
             let kind = Self::restore_kind(&namespace, ino)?;
@@ -473,7 +473,7 @@ impl QuickFS {
                 return Err(Outcome::PendingWrites);
             }
             let state = namespace
-                .record_history(request.review.document_id)
+                .document_history(request.review.document_id)
                 .ok_or(Outcome::Unavailable)?;
             let prior = namespace
                 .observed_content_revision(ino)

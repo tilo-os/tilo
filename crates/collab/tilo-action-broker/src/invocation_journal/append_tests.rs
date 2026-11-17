@@ -23,7 +23,7 @@ fn key(journal: &InvocationJournal, n: u128) -> InvocationKey {
 
 /// The request part exactly as the broker builds it for an admission.
 fn request(argument: &str) -> Value {
-    json!({"peer_id": 7, "app_id": "so.tilo.notes", "record_id": "notes",
+    json!({"peer_id": 7, "app_id": "so.tilo.notes", "document_id": "notes",
         "resource": "note:1", "action": "write", "argument": argument})
 }
 

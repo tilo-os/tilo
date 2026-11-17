@@ -94,11 +94,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         ),
         NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } => {
-            let channel = app_document_channel(app_id, record_id);
+            let channel = app_document_channel(app_id, document_id);
             // Content-key ciphertext carries its storage class in the signed
             // encryption metadata, so a host retains encrypted history
             // without reading it. A single-use MLS application message is
@@ -189,7 +189,7 @@ mod tests {
             peer: 1,
             app_id: "app".into(),
             cluster_id: "workspace".into(),
-            record_id: "doc".into(),
+            document_id: "doc".into(),
             envelope: Box::new(envelope),
             own: None,
         }

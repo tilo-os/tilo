@@ -52,7 +52,7 @@ use fanout::{LiveFanout, LiveFrame, live_budget};
 pub(crate) use replay::GovernanceCertificates;
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, answered_as_replay, authorize_state_frame,
-    authorize_state_recipient, finish_replay_write, resume_record,
+    authorize_state_recipient, finish_replay_write, resume_document,
 };
 use session::inbound_bytes;
 #[cfg(test)]
@@ -86,9 +86,9 @@ pub use fetch::FetchGrants;
 use hello::handle_host_hello;
 use live::{
     handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
-    route_record_content,
+    route_document_content,
 };
-use records::handle_open_record;
+use records::handle_open_document;
 pub use subscribe::get_or_autobind_workspace;
 use subscribe::{Subscribed, Subscription, handle_subscribe, handle_unsubscribe, subscribe};
 use sync::handle_sync_request;

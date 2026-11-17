@@ -130,7 +130,7 @@ fn factory(
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(ROOT, "body", "real document")
                     .map_err(|error| error.to_string())
             })

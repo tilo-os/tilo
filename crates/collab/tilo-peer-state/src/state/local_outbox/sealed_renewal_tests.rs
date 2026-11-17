@@ -83,7 +83,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
         cluster_id: peer.workspace_id().into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
     }

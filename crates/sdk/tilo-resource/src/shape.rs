@@ -144,7 +144,7 @@ pub(crate) fn without_absent<T: crate::Model>(value: serde_json::Value) -> serde
 
 /// [`without_absent`] of a record, reached through its table's functions
 /// rather than `T::SHAPE`, which would copy its field list into every caller.
-pub(crate) fn record_without_absent(
+pub(crate) fn resource_without_absent(
     table: &crate::table::ModelTable,
     value: serde_json::Value,
 ) -> serde_json::Value {

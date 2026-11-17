@@ -584,11 +584,11 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
 
 pub(crate) struct RoutedOwners {
     pub(crate) app: App,
-    pub(crate) records: crate::RecordStore,
+    pub(crate) records: crate::ResourceStore,
     pub(crate) bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     /// Holds the broker's next route join until the returned sender sends.
     pub(crate) hold_join: Box<dyn Fn() -> tokio::sync::oneshot::Sender<()>>,
-    _owners: crate::record::RecordOwners,
+    _owners: crate::resource::ResourceOwners,
     _temp: tempfile::TempDir,
 }
 impl RoutedOwners {
@@ -598,7 +598,7 @@ impl RoutedOwners {
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-0000-0000-000000000077";
         let records = owners.open(APP, workspace).unwrap();
         let views = Rc::new(
@@ -990,7 +990,7 @@ fn primary_routed_factory(
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
     if matches!(target, crate::application::LaunchTarget::PrimaryNew) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(ROOT, "body", "initialized")
                     .map_err(|error| error.to_string())?;
                 Ok(())
@@ -1002,9 +1002,9 @@ fn primary_routed_factory(
 
 struct RoutedPrimary {
     app: App,
-    records: crate::RecordStore,
+    records: crate::ResourceStore,
     binding: crate::bound_dispatch::CallbackBinding,
-    _owners: crate::record::RecordOwners,
+    _owners: crate::resource::ResourceOwners,
     _temp: tempfile::TempDir,
 }
 impl RoutedPrimary {
@@ -1013,7 +1013,7 @@ impl RoutedPrimary {
             ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-4000-8000-000000000078";
         let records = owners.open("dev.tilo.primary-probe", workspace).unwrap();
         let views = Rc::new(
@@ -1028,13 +1028,13 @@ impl RoutedPrimary {
             app_id: "dev.tilo.primary-probe".into(),
             title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
-            record_kind: crate::ResourceType::new("primary.probe"),
+            resource_type: crate::ResourceType::new("primary.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
@@ -3378,7 +3378,7 @@ struct ComponentControlRoot {
     slots: Vec<ComponentControlSlot>,
     fail_after_first: Rc<Cell<bool>>,
     _directory: tempfile::TempDir,
-    _owners: crate::record::RecordOwners,
+    _owners: crate::resource::ResourceOwners,
 }
 
 impl crate::widget::Widget for ComponentControlRoot {
@@ -3470,18 +3470,18 @@ fn component_control_root(
     Rc<Cell<bool>>,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
+    let mut owners = crate::resource::ResourceOwners::new(directory.path().join("records"));
     let records = owners.open(HISTORY.app_id, "component-controls").unwrap();
     let failure = Rc::new(Cell::new(false));
     let mut slots = Vec::new();
     let mut handles = Vec::new();
     for (index, (id, confirmation)) in specs.iter().enumerate() {
-        let checkout = crate::record::DocumentCheckout::new(
+        let checkout = crate::resource::DocumentCheckout::new(
             crate::DocumentId::for_tab(930 + index as u64),
-            crate::record::ResourceType::new("component-control"),
+            crate::resource::ResourceType::new("component-control"),
         );
         records
-            .reserve_record(&checkout)
+            .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 doc.put(ROOT, "body", *id).unwrap();
@@ -4595,7 +4595,7 @@ impl crate::widget::Widget for CustodyDeniedRoot {
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         if self.denied.get() && request.target.is_none() {
-            Err(crate::bound_dispatch::BoundDispatchError::CrossRecordReentry)
+            Err(crate::bound_dispatch::BoundDispatchError::CrossResourceReentry)
         } else {
             self.child.visit_components(request)
         }
@@ -4693,7 +4693,7 @@ impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped,
+        dyn crate::resource::capability::ResourceScoped,
         dyn crate::widget::ResourceOperations
     );
 
@@ -4812,7 +4812,7 @@ impl crate::widget::ResourceOperations for CustodyControlsRoot {
     }
 }
 
-impl crate::record::capability::RecordScoped for CustodyControlsRoot {
+impl crate::resource::capability::ResourceScoped for CustodyControlsRoot {
     fn record_intent(&self) -> Option<crate::DocumentCheckout> {
         self.record
             .as_ref()
@@ -5790,13 +5790,13 @@ fn header_history_control_opens_framework_history() {
 #[test]
 fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
     use crate::host_chrome::model::CommandGroup;
-    use crate::record::{DocumentCheckout, DocumentId, RecordOwners, ResourceType};
+    use crate::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache)
+    let store = ResourceOwners::portable(cache)
         .open("test", "workspace")
         .unwrap();
     let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
-    store.create_record(&checkout).unwrap();
+    store.create_resource(&checkout).unwrap();
     let mut state = State::from_doc(
         store
             .read(&checkout.id, automerge::AutoCommit::clone)

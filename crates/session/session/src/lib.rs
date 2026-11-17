@@ -46,9 +46,9 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 pub mod host_actions;
-#[cfg(target_os = "linux")]
-mod record_reads;
 pub mod records;
+#[cfg(target_os = "linux")]
+mod resource_reads;
 pub mod search;
 #[cfg(target_os = "linux")]
 mod search_agent;
@@ -322,13 +322,13 @@ pub mod quick_settings;
 #[cfg(target_os = "linux")]
 mod ready;
 #[cfg(target_os = "linux")]
-mod record_index;
-#[cfg(target_os = "linux")]
 pub mod recovery;
 #[cfg(target_os = "linux")]
 mod render;
 #[cfg(target_os = "linux")]
 mod renewal;
+#[cfg(target_os = "linux")]
+mod resource_index;
 #[cfg(target_os = "linux")]
 pub mod restart;
 #[cfg(target_os = "linux")]

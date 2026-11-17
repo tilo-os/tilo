@@ -1714,7 +1714,7 @@ impl ResourceApp for MailShell {
     /// The person's accounts, kept by Settings, and the directory of their
     /// identities, kept by Contacts: both theirs, read here for the
     /// mailboxes and the recipients they name.
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
         ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
     ];
@@ -1930,9 +1930,9 @@ mod tests {
                 .collect();
             let mut alice = TestApp::<MailShell>::new().unwrap();
             let mut joined =
-                automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
                     .unwrap();
-            let mut bob = TestApp::<MailShell>::with_workspace_record(&mut joined).unwrap();
+            let mut bob = TestApp::<MailShell>::with_workspace_resource(&mut joined).unwrap();
             let handed = alice.content().put(&file).unwrap();
             alice
                 .call(
@@ -1968,9 +1968,9 @@ mod tests {
             );
 
             let mut later =
-                automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
                     .unwrap();
-            let carol = TestApp::<MailShell>::with_workspace_record(&mut later).unwrap();
+            let carol = TestApp::<MailShell>::with_workspace_resource(&mut later).unwrap();
             carol.content().put_public(&ciphertext).unwrap();
             assert_eq!(
                 crate::attachment_store::materialize(
@@ -2653,7 +2653,7 @@ mod reach_tests {
 }
 
 #[cfg(test)]
-mod own_record_tests {
+mod own_resource_tests {
     /// A window naming no record opens the person's own mailbox, never the
     /// workspace's: a reader of the workspace keeps their own mail like
     /// anyone else, and no other member reads it.
@@ -2662,11 +2662,11 @@ mod own_record_tests {
         let definition = ui::framework::definition::<super::MailShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
         let own = definition
-            .member_record_of(&person)
+            .member_resource_of(&person)
             .expect("each member keeps their own Mail record");
         assert_eq!(
             own.id,
-            ui::record::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()
+            ui::resource::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()
         );
         assert_eq!(own.kind.as_str(), "mail.mailbox");
     }

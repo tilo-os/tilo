@@ -23,14 +23,14 @@ pub enum SaveState {
     Failed(String),
 }
 
-impl From<&crate::record::RecordSaveStatus> for SaveState {
-    fn from(status: &crate::record::RecordSaveStatus) -> Self {
-        use crate::record::RecordSaveStatus;
+impl From<&crate::resource::ResourceSaveStatus> for SaveState {
+    fn from(status: &crate::resource::ResourceSaveStatus) -> Self {
+        use crate::resource::ResourceSaveStatus;
         match status {
-            RecordSaveStatus::Saved => Self::Saved,
-            RecordSaveStatus::Saving => Self::Saving,
-            RecordSaveStatus::Failed(reason) => Self::Failed(reason.clone()),
-            RecordSaveStatus::MemoryOnly => Self::Idle,
+            ResourceSaveStatus::Saved => Self::Saved,
+            ResourceSaveStatus::Saving => Self::Saving,
+            ResourceSaveStatus::Failed(reason) => Self::Failed(reason.clone()),
+            ResourceSaveStatus::MemoryOnly => Self::Idle,
         }
     }
 }

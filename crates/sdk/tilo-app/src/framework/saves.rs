@@ -12,14 +12,14 @@
 //! "Saved" once.
 //!
 //! An app that also persists outside its record (a file it writes) reports
-//! those saves through [`Saves`] ([`RecordEnv::saves`](super::RecordEnv::saves)),
+//! those saves through [`Saves`] ([`ResourceEnv::saves`](super::ResourceEnv::saves)),
 //! and the same surface says them. It never shows a save pill, a "Saving…"
 //! line or a "Saved" notice of its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui_core::record::RecordSaveStatus;
+use ui_core::resource::ResourceSaveStatus;
 use ui_core::time::Instant;
 use ui_core::{SaveAction, SaveState, SaveStatusSurface};
 
@@ -106,7 +106,7 @@ pub(crate) struct SaveIndicator {
     saves: Saves,
     /// The record's save is to be submitted again, not yet taken by the
     /// host.
-    retry_record: bool,
+    retry_resource: bool,
     /// The notification raised for a save that gave up out of sight.
     notices: super::save_notice::SaveNotices,
     /// The app's name, which that notification says the changes are in.
@@ -119,7 +119,7 @@ impl SaveIndicator {
             surface: SaveStatusSurface::new(),
             record: None,
             saves,
-            retry_record: false,
+            retry_resource: false,
             notices: super::save_notice::SaveNotices::new(),
             app,
         }
@@ -128,11 +128,11 @@ impl SaveIndicator {
     /// The host reported the record's durability.
     /// Said in the window's bar at once: a save lands or fails outside any
     /// sync of the window, and the window shows it without one.
-    pub(crate) fn record(&mut self, status: &RecordSaveStatus, now: Instant) {
+    pub(crate) fn record(&mut self, status: &ResourceSaveStatus, now: Instant) {
         self.record = Some(match status {
             // What it means for the person, not the storage error behind it
             // (a path, an errno), which goes to the log.
-            RecordSaveStatus::Failed(reason) => {
+            ResourceSaveStatus::Failed(reason) => {
                 tracing::warn!(%reason, "the window's record failed to save");
                 SaveState::Failed(ui_core::i18n::widget_text("save-status-failed-detail"))
             }
@@ -206,7 +206,7 @@ impl SaveIndicator {
     /// shows; a save still in flight starts its wait now.
     pub(crate) fn settle_for_capture(&mut self, now: Instant) {
         self.surface = SaveStatusSurface::new();
-        self.retry_record = false;
+        self.retry_resource = false;
         self.follow(now);
         self.present();
     }
@@ -215,7 +215,7 @@ impl SaveIndicator {
     /// or both.
     fn ask_retry(&mut self) {
         if self.record.as_ref().is_some_and(unsettled) {
-            self.retry_record = true;
+            self.retry_resource = true;
         }
         if self.saves.state().as_ref().is_some_and(unsettled) {
             self.saves.ask_retry();
@@ -229,8 +229,8 @@ impl SaveIndicator {
     }
 
     /// Whether the record's save is to be submitted again, once.
-    pub(crate) fn take_record_retry(&mut self) -> bool {
-        std::mem::take(&mut self.retry_record)
+    pub(crate) fn take_resource_retry(&mut self) -> bool {
+        std::mem::take(&mut self.retry_resource)
     }
 
     /// When the surface next moves along by itself.
@@ -282,17 +282,17 @@ mod tests {
             init();
             let t0 = ui_core::time::now();
             let mut indicator = SaveIndicator::new(Saves::default(), "Probe");
-            indicator.record(&RecordSaveStatus::Saving, t0);
+            indicator.record(&ResourceSaveStatus::Saving, t0);
             indicator.sync(at(t0, 9));
             assert_eq!(indicator.said(), None, "nothing before the stall");
             assert_eq!(ui_core::window_toolbar::notice(), None, "the bar is quiet");
-            indicator.record(&RecordSaveStatus::Saved, at(t0, 9));
+            indicator.record(&ResourceSaveStatus::Saved, at(t0, 9));
             assert_eq!(
                 indicator.said(),
                 None,
                 "no Saved for a save nobody waited on"
             );
-            assert!(!indicator.take_record_retry());
+            assert!(!indicator.take_resource_retry());
         }
 
         phase a_stalled_record_save_speaks_at_the_stall_and_retries_once;
@@ -300,7 +300,7 @@ mod tests {
             init();
             let t0 = ui_core::time::now();
             let mut indicator = SaveIndicator::new(Saves::default(), "Probe");
-            indicator.record(&RecordSaveStatus::Saving, t0);
+            indicator.record(&ResourceSaveStatus::Saving, t0);
             assert_eq!(
                 indicator.next_wake_deadline(),
                 Some(at(t0, SAVE_STALL.as_secs())),
@@ -316,9 +316,9 @@ mod tests {
                 Some("Couldn't save yet. Retrying…"),
                 "the window's bar says it"
             );
-            assert!(indicator.take_record_retry(), "the stall submits once more");
-            assert!(!indicator.take_record_retry());
-            indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
+            assert!(indicator.take_resource_retry(), "the stall submits once more");
+            assert!(!indicator.take_resource_retry());
+            indicator.record(&ResourceSaveStatus::Saved, at(t0, 12));
             assert_eq!(
                 indicator.said().as_deref(),
                 Some("Saved"),
@@ -334,16 +334,16 @@ mod tests {
             init();
             let t0 = ui_core::time::now();
             let mut indicator = SaveIndicator::new(Saves::default(), "Probe");
-            indicator.record(&RecordSaveStatus::Saving, t0);
+            indicator.record(&ResourceSaveStatus::Saving, t0);
             indicator.follow(at(t0, SAVE_STALL.as_secs()));
-            indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
+            indicator.record(&ResourceSaveStatus::Saved, at(t0, 12));
             assert_eq!(indicator.said().as_deref(), Some("Saved"));
             indicator.settle_for_capture(at(t0, 12));
             assert_eq!(indicator.said(), None, "a landed save says nothing");
-            assert!(!indicator.take_record_retry(), "the stall's retry is gone");
+            assert!(!indicator.take_resource_retry(), "the stall's retry is gone");
 
             let mut failed = SaveIndicator::new(Saves::default(), "Probe");
-            failed.record(&RecordSaveStatus::Failed("The disk is full".into()), t0);
+            failed.record(&ResourceSaveStatus::Failed("The disk is full".into()), t0);
             failed.settle_for_capture(at(t0, 30));
             assert_eq!(
                 failed.failure(),
@@ -357,7 +357,7 @@ mod tests {
             init();
             let t0 = ui_core::time::now();
             let mut indicator = SaveIndicator::new(Saves::default(), "Probe");
-            indicator.record(&RecordSaveStatus::Failed("The disk is full".into()), t0);
+            indicator.record(&ResourceSaveStatus::Failed("The disk is full".into()), t0);
             indicator.sync(t0);
             assert_eq!(
                 indicator.failure(),
@@ -382,17 +382,17 @@ mod tests {
             press_try_again();
             indicator.sync(at(t0, 601));
             assert!(
-                indicator.take_record_retry(),
+                indicator.take_resource_retry(),
                 "Try again submits the record again"
             );
-            indicator.record(&RecordSaveStatus::Saving, at(t0, 602));
+            indicator.record(&ResourceSaveStatus::Saving, at(t0, 602));
             indicator.sync(at(t0, 602));
             assert_eq!(
                 ui_core::window_toolbar::notice().as_ref(),
                 Some(&held),
                 "it stands through the retry"
             );
-            indicator.record(&RecordSaveStatus::Saved, at(t0, 603));
+            indicator.record(&ResourceSaveStatus::Saved, at(t0, 603));
             indicator.sync(at(t0, 603));
             assert_eq!(indicator.failure(), None);
             assert_eq!(
@@ -410,7 +410,7 @@ mod tests {
             let t0 = ui_core::time::now();
             let saves = Saves::default();
             let mut indicator = SaveIndicator::new(saves.clone(), "Probe");
-            indicator.record(&RecordSaveStatus::Saved, t0);
+            indicator.record(&ResourceSaveStatus::Saved, t0);
             saves.saving();
             indicator.sync(at(t0, 3));
             assert_eq!(indicator.said(), None);
@@ -426,7 +426,7 @@ mod tests {
             assert!(saves.take_retry(), "the app is asked to save again");
             assert!(!saves.take_retry());
             assert!(
-                !indicator.take_record_retry(),
+                !indicator.take_resource_retry(),
                 "the record was stored; only the app's save retries"
             );
             saves.saved();
@@ -452,7 +452,7 @@ mod tests {
                 let t0 = ui_core::time::now();
                 let mut indicator = SaveIndicator::new(Saves::default(), "Notes");
                 indicator.notices.set_notifier(recording.clone());
-                indicator.record(&RecordSaveStatus::Saving, t0);
+                indicator.record(&ResourceSaveStatus::Saving, t0);
                 indicator.sync(at(t0, 21));
                 (indicator, t0)
             };
@@ -474,12 +474,12 @@ mod tests {
             assert_eq!(shown[0].action.as_deref(), Some("Try again"));
             let tag = shown[0].tag.clone();
             // The retry the stall asked for on the way.
-            let _ = indicator.take_record_retry();
-            assert!(!indicator.take_record_retry());
+            let _ = indicator.take_resource_retry();
+            assert!(!indicator.take_resource_retry());
             indicator.notices.click();
             indicator.sync(at(t0, 24));
             assert!(
-                indicator.take_record_retry(),
+                indicator.take_resource_retry(),
                 "Try again submits the record"
             );
             assert_eq!(out_of_sight.withdrawn(), [tag], "and takes it down");
@@ -492,7 +492,7 @@ mod tests {
             ui_core::window_toolbar::show_edited(false);
             let t0 = ui_core::time::now();
             let mut indicator = SaveIndicator::new(Saves::default(), "Probe");
-            indicator.record(&RecordSaveStatus::Saving, t0);
+            indicator.record(&ResourceSaveStatus::Saving, t0);
             assert!(
                 !ui_core::window_toolbar::edited(),
                 "a save under way marks nothing: it may land at once"
@@ -502,13 +502,13 @@ mod tests {
                 ui_core::window_toolbar::edited(),
                 "a stalled save is unsaved work"
             );
-            indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
+            indicator.record(&ResourceSaveStatus::Saved, at(t0, 12));
             assert!(
                 !ui_core::window_toolbar::edited(),
                 "the save that lands takes the mark down without a sync"
             );
             indicator.record(
-                &RecordSaveStatus::Failed("The disk is full".into()),
+                &ResourceSaveStatus::Failed("The disk is full".into()),
                 at(t0, 13),
             );
             assert!(

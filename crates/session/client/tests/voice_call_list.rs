@@ -116,7 +116,7 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
         let owner = &owner;
         let open = CallOperation::Open {
             app_id: CHAT.into(),
-            record_id: String::new(),
+            document_id: String::new(),
             channel_id: channel.clone(),
         };
         async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }
@@ -208,7 +208,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
         let owner = &owner;
         let open = CallOperation::Open {
             app_id: CHAT.into(),
-            record_id: String::new(),
+            document_id: String::new(),
             channel_id: channel.clone(),
         };
         async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }

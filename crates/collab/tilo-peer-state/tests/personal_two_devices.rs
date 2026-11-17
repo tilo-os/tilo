@@ -18,8 +18,8 @@ use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
 use ui::permissions::MemberId;
-use ui::record::ResourceType;
-use ui::record::person::PersonRecords;
+use ui::resource::ResourceType;
+use ui::resource::person::PersonResources;
 use web_time::SystemTime;
 
 const APP: &str = "tube";
@@ -139,16 +139,17 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
 /// One device's copy of the app's record of `KIND`, opened the way the app
 /// opens it: in the person's own scope, under the id every device derives
 /// for that kind.
-fn app_record(person: &str) -> ui::record::person::StoredRecord {
-    let mut owners =
-        ui::record::RecordOwners::with_store(std::rc::Rc::new(durable_store::MemoryStore::new()));
-    PersonRecords::open(&mut owners, NOTES, MemberId::person(person.to_owned()))
+fn app_document(person: &str) -> ui::resource::person::StoredResource {
+    let mut owners = ui::resource::ResourceOwners::with_store(std::rc::Rc::new(
+        durable_store::MemoryStore::new(),
+    ));
+    PersonResources::open(&mut owners, NOTES, MemberId::person(person.to_owned()))
         .unwrap()
-        .open_record(ResourceType::new(KIND), &|_| Ok(()))
+        .open_resource(ResourceType::new(KIND), &|_| Ok(()))
         .unwrap()
 }
 
-fn chapter(record: &ui::record::person::StoredRecord) -> Option<String> {
+fn chapter(record: &ui::resource::person::StoredResource) -> Option<String> {
     record
         .read(|doc| {
             doc.get(ROOT, "chapter")
@@ -159,7 +160,7 @@ fn chapter(record: &ui::record::person::StoredRecord) -> Option<String> {
         .flatten()
 }
 
-fn set_chapter(record: &ui::record::person::StoredRecord, value: &str) {
+fn set_chapter(record: &ui::resource::person::StoredResource, value: &str) {
     record
         .edit(true, |doc| {
             doc.put(ROOT, "chapter", value)
@@ -192,8 +193,8 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
 
     // Both devices' apps hold the record, on the one route their identity
     // root derives: the store's own key.
-    let on_a = app_record(&person);
-    let on_b = app_record(&person);
+    let on_a = app_document(&person);
+    let on_b = app_document(&person);
     let route = on_a
         .route()
         .expect("the person's cluster carries the record");

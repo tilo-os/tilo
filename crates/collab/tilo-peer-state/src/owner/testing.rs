@@ -26,8 +26,8 @@ pub mod governor;
 /// The record at `path` as the disk holds it: the index and one file per
 /// workspace, sorted by path.
 #[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
-    crate::owner::file_store::record_files(path).unwrap()
+pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    crate::owner::file_store::document_files(path).unwrap()
 }
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -75,7 +75,7 @@ pub fn own_host_hint_here(
 /// genesis the record's first write carries, admitted whole as any other write
 /// of the record is. A workspace that seals its records refuses the cleartext,
 /// so only a workspace that commits them as documents starts one this way.
-pub fn start_record(
+pub fn start_resource(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
     app: &str,
@@ -361,7 +361,7 @@ fn seeded(now: SystemTime) -> Seeded {
             .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],

@@ -372,7 +372,7 @@ pub(super) struct ActionRuntime {
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
-    pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
+    pub(super) bound_document_sync: Option<super::bound_document_sync::BoundDocumentSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     /// Publication refusals already logged, so a surface refused on every
@@ -492,7 +492,7 @@ impl ActionRuntime {
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
-            bound_record_sync: None,
+            bound_document_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             last_published_bound_route: None,
             refusals_logged: RefusalLog::default(),
@@ -624,7 +624,7 @@ impl AccessibilityRuntime {
 pub(super) struct PersistenceRuntime {
     pub(super) autosave: Option<app_state::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
-    pub(super) records: Option<crate::record::RecordSet>,
+    pub(super) records: Option<crate::resource::ResourceSet>,
     pub(super) workspace_index: Option<crate::state::DocumentReplica>,
 }
 

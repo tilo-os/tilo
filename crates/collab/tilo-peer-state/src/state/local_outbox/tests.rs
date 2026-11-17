@@ -92,7 +92,7 @@ fn local_edit(
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: "test.app".into(),
         cluster_id: peer.workspace_id().into(),
-        record_id: "tab:1".into(),
+        document_id: "tab:1".into(),
         envelope: Box::new(envelope),
         own: None,
     }
@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
             let NeighbourMsg::AppDocument {
                 peer,
                 cluster_id,
-                record_id,
+                document_id,
                 envelope,
                 ..
             } = &mut wrong
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
             };
             match field {
                 "workspace" => *cluster_id = "other-workspace".into(),
-                "record" => *record_id = "other-record".into(),
+                "record" => *document_id = "other-record".into(),
                 "peer" => *peer = peer.wrapping_add(1),
                 _ => envelope.payload.push(1),
             }

@@ -144,7 +144,7 @@ fn fixture() -> Fixture {
 
 /// The owner's record at `path`, as the store's own reader gives it back: the
 /// record is an index and one file per workspace beside it.
-fn record_at(path: &std::path::Path) -> serde_json::Value {
+fn document_at(path: &std::path::Path) -> serde_json::Value {
     serde_json::to_value(tilo_peer_state::owner::read_file(path).unwrap()).unwrap()
 }
 
@@ -218,7 +218,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
         .await
         .unwrap();
     let path = f.directory.path().join("native.json");
-    let stored = record_at(&path);
+    let stored = document_at(&path);
     let record = restart_journal(&f, &record.key);
     assert!(record.uncertain);
     let invocation = record.key.invocation;
@@ -233,7 +233,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
     assert!(!terminal.uncertain);
     assert_eq!(terminal.update, prepared.update);
     assert_eq!(
-        record_at(&path),
+        document_at(&path),
         stored,
         "the exact retry leaves the owner's record as it was"
     );

@@ -82,7 +82,7 @@ fn running(_: &str, _: &str) -> Option<Vec<u8>> {
 pub fn surfaces() -> collab_types::Surfaces {
     collab_types::Surfaces::from_source(std::sync::Arc::new(
         collab_types::surface::ContentSurfaces::new(
-            |record: &collab_types::Record<'_>, hash: &str| read(record.app, hash),
+            |record: &collab_types::WrittenDocument<'_>, hash: &str| read(record.app, hash),
         ),
     ))
 }

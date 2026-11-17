@@ -26,7 +26,7 @@ impl ShellPayloads for NeighbourPayloads {
         let Ok(NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             own,
             ..
@@ -38,7 +38,7 @@ impl ShellPayloads for NeighbourPayloads {
             Route {
                 app_id,
                 cluster_id,
-                record_id,
+                document_id,
                 own,
             },
             envelope,
@@ -55,7 +55,7 @@ impl ShellPayloads for NeighbourPayloads {
             peer: tilo_peer_state::peer_handle(author),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
-            record_id: route.record_id.clone(),
+            document_id: route.document_id.clone(),
             envelope: Box::new(op),
             own: route.own.clone(),
         })

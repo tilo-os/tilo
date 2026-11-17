@@ -29,7 +29,7 @@ impl Default for WorkLimit {
 impl WorkLimit {
     /// A metadata decode may use its entire validated record bound. Charging
     /// that bound avoids overrunning the caller's byte quantum on lookahead.
-    pub fn record_entries(self) -> usize {
+    pub fn entry_bound(self) -> usize {
         self.entries.min(self.metadata_bytes / MAX_METADATA)
     }
     /// This limit, refused when it allows no work or more than the store's
@@ -360,7 +360,7 @@ impl Sorter {
             return Ok(Step::Done(()));
         };
         let mut emitted = 0;
-        while self.stats.last_step_work < limit.record_entries() && emitted < limit.metadata_bytes {
+        while self.stats.last_step_work < limit.entry_bound() && emitted < limit.metadata_bytes {
             let Some(meta) = self.buffer.pop() else {
                 self.spill = None;
                 self.bytes = 0;
@@ -404,7 +404,7 @@ impl Sorter {
             return Ok(Step::Done(self.path(self.pass, 0)));
         }
         let mut emitted = 0;
-        while self.stats.last_step_work < limit.record_entries() && emitted < limit.metadata_bytes {
+        while self.stats.last_step_work < limit.entry_bound() && emitted < limit.metadata_bytes {
             if let Some((next, end)) = self.cleaning {
                 if next < end {
                     fs::remove_file(self.path(self.pass, next))?;

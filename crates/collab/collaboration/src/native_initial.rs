@@ -38,9 +38,9 @@ pub trait ComponentBinding {
 
 /// Why construction custody could not give a record's committed history.
 /// The record store reports each as its own open error
-/// (`ui::record::RecordOpenError`), in the same words.
+/// (`ui::resource::ResourceOpenError`), in the same words.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RecordReadError {
+pub enum ResourceReadError {
     /// The record the workspace sends this device only once it asks is not here
     /// yet: it was asked for.
     #[error("the record is on its way from the workspace")]
@@ -267,7 +267,7 @@ impl NativeConstruction {
                 bridge.wait_progress(seen, crate::time::Duration::from_millis(10));
             }
         }
-        manager.switch_native_record(binding.checkout())?;
+        manager.switch_native_resource(binding.checkout())?;
         let connected = manager.is_connected();
         let current = manager.primary_route().map(|witness| witness.route.clone());
         let observed = current.as_ref().and_then(|_| binding.admission_route());
@@ -618,7 +618,7 @@ impl InitialReadBridge {
     /// record opens as one without a bridge would. A record the workspace sends
     /// this device only once it asks
     /// ([`collab_types::document::DocumentId::arrives_on_demand`]) is asked for and
-    /// never waited on: [`RecordReadError::Arriving`] until it
+    /// never waited on: [`ResourceReadError::Arriving`] until it
     /// is here, and the store's readers are woken when it arrives. One the
     /// app's own channel answers never arrives committed: it opens without a
     /// committed read too, rather than arriving forever.
@@ -627,23 +627,23 @@ impl InitialReadBridge {
         app: &str,
         workspace: &str,
         checkout: &collab_types::document::DocumentCheckout,
-    ) -> Result<Option<CommittedDocument>, RecordReadError> {
+    ) -> Result<Option<CommittedDocument>, ResourceReadError> {
         if checkout.id.arrives_on_demand() {
             self.check_scope(app, Some(workspace))
-                .map_err(RecordReadError::Initialization)?;
+                .map_err(ResourceReadError::Initialization)?;
             if self.answered_by_own_channel(checkout) {
                 return Ok(None);
             }
             return self
                 .arrived(checkout)
-                .map_err(RecordReadError::Initialization)?
+                .map_err(ResourceReadError::Initialization)?
                 .map(Some)
-                .ok_or(RecordReadError::Arriving);
+                .ok_or(ResourceReadError::Arriving);
         }
-        self.record_waiting(app, workspace, checkout)
-            .map_err(RecordReadError::Initialization)
+        self.document_waiting(app, workspace, checkout)
+            .map_err(ResourceReadError::Initialization)
     }
-    fn record_waiting(
+    fn document_waiting(
         &self,
         app: &str,
         workspace: &str,
@@ -700,11 +700,11 @@ impl InitialReadBridge {
                 )
             },
         );
-        let record_kind = checkout.map(|checkout| checkout.kind.as_str().to_owned());
+        let resource_type = checkout.map(|checkout| checkout.kind.as_str().to_owned());
         let key = route.channel_id();
         if self.state.document_reads.joining(&key) {
             let tx = self.commands.upgrade().ok_or("native read worker ended")?;
-            if !enqueue_sdk_command(&tx, SdkCommand::Join(route, record_kind), &self.state) {
+            if !enqueue_sdk_command(&tx, SdkCommand::Join(route, resource_type), &self.state) {
                 return Err("native initial read queue unavailable".into());
             }
         }
@@ -820,7 +820,7 @@ impl InitialReadBridge {
         _app: &str,
         _workspace: &str,
         _checkout: &collab_types::document::DocumentCheckout,
-    ) -> Result<Option<CommittedDocument>, RecordReadError> {
+    ) -> Result<Option<CommittedDocument>, ResourceReadError> {
         match self.never {}
     }
     fn read_primary(&self) -> Result<CommittedDocument, String> {

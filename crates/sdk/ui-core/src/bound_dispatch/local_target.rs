@@ -128,7 +128,7 @@ impl ResourceReadRequest<'_> {
         if let Some(binding) = root.callback_binding() {
             binding
                 .enter()
-                .map_err(|e| refused("record_unavailable", format!("{e:?}")))?;
+                .map_err(|e| refused("resource_unavailable", format!("{e:?}")))?;
             if !self
                 .owners
                 .iter()
@@ -155,7 +155,7 @@ impl ResourceReadRequest<'_> {
                         }
                         resources
                     })
-                    .map_err(|e| refused("record_unavailable", format!("{e:?}")))?;
+                    .map_err(|e| refused("resource_unavailable", format!("{e:?}")))?;
                 self.owners.push(OwnerResources {
                     owner: binding,
                     resources,
@@ -164,7 +164,7 @@ impl ResourceReadRequest<'_> {
             }
         } else if root.has_separate_document_owner() {
             return Err(refused(
-                "record_unavailable",
+                "resource_unavailable",
                 "Separate document custody is unavailable",
             ));
         }

@@ -15,7 +15,7 @@ pub const HOST_PREFIX: &str = "host:";
 /// The launch id prefix of a window on its way: `window:` and its id.
 pub const WINDOW_PREFIX: &str = "window:";
 /// The launch id prefix of an app opening one of its records.
-pub const RECORD_PREFIX: &str = "record:";
+pub const RESOURCE_PREFIX: &str = "record:";
 /// The launch id prefix of an app opening content another app handed over.
 pub const CONTENT_PREFIX: &str = "content:";
 /// The launch id prefix of the tab a crashed app's notice opens under.
@@ -77,7 +77,7 @@ impl Launch {
                 open: None,
             });
         }
-        if let Some(rest) = launch.strip_prefix(RECORD_PREFIX) {
+        if let Some(rest) = launch.strip_prefix(RESOURCE_PREFIX) {
             let (app, record) = rest.split_once(':')?;
             return (!app.is_empty() && !record.is_empty()).then(|| Self::Record {
                 app: app.to_owned(),
@@ -153,7 +153,7 @@ impl Launch {
             Self::Package { app, .. } => app.clone(),
             Self::Host { desktop_id, .. } => format!("{HOST_PREFIX}{desktop_id}"),
             Self::Window { id } => format!("{WINDOW_PREFIX}{id}"),
-            Self::Record { app, record, .. } => format!("{RECORD_PREFIX}{app}:{record}"),
+            Self::Record { app, record, .. } => format!("{RESOURCE_PREFIX}{app}:{record}"),
             Self::Content { app, hash } => format!("{CONTENT_PREFIX}{app}:{hash}"),
             Self::Crashed { app } => format!("{CRASHED_PREFIX}{app}"),
         }

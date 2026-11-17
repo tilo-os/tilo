@@ -228,7 +228,7 @@ impl AuthorDirectory {
     }
 
     /// Name every actor this thread's mounts write as
-    /// ([`note_record_mount`]): a document its mounts share is written by
+    /// ([`note_resource_mount`]): a document its mounts share is written by
     /// each under its own author's actor, and history alone names none of
     /// them. An agent mount's actor, and one whose author is among `agents`
     /// (the workspace's agent members), is shown as that agent; a person
@@ -724,10 +724,14 @@ pub fn note_mount_actor(actor: &automerge::ActorId, author: &str, agent: Option<
 /// is `writer`: its author's handle for actions, its author's writer on the
 /// record for edits, and the record's writer for what the record wrote before
 /// (its creation, when this mount made it).
-pub fn note_record_mount(writer: Option<&automerge::ActorId>, author: &str, agent: Option<&str>) {
+pub fn note_resource_mount(writer: Option<&automerge::ActorId>, author: &str, agent: Option<&str>) {
     note_mount_actor(&automerge::ActorId::from(author.as_bytes()), author, agent);
     if let Some(writer) = writer {
-        note_mount_actor(&crate::record::author_writer(writer, author), author, agent);
+        note_mount_actor(
+            &crate::resource::author_writer(writer, author),
+            author,
+            agent,
+        );
         note_mount_actor(writer, author, agent);
     }
 }
@@ -887,9 +891,9 @@ mod noted_mount_tests {
         let reader = automerge::ActorId::random();
         let agent = automerge::ActorId::random();
         let stranger = automerge::ActorId::random();
-        note_record_mount(Some(&phone), "You", None);
+        note_resource_mount(Some(&phone), "You", None);
         note_mount_actor(&reader, "Reading agent", None);
-        note_record_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
+        note_resource_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
         let mut directory = AuthorDirectory::new();
         directory.register_noted_mounts(&["Reading agent".into()], &|_| None);
         let name = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
@@ -933,12 +937,13 @@ mod noted_mount_tests {
         let record = automerge::ActorId::random();
         let key = "c0ffee00c0ffee00c0ffee00c0ffee00";
         let pink = (0xee, 0x83, 0xaf);
-        note_record_mount(Some(&record), key, None);
+        note_resource_mount(Some(&record), key, None);
         let mut directory = AuthorDirectory::new();
         directory.register_noted_mounts(&[], &|user| {
             (user == key).then(|| ("Eager Dolphin".to_owned(), pink))
         });
-        let author = directory.resolve(&crate::record::author_writer(&record, key).to_hex_string());
+        let author =
+            directory.resolve(&crate::resource::author_writer(&record, key).to_hex_string());
         assert_eq!(author.name, "Eager Dolphin");
         assert_eq!(author.rgb(), pink);
     }
@@ -946,16 +951,16 @@ mod noted_mount_tests {
     #[test]
     fn every_mount_names_its_own_writer_on_a_shared_record_and_one_identity_per_author() {
         let record = automerge::ActorId::random();
-        note_record_mount(Some(&record), "Ada", None);
-        note_record_mount(Some(&record), "Scout", None);
-        note_record_mount(Some(&record), "agent-task:scout", Some("Scout"));
+        note_resource_mount(Some(&record), "Ada", None);
+        note_resource_mount(Some(&record), "Scout", None);
+        note_resource_mount(Some(&record), "agent-task:scout", Some("Scout"));
         let mut directory = AuthorDirectory::new();
         directory.register_noted_mounts(&["Scout".into()], &|_| None);
         let resolve = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string());
-        let ada = resolve(&crate::record::author_writer(&record, "Ada"));
+        let ada = resolve(&crate::resource::author_writer(&record, "Ada"));
         assert_eq!(ada.name, "Ada");
         assert_eq!(
-            resolve(&crate::record::author_writer(&record, "Scout")).name,
+            resolve(&crate::resource::author_writer(&record, "Scout")).name,
             "Scout · Agent",
             "a second mount's edits are its own, not the first mount's"
         );
@@ -970,8 +975,8 @@ mod noted_mount_tests {
             (ada.identity_short.as_str(), ada.avatar_hue),
             "one member, one identity, whichever actor wrote"
         );
-        let agent_task = resolve(&crate::record::author_writer(&record, "agent-task:scout"));
-        let scout = resolve(&crate::record::author_writer(&record, "Scout"));
+        let agent_task = resolve(&crate::resource::author_writer(&record, "agent-task:scout"));
+        let scout = resolve(&crate::resource::author_writer(&record, "Scout"));
         assert_eq!(agent_task.name, scout.name);
         assert_eq!(agent_task.identity_short, scout.identity_short);
     }

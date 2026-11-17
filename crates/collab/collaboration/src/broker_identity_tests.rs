@@ -5,14 +5,14 @@ impl SdkCertifiedIdentity for runtime_identity_host::SigningIdentity {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         runtime_identity_host::SigningIdentity::group_keys(
             self,
             workspace_id,
             app_id,
-            record_id,
+            document_id,
             known_generation,
         )
     }
@@ -32,14 +32,14 @@ impl SdkCertifiedIdentity for runtime_identity_host::SigningIdentity {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
         runtime_identity_host::SigningIdentity::sign_collaboration_op(
             self,
             workspace_id,
             app_id,
-            record_id,
+            document_id,
             unsigned_op,
         )
     }

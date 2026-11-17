@@ -14,7 +14,7 @@ impl ResourceRoot {
     /// carries, each resolved by id as [`Self::resource_for`] resolves one
     /// the tree leaves out: what a listing reads to reach every item.
     pub(super) fn past_page_all(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        let Some(table) = self.resource.record_table else {
+        let Some(table) = self.resource.resource_table else {
             return Vec::new();
         };
         let current = if self.typed.follows(doc) {
@@ -24,7 +24,7 @@ impl ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let parts = self.typed.children_parts(&*state);
-        let every = tilo_resource::table::record_items(table, &*state);
+        let every = tilo_resource::table::resource_items(table, &*state);
         let mut children = Vec::new();
         for collection in parts
             .items
@@ -58,7 +58,7 @@ impl ResourceRoot {
     /// [`Self::resources_past_page`] counted without building it: how many
     /// items the published pages leave out, across the record's collections.
     pub(super) fn past_page_count(&self, doc: &AutoCommit) -> usize {
-        let Some(table) = self.resource.record_table else {
+        let Some(table) = self.resource.resource_table else {
             return 0;
         };
         let current = if self.typed.follows(doc) {
@@ -68,7 +68,7 @@ impl ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let parts = self.typed.children_parts(&*state);
-        let every = tilo_resource::table::record_items(table, &*state);
+        let every = tilo_resource::table::resource_items(table, &*state);
         parts
             .items
             .iter()
@@ -88,7 +88,7 @@ impl ResourceRoot {
     /// collections' items without building a resource for each: what a name
     /// lookup scans.
     pub(super) fn past_page_names(&self, doc: &AutoCommit) -> Vec<(String, String)> {
-        let Some(table) = self.resource.record_table else {
+        let Some(table) = self.resource.resource_table else {
             return Vec::new();
         };
         let current = if self.typed.follows(doc) {
@@ -98,7 +98,7 @@ impl ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let parts = self.typed.children_parts(&*state);
-        let every = tilo_resource::table::record_items(table, &*state);
+        let every = tilo_resource::table::resource_items(table, &*state);
         let mut labels = Vec::new();
         for collection in parts
             .items
@@ -125,7 +125,7 @@ impl ResourceRoot {
         offset: usize,
         take: usize,
     ) -> Vec<ResourceSpec> {
-        let Some(table) = self.resource.record_table else {
+        let Some(table) = self.resource.resource_table else {
             return Vec::new();
         };
         let current = if self.typed.follows(doc) {
@@ -135,7 +135,7 @@ impl ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let parts = self.typed.children_parts(&*state);
-        let every = tilo_resource::table::record_items(table, &*state);
+        let every = tilo_resource::table::resource_items(table, &*state);
         let mut children = Vec::new();
         let mut skipped = 0usize;
         for collection in parts

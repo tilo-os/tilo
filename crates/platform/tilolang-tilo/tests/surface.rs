@@ -879,10 +879,10 @@ action attach(b: Board, list: todo.TodoList) {
         let root = replica.host.root_of(&meta.app).unwrap().id_string();
         replica.commit();
         collab_types::app_surface::register_package(&meta.app, &surface_toml(&[&meta], &SourceWords).unwrap());
-        let record = collab_types::Record {
+        let record = collab_types::WrittenDocument {
             workspace: "workspace",
             app: &meta.app,
-            record: "r",
+            document: "r",
         };
         let refuse = |replica: &mut Replica, start: &[automerge::ChangeHash]| {
             let change = replica.doc.save_after(start);

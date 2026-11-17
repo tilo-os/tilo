@@ -429,7 +429,7 @@ fn a_peer_fetches_it(
         let hash = address(part);
         grace_inbox
             .borrow_mut()
-            .push_back(CollabEvent::RecordContent {
+            .push_back(CollabEvent::DocumentContent {
                 route: peer_route.clone(),
                 hash: hash.to_owned(),
                 bytes: offers[hash].clone(),

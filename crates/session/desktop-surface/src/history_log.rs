@@ -1,5 +1,5 @@
 //! History for a desktop kept as one document.
-//! A host that keeps its desktop as a shared desktop record ([`tilo_desktop_model::shared_record`])
+//! A host that keeps its desktop as a shared desktop record ([`tilo_desktop_model::shared_resource`])
 //! stamps each change of it with when it was made and who made it ([`record`]); so does a host that
 //! keeps the layout's own document ([`tilo_desktop_model::desktop_doc`]).
 use std::collections::BTreeMap;
@@ -8,7 +8,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::shared_record;
+use tilo_desktop_model::shared_resource;
 
 /// The desktop a host value carries: `{ tree, records?, authors? }` , or a bare tree.
 fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
@@ -28,7 +28,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
     let Some(desktop) = desktop_of(value) else {
         return false;
     };
-    match shared_record::write(log, &desktop) {
+    match shared_resource::write(log, &desktop) {
         Ok(true) => {
             commit(log, author, time);
             true
@@ -44,12 +44,12 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
 /// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the
 /// shell's history says who did it and when.
 pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
-    shared_record::commit_change(doc, author, time, None);
+    shared_resource::commit_change(doc, author, time, None);
 }
 
 /// The author a change of a desktop log names.
 pub fn change_author(message: Option<&str>) -> Option<String> {
-    shared_record::change_author(message)
+    shared_resource::change_author(message)
 }
 
 /// The name of the workspace in front on a desktop a host value carries, as a person reads it: the

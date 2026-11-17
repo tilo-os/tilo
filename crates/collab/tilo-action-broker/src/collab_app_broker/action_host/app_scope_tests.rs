@@ -528,7 +528,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
         peer_id: provider,
         app_id: app_id.into(),
         cluster_id: workspace_id.clone(),
-        record_id: "atlas".into(),
+        document_id: "atlas".into(),
     }]);
     DirectoryFixture {
         state,

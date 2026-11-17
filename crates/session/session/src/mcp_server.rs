@@ -1419,7 +1419,7 @@ enum ApiAsk {
     /// that app's record.
     Change {
         actor: tilo_action_policy::Acting,
-        change: tilo_actions::remote::RecordChange,
+        change: tilo_actions::remote::ResourceChange,
         done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
     },
 }
@@ -2376,13 +2376,13 @@ impl ActionHost for Host {
     /// The records a connection reads outside their apps: the workspace's own, as the broker
     /// decides them, and the records of packages this session runs itself (the shell), which its
     /// services keep: a program reads them by the app, as it reads Notes', with no case of its own.
-    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.service_records()))
     }
 
     /// The changes a connection makes to those records: a package the session runs itself is
     /// changed through its own services, and any other app's at its record's origin.
-    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.service_records()))
     }
 }

@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
 const MAX_ENTRIES: usize = 200;
@@ -76,7 +76,7 @@ impl BookFiles {
 pub(crate) struct LocalLibrary {
     /// Where the grants are kept: the [`BookFiles`] record and this
     /// device's id. `None` keeps them in memory only.
-    store: Option<(PersonRecord<BookFiles>, String)>,
+    store: Option<(PersonResource<BookFiles>, String)>,
     pub(crate) books: HashMap<String, PathBuf>,
     pub(crate) watched_folders: Vec<PathBuf>,
 }
@@ -92,7 +92,7 @@ impl std::fmt::Debug for LocalLibrary {
 
 impl LocalLibrary {
     /// `device`'s grants in `record`, which [`Self::save`] writes back to.
-    pub(crate) fn load(record: PersonRecord<BookFiles>, device: String) -> Self {
+    pub(crate) fn load(record: PersonResource<BookFiles>, device: String) -> Self {
         let stored = record.with(|files| {
             Self::from_stored(&files.devices.get(&device).cloned().unwrap_or_default())
         });

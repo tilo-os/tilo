@@ -289,20 +289,20 @@ impl BrowserWindow {
 
     pub(crate) fn attach_personal_bookmarks(
         &mut self,
-        record: ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>,
+        record: ui::framework::PersonResource<crate::personal_bookmarks::PersonalBookmarks>,
     ) {
         self.page.attach_personal_bookmarks(record);
     }
     pub(crate) fn attach_history(
         &mut self,
-        record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+        record: ui::framework::PersonResource<crate::history::BrowsingHistory>,
     ) {
         self.page.attach_history(record);
     }
 
     pub(crate) fn attach_address_book(
         &mut self,
-        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+        book: ui::framework::PersonResource<crate::autofill::AddressBook>,
     ) {
         self.page.attach_address_book(book);
     }
@@ -781,7 +781,7 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
                 recovery: None,
                 view_error: None,
                 view_retry: None,
-                record_error: None,
+                resource_error: None,
                 record_retry: None,
                 record_retry_target: None,
                 teardown_error: Some(error),

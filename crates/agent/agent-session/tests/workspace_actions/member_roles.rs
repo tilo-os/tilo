@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
-use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
+use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
@@ -52,7 +52,7 @@ impl Membership {
     }
 }
 
-impl WorkspaceRecordsLink for Membership {
+impl WorkspaceDocumentsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
@@ -372,9 +372,9 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     );
     // The host's own person files an issue for members to comment on: in
     // the parts the tracker keeps its issues in, published as one chain.
-    let issues = ui::record::chain_resource_id(&ui::record::DocumentId::derived(
+    let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",
-        &ui::record::DocumentId::workspace_default(),
+        &ui::resource::DocumentId::workspace_default(),
     ));
     let filed = browser
         .invoke(request(

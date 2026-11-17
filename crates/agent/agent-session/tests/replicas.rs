@@ -47,7 +47,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
         &MemberId::person("host"),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![kept.save()],
         },
     )
@@ -166,7 +166,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
         &MemberId::person("writer"),
         ReplicaActor::Agent,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![bytes(snapshot)],
         },
     )
@@ -250,7 +250,7 @@ fn joined(
         &MemberId::person("writer"),
         ReplicaActor::Agent,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![changes],
         },
     )
@@ -274,7 +274,7 @@ fn only_the_creator_seeds_a_record() {
     // The workspace's own record (Chat's) is not handed over as a copy.
     for definition in tilo_agent_session::component_apps()
         .into_iter()
-        .filter(|definition| !definition.keeps_workspace_record())
+        .filter(|definition| !definition.keeps_workspace_resource())
     {
         let app = definition.app_id();
         let mut page = crate::common::open(
@@ -453,7 +453,7 @@ fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica
             standing: bot_standing(kinds),
         },
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![bytes(snapshot)],
         },
     )
@@ -574,7 +574,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
             },
         },
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![doc.save()],
         },
     )
@@ -585,7 +585,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
     let post = serde_json::json!({ "channel": channel, "text": "hello" });
     page.invoke(
         &tilo_actions::api::ActionAddress::new(
-            ui::record::chain_resource_id(&chat::parts::chain()),
+            ui::resource::chain_resource_id(&chat::parts::chain()),
             "post",
         ),
         post.as_object().unwrap(),
@@ -594,21 +594,21 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
     .unwrap();
     let part = chat::parts::part(0);
     assert!(bot.keeps_beside(&part));
-    let started = page.take_record_mutations().unwrap();
+    let started = page.take_document_mutations().unwrap();
     assert!(
         matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == part),
         "the page started the first part"
     );
     for (record, mutation) in &started {
-        bot.apply_record(record, mutation).unwrap();
+        bot.apply_document(record, mutation).unwrap();
     }
     // The bot's host reads what the bot holds through the record API: the
     // chain joined, or its head, the newest part alone.
     let held = tilo_actions::remote::HeldCopies(
-        std::iter::once(bot.record_id().clone())
-            .chain(bot.records_beside())
+        std::iter::once(bot.document_id().clone())
+            .chain(bot.resources_beside())
             .filter_map(|record| {
-                let bytes = bot.read_record(&record, |doc| doc.clone().save())?;
+                let bytes = bot.read_resource(&record, |doc| doc.clone().save())?;
                 Some((record.route().to_owned(), bytes))
             })
             .collect(),
@@ -616,10 +616,10 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
     let chain = chat::parts::chain().route().to_owned();
     for (record, joined) in [
         (chain.clone(), true),
-        (tilo_actions::record_sync::chain_head(&chain), false),
+        (tilo_actions::document_sync::chain_head(&chain), false),
     ] {
-        let ask = tilo_actions::remote::RecordAsk {
-            address: tilo_actions::remote::RecordAddress {
+        let ask = tilo_actions::remote::ResourceAsk {
+            address: tilo_actions::remote::ResourceAddress {
                 app: "so.tilo.chat".into(),
                 record,
             },
@@ -687,7 +687,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             standing,
         },
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![doc.save()],
         },
     )
@@ -710,16 +710,16 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let arguments = serde_json::json!({ "channel": channel, "text": "welcome!" });
     bot.invoke(&post, arguments.as_object().unwrap(), false)
         .unwrap();
-    let started = bot.take_record_mutations().unwrap();
+    let started = bot.take_document_mutations().unwrap();
     assert!(
         matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == chat::parts::part(0)),
         "the bot started the first part"
     );
     for (record, mutation) in &started {
-        page.apply_record(record, mutation).unwrap();
+        page.apply_document(record, mutation).unwrap();
     }
     let posted: Vec<(ui::tilo_resource::MemberId, String)> = page
-        .read_record(&chat::parts::part(0), chat::messages::read_part)
+        .read_resource(&chat::parts::part(0), chat::messages::read_part)
         .unwrap()
         .messages
         .iter()
@@ -768,7 +768,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
             agent_session: Some("s1".into()),
         },
         Seed::Existing {
-            record: made.record_id().clone(),
+            record: made.document_id().clone(),
             changes: vec![genesis.clone()],
         },
     )
@@ -858,7 +858,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
                 agent_session: None,
             },
             Seed::Existing {
-                record: made.record_id().clone(),
+                record: made.document_id().clone(),
                 changes: vec![genesis.clone()],
             },
         )

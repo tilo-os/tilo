@@ -195,7 +195,7 @@ mod tests {
                         source: "message-created".into(),
                         filter: serde_json::Map::new(),
                     },
-                    TriggerSpec::RecordChanged {
+                    TriggerSpec::ResourceChanged {
                         kind: "chat.workspace".into(),
                         actions: vec!["post".into()],
                         fields: Vec::new(),
@@ -209,7 +209,7 @@ mod tests {
             assert!(!r.appearance);
             assert_eq!(
                 r.triggers,
-                BTreeSet::from(["connector".to_owned(), "record_changed".to_owned()])
+                BTreeSet::from(["connector".to_owned(), "resource_changed".to_owned()])
             );
         }
     }

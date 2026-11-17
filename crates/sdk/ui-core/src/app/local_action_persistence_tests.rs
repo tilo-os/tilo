@@ -57,7 +57,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
     for binding in &fixture.bindings {
         fixture
             .records
-            .try_flush_record(&binding.checkout.id)
+            .try_flush_resource(&binding.checkout.id)
             .unwrap();
     }
     let recovered = fixture
@@ -217,7 +217,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
     assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
     fixture
         .records
-        .try_flush_record(&fixture.bindings[0].checkout.id)
+        .try_flush_resource(&fixture.bindings[0].checkout.id)
         .unwrap();
     fixture.app.local_input_capture = Default::default();
     fixture.app.restore_local_input_checkpoint(&route).unwrap();

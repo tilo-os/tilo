@@ -11,7 +11,7 @@
 //! an agent reads and changes through its actions.
 //!
 //! Each app's record is the one its windows open: once the session holds the workspace the
-//! person is in, it keeps the record there ([`tilo_service::Service::workspace_record`]), so the
+//! person is in, it keeps the record there ([`tilo_service::Service::workspace_resource`]), so the
 //! seed data is written into the workspace's record of the app, and the app's window, the REPL,
 //! an agent's programs and the canvas read and change that one record. A record the workspace
 //! holds already takes the place of the seed data.

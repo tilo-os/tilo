@@ -80,7 +80,7 @@ pub const JOIN_COMPLETED_REFRESH: u16 = 409;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentRow {
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub heads: Vec<String>,
 }
 

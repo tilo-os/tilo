@@ -174,9 +174,9 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
 /// A pass read `document`, record `id` of `store`: the pass reads it again once its frontier moved,
 /// whoever wrote it.
 #[inline(never)]
-pub(crate) fn read_record(
-    store: &crate::record::RecordStore,
-    id: &crate::record::DocumentId,
+pub(crate) fn read_resource(
+    store: &crate::resource::ResourceStore,
+    id: &crate::resource::DocumentId,
     document: &automerge::AutoCommit,
 ) {
     let key = Key::Record(store.key(), fold(0, id.as_str().as_bytes()));

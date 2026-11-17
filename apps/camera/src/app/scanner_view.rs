@@ -283,7 +283,7 @@ impl CameraApp {
                         generation,
                         id: id.clone(),
                         source: crate::worker::ScanSource::Frame(scanner_frame),
-                        record_history: false,
+                        document_history: false,
                     }) {
                         Ok(()) => {
                             self.scan_generation = generation;

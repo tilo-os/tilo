@@ -854,7 +854,7 @@ mod tests {
             peer: peer_handle(&key.verifying_key().to_bytes()),
             app_id: APP.into(),
             cluster_id: CLUSTER.into(),
-            record_id: RECORD.into(),
+            document_id: RECORD.into(),
             envelope: Box::new(op),
             own: None,
         };
@@ -1230,7 +1230,7 @@ mod tests {
                 peer: 0,
                 app_id: APP.into(),
                 cluster_id: CLUSTER.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 envelope: Box::new(unsigned),
                 own: None,
             };
@@ -1250,7 +1250,7 @@ mod tests {
                 peer: 0,
                 app_id: APP.into(),
                 cluster_id: CLUSTER.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 envelope: Box::new(cleartext),
                 own: None,
             };
@@ -1271,7 +1271,7 @@ mod tests {
                 peer: 0,
                 app_id: APP.into(),
                 cluster_id: CLUSTER.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 envelope: Box::new(mls),
                 own: None,
             };

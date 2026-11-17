@@ -20,7 +20,7 @@
 //! - the unlink action.
 //!
 //! The workspace's host runs them: the connector's code stays there, and the
-//! page or shell only asks, through a host's [`WorkspaceRecordActions`].
+//! page or shell only asks, through a host's [`WorkspaceResourceActions`].
 //! [`WorkspaceAccounts`] asks the workspace's connectors ([`connector_apps`]) for the
 //! read and keeps what it learns as [`LinkedAccount`]s; a host lends it to
 //! the panels that show them as [`LinkedAccounts`].
@@ -448,7 +448,7 @@ pub fn connector_apps(
 
 /// How a host asks the workspace's host to run an action of a workspace record for
 /// the person, on the web and natively alike.
-pub trait WorkspaceRecordActions {
+pub trait WorkspaceResourceActions {
     /// The apps whose workspace record this workspace holds and may publish the read
     /// ([`READ_ACTION`]): the workspace's connectors ([`connector_apps`]).
     fn apps(&self) -> Vec<String>;
@@ -506,7 +506,7 @@ pub fn record_invocation(
 
 /// What a host's answer to a record action says: the action's value, or why
 /// it did not run.
-pub fn record_answer(
+pub fn resource_answer(
     answer: Option<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
     >,
@@ -566,10 +566,10 @@ struct Known {
 }
 
 /// Linked accounts read from a workspace's records by its host, through a
-/// [`WorkspaceRecordActions`]. A link token the page came with is kept here, on
+/// [`WorkspaceResourceActions`]. A link token the page came with is kept here, on
 /// this device, until it is used up or declined.
 pub struct WorkspaceAccounts {
-    actions: Rc<dyn WorkspaceRecordActions>,
+    actions: Rc<dyn WorkspaceResourceActions>,
     known: Rc<RefCell<Known>>,
     revision: Rc<Cell<u64>>,
     /// Called when what is known changed, to draw it again.
@@ -580,7 +580,7 @@ impl WorkspaceAccounts {
     /// Accounts asked through `actions`; `changed` is called whenever an
     /// answer changed them.
     #[must_use]
-    pub fn new(actions: Rc<dyn WorkspaceRecordActions>, changed: Rc<dyn Fn()>) -> Self {
+    pub fn new(actions: Rc<dyn WorkspaceResourceActions>, changed: Rc<dyn Fn()>) -> Self {
         Self {
             actions,
             known: Rc::default(),
@@ -933,7 +933,7 @@ mod tests {
         waiting: RefCell<Vec<Box<dyn FnOnce()>>>,
     }
 
-    impl WorkspaceRecordActions for Rc<Host> {
+    impl WorkspaceResourceActions for Rc<Host> {
         fn apps(&self) -> Vec<String> {
             vec!["so.tilo.chat".into(), "so.tilo.discord".into()]
         }
@@ -1255,7 +1255,7 @@ mod tests {
             };
             let value = serde_json::json!({"code": "ABCDEFGHJKLM"});
             assert_eq!(
-                record_answer(receipt(ReceiptStatus::Completed {
+                resource_answer(receipt(ReceiptStatus::Completed {
                     output: ActionOutput {
                         value: Some(value.clone()),
                         ..ActionOutput::default()
@@ -1264,14 +1264,14 @@ mod tests {
                 Ok(value)
             );
             assert_eq!(
-                record_answer(receipt(ReceiptStatus::Completed {
+                resource_answer(receipt(ReceiptStatus::Completed {
                     output: ActionOutput::default(),
                 })),
                 Ok(serde_json::Value::Null),
                 "an action that says nothing answers nothing"
             );
             assert_eq!(
-                record_answer(receipt(ReceiptStatus::Failed {
+                resource_answer(receipt(ReceiptStatus::Failed {
                     error: ActionFailure {
                         code: "unknown_action".into(),
                         message: "no such action".into(),
@@ -1282,19 +1282,19 @@ mod tests {
                 Err("no such action".to_owned())
             );
             assert_eq!(
-                record_answer(receipt(ReceiptStatus::Rejected {
+                resource_answer(receipt(ReceiptStatus::Rejected {
                     error: ActionHostError::UnknownAction,
                 })),
                 Err("no such action is offered".to_owned())
             );
             assert_eq!(
-                record_answer(Some(Err(ActionHostError::Unavailable {
+                resource_answer(Some(Err(ActionHostError::Unavailable {
                     reason: "the session is closed".into(),
                 }))),
                 Err("remote actions are unavailable: the session is closed".to_owned())
             );
             assert_eq!(
-                record_answer(None),
+                resource_answer(None),
                 Err("the workspace's host did not answer".to_owned())
             );
         }

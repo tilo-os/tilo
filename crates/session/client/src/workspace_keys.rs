@@ -168,7 +168,7 @@ struct AskedRecord {
     /// The record as this device's person's own, which every ask for it names.
     own: Option<tilo_relay_protocol::OwnedChannel>,
     /// What the hosts answered: `None` while the answer is owed, the frames they sent once it came.
-    answer: Option<tilo_relay_protocol::RecordAnswer>,
+    answer: Option<tilo_relay_protocol::DocumentAnswer>,
 }
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
@@ -188,11 +188,11 @@ pub struct KeyLink {
     replayed: Mutex<BTreeSet<Topic>>,
     /// The workspaces, by topic, whose host sends records only once a device opens them
     /// ([`Self::host_ready`]): what a record not here is decided by, together with the host's answer
-    /// about it ([`Self::record_opened`]).
+    /// about it ([`Self::resource_opened`]).
     when_opened: Mutex<BTreeSet<Topic>>,
     /// The records this device asked the workspaces' hosts for, by topic and retained channel, and
     /// what each answered: `None` while the answer is owed, the frames it sent once it came
-    /// ([`Self::record_opened`]).
+    /// ([`Self::resource_opened`]).
     records: Mutex<AskedRecords>,
     /// Ticks whenever a host finished its replay.
     replays: tokio::sync::watch::Sender<u64>,
@@ -434,11 +434,11 @@ impl KeyLink {
     }
 
     /// The host of the workspace on topic `ws` finished replaying what it retains to this device,
-    /// after the replay's own writes. `records_when_opened`: it sends this device only the
+    /// after the replay's own writes. `documents_when_opened`: it sends this device only the
     /// workspace's governance, its shared desktop and the heads of its chained records, and every
-    /// other record once it opens it ([`Self::open_record`]).
-    pub fn host_ready(&self, ws: Topic, records_when_opened: bool) {
-        if records_when_opened {
+    /// other record once it opens it ([`Self::open_resource`]).
+    pub fn host_ready(&self, ws: Topic, documents_when_opened: bool) {
+        if documents_when_opened {
             self.when_opened.lock_recover().insert(ws);
         }
         self.replayed.lock_recover().insert(ws);
@@ -465,9 +465,9 @@ impl KeyLink {
 
     /// Whether `workspace`'s host sends a device only the workspace's governance, its shared
     /// desktop and the heads of its chained records, and every other record once the device opens
-    /// it ([`Self::open_record`]): a record that is not here is not new until the host answered it
-    /// holds none of it ([`Self::record_opened`]).
-    pub fn records_when_opened(&self, workspace: ModelWorkspaceId) -> bool {
+    /// it ([`Self::open_resource`]): a record that is not here is not new until the host answered it
+    /// holds none of it ([`Self::resource_opened`]).
+    pub fn documents_when_opened(&self, workspace: ModelWorkspaceId) -> bool {
         self.when_opened
             .lock_recover()
             .contains(&topic_of(workspace))
@@ -477,7 +477,7 @@ impl KeyLink {
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
     /// then on. Asked once per record and session; a host session that comes up later asks again
     /// ([`Self::host_ready`]). `false` when the plane is not running, so nothing was asked.
-    pub fn open_record(
+    pub fn open_resource(
         &self,
         workspace: ModelWorkspaceId,
         channel: [u8; 32],
@@ -500,7 +500,7 @@ impl KeyLink {
         self.ask_for(ws, [(channel, own)])
     }
 
-    /// Say [`Cmd::OpenRecord`] for each of `channels` on the plane: whether it was taken, or `true`
+    /// Say [`Cmd::OpenDocument`] for each of `channels` on the plane: whether it was taken, or `true`
     /// when there is no plane to ask on.
     fn ask_for(
         &self,
@@ -509,20 +509,22 @@ impl KeyLink {
     ) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         channels.into_iter().all(|(channel, own)| {
-            outgoing
-                .as_ref()
-                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel, own }).is_ok())
+            outgoing.as_ref().is_none_or(|outgoing| {
+                outgoing
+                    .send(Cmd::OpenDocument { ws, channel, own })
+                    .is_ok()
+            })
         })
     }
 
     /// The host of the workspace on topic `ws` answered the record on `channel`: it sent
     /// everything it retains of it — none when the workspace has none of it, and then the record is
     /// new to whoever opens it — or it is another person's own, which this device never opens.
-    pub fn record_opened(
+    pub fn resource_opened(
         &self,
         ws: Topic,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::RecordAnswer,
+        answer: tilo_relay_protocol::DocumentAnswer,
     ) {
         self.records
             .lock_recover()
@@ -536,11 +538,11 @@ impl KeyLink {
 
     /// What the hosts of `workspace` answered about the record on `channel`: `None` while the
     /// answer is owed.
-    pub fn record_answer(
+    pub fn resource_answer(
         &self,
         workspace: ModelWorkspaceId,
         channel: &[u8; 32],
-    ) -> Option<tilo_relay_protocol::RecordAnswer> {
+    ) -> Option<tilo_relay_protocol::DocumentAnswer> {
         self.records
             .lock_recover()
             .get(&(topic_of(workspace), *channel))

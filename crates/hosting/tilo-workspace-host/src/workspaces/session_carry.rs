@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 use super::{WeakWorkspaces, Workspaces};
-use crate::workspace_records::HostCommit;
+use crate::workspace_documents::HostCommit;
 use tilo_relay_protocol::WorkspaceId;
 
 /// The first wait before a failed copy is tried again.

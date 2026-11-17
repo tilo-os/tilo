@@ -39,7 +39,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
-use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
@@ -49,21 +49,21 @@ mod authors;
 mod bound;
 mod context;
 mod decompose;
+mod document_api;
 mod facts;
 mod introduce;
 mod logs;
 mod obligations;
 mod parts;
 mod planning;
-mod record_api;
 mod records;
 mod repairs;
 mod running;
 mod waits;
 
-pub(crate) use crate::workspace_records::desktop_route;
+pub(crate) use crate::workspace_documents::desktop_route;
 
-use crate::workspace_records::{Reading, WorkspaceRecords};
+use crate::workspace_documents::{Reading, WorkspaceDocuments};
 use context::picture_head;
 use logs::{record_ended, record_plan};
 use running::{
@@ -151,7 +151,7 @@ const MOST_NEWS_REPLANS: u32 = 3;
 /// The most message records whose text a wait keeps from when it began, so
 /// it can tell what arrived from what was there; a record past them counts
 /// all its text as arrived.
-const MOST_WAIT_RECORDS: usize = 32;
+const MOST_WAIT_DOCUMENTS: usize = 32;
 
 /// The most characters of what arrived a plan after a wait is shown: the
 /// message itself, not the conversation around it.
@@ -251,11 +251,11 @@ pub struct AgentMember {
     /// The workspace's content store, lent to every record the agent holds.
     content: tilo_content::ContentStore,
     /// The workspace's records in the session's replica the agent has not opened.
-    unopened: WorkspaceRecords,
+    unopened: WorkspaceDocuments,
     /// Records whose writes landed in the session's replica that it cannot open yet: their
     /// keys, surface or the governance that decides them have not arrived.
     undecided: BTreeSet<DocumentRoute>,
-    focus: Option<LiveRecord>,
+    focus: Option<LiveResource>,
     /// Where in the focused record its last operation left it.
     place: Option<(LiveAnchor, LiveAnchor)>,
     /// Who is here and what each says of themselves, said on this agent's session.
@@ -294,13 +294,13 @@ pub struct AgentMember {
     /// The workspace sends this agent a record only once it opens it (a
     /// public workspace, one anyone may walk into): what the workspace holds
     /// is asked for and never founded here before the host answered it holds
-    /// none of it ([`Self::record_on_its_way`]).
+    /// none of it ([`Self::document_on_its_way`]).
     when_opened: bool,
     /// The records asked of the workspace's host and not answered yet.
-    asked_records: BTreeSet<DocumentRoute>,
+    asked_documents: BTreeSet<DocumentRoute>,
     /// The records the host answered it holds none of: the ones this agent
     /// may make itself.
-    absent_records: BTreeSet<DocumentRoute>,
+    absent_documents: BTreeSet<DocumentRoute>,
     /// Records the host answered are another person's own: never sent to this agent, never
     /// founded by it, and refused when it opens them.
     not_yours: BTreeSet<DocumentRoute>,
@@ -427,7 +427,7 @@ impl AgentMember {
         Ok(Self {
             identity,
             control,
-            unopened: WorkspaceRecords::new(&config.workspace, Arc::clone(peer.engine())),
+            unopened: WorkspaceDocuments::new(&config.workspace, Arc::clone(peer.engine())),
             peer,
             events,
             workspace: config.workspace,
@@ -455,8 +455,8 @@ impl AgentMember {
             exported: Vec::new(),
             ready: false,
             when_opened: false,
-            asked_records: BTreeSet::new(),
-            absent_records: BTreeSet::new(),
+            asked_documents: BTreeSet::new(),
+            absent_documents: BTreeSet::new(),
             not_yours: BTreeSet::new(),
             settling: None,
             finishing: None,
@@ -705,14 +705,14 @@ impl AgentMember {
         match event {
             Event::HostReady {
                 ws: workspace_id,
-                records_when_opened,
+                documents_when_opened,
                 ..
             } if workspace_id == self.workspace_id => {
                 if !self.ready {
                     self.settling = Some(Instant::now());
                 }
                 self.ready = true;
-                self.when_opened = records_when_opened;
+                self.when_opened = documents_when_opened;
                 let held: Vec<DocumentRoute> = self.apps.keys().cloned().collect();
                 for route in &held {
                     self.ask_workspace_through(route);
@@ -721,7 +721,7 @@ impl AgentMember {
                     self.control.set_status(AgentStatus::Waiting);
                 }
             }
-            Event::RecordOpened {
+            Event::DocumentOpened {
                 ws: workspace_id,
                 route: Some(route),
                 answer,
@@ -1100,7 +1100,7 @@ impl AgentMember {
         let Some((id, text)) = self.starting.take().or_else(|| self.control.begin_next()) else {
             return;
         };
-        if (self.keys_pending_for(&text) || self.task_records_arriving(&text))
+        if (self.keys_pending_for(&text) || self.task_documents_arriving(&text))
             && self.may_wait_for_host()
         {
             self.starting = Some((id, text));
@@ -1616,7 +1616,7 @@ impl AgentMember {
         for route in self
             .previous_touched
             .iter()
-            .chain(&self.coordinated_records())
+            .chain(&self.coordinated_documents())
         {
             if !touched.contains(route) {
                 touched.push(route.clone());
@@ -1706,11 +1706,11 @@ impl AgentMember {
             // else a new one) rather than failing on whichever document the
             // plan found it offered on.
             Some(record) if imports(step) && self.written(&step.app, record) => {
-                self.unnamed_record(step)?
+                self.unnamed_document(step)?
             }
             Some(record) => self.open(&step.app, Some(record))?,
-            None if matches!(step.action, StepAction::Open) => self.new_record(&step.app)?,
-            None => self.unnamed_record(step)?,
+            None if matches!(step.action, StepAction::Open) => self.new_resource(&step.app)?,
+            None => self.unnamed_document(step)?,
         };
         if let Some(running) = self.running.as_mut()
             && !running.touched.contains(&route)
@@ -1898,7 +1898,7 @@ impl AgentMember {
                 )
             },
         );
-        self.focus = Some(LiveRecord {
+        self.focus = Some(LiveResource {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
@@ -1942,7 +1942,7 @@ impl AgentMember {
     /// Records of the workspace the agent has seen but not opened: those it reads, not those
     /// whose keys are still on their way.
     #[must_use]
-    pub fn known_records(&self) -> Vec<DocumentRoute> {
+    pub fn known_resources(&self) -> Vec<DocumentRoute> {
         self.unopened
             .routes()
             .into_iter()
@@ -1967,12 +1967,12 @@ impl AgentMember {
         // An app that keeps one record per workspace (Chat) has one route, named
         // empty: asked for a new record, the agent joins the workspace's own once
         // the workspace has it, so every agent sees what the others wrote there.
-        let workspace_record = self.keeps_workspace_record(app_id);
+        let workspace_resource = self.keeps_workspace_resource(app_id);
         // A part of a chain is held beside its record, never opened: asked
         // for one, the agent opens the record that keeps it.
         let record = record
             .filter(|record| !parts::is_part(record))
-            .or_else(|| workspace_record.then_some(""));
+            .or_else(|| workspace_resource.then_some(""));
         let (seed, seeded) = match record {
             Some(record) => {
                 let route = route(record);
@@ -1982,7 +1982,7 @@ impl AgentMember {
                 match self.unopened.seed(&route) {
                     Some(saved) => {
                         let seed = Seed::Existing {
-                            record: ui::record::DocumentId::from_route(record)
+                            record: ui::resource::DocumentId::from_route(record)
                                 .ok_or_else(|| format!("{record} is not a record route"))?,
                             changes: vec![saved?],
                         };
@@ -1996,7 +1996,7 @@ impl AgentMember {
                     }
                     // The workspace may hold the record and send it only now
                     // that it is opened: it is never founded here meanwhile.
-                    None if self.record_on_its_way(&route) => {
+                    None if self.document_on_its_way(&route) => {
                         return Err(if record.is_empty() {
                             format!("the workspace's own {app_id} record is on its way")
                         } else {
@@ -2006,7 +2006,7 @@ impl AgentMember {
                     // Nobody has written the workspace's record yet: its genesis
                     // is the same on every member, so this one converges
                     // with whoever makes it too.
-                    None if workspace_record && record.is_empty() => (Seed::New, None),
+                    None if workspace_resource && record.is_empty() => (Seed::New, None),
                     None => {
                         return Err(format!(
                             "the workspace has no record {record} of {app_id} yet"
@@ -2031,7 +2031,7 @@ impl AgentMember {
         if let Some(seeded) = &seeded {
             self.unopened.forget(seeded);
         }
-        let route = route(app.wire_record());
+        let route = route(app.wire_document());
         let made = app.take_mutation().map_err(|error| error.to_string())?;
         if let Some(mutation) = &made {
             self.peer.write(route.clone(), mutation)?;
@@ -2046,7 +2046,7 @@ impl AgentMember {
         if made.is_some() {
             self.show_on_layout(&route);
         }
-        self.focus = Some(LiveRecord {
+        self.focus = Some(LiveResource {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
@@ -2121,8 +2121,8 @@ impl AgentMember {
                 route.app_id
             )));
         }
-        if record_api::reads(route, address) {
-            return self.read_record(route).map(Some).map_err(Refusal::Agent);
+        if document_api::reads(route, address) {
+            return self.read_resource(route).map(Some).map_err(Refusal::Agent);
         }
         let app = self
             .apps
@@ -2180,7 +2180,7 @@ impl AgentMember {
         if changed.is_some() || posted {
             self.show_on_layout(route);
         }
-        self.focus = Some(LiveRecord {
+        self.focus = Some(LiveResource {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
@@ -2219,7 +2219,11 @@ impl AgentMember {
         // Pages note each window's record on the layout in its wire spelling (empty for an app's
         // primary record), and the view is named the same way, so a record a person's window
         // already shows is found there.
-        let Some(record) = self.apps.get(route).map(|app| app.wire_record().to_owned()) else {
+        let Some(record) = self
+            .apps
+            .get(route)
+            .map(|app| app.wire_document().to_owned())
+        else {
             return;
         };
         let beside = self
@@ -2234,7 +2238,7 @@ impl AgentMember {
             .and_then(|last| {
                 self.apps
                     .get(&last)
-                    .map(|app| (last.app_id.clone(), app.wire_record().to_owned()))
+                    .map(|app| (last.app_id.clone(), app.wire_document().to_owned()))
             });
         let title = self
             .catalogue

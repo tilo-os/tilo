@@ -1,7 +1,7 @@
 //! What the one walk over the document's nodes costs and answers, and what a
 //! change costs instead.
 //!
-//! `Namespace::rebuild_record_index` reads each node's document once and
+//! `Namespace::rebuild_document_index` reads each node's document once and
 //! takes its placement, name, kind and record id from that object: the work
 //! opening a namespace pays for the whole workspace, on load only. A rename
 //! or move of this replica's own, and a peer's delta through any of the
@@ -49,14 +49,14 @@ tilo_test_env::scenario! {
         let mut reopened = Namespace::from_bytes("a", &saved).unwrap();
         let nodes = reopened.doc.keys(&reopened.nodes).count() as u64;
         assert_eq!(nodes, 65, "the fixture holds the directory and its files");
-        assert_eq!(reopened.indexed_record_count() as u64, nodes);
+        assert_eq!(reopened.indexed_document_count() as u64, nodes);
 
         let ino = reopened.lookup(ROOT_INO, "f1").unwrap().ino.0;
         let document_id = reopened.document_id_for(ino).unwrap();
         assert_eq!(reopened.ino_for_document_id(document_id), Some(ino));
 
         let before = reopened.node_lookup_count();
-        reopened.rebuild_record_index();
+        reopened.rebuild_document_index();
         let reads = reopened.node_lookup_count() - before;
         assert_eq!(
             reads, nodes,
@@ -103,11 +103,11 @@ tilo_test_env::scenario! {
             let nodes = reopened.doc.keys(&reopened.nodes).count();
             assert_eq!(nodes, paths.len(), "{row}: nodes in the document");
             let before = reopened.node_lookup_count();
-            reopened.rebuild_record_index();
+            reopened.rebuild_document_index();
             let reads = reopened.node_lookup_count() - before;
             assert_eq!(reads, nodes as u64, "{row}: node documents read");
             let indexed: std::collections::BTreeSet<&str> = reopened
-                .record_index
+                .document_index
                 .values()
                 .map(|record| record.path.as_str())
                 .collect();
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
                 "{row}: catalogue paths"
             );
             assert_eq!(
-                reopened.indexed_record_count(),
+                reopened.indexed_document_count(),
                 nodes,
                 "{row}: catalogue rows"
             );
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
                 "{row}: catalogue paths"
             );
             assert_eq!(
-                replicas.here.indexed_record_count(),
+                replicas.here.indexed_document_count(),
                 paths.len(),
                 "{row}: catalogue rows"
             );
@@ -222,14 +222,14 @@ tilo_test_env::scenario! {
             assert_indexes_match_rebuild(ns);
             assert_eq!(catalogue_paths(ns), paths, "{replica}: catalogue paths");
             assert_eq!(
-                ns.indexed_record_count(),
+                ns.indexed_document_count(),
                 paths.len(),
                 "{replica}: catalogue rows"
             );
         }
         assert_eq!(
-            here.indexed_record_revision(),
-            peer.indexed_record_revision(),
+            here.indexed_document_revision(),
+            peer.indexed_document_revision(),
             "the replicas hold the same rows under different revisions"
         );
     }
@@ -238,36 +238,36 @@ tilo_test_env::scenario! {
     {
         let saved = saved_tree(8);
         let mut ns = Namespace::from_bytes("a", &saved).unwrap();
-        let root_record = ns.document_id_for(ROOT_INO).unwrap();
-        let rows = ns.indexed_record_count();
-        let revision = ns.indexed_record_revision().to_owned();
+        let root_document = ns.document_id_for(ROOT_INO).unwrap();
+        let rows = ns.indexed_document_count();
+        let revision = ns.indexed_document_revision().to_owned();
 
-        let own_record = FileDocumentId::new();
+        let own_document = FileDocumentId::new();
         let node = ns.doc.put_object(&ns.nodes, ROOT_ID, ObjType::Map).unwrap();
         ns.doc.put(&node, "parent", ROOT_ID).unwrap();
         ns.doc.put(&node, "name", b"loop".to_vec()).unwrap();
         ns.doc.put(&node, "kind", "file").unwrap();
         ns.doc
-            .put(&node, "document_id", own_record.0.to_string())
+            .put(&node, "document_id", own_document.0.to_string())
             .unwrap();
 
-        ns.rebuild_record_index();
+        ns.rebuild_document_index();
 
         assert_eq!(
-            ns.indexed_record_count(),
+            ns.indexed_document_count(),
             rows,
             "the reserved id became an index row"
         );
         assert_eq!(
-            ns.indexed_record_revision(),
+            ns.indexed_document_revision(),
             revision,
             "the reserved id moved the record catalogue"
         );
-        assert_eq!(ns.document_id_for(ROOT_INO), Some(root_record));
-        assert!(!ns.record_index_ambiguous.contains(&root_record));
-        assert!(ns.tree.nodes_of(own_record).any(|id| id == ROOT_ID));
-        assert!(!ns.tree.nodes_of(root_record).any(|id| id == ROOT_ID));
-        assert!(ns.indexed_record(own_record).is_none());
+        assert_eq!(ns.document_id_for(ROOT_INO), Some(root_document));
+        assert!(!ns.document_index_ambiguous.contains(&root_document));
+        assert!(ns.tree.nodes_of(own_document).any(|id| id == ROOT_ID));
+        assert!(!ns.tree.nodes_of(root_document).any(|id| id == ROOT_ID));
+        assert!(ns.indexed_document(own_document).is_none());
     }
 }
 
@@ -290,7 +290,7 @@ fn small_replicas() -> Replicas {
 
 fn catalogue_paths(ns: &Namespace) -> Vec<String> {
     let mut paths: Vec<String> = ns
-        .record_index
+        .document_index
         .values()
         .map(|record| record.path.clone())
         .collect();
@@ -311,7 +311,7 @@ fn moves_that_are_refused(replicas: &mut Replicas) {
     let here = &mut replicas.here;
     let dir = dir_of(here);
     let inner = here.create_dir(dir, "inner", 2).unwrap();
-    let revision = here.indexed_record_revision().to_owned();
+    let revision = here.indexed_document_revision().to_owned();
     assert!(
         !here.rename(ROOT_INO, "dir", inner, "dir", 3),
         "a directory moved under its own child"
@@ -325,7 +325,7 @@ fn moves_that_are_refused(replicas: &mut Replicas) {
         "a name nothing has was moved"
     );
     assert_eq!(
-        here.indexed_record_revision(),
+        here.indexed_document_revision(),
         revision,
         "a refused move moved the catalogue"
     );
@@ -333,17 +333,17 @@ fn moves_that_are_refused(replicas: &mut Replicas) {
 
 fn a_file_that_comes_and_goes(replicas: &mut Replicas) {
     let here = &mut replicas.here;
-    let revision = here.indexed_record_revision().to_owned();
+    let revision = here.indexed_document_revision().to_owned();
     let dir = dir_of(here);
     let brief = here.create_file(dir, "brief", Some(&h(2)), 1, 2).unwrap();
     assert_ne!(
-        here.indexed_record_revision(),
+        here.indexed_document_revision(),
         revision,
         "a new row left the revision where it was"
     );
     assert!(here.remove(brief));
     assert_eq!(
-        here.indexed_record_revision(),
+        here.indexed_document_revision(),
         revision,
         "the same rows have another revision"
     );
@@ -373,10 +373,10 @@ fn a_peer_move_delivered_twice(replicas: &mut Replicas) {
     assert!(replicas.peer.rename(ROOT_INO, "f1", dir, "moved", 9));
     let delta = replicas.peer.save_incremental();
     replicas.here.apply_remote_and_resolve(&delta).unwrap();
-    let revision = replicas.here.indexed_record_revision().to_owned();
+    let revision = replicas.here.indexed_document_revision().to_owned();
     replicas.here.apply_remote_and_resolve(&delta).unwrap();
     assert_eq!(
-        replicas.here.indexed_record_revision(),
+        replicas.here.indexed_document_revision(),
         revision,
         "a delta delivered again moved the catalogue"
     );
@@ -407,11 +407,11 @@ fn a_change_costs_the_change_not_the_tree() {
     let mut ns = wide_tree();
     let nodes = ns.doc.keys(&ns.nodes).count() as u64;
     assert_eq!(nodes, 100_100, "the fixture is the whole tree");
-    assert_eq!(ns.indexed_record_count() as u64, nodes);
+    assert_eq!(ns.indexed_document_count() as u64, nodes);
 
     let mut rebuilt = ns.clone();
     let start = std::time::Instant::now();
-    rebuilt.rebuild_record_index();
+    rebuilt.rebuild_document_index();
     let rebuild_ms = start.elapsed().as_millis();
     eprintln!("WORK rebuild-100k-tree: {rebuild_ms} ms");
 
@@ -449,7 +449,7 @@ fn measure<T>(
 }
 
 fn indexed_path(ns: &Namespace, ino: u64) -> String {
-    ns.indexed_record(ns.document_id_for(ino).unwrap())
+    ns.indexed_document(ns.document_id_for(ino).unwrap())
         .expect("a live node has a catalogue row")
         .path
 }
@@ -503,13 +503,13 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     assert_eq!(indexed_path(ns, created), "/dir-003/created");
 
     let doomed = ns.lookup(here, "f-0002").unwrap().ino.0;
-    let doomed_record = ns.document_id_for(doomed);
+    let doomed_document = ns.document_id_for(doomed);
     let theirs = peer.lookup(peer_dir, "f-0002").unwrap().ino.0;
     assert!(peer.remove(theirs));
     measure("delete", ns, 64, quarter, rebuild_ms, |ns| {
         ns.merge_doc(&mut peer).unwrap();
     });
-    assert!(ns.indexed_record(doomed_record.unwrap()).is_none());
+    assert!(ns.indexed_document(doomed_document.unwrap()).is_none());
 
     let harvest = peer.lookup(ROOT_INO, "dir-006").unwrap().ino.0;
     assert!(peer.rename(ROOT_INO, "dir-005", harvest, "harvest", 5));

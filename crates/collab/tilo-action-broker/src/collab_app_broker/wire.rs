@@ -350,7 +350,7 @@ impl JoinedChannel {
     pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
         self.writable()?;
         // A change of the record the channel carries, under the id it is kept under.
-        let (state, route) = (&self.state, self.record_route());
+        let (state, route) = (&self.state, self.resource_route());
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         verify_session_author(&current_identity, envelope.author)
             .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
@@ -376,16 +376,16 @@ impl JoinedChannel {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.record_id.clone(),
+                            record: route.document_id.clone(),
                             envelope: Box::new(envelope),
-                            own: collab_types::OwnRecord::recognise(
+                            own: collab_types::OwnResource::recognise(
                                 &route.app_id,
-                                &route.record_id,
+                                &route.document_id,
                                 current_identity.verified.user_public_key,
                             ),
                         },
                     },
-                    self.record_kind.clone(),
+                    self.resource_type.clone(),
                 )
                 .await?
         } else {
@@ -418,27 +418,32 @@ impl JoinedChannel {
     }
 
     /// The host's record-content service, for a channel still admitted.
-    fn record_content(
+    fn document_content(
         &self,
-    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), BrokerError> {
+    ) -> Result<(CrdtRoute, Arc<crate::document_content::RouteContent>), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.record_route();
+        let route = self.resource_route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(BrokerError::failed(
                 "record content belongs to a certified app route".into(),
             ));
         }
-        let content = self.state.services.record_content.clone().ok_or_else(|| {
-            BrokerError::unimplemented("this host keeps no record content".into())
-        })?;
+        let content = self
+            .state
+            .services
+            .document_content
+            .clone()
+            .ok_or_else(|| {
+                BrokerError::unimplemented("this host keeps no record content".into())
+            })?;
         Ok((route, content))
     }
 
     /// Keep content the record references, which the app stored.
     pub(super) fn offer_content(&self, hash: &str, bytes: &[u8]) -> Result<(), BrokerError> {
         self.writable()?;
-        let (route, content) = self.record_content()?;
+        let (route, content) = self.document_content()?;
         content
             .offer(&route, hash, bytes)
             .map_err(BrokerError::failed)
@@ -447,7 +452,7 @@ impl JoinedChannel {
     /// Fetch content the record references and the app lacks; it arrives on
     /// the content feed.
     pub(super) fn want_content(&self, hash: &str) -> Result<(), BrokerError> {
-        let (route, content) = self.record_content()?;
+        let (route, content) = self.document_content()?;
         content.want(&route, hash);
         Ok(())
     }
@@ -456,7 +461,7 @@ impl JoinedChannel {
     /// roster. A native private window's context also follows the
     /// continuation it shows.
     pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, BrokerError> {
-        let route = self.record_route();
+        let route = self.resource_route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let native = self
@@ -561,7 +566,7 @@ impl JoinedChannel {
                     .as_ref()
                     .ok_or_else(|| "search index publication unsupported".to_owned())
                     .and_then(|service| {
-                        service.publish(workspace, &app_id, &route.record_id, &delta)
+                        service.publish(workspace, &app_id, &route.document_id, &delta)
                     })
             }
         }
@@ -706,7 +711,7 @@ impl JoinedChannel {
                 nearby_transfer_change(services, &context, after)
             }
             Changes::GroupKeys => {
-                let route = self.record_route();
+                let route = self.resource_route();
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
                     return Err(BrokerError::failed(
                         "channel keys belong to a certified app route".into(),
@@ -871,7 +876,7 @@ impl JoinedChannel {
         before_seq: u64,
         max: u32,
     ) -> Result<(Vec<Vec<u8>>, bool), BrokerError> {
-        let route = self.record_route();
+        let route = self.resource_route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let broker_channels = &self.state.broker_channels;
@@ -1320,7 +1325,7 @@ impl JoinedChannel {
         // A catalogue offering its record is what an `open` of it waits for:
         // a directory alone is offered before the app is ready.
         self.state
-            .launch_published(&surface, self.record_kind.as_deref());
+            .launch_published(&surface, self.resource_type.as_deref());
         // An agent that publishes how it answers a turn is handed its turns.
         if let Some(agent) = &current.agent_id
             && answers_turns(&surface)
@@ -1434,8 +1439,8 @@ impl JoinedChannel {
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
-    ) -> Result<Feed<crate::record_content::ContentNews>, BrokerError> {
-        let (route, content) = self.record_content()?;
+    ) -> Result<Feed<crate::document_content::ContentNews>, BrokerError> {
+        let (route, content) = self.document_content()?;
         Ok(Feed::new(content.subscribe(&route)))
     }
 }
@@ -1490,7 +1495,7 @@ impl JoinedChannel {
                     peer_id: self.peer_id,
                     app_id,
                     cluster_id: route.cluster_id.clone(),
-                    record_id: route.record_id.clone(),
+                    document_id: route.document_id.clone(),
                 },
             );
         }
@@ -2150,7 +2155,7 @@ impl WireConnection {
                             feed,
                             id,
                             frames,
-                            |news: crate::record_content::ContentNews| {
+                            |news: crate::document_content::ContentNews| {
                                 Some(Event::Content {
                                     hash: news.hash,
                                     state: news.state,

@@ -19,7 +19,7 @@ use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
     StoreError, Stored, WriteOp,
 };
-use ui::record::DocumentCheckout;
+use ui::resource::DocumentCheckout;
 
 use super::Store;
 
@@ -27,7 +27,7 @@ use super::Store;
 const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A record a change reached: whose app keeps it, in which workspace, and its route
-/// ([`ui::record::DocumentId::route`]); [`storage_key`] is where a reader finds it.
+/// ([`ui::resource::DocumentId::route`]); [`storage_key`] is where a reader finds it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Changed {
     pub workspace: String,
@@ -146,7 +146,7 @@ impl Changes {
         }
         // A document read while its first write is still landing names no identity yet: the next
         // write of it is read again.
-        let id = ui::record::identity(&stored_document(store, key)?)?.id;
+        let id = ui::resource::identity(&stored_document(store, key)?)?.id;
         if id.storage_key() != *document {
             return None;
         }
@@ -409,10 +409,10 @@ pub fn named_checkouts(
 ) -> Option<Vec<(DocumentCheckout, Option<String>)>> {
     let index = index_document(store, app, workspace)?;
     Some(
-        ui::record::index::discoverable_references(&index)
+        ui::resource::index::discoverable_references(&index)
             .into_iter()
             .map(|checkout| {
-                let name = ui::record::index::name_of(&index, &checkout.id);
+                let name = ui::resource::index::name_of(&index, &checkout.id);
                 (checkout, name)
             })
             .collect(),
@@ -423,13 +423,13 @@ pub fn named_checkouts(
 /// document itself as the record `app` keeps as itself (Notes' notebook, Chat's chat) once an
 /// action was done in it. Keeping the index alone is no one's work.
 #[must_use]
-pub fn workspace_records(
+pub fn workspace_resources(
     store: &dyn DurableStore,
     app: &str,
     workspace: &str,
 ) -> Option<(Vec<DocumentCheckout>, Option<AutoCommit>)> {
     let document = index_document(store, app, workspace)?;
-    let checkouts = ui::record::index::discoverable_references(&document);
+    let checkouts = ui::resource::index::discoverable_references(&document);
     // Only the changes' messages are read: rebuilding every change would cost the whole log.
     let acted = document
         .committed_document()
@@ -478,7 +478,7 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
 /// the record id's storage key for any other. `None` for a route that names no record.
 #[must_use]
 pub fn storage_key(app: &str, workspace: &str, record: &str) -> Option<StorageKey> {
-    let id = ui::record::DocumentId::from_route(record)?;
+    let id = ui::resource::DocumentId::from_route(record)?;
     Some(if id.is_package_primary() {
         StorageKey::workspace_index(app, workspace)
     } else {

@@ -424,7 +424,7 @@ impl Server {
         let created_by = proof.cert.device_label;
         let Ok((grant, token)) =
             self.store
-                .record_key(&key, name, store::GrantKind::Key, Some(created_by), now)
+                .resource_key(&key, name, store::GrantKind::Key, Some(created_by), now)
         else {
             return html(
                 StatusCode::SERVICE_UNAVAILABLE,

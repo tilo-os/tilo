@@ -17,7 +17,7 @@ use std::rc::Rc;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
-use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceRecord};
+use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceResource};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::remote::ApplicationLaunch;
@@ -73,7 +73,7 @@ impl ResourceApp for FilesTreeShell {
     const ICON: Option<&'static str> = Some("file-explorer");
     /// The workspace's tree, the record every member holds: the window shows it and its
     /// History reads its changes, so it is opened with the window.
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
             fs_protocol::tree::FilesTree,
         >()];
@@ -124,7 +124,7 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it.
-    tree: Option<WorkspaceRecord<fs_protocol::tree::FilesTree>>,
+    tree: Option<WorkspaceResource<fs_protocol::tree::FilesTree>>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -163,7 +163,7 @@ impl TreeBrowser {
         // The workspace's tree is the record every member holds, under the
         // Files app's own name for it — the one the page's search reads
         // when it finds a file by what it says.
-        let tree = cx.shared_record::<fs_protocol::tree::FilesTree>(
+        let tree = cx.shared_resource::<fs_protocol::tree::FilesTree>(
             FILES_APP,
             &fs_protocol::tree::document_id(),
         );
@@ -202,7 +202,7 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
-        let tree = self.tree.as_ref().map(WorkspaceRecord::get);
+        let tree = self.tree.as_ref().map(WorkspaceResource::get);
         let folder = self.folder(tree.as_deref());
         let names = self.people.revision().get();
         let moved = self.shown.as_ref().is_none_or(|shown| {
@@ -386,7 +386,7 @@ impl TreeBrowser {
             .as_deref()
             .filter(|parent| *parent != ROOT_ID)
             .map(|parent| {
-                let held = self.tree.as_ref().map(WorkspaceRecord::get);
+                let held = self.tree.as_ref().map(WorkspaceResource::get);
                 let path = match held.as_deref() {
                     Some(tree) => Self::path_of(tree, parent),
                     None => String::new(),
@@ -861,7 +861,7 @@ mod window_tests {
         let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
             .expect("the window opens");
         let tree = app
-            .shared_record::<fs_protocol::tree::FilesTree>(
+            .shared_resource::<fs_protocol::tree::FilesTree>(
                 FILES_APP,
                 &fs_protocol::tree::document_id(),
             )

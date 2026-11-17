@@ -74,7 +74,7 @@ pub struct RelayCoeditSession {
     /// Whether the host said this workspace sends a device only its
     /// governance, its shared desktop and the heads of its chains, and every
     /// other record once the device opens it (its `Ready`): what a device
-    /// reads as `records_when_opened`.
+    /// reads as `documents_when_opened`.
     when_opened: std::sync::atomic::AtomicBool,
 }
 
@@ -108,10 +108,10 @@ impl RelayCoeditSession {
 
     /// Open a record of this workspace by its retained channel
     /// (`neighbour_wire::app_document_channel`): an on-demand one
-    /// (`neighbour_wire::record_sync`), which a subscription does not
+    /// (`neighbour_wire::document_sync`), which a subscription does not
     /// replay, or any record of a workspace that sends them all only when
-    /// they are opened ([`Self::records_when_opened`]). The host sends what
-    /// it retains of it as [`Inbound::Delta`]s, then [`Inbound::RecordOpened`]
+    /// they are opened ([`Self::documents_when_opened`]). The host sends what
+    /// it retains of it as [`Inbound::Delta`]s, then [`Inbound::DocumentOpened`]
     /// saying how many frames that was, and its changes from then on; or it
     /// answers that the record is not this device's to open.
     ///
@@ -122,13 +122,13 @@ impl RelayCoeditSession {
     /// # Errors
     ///
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn open_record(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
+    pub fn open_resource(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
         self.open(channel, None)
     }
 
-    /// [`Self::open_record`] for a member's own record, named with its kind
+    /// [`Self::open_resource`] for a member's own record, named with its kind
     /// and person: the host answers another person's
-    /// [`tilo_relay_protocol::RecordAnswer::NotYours`] even before anything
+    /// [`tilo_relay_protocol::DocumentAnswer::NotYours`] even before anything
     /// of it was written.
     ///
     /// # Errors
@@ -138,7 +138,7 @@ impl RelayCoeditSession {
         &self,
         own: tilo_relay_protocol::OwnedChannel,
     ) -> Result<(), CoeditError> {
-        let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.record_id());
+        let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.document_id());
         self.open(channel, Some(own))
     }
 
@@ -158,7 +158,7 @@ impl RelayCoeditSession {
             opened.insert(channel, own.clone());
         }
         self.client
-            .send(Envelope::OpenRecord {
+            .send(Envelope::OpenDocument {
                 workspace_id: self.workspace_id,
                 channel,
                 own,
@@ -169,19 +169,19 @@ impl RelayCoeditSession {
     /// Whether the host said this workspace sends a device only its
     /// governance, its shared desktop and the heads of its chained records,
     /// and every other record once the device opens it
-    /// ([`Self::open_record`]) — the `records_when_opened` of its `Ready`.
+    /// ([`Self::open_resource`]) — the `documents_when_opened` of its `Ready`.
     /// `false` until the host says otherwise.
     #[must_use]
-    pub fn records_when_opened(&self) -> bool {
+    pub fn documents_when_opened(&self) -> bool {
         self.when_opened.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Whether this session opened `channel`'s record
-    /// ([`Self::open_record`]): the host sends it in the record's own order,
+    /// ([`Self::open_resource`]): the host sends it in the record's own order,
     /// what it retains first, and every write of it is decided by its place
     /// there, never by when it arrived.
     #[must_use]
-    pub fn opened_record(&self, channel: &[u8; 32]) -> bool {
+    pub fn opened_resource(&self, channel: &[u8; 32]) -> bool {
         self.opened
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -208,7 +208,7 @@ impl RelayCoeditSession {
             .clone();
         for (channel, own) in opened {
             self.client
-                .send(Envelope::OpenRecord {
+                .send(Envelope::OpenDocument {
                     workspace_id: self.workspace_id,
                     channel,
                     own,
@@ -400,7 +400,7 @@ impl RelayCoeditSession {
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
     pub fn publish_record_content(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
         self.client
-            .send(Envelope::RecordContent {
+            .send(Envelope::DocumentContent {
                 workspace_id: self.workspace_id,
                 to_device_public_key: to,
                 from_device_public_key: [0; 32],
@@ -558,25 +558,25 @@ impl RelayCoeditSession {
                         });
                     }
                 }
-                envelope @ (Envelope::RemoteAction { .. } | Envelope::RecordContent { .. }) => {
+                envelope @ (Envelope::RemoteAction { .. } | Envelope::DocumentContent { .. }) => {
                     if let Some(inbound) = self.device_frame(envelope) {
                         return Some(inbound);
                     }
                 }
                 Envelope::Ready {
                     pending_deltas,
-                    records_when_opened,
+                    documents_when_opened,
                     ..
                 } => {
                     self.when_opened
-                        .store(records_when_opened, std::sync::atomic::Ordering::Release);
+                        .store(documents_when_opened, std::sync::atomic::Ordering::Release);
                     return Some(Inbound::Ready {
                         pending: pending_deltas,
-                        records_when_opened,
+                        documents_when_opened,
                     });
                 }
                 envelope @ (Envelope::RetiredLiveMember { .. }
-                | Envelope::RecordOpened { .. }
+                | Envelope::DocumentOpened { .. }
                 | Envelope::VoiceCallResult { .. }
                 | Envelope::VoiceGranted { .. }
                 | Envelope::VoiceRefused { .. }
@@ -630,12 +630,12 @@ impl RelayCoeditSession {
                 device: device_public_key,
                 active,
             }),
-            Envelope::RecordOpened {
+            Envelope::DocumentOpened {
                 workspace_id,
                 channel,
                 answer,
             } if workspace_id == self.workspace_id => {
-                Some(Inbound::RecordOpened { channel, answer })
+                Some(Inbound::DocumentOpened { channel, answer })
             }
             Envelope::VoiceCallResult {
                 workspace_id,
@@ -677,12 +677,14 @@ impl RelayCoeditSession {
                 frame,
                 ..
             } if workspace_id == self.workspace_id => Some(Inbound::RemoteAction { from, frame }),
-            Envelope::RecordContent {
+            Envelope::DocumentContent {
                 workspace_id,
                 from_device_public_key: from,
                 frame,
                 ..
-            } if workspace_id == self.workspace_id => Some(Inbound::RecordContent { from, frame }),
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::DocumentContent { from, frame })
+            }
             _ => None,
         }
     }
@@ -841,7 +843,7 @@ mod tests {
             Envelope::Ready {
                 workspace_id: WorkspaceId::from_u128(42),
                 pending_deltas: 0,
-                records_when_opened: false,
+                documents_when_opened: false,
             },
         ];
         for frame in bad {

@@ -536,25 +536,25 @@ impl Link {
     #[must_use]
     pub fn snapshot(&self) -> crate::health::PeerSnapshot {
         let owner = self.engine.owner();
-        let writes =
-            self.engine
-                .workspaces()
-                .into_iter()
-                .flat_map(|workspace| {
-                    owner.record_writes(workspace).into_iter().map(
-                        move |((app_id, record), writes)| {
-                            (
-                                DocumentRoute {
-                                    app_id,
-                                    cluster_id: workspace.to_string(),
-                                    record,
-                                },
-                                writes,
-                            )
-                        },
-                    )
-                })
-                .collect();
+        let writes = self
+            .engine
+            .workspaces()
+            .into_iter()
+            .flat_map(|workspace| {
+                owner.document_writes(workspace).into_iter().map(
+                    move |((app_id, record), writes)| {
+                        (
+                            DocumentRoute {
+                                app_id,
+                                cluster_id: workspace.to_string(),
+                                record,
+                            },
+                            writes,
+                        )
+                    },
+                )
+            })
+            .collect();
         crate::health::PeerSnapshot::from_status(&self.status(), &writes)
     }
 

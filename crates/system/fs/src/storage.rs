@@ -14,7 +14,7 @@ use runtime_fs::storage::{
 };
 
 use crate::availability::{
-    AvailabilityRegistry, RecordAvailability, RecordKind, pinned_in_snapshot,
+    AvailabilityRegistry, DocumentAvailability, EntryKind, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
@@ -188,7 +188,7 @@ impl StorageAuthority {
         &self,
         file: LogicalFile,
         dirty: &HashSet<u64>,
-        records: &[RecordAvailability],
+        records: &[DocumentAvailability],
         plans: &HashMap<fs_protocol::FileDocumentId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
@@ -296,7 +296,7 @@ impl StorageAuthority {
         self.dirty.lock_recover().keys().copied().collect()
     }
 
-    fn records(&self) -> Vec<RecordAvailability> {
+    fn records(&self) -> Vec<DocumentAvailability> {
         self.availability
             .as_ref()
             .map_or_else(Vec::new, |registry| {
@@ -304,7 +304,7 @@ impl StorageAuthority {
             })
     }
 
-    fn root_record(&self) -> Option<fs_protocol::FileDocumentId> {
+    fn root_document(&self) -> Option<fs_protocol::FileDocumentId> {
         self.namespace.lock_recover().document_id_for(ROOT_INO)
     }
 
@@ -368,7 +368,7 @@ impl StorageAuthority {
             };
             add_to(&mut split, &facts);
         }
-        let kept_here = self.root_record().is_some_and(|root| {
+        let kept_here = self.root_document().is_some_and(|root| {
             by_id
                 .get(&root)
                 .is_some_and(|record| record.policy == fs_protocol::AvailabilityPolicy::Pinned)
@@ -420,7 +420,7 @@ impl StorageAuthority {
             .as_ref()
             .ok_or_else(|| anyhow!("durable availability registry is unavailable"))?;
         let root = self
-            .root_record()
+            .root_document()
             .ok_or_else(|| anyhow!("the workspace has no root record"))?;
         let policy = if keep {
             fs_protocol::AvailabilityPolicy::Pinned
@@ -429,7 +429,7 @@ impl StorageAuthority {
         };
         registry
             .lock_recover()
-            .set_policy_along(&[(root, RecordKind::Directory, None)], policy)?;
+            .set_policy_along(&[(root, EntryKind::Directory, None)], policy)?;
         Ok(())
     }
 
@@ -600,11 +600,11 @@ fn app_from_path(path: &str) -> Option<String> {
 ///
 /// Nothing acknowledges replicas since the tree became the record, so Settings
 /// offers only the destructive release, and says so.
-fn has_fresh_signed_ack(_record: &RecordAvailability) -> bool {
+fn has_fresh_signed_ack(_document: &DocumentAvailability) -> bool {
     false
 }
 
-fn has_fresh_signed_ack_at(_record: &RecordAvailability, _now: u64) -> bool {
+fn has_fresh_signed_ack_at(_document: &DocumentAvailability, _now: u64) -> bool {
     false
 }
 
@@ -671,7 +671,7 @@ fn add_to(split: &mut ResidencySplit, facts: &FileFacts) {
 fn kept_by_policy(
     ns: &mut Namespace,
     ino: u64,
-    records: &HashMap<fs_protocol::FileDocumentId, &RecordAvailability>,
+    records: &HashMap<fs_protocol::FileDocumentId, &DocumentAvailability>,
 ) -> bool {
     let mut cursor = Some(ino);
     // A namespace is a tree; the bound only keeps a corrupt one finite.
@@ -714,7 +714,7 @@ fn drop_cached(files: &crate::store::area::FileArea, keys: &[[u8; 32]]) -> Resul
 fn snapshot_candidate_ids(
     logical: &[LogicalFile],
     dirty: &HashSet<u64>,
-    records: &[RecordAvailability],
+    records: &[DocumentAvailability],
     now: u64,
 ) -> Vec<fs_protocol::FileDocumentId> {
     logical
@@ -991,7 +991,7 @@ mod tests {
             {
                 let record = fs_protocol::FileDocumentId::new();
                 let missing_parent = fs_protocol::FileDocumentId::new();
-                let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
+                let mut row = DocumentAvailability::new(record, crate::availability::EntryKind::File);
                 row.parent = Some(missing_parent);
                 assert!(pinned_in_snapshot(&[row], record));
             }
@@ -1009,7 +1009,7 @@ mod tests {
                 let mut dirty = HashSet::new();
                 dirty.insert(7);
                 let mut record =
-                    RecordAvailability::new(document_id, crate::availability::RecordKind::File);
+                    DocumentAvailability::new(document_id, crate::availability::EntryKind::File);
                 record.current_version = Some(fs_protocol::FileVersionId::new());
                 assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
             }
@@ -1210,7 +1210,7 @@ mod tests {
             .unwrap()
             .document_id_for(inodes[2])
             .unwrap();
-        let mut record = RecordAvailability::new(backed_up, RecordKind::File);
+        let mut record = DocumentAvailability::new(backed_up, EntryKind::File);
         record.current_version = Some(fs_protocol::FileVersionId::new());
         registry.lock().unwrap().put(record).unwrap();
         let authority = StorageAuthority::new(

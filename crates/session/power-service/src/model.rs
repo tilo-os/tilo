@@ -60,7 +60,7 @@ impl tilo_resource::JsonSchema for Battery {
 
     fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
         use tilo_resource::JsonSchema;
-        tilo_resource::surface::record_of(
+        tilo_resource::surface::resource_of(
             types,
             "tilo_power_service::Battery",
             "Battery",

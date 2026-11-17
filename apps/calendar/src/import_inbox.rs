@@ -46,7 +46,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     }
     let author = context.author().clone();
     context
-        .migrate_record(move |doc| apply(doc, imports, author).map(|()| true))
+        .migrate_resource(move |doc| apply(doc, imports, author).map(|()| true))
         .map(drop)
 }
 

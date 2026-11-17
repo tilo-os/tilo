@@ -54,7 +54,7 @@ fn plane_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRout
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: collab_types::scope::WORKSPACE_RECORD.to_owned(),
+        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 
@@ -117,7 +117,7 @@ fn call_operation(body: &[u8]) -> Option<CallOperation> {
     }
     Some(CallOperation::Open {
         app_id: text("app")?,
-        record_id: text("record").unwrap_or_default(),
+        document_id: text("record").unwrap_or_default(),
         channel_id: text("channel")?,
     })
 }
@@ -178,7 +178,7 @@ impl Page {
                 Event::Voice(VoiceEvent::Calls { result, .. }) => Some(match result {
                     Ok(calls) => json!({"workspace": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
                         "call": hex::encode(call.state.call), "epoch": call.state.epoch, "active": call.state.active,
-                        "app": call.app_id, "record": call.record_id, "channel": call.channel_id,
+                        "app": call.app_id, "record": call.document_id, "channel": call.channel_id,
                     })).collect::<Vec<_>>()}),
                     Err(error) => json!({"workspace": self.workspace, "kind": "calls", "error": error}),
                 }),

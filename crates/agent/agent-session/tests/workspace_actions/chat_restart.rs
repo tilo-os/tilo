@@ -19,7 +19,7 @@ use serde_json::json;
 async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     let whole = workspaces
-        .whole_records(&on_relay.lobby, None)
+        .whole_documents(&on_relay.lobby, None)
         .await
         .map_err(|error| error.to_string())?;
     if !whole.is_whole() {

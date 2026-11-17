@@ -5,7 +5,7 @@
 //! answer here until a change comes or the wait runs out.
 use super::{
     ActionHostError, Arc, Caller, Completer, DocumentRoute, Event, Instant, MAX_REMOTE_WAIT, Needs,
-    Worker, Workspace, WorkspaceId, WorkspaceRecords,
+    Worker, Workspace, WorkspaceDocuments, WorkspaceId,
 };
 
 /// One caller waiting for a change of what it follows in a workspace ([`Worker::watch`]).
@@ -64,13 +64,13 @@ impl Workspace {
             match event {
                 Event::HostReady {
                     ws: ready,
-                    records_when_opened,
+                    documents_when_opened,
                     ..
                 } if ready == workspace_id => {
                     self.ready = true;
-                    self.when_opened = records_when_opened;
+                    self.when_opened = documents_when_opened;
                 }
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     ws: opened,
                     route: Some(route),
                     answer,
@@ -89,13 +89,13 @@ impl Workspace {
                     // is answered as theirs: not absent, never founded here.
                     if self.asked.remove(&route) {
                         match answer {
-                            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
+                            tilo_session_client::DocumentAnswer::Sent { frames: 0 } => {
                                 self.absent.insert(route.clone());
                             }
-                            tilo_session_client::RecordAnswer::NotYours => {
+                            tilo_session_client::DocumentAnswer::NotYours => {
                                 self.not_yours.insert(route.clone());
                             }
-                            tilo_session_client::RecordAnswer::Sent { .. } => {}
+                            tilo_session_client::DocumentAnswer::Sent { .. } => {}
                         }
                         self.answered.insert(route);
                     }
@@ -119,7 +119,7 @@ impl Workspace {
             // Asked without reading the record out, as a write lands for every post;
             // this device's own writes not taken in yet leave only a read to decide.
             let reads = engine
-                .record_revision(&route.cluster_id, &route.app_id, &route.record)
+                .document_revision(&route.cluster_id, &route.app_id, &route.record)
                 .and_then(|revision| match revision {
                     Some(_) => Ok(true),
                     None => engine
@@ -141,7 +141,7 @@ impl Workspace {
             }
             self.records
                 .get_or_insert_with(|| {
-                    WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
+                    WorkspaceDocuments::new(&route.cluster_id, Arc::clone(self.peer.engine()))
                 })
                 .landed(&route);
         }

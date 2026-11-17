@@ -714,7 +714,7 @@ fn checked_personal_projection(
         bail!("existing identity registry has an invalid schema");
     }
 
-    let record_path = identity_record_path(identity_dir, user);
+    let resource_path = identity_record_path(identity_dir, user);
     let registry_root = registry
         .as_object_mut()
         .context("existing identity registry has an invalid schema")?;
@@ -731,7 +731,7 @@ fn checked_personal_projection(
             serde_json::json!({
                 "id": identity_id,
                 "display_name": "My Tilo identity",
-                "record_path": record_path,
+                "resource_path": resource_path,
                 "user_public_key": user
             }),
         );
@@ -946,12 +946,12 @@ fn commit_staged_personal_enrollment(
     // directory's owner can select (the selector is theirs alone); a root-run
     // join for someone else (`--person-uid`) leaves it to them.
     if PERSON_UID.get().is_none() {
-        let record_id = record
+        let document_id = record
             .file_stem()
             .and_then(|stem| stem.to_str())
             .context("joined identity record has no runtime id")?;
         as_person(&marker.identity_dir, || {
-            runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            runtime_identity::set_active_identity(&marker.identity_dir, document_id)
         })
         .context("select the joined identity")?;
     }
@@ -1696,7 +1696,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                             .is_ok()
                             {
                                 validate_requester(requester_lease)?;
-                                let record_path =
+                                let resource_path =
                                     if let Some((marker_path, marker)) = staged_personal.as_ref() {
                                         // This durable marker is the commit point:
                                         // both Finalized and the exact originating
@@ -1773,14 +1773,14 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         "{}",
                                         serde_json::json!({
                                             "identity": hex::encode(payload.cert.user_public_key),
-                                            "record_path": record_path.as_ref().context("record path is required")?,
+                                            "resource_path": resource_path.as_ref().context("record path is required")?,
                                             "label": payload.cert.device_label,
                                         })
                                     );
                                 } else {
                                     println!("enrolled {}", payload.cert.device_label);
                                 }
-                                return Ok(record_path);
+                                return Ok(resource_path);
                             }
                         }
                         Ok(_) => {}
@@ -1873,7 +1873,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     continue;
                 }
                 println!("Nearby Tilo device approved code {code}");
-                let record_path = join_with_token(
+                let resource_path = join_with_token(
                     token_text.trim(),
                     JoinOptions {
                         label: &label,
@@ -1889,7 +1889,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                             "state": "complete",
                             "verification_code": code,
                             "identity": hex::encode(token.user_public_key),
-                            "record_path": record_path,
+                            "resource_path": resource_path,
                         }),
                     )?;
                 }

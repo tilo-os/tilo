@@ -693,7 +693,7 @@ pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
 }
 
 /// What `peer`'s replica of its workspace holds of `route` now, when it reads.
-pub fn record_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
+pub fn resource_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
     let bytes = peer
         .engine()
         .record(&route.cluster_id, &route.app_id, &route.record)
@@ -703,7 +703,7 @@ pub fn record_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
 
 /// What `peer`'s replica says in `route`: every text [`say`] noted in it.
 pub fn said(peer: &Link, route: &DocumentRoute) -> BTreeSet<String> {
-    record_of(peer, route)
+    resource_of(peer, route)
         .map(|doc| doc.keys(ROOT).collect())
         .unwrap_or_default()
 }
@@ -780,7 +780,7 @@ pub fn refused(peer: &Link) -> Option<String> {
 pub async fn holds(peer: &Link, route: &DocumentRoute, doc: &AutoCommit) -> AutoCommit {
     let heads = doc.clone().get_heads();
     in_replica(peer, route, "the replica to hold the record", || {
-        record_of(peer, route).filter(|held| {
+        resource_of(peer, route).filter(|held| {
             let mut held = held.clone();
             heads
                 .iter()

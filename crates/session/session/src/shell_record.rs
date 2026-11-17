@@ -4,8 +4,8 @@
 //! The shell keeps the person's shell choices in its own record (`records: .own`): the style,
 //! the bar and the dock, the strips' and the frames' settings, and the person's layout. That
 //! record is the person's as any app's is, so it is kept where an app's own record of the person's
-//! is kept: one document opened through `app_state` — the store `ui::record` opens a record
-//! through — under the app's own person scope (`ui::record::person::PERSONAL_SCOPE`), in the
+//! is kept: one document opened through `app_state` — the store `ui::resource` opens a record
+//! through — under the app's own person scope (`ui::resource::person::PERSONAL_SCOPE`), in the
 //! directory the launcher binds into every app as `TILO_PERSON_DIR`. What the shell's parts commit
 //! is appended through the same `DocWriter` an app's record uses, off the frame
 //! (`ShellRecord::follow`).
@@ -14,7 +14,7 @@
 //! (`crate::personal::Personal`, the `PersonalSync` the session already runs for their own
 //! records) carries it, exactly as it carries every app's person record — what this device writes
 //! is published there, and what another of their devices wrote is merged here
-//! (`Shell::sync_record`).
+//! (`Shell::sync_resource`).
 //!
 //! A document this build cannot read is never written over: the session keeps the shell's record
 //! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
@@ -58,7 +58,7 @@ impl ShellRecord {
     /// any other: a person with no record yet gets the shell's defaults, and an existing one is
     /// never replaced, rewritten or reset.
     pub(crate) fn open(state: Option<&Path>, person: &str) -> Self {
-        let id = record_id(person);
+        let id = document_id(person);
         // A session that keeps no state keeps nothing: it draws the shell's defaults and writes no
         // copy beside them, as every other thing the session keeps follows the state directory.
         let Some(store) = state.and_then(|_| person_store()) else {
@@ -66,8 +66,8 @@ impl ShellRecord {
         };
         let key = durable_store::StorageKey::document(
             APP,
-            ui::record::person::PERSONAL_SCOPE,
-            ui::record::DocumentId::parse(&id)
+            ui::resource::person::PERSONAL_SCOPE,
+            ui::resource::DocumentId::parse(&id)
                 .map_or_else(|| id.clone(), |parsed| parsed.storage_key()),
         );
         let mut opened = match app_state::DocStore::shared(store, key) {
@@ -222,9 +222,9 @@ impl ShellRecord {
 /// The record id the shell's own record takes: the one an app declaring `records: .own` names for
 /// `person` (of the package kind `tl.so.tilo.shell`, read and changed by that person's devices alone),
 /// and, for a person without a root identity, the id every device derives alike.
-fn record_id(person: &str) -> String {
+fn document_id(person: &str) -> String {
     tilolang_tilo::member_record_of(APP, person).unwrap_or_else(|| {
-        ui::record::person::record_id(&ui::record::ResourceType::new(APP))
+        ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))
             .as_str()
             .to_owned()
     })

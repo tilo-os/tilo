@@ -31,10 +31,10 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod route_access;
-use route_access::{RouteAccess, attested_route_access, identity_reads_record};
+use route_access::{RouteAccess, attested_route_access, identity_reads_document};
 mod committed_document;
 mod content_put;
-mod record_read;
+mod resource_read;
 pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
@@ -51,7 +51,7 @@ mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
-mod kept_record;
+mod kept_document;
 mod launcher_handoff;
 use launcher_handoff::{LauncherHandoff, credentialed_peer, read_launcher_handoff};
 mod native_checkout;
@@ -79,8 +79,8 @@ mod wire;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    AwaitingRecord, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, RecordRead,
+    AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
@@ -546,10 +546,10 @@ fn admit_verified_join_at(
 /// workspace: only a record of the person's whose kind its surface declares
 /// (its own, or another app's it reads). The person's workspace holds nothing
 /// else for an app.
-fn person_record_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
-    let kind = collab_types::person_record_kind(&route.record_id)
+fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
+    let kind = collab_types::person_resource_type(&route.document_id)
         .ok_or("an app joins the person's workspace only for one of their records")?;
-    if !ui::app_surface::keeps_person_record(app, kind) {
+    if !ui::app_surface::keeps_person_resource(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
         ));
@@ -906,7 +906,7 @@ pub(crate) struct CallerInvocation {
     pub host: uuid::Uuid,
     pub peer_id: u64,
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub resource: String,
     pub action: String,
     pub argument: Option<String>,
@@ -917,7 +917,7 @@ pub(crate) struct CallerInvocation {
 impl CallerInvocation {
     fn intent(&self) -> serde_json::Value {
         let mut intent = serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
-            "record_id": self.record_id, "resource": self.resource,
+            "document_id": self.document_id, "resource": self.resource,
             "action": self.action, "argument": self.argument });
         if let Some(fields) = intent.as_object_mut() {
             if let Some(revision) = &self.revision {
@@ -1476,7 +1476,7 @@ impl AppBrokerState {
             || request.peer_id == ui::collaboration::CURRENT_CONNECTION_PEER_ID
             || [
                 &request.app_id,
-                &request.record_id,
+                &request.document_id,
                 &request.resource,
                 &request.action,
             ]
@@ -1505,7 +1505,7 @@ impl AppBrokerState {
                 surface.live
                     && surface.route.cluster_id == caller.workspace
                     && surface.app_id == request.app_id
-                    && surface.route.record_id == request.record_id
+                    && surface.route.document_id == request.document_id
             })
             .and_then(|surface| {
                 let action = surface
@@ -1546,7 +1546,7 @@ impl AppBrokerState {
         let record = self
             .verified_invocation_status(caller, invocation)?
             .ok_or("unknown invocation")?;
-        self.cancel_durable_record(&record)?.wait().await?;
+        self.cancel_durable_document(&record)?.wait().await?;
         self.verified_invocation_status(caller, invocation)?
             .ok_or_else(|| "invocation missing".into())
     }
@@ -1555,7 +1555,7 @@ impl AppBrokerState {
     /// returned write resolves; the application hears of it no sooner
     /// either (see `invocation_cancellation`).
     #[cfg(test)]
-    fn cancel_durable_record(
+    fn cancel_durable_document(
         &self,
         record: &DurableInvocation,
     ) -> Result<invocation_journal::Durable, String> {
@@ -1712,7 +1712,7 @@ pub struct ActionDirectoryRoot {
     pub peer_id: u64,
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
 }
 
 /// A deterministic, inert page over the broker-retained directory root
@@ -3223,13 +3223,13 @@ impl AppBrokerState {
     async fn commit_owner_document(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> Result<SignedOp, BrokerError> {
         self.owner_health().map_err(BrokerError::failed)?;
         let waiting = OwnerWait::on(&self.owner_commit_failure);
         let answered = self
             .publisher
-            .commit_owner_document(request.clone(), record_kind)
+            .commit_owner_document(request.clone(), resource_type)
             .await;
         waiting.answered();
         let (committed, receipt) = answered.map_err(BrokerError::failed)?;
@@ -3742,7 +3742,7 @@ impl AppBrokerState {
                 (
                     surface.app_id.clone(),
                     surface.route.cluster_id.clone(),
-                    surface.route.record_id.clone(),
+                    surface.route.document_id.clone(),
                 )
             })
             .collect::<std::collections::HashSet<_>>();
@@ -3751,7 +3751,7 @@ impl AppBrokerState {
             !live_keys.contains(&(
                 surface.app_id.clone(),
                 surface.route.cluster_id.clone(),
-                surface.route.record_id.clone(),
+                surface.route.document_id.clone(),
             ))
         }));
         result
@@ -3793,7 +3793,7 @@ impl AppBrokerState {
         &self,
         app_id: &str,
         cluster_id: &str,
-        record_id: &str,
+        document_id: &str,
         resource: &str,
         action: &str,
     ) -> bool {
@@ -3802,7 +3802,7 @@ impl AppBrokerState {
                 surface.live
                     && surface.app_id == app_id
                     && surface.route.cluster_id == cluster_id
-                    && surface.route.record_id == record_id
+                    && surface.route.document_id == document_id
                     && surface.actions.iter().any(|descriptor| {
                         descriptor.resource == resource && descriptor.action == action
                     })
@@ -4663,7 +4663,7 @@ impl AppBrokerState {
                 provider,
                 app_id: surface.app_id,
                 cluster_id: surface.route.cluster_id,
-                record_id: surface.route.record_id,
+                document_id: surface.route.document_id,
                 live: surface.live,
                 actions: surface.actions.into_iter().map(stateless).collect(),
             });
@@ -4674,7 +4674,7 @@ impl AppBrokerState {
                 provider: Some(provider.to_owned()),
                 app_id,
                 cluster_id: cluster_id.to_owned(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
                 actions: actions
                     .iter()
@@ -4690,7 +4690,7 @@ impl AppBrokerState {
                 provider: Some(tilo_actions::remote::workspace_provider(cluster_id)),
                 app_id: package_id.clone(),
                 cluster_id: cluster_id.to_owned(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
                 actions: vec![PublishedAction {
                     did: None,
@@ -5572,7 +5572,7 @@ impl AppBrokerState {
         let request = match durable {
             Some(context) => context.intent(),
             None => serde_json::json!({
-                "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                "peer_id": peer_id, "app_id": offered.0.app_id, "document_id": offered.0.route.document_id,
                 "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
                 "original_request": original_request,
             }),
@@ -5583,7 +5583,7 @@ impl AppBrokerState {
                 "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
                 "resolved_request": {
                     "app_id": offered.0.app_id,
-                    "record_id": offered.0.route.record_id,
+                    "document_id": offered.0.route.document_id,
                     "resource": offered.1.resource,
                     "action": offered.1.action,
                     "argument": argument,
@@ -5597,7 +5597,7 @@ impl AppBrokerState {
         serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
             "context": receipt_context, "actor": actor.member(), "app_id": offered.0.app_id,
-            "record_id": offered.0.route.record_id,
+            "document_id": offered.0.route.document_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
             "action": offered.1.action, "revision": revision })
     }
@@ -6397,7 +6397,7 @@ impl AppBrokerState {
         let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
-            &route.record_id,
+            &route.document_id,
             envelope,
         )
         .map_err(|error| {
@@ -6413,7 +6413,7 @@ impl AppBrokerState {
                 .services
                 .committed_documents
                 .as_ref()
-                .is_some_and(|service| service.seals_records(&route.cluster_id))
+                .is_some_and(|service| service.seals_documents(&route.cluster_id))
         {
             tracing::warn!(
                 app = %route.app_id,
@@ -6437,10 +6437,10 @@ impl AppBrokerState {
         drop(broker_channels);
         // The change the op makes must be allowed outright: a signed op
         // carries no answer to a grant that would ask first.
-        let record = collab_types::Record {
+        let record = collab_types::WrittenDocument {
             workspace: &route.cluster_id,
             app: &route.app_id,
-            record: &route.record_id,
+            document: &route.document_id,
         };
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |authority| {
@@ -6588,11 +6588,11 @@ impl AppBrokerState {
                 let handoff = ContextUpdate::Handoff(request.encode());
                 subscriptions::context_frame(channels, except, &handoff);
             }
-            CollabEvent::RecordsArrived { records } => {
+            CollabEvent::ResourcesArrived { records } => {
                 subscriptions::context_frame(
                     channels,
                     except,
-                    &ContextUpdate::RecordsArrived(records.clone()),
+                    &ContextUpdate::ResourcesArrived(records.clone()),
                 );
             }
             CollabEvent::ScrollbackBatch { .. }
@@ -6600,7 +6600,7 @@ impl AppBrokerState {
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }
-            | CollabEvent::RecordUnavailable { .. }
+            | CollabEvent::ResourceUnavailable { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
@@ -6616,8 +6616,8 @@ impl AppBrokerState {
             | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
-            | CollabEvent::RecordContent { .. }
-            | CollabEvent::RecordContentState { .. }
+            | CollabEvent::DocumentContent { .. }
+            | CollabEvent::DocumentContentState { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -7509,11 +7509,11 @@ impl Drop for ConnectionLease {
 /// kind, which the route's id already derives from and every window joining
 /// it holds whether or not it says so, else what the join `named`. A join
 /// naming a workspace record as another kind is refused.
-fn route_record_kind(
+fn route_resource_type(
     route: &CrdtRoute,
     named: Option<String>,
 ) -> Result<Option<String>, BrokerError> {
-    let Some(record) = collab_types::workspace_document(&route.app_id, &route.record_id) else {
+    let Some(record) = collab_types::workspace_document(&route.app_id, &route.document_id) else {
         return Ok(named);
     };
     match named {
@@ -7567,11 +7567,11 @@ impl JoinPhases {
 
 /// The resource kind a join names for its record: none when empty, and
 /// refused unless it is a record kind the toolkit accepts.
-fn joined_record_kind(kind: &str) -> Result<Option<String>, BrokerError> {
+fn joined_resource_type(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
         return Ok(None);
     }
-    if !ui::record::ResourceType::new(kind).is_valid() {
+    if !ui::resource::ResourceType::new(kind).is_valid() {
         return Err(BrokerError::failed(format!("invalid record kind `{kind}`")));
     }
     Ok(Some(kind.to_owned()))
@@ -7584,7 +7584,7 @@ struct JoinedChannel {
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     channel_id: String,
-    /// The launched app, when the channel is the record of an id it had before ([`kept_record`]).
+    /// The launched app, when the channel is the record of an id it had before ([`kept_document`]).
     as_app: Option<String>,
     /// The route hold this channel publishes and works as ([`route_holds`]).
     peer_id: u64,
@@ -7593,7 +7593,7 @@ struct JoinedChannel {
     connection_id: u64,
     verified_identity: AdmittedJoinIdentity,
     /// The resource kind the app named for this channel's record, if any.
-    record_kind: Option<String>,
+    resource_type: Option<String>,
     /// Whether the app may change what this channel carries, or only read
     /// it (another app's record it declared it reads).
     route_access: RouteAccess,
@@ -8099,7 +8099,7 @@ impl<'a> DirectoryQuestion<'a> {
                 || operation.is_none())
                 && !contract.is_presence_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_record()),
+                    && contract.reads_resource()),
         }
     }
 
@@ -8437,12 +8437,12 @@ fn validate_signed_op(
                 .artifact_apps
                 .insert(artifact, route.app_id.clone());
             ch_state
-                .artifact_records
-                .insert(artifact, route.record_id.clone());
+                .artifact_resources
+                .insert(artifact, route.document_id.clone());
             // The person's own record is theirs to change whatever their role.
-            if let Some(own) = collab_types::OwnRecord::recognise(
+            if let Some(own) = collab_types::OwnResource::recognise(
                 &route.app_id,
-                &route.record_id,
+                &route.document_id,
                 verified_identity.verified.user_public_key,
             ) {
                 ch_state.artifact_owners.insert(artifact, own.person());
@@ -8478,7 +8478,7 @@ fn handle_signed_op_send_for_artifact(
     match validation {
         Ok(()) => {
             let unsynced = state.broker_channels.lock().ok().map(|mut ch| {
-                let unsynced = ch.record_history(route, &envelope);
+                let unsynced = ch.document_history(route, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.kind == collab_types::OpKind::Compaction
@@ -8570,7 +8570,7 @@ impl AppBrokerState {
             return Ok(());
         };
         personal
-            .admit_local(&route.app_id, &route.record_id, envelope.clone())
+            .admit_local(&route.app_id, &route.document_id, envelope.clone())
             .map(|_| ())
             .map_err(|error| {
                 BrokerError::failed(format!(
@@ -9779,7 +9779,7 @@ async fn authenticate_launcher_handoff(
                 answerable: false,
             });
         }
-        let earlier = kept_record::earlier_ids_of(services, &handoff.app_id);
+        let earlier = kept_document::earlier_ids_of(services, &handoff.app_id);
         let opened = launch
             .launch_ticket
             .map(|ticket| workspace_open::ConnectedLaunch {
@@ -10183,7 +10183,7 @@ pub mod tests {
 
     #[test]
     fn a_join_names_a_valid_record_kind_or_none() {
-        let joined = |kind: &str| super::joined_record_kind(kind);
+        let joined = |kind: &str| super::joined_resource_type(kind);
         assert_eq!(joined("").unwrap(), None);
         assert_eq!(
             joined("notes.notebook").unwrap().as_deref(),
@@ -10279,8 +10279,8 @@ pub mod tests {
     /// keeps. The app must hear why, as an ordinary failed call.
     #[test]
     fn an_unattested_launch_is_told_why_it_was_refused() {
-        struct NoLaunchRecords;
-        impl crate::services::LauncherServices for NoLaunchRecords {
+        struct NoLaunchDocuments;
+        impl crate::services::LauncherServices for NoLaunchDocuments {
             fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                 Vec::new()
             }
@@ -10309,7 +10309,7 @@ pub mod tests {
             PeerPublisher::disabled(),
             Some(&config),
             HostServices {
-                launcher: Some(Arc::new(NoLaunchRecords)),
+                launcher: Some(Arc::new(NoLaunchDocuments)),
                 ..Default::default()
             },
             None,
@@ -10973,7 +10973,7 @@ pub mod tests {
                 peer_id: survivor,
                 app_id: fixture.route.app_id.clone(),
                 cluster_id: fixture.cluster_id.clone(),
-                record_id: "survivor".into(),
+                document_id: "survivor".into(),
             };
             fixture
                 .state
@@ -11064,7 +11064,7 @@ pub mod tests {
                         peer_id: replacement,
                         app_id: fixture.route.app_id.clone(),
                         cluster_id: fixture.cluster_id.clone(),
-                        record_id: "replacement".into(),
+                        document_id: "replacement".into(),
                     },
                 );
             fixture.state.refresh_action_directory_root_snapshot();
@@ -11246,7 +11246,7 @@ pub mod tests {
                             peer_id,
                             app_id: "so.tilo.test".into(),
                             cluster_id: fixture.cluster_id.clone(),
-                            record_id: format!("root-{peer_id}"),
+                            document_id: format!("root-{peer_id}"),
                         },
                     );
                 }
@@ -11417,11 +11417,11 @@ pub mod tests {
     #[cfg(all(test, target_os = "linux"))]
     include!("native_checkout_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
-    include!("workspace_record_custody_tests.rs");
+    include!("workspace_document_custody_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
-    include!("record_content_tests.rs");
+    include!("document_content_tests.rs");
     #[cfg(test)]
     include!("offload_api_tests.rs");
     #[cfg(test)]
@@ -11503,7 +11503,7 @@ pub mod tests {
                         agent_cert: None,
                     }
                 }),
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
@@ -11878,7 +11878,7 @@ pub mod tests {
                     peer_id,
                     app_id: route.app_id.clone(),
                     cluster_id: cluster_id.clone(),
-                    record_id: route.record_id.clone(),
+                    document_id: route.document_id.clone(),
                 },
             );
         state.refresh_action_directory_root_snapshot();
@@ -13249,7 +13249,7 @@ pub mod tests {
             Sent::Signed {
                 app_id,
                 cluster_id,
-                record_id,
+                document_id,
                 payload,
             },
         ] = published.as_slice()
@@ -13258,7 +13258,7 @@ pub mod tests {
         };
         assert_eq!(app_id, "so.tilo.notes");
         assert_eq!(cluster_id, &route.cluster_id);
-        assert_eq!(record_id, "meeting-notes");
+        assert_eq!(document_id, "meeting-notes");
         assert_eq!(
             DocumentMutation::decode(payload).expect("typed network payload"),
             DocumentMutation::Snapshot(b"automerge snapshot".to_vec()),
@@ -13310,14 +13310,14 @@ pub mod tests {
         state.ensure_channel(&route.channel_key());
         let mut received = state.subscribe_ops(&route.channel_key(), 2);
 
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
         let mut op = SignedOp::new_unsigned(
             DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
                 .encode()
                 .expect("typed snapshot"),
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             1,
@@ -13349,7 +13349,7 @@ pub mod tests {
             b"opaque MLS application frame".to_vec(),
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             2,
@@ -13384,11 +13384,11 @@ pub mod tests {
                 .is_err(),
             "a live downgrade must take effect before the next send"
         );
-        let other_record =
+        let other_document =
             CrdtRoute::record(route.app_id.clone(), route.cluster_id, "other-record");
         assert!(
             state
-                .authorize_certified_document(&other_record, &admitted, &op)
+                .authorize_certified_document(&other_document, &admitted, &op)
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
@@ -13482,9 +13482,9 @@ pub mod tests {
             DocumentMutation::Snapshot(b"watched".to_vec())
                 .encode()
                 .expect("typed snapshot"),
-            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             1,
@@ -13502,8 +13502,8 @@ pub mod tests {
         );
         assert!(matches!(
             sink.snapshot().as_slice(),
-            [Sent::Signed { cluster_id, record_id, .. }]
-                if *cluster_id == route.cluster_id && record_id == "watch-history"
+            [Sent::Signed { cluster_id, document_id, .. }]
+                if *cluster_id == route.cluster_id && document_id == "watch-history"
         ));
     }
 
@@ -13520,11 +13520,11 @@ pub mod tests {
         fanout.attach_app_broker(Arc::clone(&state));
 
         let target = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-a");
-        let other_record = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-b");
+        let other_document = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-b");
         let other_app = CrdtRoute::record("so.tilo.files", "workspace-1", "note-a");
         let other_workspace = CrdtRoute::record("so.tilo.notes", "workspace-2", "note-a");
         let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
-        let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
+        let mut other_document_rx = state.subscribe_ops(&other_document.channel_key(), 3);
         let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
         let mut other_workspace_rx = state.subscribe_ops(&other_workspace.channel_key(), 5);
 
@@ -13533,9 +13533,9 @@ pub mod tests {
             DocumentMutation::Incremental(vec![7, 9])
                 .encode()
                 .expect("typed incremental mutation"),
-            document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
+            document_artifact_id(&target.app_id, &target.cluster_id, &target.document_id),
             author,
-            document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
+            document_attestation_id(&target.app_id, &target.cluster_id, &target.document_id),
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             1,
@@ -13554,7 +13554,7 @@ pub mod tests {
             "the addressed record receives the op"
         );
         for (label, received) in [
-            ("another record", other_record_rx.try_recv()),
+            ("another record", other_document_rx.try_recv()),
             ("another app", other_app_rx.try_recv()),
             ("another workspace", other_workspace_rx.try_recv()),
         ] {
@@ -13654,7 +13654,7 @@ pub mod tests {
             assert_eq!(live.peer_id, 8);
             assert!(live.actions.is_empty());
             assert_eq!(descriptor.action_label, "Current live action");
-            let foreign = CrdtRoute::record(&route.app_id, "another-workspace", &route.record_id);
+            let foreign = CrdtRoute::record(&route.app_id, "another-workspace", &route.document_id);
             assert!(
                 state
                     .published_action(&foreign, "notebook", "open")
@@ -14957,4 +14957,4 @@ mod host_worker_capacity_tests {
 mod resource_view_tests;
 
 #[cfg(test)]
-mod person_record_join_tests;
+mod person_document_join_tests;

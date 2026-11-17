@@ -228,7 +228,7 @@ impl Workspaces {
     /// every device again. A public workspace is one anyone may walk into:
     /// what a newcomer waits for is its governance and its shared desktop,
     /// not every record its crowd ever wrote.
-    async fn load_records_when_opened(&self, workspace: &str, when_opened: bool) {
+    async fn load_documents_when_opened(&self, workspace: &str, when_opened: bool) {
         let Ok(governed) = self.workspace(workspace).await else {
             return;
         };
@@ -246,7 +246,7 @@ impl Workspaces {
                 .lock()
                 .await
                 .store
-                .set_records_when_opened(when_opened);
+                .set_documents_when_opened(when_opened);
         }
     }
 
@@ -313,7 +313,7 @@ impl Workspaces {
         .await?;
         let listed = entry.is_listed();
         drop(governed);
-        self.load_records_when_opened(workspace, listed).await;
+        self.load_documents_when_opened(workspace, listed).await;
         self.inner.directory.announce(workspace);
         tracing::info!(%workspace, listed, "the workspace's entry settled");
         Ok(entry)
@@ -548,7 +548,7 @@ impl Workspaces {
     /// Keep the directory's activity hint: each member write marks its workspace
     /// active, for as long as the workspaces are governed here.
     pub(super) fn follow_activity(&self) {
-        let mut writes = self.record_writes();
+        let mut writes = self.document_writes();
         let workspaces = std::sync::Arc::downgrade(&self.inner);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;

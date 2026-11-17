@@ -36,7 +36,7 @@ use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, Work
 use tilo_agent_session::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
-    WorkspaceActions, WorkspaceRecordsLink,
+    WorkspaceActions, WorkspaceDocumentsLink,
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -782,7 +782,7 @@ struct RelayRecordsLink {
     certification: CertificationProtocol,
 }
 
-impl WorkspaceRecordsLink for RelayRecordsLink {
+impl WorkspaceDocumentsLink for RelayRecordsLink {
     /// On the approving devices of the person `caller` is or acts for: the
     /// host's own person's, or a member's own root, as their device requests
     /// are answered.
@@ -1001,7 +1001,7 @@ fn app_catalogue(
 ///
 /// # Errors
 /// Why the relay did not start.
-pub async fn start_serving_records(
+pub async fn start_serving_documents(
     mut cfg: crate::RelayConfig,
     identity: RelayIdentity,
     catalogue: Option<CatalogueFactory>,
@@ -1019,7 +1019,7 @@ pub async fn start_serving_records(
     });
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
-    attach_records(
+    attach_resources(
         &plane.actions,
         &relay,
         &host_cert,
@@ -1036,7 +1036,7 @@ async fn with_notes(
 ) -> std::collections::BTreeSet<tilo_relay_protocol::WorkspaceId> {
     let mut held = std::collections::BTreeSet::new();
     for summary in workspaces.list().await {
-        let Ok(routes) = workspaces.record_routes(&summary.workspace).await else {
+        let Ok(routes) = workspaces.document_routes(&summary.workspace).await else {
             continue;
         };
         if routes
@@ -1051,7 +1051,7 @@ async fn with_notes(
 }
 
 /// Give `workspaces` the records `relay` holds, joined as its own device.
-fn attach_records(
+fn attach_resources(
     actions: &WorkspaceActions,
     relay: &Relay,
     host_cert: &DeviceCert,
@@ -1065,10 +1065,10 @@ fn attach_records(
         // A session in a workspace's VM joins as a device of the person's,
         // which a stand-in certifies: the one this host keeps for them, else
         // a host that is itself one.
-        let user = relay.workspace_records().user_public_key();
+        let user = relay.workspace_documents().user_public_key();
         let (key, cert) = relay.stand_in(&user).unwrap_or_else(|| {
             (
-                relay.workspace_records().signing_key().clone(),
+                relay.workspace_documents().signing_key().clone(),
                 host_cert.clone(),
             )
         });
@@ -1095,7 +1095,7 @@ fn attach_records(
     // A workspace's notes are also `.md` files in its folder: a write to its notebook or
     // its folder brings the two into step, on this host, which holds both.
     if let Some(workspaces) = relay.workspaces() {
-        let mut writes = workspaces.record_writes();
+        let mut writes = workspaces.document_writes();
         let workspaces = workspaces.clone();
         let actions = actions.clone();
         tokio::spawn(async move {
@@ -1135,7 +1135,7 @@ fn attach_records(
     actions
         .attach(Arc::new(RelayRecordsLink {
             shell,
-            user_public_key: relay.workspace_records().user_public_key(),
+            user_public_key: relay.workspace_documents().user_public_key(),
             workspaces: relay.workspaces().cloned(),
             browser_origin: Arc::clone(&relay.browser_origin),
             web_entry,
@@ -1145,7 +1145,7 @@ fn attach_records(
             certification: relay.web_context().certification.clone(),
             host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
-                key: relay.workspace_records().signing_key().clone(),
+                key: relay.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
         }))
@@ -1208,7 +1208,7 @@ async fn start_inner(
         }
         None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
     };
-    attach_records(
+    attach_resources(
         &plane.host.actions,
         &relay,
         &host_cert,

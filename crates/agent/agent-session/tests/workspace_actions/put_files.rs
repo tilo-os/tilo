@@ -19,7 +19,7 @@ use base64::Engine as _;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
-use tilo_fs::tree_record::record as tree_record;
+use tilo_fs::tree_document::record as tree_record;
 use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
@@ -27,11 +27,11 @@ use tilo_session_client::remote::SessionActions;
 async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tree {
     let workspaces = hosted.relay.workspaces().unwrap();
     let record = workspaces
-        .record_document(workspace, FILES_APP, &tree_record())
+        .resource_document(workspace, FILES_APP, &tree_record())
         .await
         .unwrap()
         .expect("the host keeps the workspace's tree");
-    Tree::of_record(&record).expect("the tree reads as one")
+    Tree::of_document(&record).expect("the tree reads as one")
 }
 
 /// What a tree names a file of `bytes` by: the BLAKE3 address of its content

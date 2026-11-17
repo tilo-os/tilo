@@ -61,7 +61,7 @@ fn route_key(route: &CrdtRoute) -> (String, String, String) {
     (
         route.cluster_id.clone(),
         route.app_id.clone(),
-        route.record_id.clone(),
+        route.document_id.clone(),
     )
 }
 
@@ -155,7 +155,7 @@ impl AppBrokerState {
                 roots.get(&peer).is_some_and(|root| {
                     root.app_id == publisher.route.app_id
                         && root.cluster_id == publisher.route.cluster_id
-                        && root.record_id == publisher.route.record_id
+                        && root.document_id == publisher.route.document_id
                 })
             })
     }
@@ -174,7 +174,7 @@ impl AppBrokerState {
             reason: "invalid canonical application route".into(),
         })?;
         super::validate_directory_identifier(
-            &requested.record_id,
+            &requested.document_id,
             "canonical record",
             super::DIRECTORY_MAX_IDENTIFIER_BYTES,
             false,
@@ -190,7 +190,7 @@ impl AppBrokerState {
         let route = CrdtRoute::record(
             &requested.app_id,
             &requested.workspace,
-            &requested.record_id,
+            &requested.document_id,
         );
         let key = route_key(&route);
         let candidates = self.canonical_candidates(&route)?;
@@ -231,7 +231,7 @@ impl AppBrokerState {
             peer_id: selected.peer,
             app_id: route.app_id,
             cluster_id: route.cluster_id,
-            record_id: route.record_id,
+            document_id: route.document_id,
         };
         Ok(Some((root, format!("{PROVIDER_PREFIX}{}", selected.token))))
     }
@@ -273,11 +273,13 @@ impl AppBrokerState {
             .selected
             .iter()
             .find(|(_, selected)| selected.token == uuid)
-            .map(|((workspace, app_id, record_id), _)| CanonicalActionRoute {
-                workspace: workspace.clone(),
-                app_id: app_id.clone(),
-                record_id: record_id.clone(),
-            })
+            .map(
+                |((workspace, app_id, document_id), _)| CanonicalActionRoute {
+                    workspace: workspace.clone(),
+                    app_id: app_id.clone(),
+                    document_id: document_id.clone(),
+                },
+            )
             .ok_or_else(unavailable)?;
         let (root, current) = self
             .canonical_directory(&requested)?

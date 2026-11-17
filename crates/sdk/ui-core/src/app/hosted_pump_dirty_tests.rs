@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
             ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open("test.directory", "00000000-0000-0000-0000-000000000005")
             .unwrap();
@@ -474,13 +474,13 @@ tilo_test_env::scenario! {
             app_id: "test.directory".into(),
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
-            record_kind: crate::record::ResourceType::new("directory"),
+            resource_type: crate::resource::ResourceType::new("directory"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
         let permissions = crate::permissions::SharedPermissions::new(
@@ -561,7 +561,7 @@ tilo_test_env::scenario! {
             ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open("test.directory", "00000000-0000-0000-0000-000000000006")
             .unwrap();
@@ -577,13 +577,13 @@ tilo_test_env::scenario! {
             app_id: "test.directory".into(),
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
-            record_kind: crate::record::ResourceType::new("directory"),
+            resource_type: crate::resource::ResourceType::new("directory"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
         let context = HostContext::prepare(

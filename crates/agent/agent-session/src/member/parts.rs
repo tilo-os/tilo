@@ -1,5 +1,5 @@
 //! The records an app keeps beside one of its own: the parts of a chain
-//! (a chat's messages, [`ui::record::DocumentId::part`]). A part is never a
+//! (a chat's messages, [`ui::resource::DocumentId::part`]). A part is never a
 //! record the agent opens; it is held in the replica of the record that
 //! keeps it, as a window holds it, so the record's operations read and
 //! write it (a post goes to the chat's head part). A part that arrives
@@ -16,7 +16,7 @@ use super::AgentMember;
 /// Whether the wire record `record` is a part of a chain, held beside its
 /// app's record rather than opened.
 pub(crate) fn is_part(record: &str) -> bool {
-    ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
+    ui::resource::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
 impl AgentMember {
@@ -28,7 +28,7 @@ impl AgentMember {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Option<DocumentRoute> {
-        let record = ui::record::DocumentId::parse(&route.record)?;
+        let record = ui::resource::DocumentId::parse(&route.record)?;
         let known = self
             .beside
             .get(route)
@@ -51,7 +51,7 @@ impl AgentMember {
             let Some(app) = self.apps.get(&holder) else {
                 continue;
             };
-            match app.apply_record(&record, mutation) {
+            match app.apply_document(&record, mutation) {
                 Ok(()) => {
                     tracing::debug!(part = %route.record, "agent: merged a part");
                     self.beside.insert(route.clone(), holder.clone());
@@ -87,13 +87,13 @@ impl AgentMember {
             let Some(Ok(saved)) = self.unopened.seed(&part) else {
                 continue;
             };
-            let Some(record) = ui::record::DocumentId::parse(&part.record) else {
+            let Some(record) = ui::resource::DocumentId::parse(&part.record) else {
                 continue;
             };
             let Some(app) = self.apps.get(holder) else {
                 return;
             };
-            match app.apply_record(&record, &DocumentMutation::Snapshot(saved)) {
+            match app.apply_document(&record, &DocumentMutation::Snapshot(saved)) {
                 Ok(()) => {
                     tracing::debug!(part = %part.record, "agent: held a waiting part");
                     self.unopened.forget(&part);
@@ -113,7 +113,7 @@ impl AgentMember {
             return Ok(false);
         };
         let taken = app
-            .take_record_mutations()
+            .take_document_mutations()
             .map_err(|error| error.to_string())?;
         let known = self
             .peer

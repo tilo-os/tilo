@@ -1,4 +1,4 @@
-//! A settings section held as a record ([`RecordEnv::settings`](super::RecordEnv::settings)):
+//! A settings section held as a record ([`ResourceEnv::settings`](super::ResourceEnv::settings)):
 //! published as `settings:<kind>` with its field edits and verbs, each change
 //! checked by the section's model and stored in the settings document with
 //! what made it and who.
@@ -22,7 +22,7 @@ use ui_core::storage::{
 };
 
 use super::live::Live;
-use super::record::{Held, RecordApi};
+use super::record::{Held, ResourceApi};
 
 /// One thing a section's record asks of the section's type.
 #[derive(Clone, Copy)]
@@ -351,7 +351,7 @@ impl SectionApi {
     }
 }
 
-impl RecordApi for SectionApi {
+impl ResourceApi for SectionApi {
     fn id(&self) -> &str {
         &self.id
     }
@@ -388,7 +388,7 @@ impl RecordApi for SectionApi {
 }
 
 impl SectionApi {
-    /// [`RecordApi::apply_encoded`], run by the action `invoked_by` when
+    /// [`ResourceApi::apply_encoded`], run by the action `invoked_by` when
     /// another action ran this one.
     fn apply_invoked(
         &self,
@@ -414,7 +414,7 @@ impl SectionApi {
 /// in the settings document with what made it and who; admitting an
 /// invocation (the invoker's grants) is the caller's, from the published
 /// action.
-pub struct SettingsRecords {
+pub struct SettingsResources {
     apis: Vec<Rc<SectionApi>>,
     /// The person the sections are changed by, whose undo and redo of
     /// their steps on each are published beside it, with their shared
@@ -422,7 +422,7 @@ pub struct SettingsRecords {
     person: Option<Rc<super::person::PersonState>>,
 }
 
-impl SettingsRecords {
+impl SettingsResources {
     /// The settings sections `declare` declares, of the app `app_id`, as
     /// they are stored now.
     #[must_use]
@@ -459,7 +459,7 @@ impl SettingsRecords {
         app_id: &'static str,
         app_title: &'static str,
         declares: &[super::Declare],
-        records: ui_core::record::person::PersonRecords,
+        records: ui_core::resource::person::PersonResources,
     ) -> Self {
         Self::declared(
             super::record::Sections {
@@ -515,7 +515,7 @@ impl SettingsRecords {
             super::record::Sections {
                 app_id,
                 document,
-                person: Some(Rc::new(super::person::PersonState::without_records(
+                person: Some(Rc::new(super::person::PersonState::without_resources(
                     person.clone(),
                     earlier.to_vec(),
                     app_id,
@@ -555,7 +555,7 @@ impl SettingsRecords {
     /// ([`Self::history_owners`]), opened on first use; not published here.
     /// `None` where no person is.
     #[must_use]
-    pub fn shared<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+    pub fn shared<P: tilo_resource::SharedResource>(&self) -> Option<super::PersonResource<P>> {
         self.person.as_ref()?.hold_shared::<P>()
     }
 
@@ -611,7 +611,7 @@ impl SettingsRecords {
                 .answer_for(&encoded.payload, invoker)
                 .map_err(tilo_actions::ApiError::Failed);
         }
-        let request: super::record::RecordAction = tilo_actions::decode_json(&encoded.payload)
+        let request: super::record::ResourceAction = tilo_actions::decode_json(&encoded.payload)
             .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
         let api = self
             .apis
@@ -624,7 +624,7 @@ impl SettingsRecords {
     }
 }
 
-impl SettingsRecords {
+impl SettingsResources {
     /// What answers these sections' actions where the host keeps them in its
     /// own process, as `person`'s: the controls a window binds to them
     /// ([`Records::kept_by`](super::Records::kept_by)) are invoked here, as a

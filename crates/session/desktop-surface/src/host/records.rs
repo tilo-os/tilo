@@ -2,10 +2,10 @@
 //! records a joining host adopts and the records it writes back.
 //!
 //! A shared layout names a window's record by its route ([`DocumentId::route`]): the package
-//! primary's route is empty, every other record's is its id ([`wire_record`]). A host that joins a
+//! primary's route is empty, every other record's is its id ([`wire_document`]). A host that joins a
 //! layout adopts the record each of its windows shows ([`adopted`]) and writes every one of them back
 //! ([`live`]), so it never holds a window on another record than the layout showed
-//! (`tilo_desktop_model::shared_record::guard` refuses such a write). What a host cannot bind yet —
+//! (`tilo_desktop_model::shared_resource::guard` refuses such a write). What a host cannot bind yet —
 //! an application whose code has not loaded, one it does not run, or a record it does not read —
 //! keeps the layout's spelling verbatim, as the layout keeps the record a window held.
 
@@ -14,12 +14,12 @@ use std::hash::BuildHasher;
 
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{Layout, TabId, TileContent};
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 /// The record `id` travels under on the workspace's shared layout: its route, empty for the
 /// package's primary record.
 #[must_use]
-pub fn wire_record(id: &DocumentId) -> &str {
+pub fn wire_document(id: &DocumentId) -> &str {
     id.route()
 }
 
@@ -33,7 +33,7 @@ pub fn app_of(tree: &Layout, tab: TabId) -> Option<&str> {
 }
 
 /// What `tab` shows, as presence names it: the application it runs and its record's wire spelling
-/// ([`wire_record`]), or `None` for a window no component bound a record to yet.
+/// ([`wire_document`]), or `None` for a window no component bound a record to yet.
 #[must_use]
 pub fn of_window<S: BuildHasher>(
     tree: &Layout,
@@ -42,7 +42,7 @@ pub fn of_window<S: BuildHasher>(
 ) -> Option<(String, String)> {
     let app = app_of(tree, tab)?;
     let checkout = bindings.get(&tab)?;
-    Some((app.to_owned(), wire_record(&checkout.id).to_owned()))
+    Some((app.to_owned(), wire_document(&checkout.id).to_owned()))
 }
 
 /// `(tab, record)` for every window of `tree` whose component bound a record, or that keeps the
@@ -57,7 +57,7 @@ pub fn live<S: BuildHasher>(
     let mut records: Vec<(TabId, String)> = bindings
         .iter()
         .filter(|(tab, _)| live.contains(tab))
-        .map(|(tab, checkout)| (*tab, wire_record(&checkout.id).to_owned()))
+        .map(|(tab, checkout)| (*tab, wire_document(&checkout.id).to_owned()))
         .chain(
             held.iter()
                 .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
@@ -239,10 +239,10 @@ mod tests {
         phase the_primary_record_travels_as_its_route;
         // The package primary travels as the empty route; every other record travels as its id.
         {
-            assert_eq!(wire_record(&DocumentId::package_primary()), "");
+            assert_eq!(wire_document(&DocumentId::package_primary()), "");
             let derived = DocumentId::from_route("derived:default@tab:0000000000000002").unwrap();
             assert_eq!(
-                wire_record(&derived),
+                wire_document(&derived),
                 "derived:default@tab:0000000000000002"
             );
         }

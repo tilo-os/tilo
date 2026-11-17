@@ -1351,11 +1351,11 @@ mod tests {
     fn opening_the_storage_page_writes_no_change() {
         fn documents(
             app: &ui::prelude::TestApp<crate::SettingsShell>,
-        ) -> Vec<(ui::record::DocumentId, Option<Vec<u8>>)> {
-            app.open_records()
+        ) -> Vec<(ui::resource::DocumentId, Option<Vec<u8>>)> {
+            app.open_resources()
                 .into_iter()
                 .map(|record| {
-                    let bytes = app.record_document(&record);
+                    let bytes = app.resource_document(&record);
                     (record, bytes)
                 })
                 .collect()

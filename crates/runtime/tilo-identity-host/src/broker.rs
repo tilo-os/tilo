@@ -21,7 +21,7 @@ use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
-pub use crate::sources::{GroupKeySource, GroupKeys, PersonRecordKinds, WorkspaceMembership};
+pub use crate::sources::{GroupKeySource, GroupKeys, PersonResourceTypes, WorkspaceMembership};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 use tilo_lock::MutexRecover as _;
@@ -120,7 +120,7 @@ pub fn spawn(
     path: PathBuf,
     tree: Arc<dyn WorkspaceMembership>,
     groups: Arc<dyn GroupKeySource>,
-    person: Arc<dyn PersonRecordKinds>,
+    person: Arc<dyn PersonResourceTypes>,
 ) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
@@ -190,7 +190,7 @@ fn serve(
     mut stream: UnixStream,
     tree: &dyn WorkspaceMembership,
     groups: &dyn GroupKeySource,
-    person: &dyn PersonRecordKinds,
+    person: &dyn PersonResourceTypes,
 ) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
@@ -244,7 +244,7 @@ fn serve(
             Request::CollaborationOp {
                 workspace_id,
                 app_id,
-                record_id,
+                document_id,
                 unsigned_op,
             } => sign_collaboration_op(
                 tree,
@@ -255,13 +255,13 @@ fn serve(
                 },
                 &workspace_id,
                 &app_id,
-                &record_id,
+                &document_id,
                 &unsigned_op,
             ),
             Request::GroupKeys {
                 workspace_id,
                 app_id,
-                record_id,
+                document_id,
                 known_generation,
             } => group_keys(
                 tree,
@@ -274,7 +274,7 @@ fn serve(
                     },
                     workspace_id: &workspace_id,
                     app_id: &app_id,
-                    record_id: &record_id,
+                    document_id: &document_id,
                 },
                 known_generation,
             ),
@@ -339,7 +339,7 @@ fn metadata_response(
 struct Bound<'a> {
     workspace: &'a WorkspaceId,
     app_id: &'a str,
-    person: &'a dyn PersonRecordKinds,
+    person: &'a dyn PersonResourceTypes,
 }
 
 impl Bound<'_> {
@@ -355,8 +355,8 @@ impl Bound<'_> {
 
     /// Whether the bound app declares that it reads `app_id`'s records: another app's, which
     /// it opens and never writes.
-    fn reads_records_of(&self, app_id: &str) -> bool {
-        self.person.reads_records_of(self.app_id, app_id)
+    fn reads_documents_of(&self, app_id: &str) -> bool {
+        self.person.reads_documents_of(self.app_id, app_id)
     }
 
     /// Whether `workspace_id` is the own cluster of the person the bound
@@ -367,14 +367,14 @@ impl Bound<'_> {
         workspace_id: &str,
     ) -> bool {
         collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace_id
-            && !self.person.person_record_kinds(self.app_id).is_empty()
+            && !self.person.person_resource_types(self.app_id).is_empty()
     }
 
-    /// Whether the app declares the person's record `record_id`.
-    fn keeps_person_record(&self, record_id: &str) -> bool {
-        collab_types::person_record_kind(record_id).is_some_and(|kind| {
+    /// Whether the app declares the person's record `document_id`.
+    fn keeps_person_record(&self, document_id: &str) -> bool {
+        collab_types::person_resource_type(document_id).is_some_and(|kind| {
             self.person
-                .person_record_kinds(self.app_id)
+                .person_resource_types(self.app_id)
                 .iter()
                 .any(|declared| declared == kind)
         })
@@ -393,7 +393,7 @@ fn sign_collaboration_join(
             && !bound.in_personal_cluster(profile, workspace_id)
     };
     if workspace_id != bound.workspace.to_string()
-        && bound.person.person_record_kinds(bound.app_id).is_empty()
+        && bound.person.person_resource_types(bound.app_id).is_empty()
     {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
@@ -444,7 +444,7 @@ fn sign_collaboration_op(
     bound: &Bound<'_>,
     workspace_id: &str,
     app_id: &str,
-    record_id: &str,
+    document_id: &str,
     unsigned_op: &[u8],
 ) -> Response {
     let bound_workspace = bound.workspace;
@@ -454,9 +454,9 @@ fn sign_collaboration_op(
     // record of the person's this app keeps in their own cluster: never
     // another app's, and never a kind it does not declare.
     let workspace_record =
-        launch_workspace && collab_types::workspace_document(app_id, record_id).is_some();
+        launch_workspace && collab_types::workspace_document(app_id, document_id).is_some();
     if (!bound.keeps_records_of(app_id) && !workspace_record)
-        || (!launch_workspace && !bound.keeps_person_record(record_id))
+        || (!launch_workspace && !bound.keeps_person_record(document_id))
     {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
@@ -484,8 +484,8 @@ fn sign_collaboration_op(
         }
     };
     let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-    let expected_artifact = document_artifact_id(app_id, workspace_id, record_id);
-    let expected_attestation = document_attestation_id(app_id, workspace_id, record_id);
+    let expected_artifact = document_artifact_id(app_id, workspace_id, document_id);
+    let expected_attestation = document_attestation_id(app_id, workspace_id, document_id);
     let now = std::time::SystemTime::now();
     let skew = Duration::from_secs(300);
     let earliest = now
@@ -495,7 +495,7 @@ fn sign_collaboration_op(
     if op.author != author
         || op.artifact != expected_artifact
         || op.attestation_id != expected_attestation
-        || collab_types::validate_document_payload_route(app_id, workspace_id, record_id, &op)
+        || collab_types::validate_document_payload_route(app_id, workspace_id, document_id, &op)
             .is_err()
         || op.timestamp < earliest
         || op.timestamp > latest
@@ -515,10 +515,10 @@ fn sign_collaboration_op(
     let actor_key = hex::encode(profile.user_public_key);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
         workspace.role_of(&actor_key)?;
-        let record = collab_types::Record {
+        let record = collab_types::WrittenDocument {
             workspace: &workspace.policy.workspace,
             app: app_id,
-            record: record_id,
+            document: document_id,
         };
         let allows = |node: &tilo_action_policy::TreePath, kind| {
             workspace.answer_at(&actor_key, node, kind, unix_now()) == Answer::Allow
@@ -553,7 +553,7 @@ struct GroupKeyRoute<'a> {
     bound: Bound<'a>,
     workspace_id: &'a str,
     app_id: &'a str,
-    record_id: &'a str,
+    document_id: &'a str,
 }
 
 /// Hand an app the content keys of one route of its own launch, only while
@@ -574,9 +574,9 @@ fn group_keys(
     // another app's it reads).
     if (launch_workspace
         && !bound.keeps_records_of(route.app_id)
-        && !bound.reads_records_of(route.app_id)
-        && collab_types::workspace_document(route.app_id, route.record_id).is_none())
-        || (!launch_workspace && !bound.keeps_person_record(route.record_id))
+        && !bound.reads_documents_of(route.app_id)
+        && collab_types::workspace_document(route.app_id, route.document_id).is_none())
+        || (!launch_workspace && !bound.keeps_person_record(route.document_id))
     {
         return Response::Denied("group keys requested for a different launch route".into());
     }
@@ -612,7 +612,7 @@ fn group_keys(
             let node = collab_types::validator::document_node(
                 &workspace.policy.workspace,
                 route.app_id,
-                route.record_id,
+                route.document_id,
             );
             workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) != Answer::Deny
         })
@@ -762,8 +762,8 @@ mod tests {
     /// Every app was published as the id this names before, as an installed catalogue believes.
     struct RenamedFrom(&'static str);
 
-    impl PersonRecordKinds for RenamedFrom {
-        fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+    impl PersonResourceTypes for RenamedFrom {
+        fn person_resource_types(&self, _app_id: &str) -> Vec<String> {
             Vec::new()
         }
 
@@ -775,8 +775,8 @@ mod tests {
     /// Notes keeps the person's record of what they watched.
     struct NotesKeepsWatched;
 
-    impl PersonRecordKinds for NotesKeepsWatched {
-        fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+    impl PersonResourceTypes for NotesKeepsWatched {
+        fn person_resource_types(&self, app_id: &str) -> Vec<String> {
             if app_id == "so.tilo.notes" {
                 vec!["notes.watched".into()]
             } else {
@@ -965,7 +965,7 @@ mod tests {
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
             let app_id = "so.tilo.notes";
-            let record_id = "meeting-notes";
+            let document_id = "meeting-notes";
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
@@ -984,9 +984,9 @@ mod tests {
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id(app_id, &workspace_id, record_id),
+                document_artifact_id(app_id, &workspace_id, document_id),
                 author,
-                document_attestation_id(app_id, &workspace_id, record_id),
+                document_attestation_id(app_id, &workspace_id, document_id),
                 collab_types::OpKind::Change,
                 now,
                 1,
@@ -997,7 +997,7 @@ mod tests {
                 &bound(&workspace, app_id),
                 &workspace_id,
                 app_id,
-                record_id,
+                document_id,
                 &unsigned,
             ) else {
                 panic!("valid certified document operation was not signed");
@@ -1013,9 +1013,9 @@ mod tests {
 
             let encrypted = SignedOp::new_unsigned_with_encryption(
                 b"opaque MLS application frame".to_vec(),
-                document_artifact_id(app_id, &workspace_id, record_id),
+                document_artifact_id(app_id, &workspace_id, document_id),
                 author,
-                document_attestation_id(app_id, &workspace_id, record_id),
+                document_attestation_id(app_id, &workspace_id, document_id),
                 collab_types::OpKind::Change,
                 now,
                 2,
@@ -1028,7 +1028,7 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &encrypted_unsigned,
                 ),
                 Response::Signature(_)
@@ -1039,7 +1039,7 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     "so.tilo.calendar",
-                    record_id,
+                    document_id,
                     &unsigned,
                 ),
                 Response::Denied(_)
@@ -1058,7 +1058,7 @@ mod tests {
                     &as_renamed,
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &unsigned
                 ),
                 Response::Signature(_)
@@ -1069,7 +1069,7 @@ mod tests {
                     &bound(&workspace, "so.tilo.notebook"),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &unsigned,
                 ),
                 Response::Denied(_)
@@ -1082,7 +1082,7 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &malformed,
                 ),
                 Response::Denied(_)
@@ -1101,7 +1101,7 @@ mod tests {
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &unsigned,
                 ),
                 Response::Denied(reason) if reason.contains("denies this document action")
@@ -1141,7 +1141,7 @@ params = []
                 doc.put(automerge::ROOT, "written", seq).expect("write");
                 let context = tilo_actions::ActionContext {
                     what: Some(what),
-                    ..tilo_actions::ActionContext::for_resource(record_id, "notes.page", "Page")
+                    ..tilo_actions::ActionContext::for_resource(document_id, "notes.page", "Page")
                 };
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
@@ -1167,7 +1167,7 @@ params = []
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &comment
                 ),
                 Response::Signature(_)
@@ -1185,7 +1185,7 @@ params = []
                 11,
             );
             assert!(matches!(
-                sign_collaboration_op(&tree, &bound(&workspace, app_id), &workspace_id, app_id, record_id, &edit),
+                sign_collaboration_op(&tree, &bound(&workspace, app_id), &workspace_id, app_id, document_id, &edit),
                 Response::Denied(reason) if reason.contains("denies this document action")
             ));
             let mut tree_guard = tree.write();
@@ -1198,7 +1198,7 @@ params = []
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &unsigned,
                 ),
                 Response::Denied(reason) if reason.contains("denies this document action")
@@ -1293,7 +1293,7 @@ params = []
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
             let app_id = "so.tilo.notes";
-            let record_id = "meeting-notes";
+            let document_id = "meeting-notes";
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
@@ -1303,9 +1303,9 @@ params = []
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id(app_id, &workspace_id, record_id),
+                document_artifact_id(app_id, &workspace_id, document_id),
                 Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-                document_attestation_id(app_id, &workspace_id, record_id),
+                document_attestation_id(app_id, &workspace_id, document_id),
                 collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
@@ -1317,7 +1317,7 @@ params = []
                     &bound(&workspace, app_id),
                     &workspace_id,
                     app_id,
-                    record_id,
+                    document_id,
                     &unsigned,
                 )
             };
@@ -1575,15 +1575,15 @@ params = []
                     .is_err(),
                 "the identity broker must not sign a join for another workspace"
             );
-            let record_id = "record-1";
+            let document_id = "record-1";
             let now = std::time::SystemTime::now();
             let mut op = SignedOp::new_unsigned(
                 DocumentMutation::Incremental(b"automerge changes".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id("so.tilo.notes", &workspace_id, record_id),
+                document_artifact_id("so.tilo.notes", &workspace_id, document_id),
                 Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-                document_attestation_id("so.tilo.notes", &workspace_id, record_id),
+                document_attestation_id("so.tilo.notes", &workspace_id, document_id),
                 collab_types::OpKind::Change,
                 now,
                 1,
@@ -1592,7 +1592,7 @@ params = []
                 .sign_collaboration_op(
                     &workspace_id,
                     "so.tilo.notes",
-                    record_id,
+                    document_id,
                     &postcard::to_stdvec(&op).expect("unsigned envelope"),
                 )
                 .expect("owner may sign a typed document operation");
@@ -1624,7 +1624,7 @@ params = []
                     1,
                 )
             };
-            let watched = collab_types::person_record_id("notes.watched");
+            let watched = collab_types::person_document_id("notes.watched");
             let mut kept = person_op(&watched);
             kept.signature = collab_types::Signature::from_bytes(
                 identity
@@ -1637,7 +1637,7 @@ params = []
                     .expect("its own record of the person's is signed"),
             );
             collab_types::verify_op(&kept).expect("the personal-cluster change verifies");
-            let undeclared = collab_types::person_record_id("notes.bookmarks");
+            let undeclared = collab_types::person_document_id("notes.bookmarks");
             assert!(
                 identity
                     .sign_collaboration_op(
@@ -1752,7 +1752,7 @@ params = []
             .expect("the person's store");
             let own = own_cluster.to_string();
             let app_id = "so.tilo.notes";
-            let watched = collab_types::person_record_id("notes.watched");
+            let watched = collab_types::person_document_id("notes.watched");
             let answer = group_keys(
                 &WorkspaceTree::default().shared(),
                 &ReadyGroups,
@@ -1764,7 +1764,7 @@ params = []
                     },
                     workspace_id: &own,
                     app_id,
-                    record_id: &watched,
+                    document_id: &watched,
                 },
                 0,
             );
@@ -1796,7 +1796,7 @@ params = []
                         },
                         workspace_id: &launch,
                         app_id: owner,
-                        record_id: "",
+                        document_id: "",
                     },
                     0,
                 )
@@ -1837,7 +1837,7 @@ params = []
                         bound: bound(&workspace, app_id),
                         workspace_id: &fixture.workspace,
                         app_id,
-                        record_id: "note",
+                        document_id: "note",
                     },
                     0,
                 )
@@ -1883,12 +1883,12 @@ params = []
     /// Today declares that it reads Tasks' records.
     struct TodayReadsTasks;
 
-    impl PersonRecordKinds for TodayReadsTasks {
-        fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+    impl PersonResourceTypes for TodayReadsTasks {
+        fn person_resource_types(&self, _app_id: &str) -> Vec<String> {
             Vec::new()
         }
 
-        fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+        fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
             reader == "so.tilo.lang.today" && owner == "so.tilo.lang.tasks"
         }
     }

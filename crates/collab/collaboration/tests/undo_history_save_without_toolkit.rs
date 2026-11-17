@@ -9,11 +9,11 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use collab_types::MemberId;
 use collab_types::document::DocumentId;
+use collaboration::document::save::{ResourceSaveStatus, resource_document};
 use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::HistoryEdit;
 use collaboration::history_source::words::HistoryWords;
-use collaboration::record::save::{RecordSaveStatus, record_document};
 use collaboration::state::UndoLog;
 use durable_store::DurableStore;
 
@@ -61,7 +61,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let ada = MemberId::person("ada");
 
     // The record, its undo log and the writer of its on-disk copy.
-    let mut store = record_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
+    let mut store = resource_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
     let mut doc = store.load_or_new();
     // Every change of the record is its original persistent writer's, as
     // the toolkit's record store sets it.
@@ -70,15 +70,15 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let mut writer = store.writer();
     // A new record holds no edits of its own, so it has nothing to save.
     assert_eq!(
-        RecordSaveStatus::of_writer(&doc, &writer),
-        RecordSaveStatus::Saved
+        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::Saved
     );
     doc.commit();
     writer.request(&doc);
     writer.flush();
     assert_eq!(
-        RecordSaveStatus::of_writer(&doc, &writer),
-        RecordSaveStatus::Saved
+        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::Saved
     );
 
     // An edit is a step by its author.
@@ -91,8 +91,8 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     assert_eq!(step.author, Some(ada.clone()));
     assert_eq!(step_authors(&mut doc), ["ada"]);
     assert_eq!(
-        RecordSaveStatus::of_writer(&doc, &writer),
-        RecordSaveStatus::Saving
+        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::Saving
     );
 
     // Undo takes it back as a new change; redo brings it back.
@@ -115,15 +115,15 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     writer.request(&doc);
     writer.flush();
     assert_eq!(
-        RecordSaveStatus::of_writer(&doc, &writer),
-        RecordSaveStatus::Saved
+        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::Saved
     );
     let heads = doc.get_heads();
     drop(writer);
 
     // Reloaded, the record holds its history: the same heads and authors,
     // and a new session's undo log takes the step back again.
-    let mut store = record_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
+    let mut store = resource_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
     let mut reloaded = store
         .load_complete()
         .unwrap()

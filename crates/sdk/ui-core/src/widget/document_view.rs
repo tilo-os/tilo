@@ -274,7 +274,7 @@ where
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::record::capability::RecordScoped,
+        dyn crate::resource::capability::ResourceScoped,
         dyn crate::view::capability::ViewState
     );
 
@@ -384,18 +384,18 @@ where
     }
 }
 
-impl<K> crate::record::capability::RecordScoped for ModelView<K>
+impl<K> crate::resource::capability::ResourceScoped for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
-        crate::record::capability::record_intent(self.child.as_ref())
+    fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
+        crate::resource::capability::record_intent(self.child.as_ref())
     }
-    fn set_record_scope(&mut self, record: &crate::record::DocumentId) {
-        crate::record::capability::set_record_scope(self.child.as_mut(), record);
+    fn set_resource_scope(&mut self, record: &crate::resource::DocumentId) {
+        crate::resource::capability::set_resource_scope(self.child.as_mut(), record);
     }
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        crate::record::capability::release_record_scope(self.child.as_mut())
+    fn release_resource_scope(&mut self) -> Result<(), String> {
+        crate::resource::capability::release_resource_scope(self.child.as_mut())
     }
 }
 

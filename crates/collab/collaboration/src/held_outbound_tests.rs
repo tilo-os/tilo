@@ -87,7 +87,7 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
         app_id: app_id.into(),
         cluster_id: cluster,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();

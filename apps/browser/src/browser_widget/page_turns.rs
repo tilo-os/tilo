@@ -40,7 +40,7 @@ pub(super) const PAGE_TURN_WAIT: Duration = Duration::from_secs(30);
 pub(super) const MAX_RECORD_READS: usize = 8;
 
 /// A read of the tab's record that is with the engine. It holds no turn.
-pub(super) struct RecordRead {
+pub(super) struct ResourceRead {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
     /// The read as it was asked, for the answer that says what ran.
@@ -119,7 +119,7 @@ impl BrowserWidget {
             ));
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
-        self.page_record_reads.push(RecordRead {
+        self.page_record_reads.push(ResourceRead {
             invocation,
             request_id: self.page_request_seq,
             acted: request.clone(),
@@ -190,7 +190,7 @@ impl BrowserWidget {
         let read = self.page_record_reads.remove(index);
         // The record is Browser's resource: an engine that does not answer
         // leaves it as readable as it was.
-        if self.page_record.attached()
+        if self.page_resource.attached()
             && let Ok(reply) = self.page_record_reply(
                 &read.acted,
                 Err(ui::webview::PageFailure::new(

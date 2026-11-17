@@ -223,7 +223,7 @@ pub fn decide_receipt(dir: &Path) {
     }));
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
-            |record: &collab_types::Record<'_>, hash: &str| kept(record.app, hash),
+            |record: &collab_types::WrittenDocument<'_>, hash: &str| kept(record.app, hash),
         ))),
         signed_surface,
     );
@@ -252,7 +252,7 @@ pub(crate) fn arrived() {
 /// role: a Viewer's role grants nothing to write in the workspace, so no
 /// document change it sends is one the workspace takes, and the relay says so
 /// of a change of an encrypted record too, which it cannot read. Their own
-/// record is no part of what the workspace grants ([`collab_types::OwnRecord`]):
+/// record is no part of what the workspace grants ([`collab_types::OwnResource`]):
 /// it is theirs to write whatever their role. `None` for any other role, for
 /// a change of the author's own record, for a workspace whose governor
 /// projected no standings (`standings`), and for a delta that carries no
@@ -277,7 +277,7 @@ pub(crate) fn role_refusal(
     let standing = standings?.get(&author_device)?;
     let person = standing.person_id().unwrap_or_default();
     if standing.policy.active_role(person) != Some(tilo_action_policy::Role::Viewer)
-        || writes_own_record(&message, person)
+        || writes_own_document(&message, person)
     {
         return None;
     }
@@ -292,11 +292,11 @@ pub(crate) fn role_refusal(
 
 /// Whether `message` is a change of `person`'s own record, which only they
 /// read and write whatever their role in the workspace.
-fn writes_own_record(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
+fn writes_own_document(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
     matches!(
         message,
-        neighbour_wire::NeighbourMsg::AppDocument { record_id, own: Some(own), .. }
-            if !person.is_empty() && own.names(record_id) && own.person() == person
+        neighbour_wire::NeighbourMsg::AppDocument { document_id, own: Some(own), .. }
+            if !person.is_empty() && own.names(document_id) && own.person() == person
     )
 }
 
@@ -332,10 +332,10 @@ pub(crate) fn refusal(
 ) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let (route, envelope) = payloads.open_document(body)?;
-    let record = collab_types::Record {
+    let record = collab_types::WrittenDocument {
         workspace: &route.cluster_id,
         app: &route.app_id,
-        record: &route.record_id,
+        document: &route.document_id,
     };
     let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
     // A member's own record is decided as theirs: its person does anything in
@@ -343,11 +343,11 @@ pub(crate) fn refusal(
     let person = route
         .own
         .as_ref()
-        .filter(|own| own.names(&route.record_id))
-        .map(collab_types::OwnRecord::person);
+        .filter(|own| own.names(&route.document_id))
+        .map(collab_types::OwnResource::person);
     let mut cx = tilo_action_policy::Context::at(tilo_clock::unix_now());
     if let Some(person) = &person {
-        cx = cx.with_own_record(&route.record_id, person);
+        cx = cx.with_own_resource(&route.document_id, person);
     }
     let allows = |node: &tilo_action_policy::TreePath, kind| match author {
         // No projection: membership already decided who may write here.

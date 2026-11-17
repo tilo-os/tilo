@@ -29,7 +29,7 @@ pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
-use crate::record::{DocumentCheckout, RecordOpenError, RecordStore};
+use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
 use crate::widget::Widget;
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
@@ -100,9 +100,9 @@ impl BoundActionError {
     pub(crate) fn code(&self) -> &str {
         match self {
             Self::Api(error) => error.code(),
-            Self::Dispatch(BoundDispatchError::CrossRecordReentry) => "cross_record_reentry",
+            Self::Dispatch(BoundDispatchError::CrossResourceReentry) => "cross_resource_reentry",
             Self::Dispatch(BoundDispatchError::ClosedLifetime) => "closed_lifetime",
-            Self::Dispatch(_) => "record_unavailable",
+            Self::Dispatch(_) => "resource_unavailable",
             Self::AmbiguousTarget { .. } => "ambiguous_action_target",
             Self::Rerouted => "bound_broker_route_required",
             Self::Hosted(_) => "provider_unavailable",
@@ -132,7 +132,7 @@ pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
         && matches!(
             code.as_str(),
-            "cross_record_reentry"
+            "cross_resource_reentry"
                 | "ambiguous_action_target"
                 | "bound_broker_route_unavailable"
                 | "undeclared_document_mutation"
@@ -1358,7 +1358,7 @@ pub(crate) struct BoundOwnerMark {
 #[derive(PartialEq)]
 pub(crate) struct OwnerStanding {
     pub(crate) permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
-    pub(crate) save: Result<crate::record::RecordSaveStatus, String>,
+    pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
 impl BoundOwnerMark {
@@ -1774,8 +1774,8 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
         | "published_invocation_contract_changed"
         | "action_document_replaced"
         | "closed_lifetime"
-        | "record_unavailable" => CHANGED,
-        "cross_record_reentry"
+        | "resource_unavailable" => CHANGED,
+        "cross_resource_reentry"
         | "ambiguous_action_target"
         | "ambiguous_action_identity"
         | "undeclared_document_mutation"
@@ -2984,7 +2984,7 @@ pub(crate) fn invoke_resource_action(
             .flatten();
         result = Some(
             binding
-                .with_record_frame(document, false, |doc, path| {
+                .with_resource_frame(document, false, |doc, path| {
                     let presence = crate::invocation_scope::current_presence();
                     let resolved = presence
                         .is_none()
@@ -3151,7 +3151,7 @@ pub(crate) fn invoke_resource_action(
                     };
                     let run = |doc: &mut AutoCommit| {
                     let mut operation = BoundOperation::enter(binding, doc, spec.kind)?;
-                    let started = crate::invocation_scope::with_loaned_record(
+                    let started = crate::invocation_scope::with_loaned_resource(
                         &binding.records,
                         &binding.checkout,
                         &binding.app_id,
@@ -3409,7 +3409,7 @@ pub struct CallbackBinding {
     pub(crate) device_id: String,
     /// Immutable local person supplied at host preparation, not the action author.
     pub(crate) host_person: MemberId,
-    pub(crate) records: RecordStore,
+    pub(crate) records: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: MemberId,
@@ -3469,15 +3469,15 @@ pub(crate) fn service_retained_owner_model(
                      _: &tilo_actions::ActionRegistry| {
         if current.same_component(captured) {
             let updated = current
-                .with_settlement(outer, |document, record_root| {
-                    owner.update(document, record_root);
-                    owner.settle(&mut crate::widget::Edits::lend(document), record_root);
+                .with_settlement(outer, |document, resource_root| {
+                    owner.update(document, resource_root);
+                    owner.settle(&mut crate::widget::Edits::lend(document), resource_root);
                     current.drain_owned_tree(owner, document).map(|_| ())
                 })
                 .and_then(|result| result);
             let synced = current
-                .with_document(outer, |document, record_root| {
-                    owner.sync(document, record_root);
+                .with_document(outer, |document, resource_root| {
+                    owner.sync(document, resource_root);
                     current.drain_owned_tree(owner, document).map(|_| ())
                 })
                 .and_then(|result| result);
@@ -3491,12 +3491,12 @@ pub(crate) fn service_retained_owner_model(
                     .records
                     .save_status(&current.checkout.id)
                     .map_err(BoundDispatchError::Record)
-                    .map(|status| owner.record_save_status(status))
+                    .map(|status| owner.resource_save_status(status))
             });
             let offered = current.enter().and_then(|_entry| {
                 current
                     .records
-                    .offer_record(&current.checkout.id)
+                    .offer_resource(&current.checkout.id)
                     .map_err(BoundDispatchError::Persistence)
             });
             result = Some(admitted.and(projected).and(offered));
@@ -3533,7 +3533,7 @@ pub(crate) fn service_owner_save_progress(
                     .records
                     .save_status(&current.checkout.id)
                     .map_err(BoundDispatchError::Record)?;
-                if status == crate::record::RecordSaveStatus::Saving {
+                if status == crate::resource::ResourceSaveStatus::Saving {
                     let wake = current.lifetime.clone();
                     current.records.wake_on_save_progress(
                         &current.checkout.id,
@@ -3541,7 +3541,7 @@ pub(crate) fn service_owner_save_progress(
                     );
                 }
                 let bar = crate::window_toolbar::revision();
-                owner.record_save_status(status);
+                owner.resource_save_status(status);
                 Ok(crate::window_toolbar::revision() != bar
                     || (owner.needs_redraw() || owner.needs_animation_frame()))
             }));
@@ -3581,14 +3581,14 @@ impl<'b> RetainedComponentRequest<'_, 'b> {
 pub enum BoundDispatchError {
     MissingNode,
     ClosedLifetime,
-    CrossRecordReentry,
-    Record(RecordOpenError),
+    CrossResourceReentry,
+    Record(ResourceOpenError),
     Persistence(String),
 }
 
 /// Logical typing ownership survives physical commits made when an opaque
 /// callback from another instance is admitted. Read-only entry never touches it.
-pub(crate) struct PendingRecordAction {
+pub(crate) struct PendingResourceAction {
     instance_id: crate::application::InstanceId,
     owner: Rc<Cell<bool>>,
     before: Vec<ChangeHash>,
@@ -3609,9 +3609,9 @@ struct NativeTextPolicy {
     continuable: bool,
 }
 
-pub(crate) struct RecordActionState {
+pub(crate) struct ResourceActionState {
     pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
-    pending: Option<PendingRecordAction>,
+    pending: Option<PendingResourceAction>,
     pub(crate) generation: Option<u64>,
     statuses: HashMap<(MemberId, crate::application::InstanceId), crate::undo::UndoStatus>,
     /// The status last answered per author's window, with where the document, the history and the
@@ -3626,16 +3626,16 @@ pub(crate) struct RecordActionState {
         ),
     >,
     /// Changes the workspace refused and the record withdrew, not yet told to
-    /// the app that has it ([`crate::record::RecordStore::take_refusals`]).
-    pub(crate) refusals: Vec<crate::record::RecordRefusal>,
+    /// the app that has it ([`crate::resource::ResourceStore::take_refusals`]).
+    pub(crate) refusals: Vec<crate::resource::ResourceRefusal>,
     /// What windows said they did, held until the workspace keeps it
-    /// ([`crate::record::RecordStore::hold_notice`]).
-    pub(crate) notices: crate::record::WorkspaceNotices,
+    /// ([`crate::resource::ResourceStore::hold_notice`]).
+    pub(crate) notices: crate::resource::WorkspaceNotices,
     /// The writers this replica has written the record as: the record writer and each writer derived
     /// for an author an action ran as.
     pub(crate) writers: Rc<RefCell<crate::state::WritingActors>>,
 }
-impl Default for RecordActionState {
+impl Default for ResourceActionState {
     fn default() -> Self {
         Self {
             invocation_provenance: Rc::default(),
@@ -3644,12 +3644,12 @@ impl Default for RecordActionState {
             statuses: HashMap::new(),
             answered: HashMap::new(),
             refusals: Vec::new(),
-            notices: crate::record::WorkspaceNotices::default(),
+            notices: crate::resource::WorkspaceNotices::default(),
             writers: Rc::default(),
         }
     }
 }
-impl RecordActionState {
+impl ResourceActionState {
     #[cfg(test)]
     pub(crate) fn statuses_for_test(
         &self,
@@ -3720,7 +3720,7 @@ struct ActiveMutation {
 }
 struct ActionFrame {
     history: crate::state::UndoLog,
-    state: RecordActionState,
+    state: ResourceActionState,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
     writer: automerge::ActorId,
@@ -3910,7 +3910,7 @@ pub(crate) fn report_typed_action(
     }
     if let Some(native) = native.filter(|policy| policy.continuable) {
         if !continues {
-            frame.state.pending = Some(PendingRecordAction::new(&binding, before));
+            frame.state.pending = Some(PendingResourceAction::new(&binding, before));
         }
         if let Some(pending) = frame.state.pending.as_mut() {
             pending.native_text = Some(NativeTextSpan {
@@ -3960,19 +3960,19 @@ impl<'a> BoundOperation<'a> {
         kind: tilo_actions::OperationKind,
     ) -> Result<Self, BoundDispatchError> {
         if !binding
-            .check_record()?
+            .check_resource()?
             .is_some_and(|pointer| std::ptr::eq(pointer, doc))
         {
-            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+            return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
         }
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         let depth = {
             let mut owned = handle.borrow_mut();
             let frame = owned
                 .as_mut()
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let effect = kind == tilo_actions::OperationKind::Effect;
             let cursor = effect.then(|| frame.commit_physical(doc));
             let depth = frame.operations.len();
@@ -4038,7 +4038,7 @@ impl Drop for BoundOperation<'_> {
 
 struct RestoreFrame<'a> {
     history: &'a mut crate::state::UndoLog,
-    state: &'a mut RecordActionState,
+    state: &'a mut ResourceActionState,
     frame: FrameHandle,
 }
 impl Drop for RestoreFrame<'_> {
@@ -4070,7 +4070,7 @@ impl TakenActionBracket {
     }
 }
 
-impl PendingRecordAction {
+impl PendingResourceAction {
     fn new(binding: &CallbackBinding, before: Vec<ChangeHash>) -> Self {
         Self {
             instance_id: binding.instance_id,
@@ -4116,7 +4116,7 @@ impl ActionFrame {
     }
 
     fn reset_operation_baseline(&mut self, binding: &CallbackBinding, after: Vec<ChangeHash>) {
-        self.state.pending = Some(PendingRecordAction::new(binding, after.clone()));
+        self.state.pending = Some(PendingResourceAction::new(binding, after.clone()));
         if let Some(active) = self.mutation.as_mut() {
             active.before = (!active.binding.same_component(binding)).then_some(after);
         }
@@ -4240,7 +4240,7 @@ impl ActionFrame {
 
     fn writer_of(&self, binding: &CallbackBinding) -> automerge::ActorId {
         if binding.writes_as_author {
-            crate::record::author_writer(&self.writer, binding.author.actor_bytes())
+            crate::resource::author_writer(&self.writer, binding.author.actor_bytes())
         } else {
             self.writer.clone()
         }
@@ -4282,7 +4282,7 @@ impl ActionFrame {
                 self.finish_pending_at(before.clone(), doc);
             }
             if self.state.pending.is_none() {
-                self.state.pending = Some(PendingRecordAction::new(&binding, before));
+                self.state.pending = Some(PendingResourceAction::new(&binding, before));
             }
         }
     }
@@ -4302,7 +4302,7 @@ impl ActionFrame {
         };
         self.switch_writer(doc, self.writer_of(binding));
         if self.state.pending.is_none() {
-            self.state.pending = Some(PendingRecordAction::new(
+            self.state.pending = Some(PendingResourceAction::new(
                 binding,
                 before.unwrap_or_default(),
             ));
@@ -4361,14 +4361,14 @@ impl Drop for MutationReturn<'_> {
     }
 }
 
-type ActiveRecord = (
-    RecordStore,
+type ActiveResource = (
+    ResourceStore,
     DocumentCheckout,
     *const AutoCommit,
     Option<FrameHandle>,
 );
 thread_local! {
-    static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
+    static ACTIVE: RefCell<Option<ActiveResource>> = const { RefCell::new(None) };
 }
 /// What entering a component's callback scope has until it is dropped.
 pub struct CallbackScopeGuard {
@@ -4376,7 +4376,7 @@ pub struct CallbackScopeGuard {
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
     _scope: ExecutingHostScope,
-    _actor: tilo_resource::action::RecordActorScope,
+    _actor: tilo_resource::action::ResourceActorScope,
 }
 
 struct ActiveEntry;
@@ -4471,25 +4471,25 @@ impl CallbackBinding {
         &self,
         outer: &mut AutoCommit,
     ) -> Result<crate::undo::UndoStatus, BoundDispatchError> {
-        self.with_record_frame(outer, false, |doc, _| {
+        self.with_resource_frame(outer, false, |doc, _| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let mut owned = handle.borrow_mut();
             let frame = owned
                 .as_mut()
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             Ok(frame.status(doc, &self.author, self.instance_id))
         })?
     }
     fn generation(&self) -> Result<Option<u64>, BoundDispatchError> {
-        if self.check_record()?.is_some() {
+        if self.check_resource()?.is_some() {
             return ACTIVE.with_borrow(|active| {
                 active
                     .as_ref()
                     .and_then(|entry| entry.3.as_ref())
                     .and_then(|handle| handle.borrow().as_ref().map(|frame| frame.state.generation))
-                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))
+                    .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))
             });
         }
         self.records
@@ -4500,27 +4500,27 @@ impl CallbackBinding {
         &self,
         outer: &AutoCommit,
     ) -> Result<DocumentEditStamp, BoundDispatchError> {
-        let active = self.check_record()?;
+        let active = self.check_resource()?;
         let _scope = self.enter()?;
         if let Some(document) = active {
             if !std::ptr::eq(document, outer) {
-                return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
             }
             return ACTIVE.with_borrow(|active| {
                 let handle = active
                     .as_ref()
                     .and_then(|entry| entry.3.as_ref())
-                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                    .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
                 let owned = handle
                     .try_borrow()
-                    .map_err(|_| BoundDispatchError::Record(RecordOpenError::Busy))?;
+                    .map_err(|_| BoundDispatchError::Record(ResourceOpenError::Busy))?;
                 let frame = owned
                     .as_ref()
-                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                    .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
                 if frame.state.generation.is_none_or(|value| value == u64::MAX)
                     || frame.history.revision() == u64::MAX
                 {
-                    return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                    return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
                 }
                 Ok(DocumentEditStamp::for_owned_document(
                     outer,
@@ -4557,12 +4557,12 @@ impl CallbackBinding {
         } = taken;
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         {
             let mut owned = handle.borrow_mut();
             let frame = owned
                 .as_mut()
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             if !frame.operations.is_empty() {
                 return Ok(true);
             }
@@ -4588,7 +4588,7 @@ impl CallbackBinding {
             });
             if advances {
                 frame.finish_pending_at(before.clone(), doc);
-                frame.state.pending = Some(PendingRecordAction::new(self, before));
+                frame.state.pending = Some(PendingResourceAction::new(self, before));
             }
             if let Some(pending) = frame.state.pending.as_mut() {
                 pending.metadata = metadata;
@@ -4613,7 +4613,7 @@ impl CallbackBinding {
         &self,
         outer: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        self.with_record_frame(outer, false, |doc, _| {
+        self.with_resource_frame(outer, false, |doc, _| {
             tilo_resource::history::committed_versions(doc)
                 .iter()
                 .any(|version| {
@@ -4635,11 +4635,11 @@ impl CallbackBinding {
             self.finish_action_boundary(doc)?;
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let mut owned = handle.borrow_mut();
             let frame = owned
                 .as_mut()
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let entry = match request {
                 crate::undo::UndoRequest::Undo => {
                     frame
@@ -4652,7 +4652,7 @@ impl CallbackBinding {
                         .redo_in(doc, &self.author, self.instance_id, None, None)
                 }
             };
-            frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));
+            frame.state.pending = Some(PendingResourceAction::new(self, doc.get_heads()));
             Ok(entry)
         })?
     }
@@ -4687,36 +4687,36 @@ impl CallbackBinding {
         doc: &AutoCommit,
         read: impl FnOnce(&ActionFrame) -> R,
     ) -> Result<R, BoundDispatchError> {
-        let active = self.check_record()?;
+        let active = self.check_resource()?;
         if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {
-            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+            return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
         }
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         let owned = handle.borrow();
         let frame = owned
             .as_ref()
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         Ok(read(frame))
     }
 
     fn finish_action_boundary(&self, doc: &mut AutoCommit) -> Result<(), BoundDispatchError> {
-        let active = self.check_record()?;
+        let active = self.check_resource()?;
         if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {
-            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+            return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
         }
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         let mut owned = handle.borrow_mut();
         let frame = owned
             .as_mut()
-            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
         frame.settle_segment(doc);
         let heads = frame.commit_physical(doc);
         frame.finish_pending_at(heads.clone(), doc);
-        frame.state.pending = Some(PendingRecordAction::new(self, heads));
+        frame.state.pending = Some(PendingResourceAction::new(self, heads));
         if let Some(active) = frame.mutation.as_mut() {
             active.before = None;
         }
@@ -4741,7 +4741,7 @@ impl CallbackBinding {
             && self.host_person == other.host_person
             && self.author == other.author
     }
-    fn check_record(&self) -> Result<Option<*const AutoCommit>, BoundDispatchError> {
+    fn check_resource(&self) -> Result<Option<*const AutoCommit>, BoundDispatchError> {
         if self.closing.get() || !self.lifetime.is_active() {
             return Err(BoundDispatchError::ClosedLifetime);
         }
@@ -4750,7 +4750,7 @@ impl CallbackBinding {
                 if self.records.same_owner(records) && self.checkout == *checkout {
                     Ok(Some(*document))
                 } else {
-                    Err(BoundDispatchError::CrossRecordReentry)
+                    Err(BoundDispatchError::CrossResourceReentry)
                 }
             }
             None => Ok(None),
@@ -4758,7 +4758,7 @@ impl CallbackBinding {
     }
     pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
         let _profile = tilo_resource::profiling::Phase::start("ui.callback_scope");
-        self.check_record()?;
+        self.check_resource()?;
         let wake = self
             .lifetime
             .enter_if_open()
@@ -4768,7 +4768,7 @@ impl CallbackBinding {
             _device: ExecutingHostDevice::enter(&self.device_id),
             _person: ExecutingHostPerson::enter(&self.host_person),
             _scope: ExecutingHostScope::enter(self.lifetime_id),
-            _actor: tilo_resource::action::RecordActorScope::enter(
+            _actor: tilo_resource::action::ResourceActorScope::enter(
                 crate::invocation_scope::current_invoker()
                     .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
                     .unwrap_or_else(|| self.author.clone()),
@@ -4782,7 +4782,7 @@ impl CallbackBinding {
     ) -> Result<R, BoundDispatchError> {
         #[cfg(test)]
         document_admission_probe::record(self);
-        self.with_record_frame(outer, true, callback)
+        self.with_resource_frame(outer, true, callback)
     }
     /// Input reached the component outside its passes (an event, an action, focus): its input revision
     /// moves, so its next pass runs ([`crate::component_inputs`]).
@@ -4798,15 +4798,15 @@ impl CallbackBinding {
     ) -> Result<R, BoundDispatchError> {
         #[cfg(test)]
         document_admission_probe::record(self);
-        self.with_record_frame(outer, false, |document, root| {
+        self.with_resource_frame(outer, false, |document, root| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let previous = {
                 let mut owned = handle.borrow_mut();
                 let frame = owned
                     .as_mut()
-                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                    .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
                 frame.mutation.replace(ActiveMutation {
                     binding: self.clone(),
                     before: None,
@@ -4859,7 +4859,7 @@ impl CallbackBinding {
         crate::state::owned_restore::OwnedRestoreError,
     > {
         use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
-        self.with_record_frame(outer, false, |doc, _| {
+        self.with_resource_frame(outer, false, |doc, _| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
                 .ok_or(OwnedRestoreError::ActiveAction)?;
@@ -4901,23 +4901,23 @@ impl CallbackBinding {
         })
         .map_err(OwnedRestoreError::Bound)?
     }
-    pub(crate) fn with_record_frame<R>(
+    pub(crate) fn with_resource_frame<R>(
         &self,
         outer: &mut AutoCommit,
         mutation: bool,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
-        let active = self.check_record()?;
+        let active = self.check_resource()?;
         let _scope = self.enter()?;
         if let Some(document) = active {
             if !std::ptr::eq(document, outer) {
                 // Reentry must carry the currently borrowed document, never reconstruct
                 // a mutable reference from a saved pointer.
-                return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
             }
             let frame = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             return if mutation {
                 self.mutate_in_frame(outer, &frame, callback)
             } else {
@@ -4970,7 +4970,7 @@ impl CallbackBinding {
             let mut owned = handle.borrow_mut();
             let frame = owned
                 .as_mut()
-                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let previous = frame.mutation.as_ref().map(|m| m.binding.clone());
             frame.state.generation = frame
                 .state
@@ -4998,11 +4998,11 @@ impl CallbackBinding {
         outer: &AutoCommit,
         callback: impl FnOnce(&AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
-        let active = self.check_record()?;
+        let active = self.check_resource()?;
         let _scope = self.enter()?;
         if let Some(document) = active {
             if !std::ptr::eq(document, outer) {
-                return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+                return Err(BoundDispatchError::Record(ResourceOpenError::Busy));
             }
             return Ok(callback(outer, &ROOT));
         }
@@ -5027,8 +5027,8 @@ struct BoundNode {
 
 /// Record owners outside a component (person records, routed records) keep their real record custody;
 /// they do not impersonate a canonical component.
-pub(crate) fn restore_record_history(
-    store: &RecordStore,
+pub(crate) fn restore_resource_history(
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
     write: crate::state::owned_restore::RestoreWrite<'_>,
@@ -5038,7 +5038,7 @@ pub(crate) fn restore_record_history(
 > {
     use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
     store
-        .open_existing_record_checked(checkout)
+        .open_existing_resource_checked(checkout)
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?;
     store
         .with_action_state(&checkout.id, |doc, history, state| {
@@ -5137,14 +5137,14 @@ mod bound_action_address_tests;
 mod owned_restore_tests;
 
 pub(crate) fn merge_remote_owned_document(
-    store: &RecordStore,
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     mutation: &collab_types::DocumentMutation,
 ) -> Result<crate::history_mode::routes::MergedRemote, crate::history_mode::routes::RemoteApplyError>
 {
     use crate::history_mode::routes::{MergedRemote, RemoteApplyError};
     store
-        .open_existing_record_checked(checkout)
+        .open_existing_resource_checked(checkout)
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
     let identity = store
         .replica_identity_stamp(checkout)

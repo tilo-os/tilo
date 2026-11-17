@@ -1621,7 +1621,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
             instance["app_id"].as_str() == Some(app_id)
                 && matches!(
-                    instance["record_id"].as_str(),
+                    instance["document_id"].as_str(),
                     Some("" | "derived:default@tab:0000000000000000")
                 )
         }) else {

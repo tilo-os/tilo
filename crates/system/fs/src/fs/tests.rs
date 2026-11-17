@@ -11,7 +11,7 @@ mod availability_control_tests {
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: fs_protocol::FileDocumentId,
-        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
+        predicate: impl Fn(&DocumentAvailability) -> bool + Send + Sync,
     ) {
         wait_for_availability_with_timeout(
             registry,
@@ -26,7 +26,7 @@ mod availability_control_tests {
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: fs_protocol::FileDocumentId,
         timeout: Duration,
-        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
+        predicate: impl Fn(&DocumentAvailability) -> bool + Send + Sync,
     ) {
         tokio::time::timeout(timeout, async {
             loop {
@@ -84,16 +84,16 @@ mod availability_control_tests {
         registry
             .lock()
             .unwrap()
-            .put(RecordAvailability::new(root, RecordKind::Directory))
+            .put(DocumentAvailability::new(root, EntryKind::Directory))
             .unwrap();
-        let mut record = RecordAvailability::new(document_id, RecordKind::File);
+        let mut record = DocumentAvailability::new(document_id, EntryKind::File);
         record.parent = parent;
         record.policy = AvailabilityPolicy::Pinned;
         registry.lock().unwrap().put(record).unwrap();
         PinnedCandidate {
             document_id,
             parent,
-            kind: RecordKind::File,
+            kind: EntryKind::File,
             version: None,
             hash: Some(hash),
             size: 1,
@@ -214,7 +214,7 @@ mod availability_control_tests {
                 let registry = registry.lock().unwrap();
                 let children = registry
                     .records()
-                    .filter(|record| record.kind == RecordKind::File)
+                    .filter(|record| record.kind == EntryKind::File)
                     .collect::<Vec<_>>();
                 let attempted = children
                     .iter()
@@ -244,7 +244,7 @@ mod availability_control_tests {
             )
             .await;
             assert!(registry.lock().unwrap().records().all(|record| {
-                record.kind == RecordKind::Directory
+                record.kind == EntryKind::Directory
                     || (record.transfer.phase == TransferPhase::Idle
                         && record.transfer.retry_count == 0
                         && record.transfer.retry_at_ms.is_none())
@@ -737,10 +737,10 @@ mod availability_control_tests {
             let mut registry = registry.lock().unwrap();
             if registry.get(root).is_none() {
                 registry
-                    .put(RecordAvailability::new(root, RecordKind::Directory))
+                    .put(DocumentAvailability::new(root, EntryKind::Directory))
                     .unwrap();
             }
-            let mut pinned = RecordAvailability::new(other, RecordKind::Directory);
+            let mut pinned = DocumentAvailability::new(other, EntryKind::Directory);
             pinned.parent = Some(root);
             pinned.policy = AvailabilityPolicy::Pinned;
             registry.put(pinned).unwrap();
@@ -967,7 +967,7 @@ mod availability_control_tests {
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
-        let mut availability = RecordAvailability::new(document_id, RecordKind::File);
+        let mut availability = DocumentAvailability::new(document_id, EntryKind::File);
         availability.current_version = Some(version_id);
         availability.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(availability).unwrap();
@@ -1283,7 +1283,7 @@ mod predictive_tests {
         {
             const ME: [u8; 32] = [0xA2; 32];
             let (namespace, fs) = fixture().await;
-            let (visible_record, hidden_record) = {
+            let (visible_document, hidden_document) = {
                 let mut ns = namespace.lock_recover();
                 let folder = ns.create_dir(ROOT_INO, "folder", 1).unwrap();
                 let visible = ns
@@ -1301,23 +1301,25 @@ mod predictive_tests {
             acl.grant_read(ME, "/folder/visible.txt");
             let fs = fs.with_acl(acl, ME);
 
-            let manifest: fs_protocol::projection::RecordIndexManifestV3 = serde_json::from_slice(
-                &fs.record_index_manifest_v3().expect("root record catalog"),
-            )
-            .unwrap();
-            let projection: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
-                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+            let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(
+                    &fs.document_index_manifest_v3()
+                        .expect("root record catalog"),
+                )
+                .unwrap();
+            let projection: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
+                &fs.document_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .expect("the first page"),
             )
             .unwrap();
             assert!(projection.records.iter().any(|entry| {
-                entry.document_id == visible_record && entry.path == "/folder/visible.txt"
+                entry.document_id == visible_document && entry.path == "/folder/visible.txt"
             }));
             assert!(
                 projection
                     .records
                     .iter()
-                    .all(|entry| entry.document_id != hidden_record),
+                    .all(|entry| entry.document_id != hidden_document),
                 "a record outside the mount's ACL-filtered view cannot enter search metadata"
             );
         }
@@ -1337,19 +1339,19 @@ mod predictive_tests {
                     .unwrap();
                 }
             }
-            let manifest: fs_protocol::projection::RecordIndexManifestV2 =
-                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+            let manifest: fs_protocol::projection::DocumentIndexManifestV2 =
+                serde_json::from_slice(&fs.document_index_manifest_v2().unwrap()).unwrap();
             manifest.validate().unwrap();
             assert_eq!(
                 manifest.records,
                 fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1
             );
-            let first: fs_protocol::projection::RecordIndexPageV2 =
-                serde_json::from_slice(&fs.record_index_page_v2(&manifest.revision, 0).unwrap())
+            let first: fs_protocol::projection::DocumentIndexPageV2 =
+                serde_json::from_slice(&fs.document_index_page_v2(&manifest.revision, 0).unwrap())
                     .unwrap();
             let second_offset = first.next_offset.expect("continuation page");
-            let second: fs_protocol::projection::RecordIndexPageV2 = serde_json::from_slice(
-                &fs.record_index_page_v2(&manifest.revision, second_offset)
+            let second: fs_protocol::projection::DocumentIndexPageV2 = serde_json::from_slice(
+                &fs.document_index_page_v2(&manifest.revision, second_offset)
                     .unwrap(),
             )
             .unwrap();
@@ -1360,7 +1362,7 @@ mod predictive_tests {
                 .create_file(ROOT_INO, "new.txt", None, 1, 1)
                 .unwrap();
             assert!(
-                fs.record_index_page_v2(&manifest.revision, 0).is_none(),
+                fs.document_index_page_v2(&manifest.revision, 0).is_none(),
                 "a namespace revision invalidates a page cursor rather than mixing rows"
             );
         }
@@ -1375,15 +1377,15 @@ mod predictive_tests {
             policy.grant_read(ME, "/visible.txt");
             let handle = AclHandle::new(policy.clone());
             let fs = fs.with_acl(handle.clone(), ME);
-            let before: fs_protocol::projection::RecordIndexManifestV2 =
-                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+            let before: fs_protocol::projection::DocumentIndexManifestV2 =
+                serde_json::from_slice(&fs.document_index_manifest_v2().unwrap()).unwrap();
 
             handle.replace(policy);
-            let after: fs_protocol::projection::RecordIndexManifestV2 =
-                serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+            let after: fs_protocol::projection::DocumentIndexManifestV2 =
+                serde_json::from_slice(&fs.document_index_manifest_v2().unwrap()).unwrap();
             assert_ne!(before.revision, after.revision);
             assert!(
-                fs.record_index_page_v2(&before.revision, 0).is_none(),
+                fs.document_index_page_v2(&before.revision, 0).is_none(),
                 "a page issued under the old ACL generation cannot be replayed"
             );
         }
@@ -1394,7 +1396,7 @@ mod predictive_tests {
         {
             const ME: [u8; 32] = [0xA4; 32];
             let (namespace, fs) = fixture().await;
-            let visible_record = {
+            let visible_document = {
                 let mut ns = namespace.lock_recover();
                 for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
                     ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
@@ -1407,39 +1409,42 @@ mod predictive_tests {
             policy.grant_read(ME, "/visible.txt");
             let fs = fs.with_acl(AclHandle::new(policy), ME);
 
-            let before = fs.record_index_manifest_v3().unwrap();
-            let manifest: fs_protocol::projection::RecordIndexManifestV3 =
+            let before = fs.document_index_manifest_v3().unwrap();
+            let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&before).unwrap();
             manifest.validate().unwrap();
             assert_eq!(manifest.initial_cursor.len(), 36);
-            let first: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
-                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+            let first: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
+                &fs.document_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
             )
             .unwrap();
             assert_eq!(first.records.len(), 1);
-            assert_eq!(first.records[0].document_id, visible_record);
+            assert_eq!(first.records[0].document_id, visible_document);
             assert!(first.next_cursor.is_none());
             assert!(
-                fs.record_index_page_v3(&manifest.revision, "00000000-0000-0000-0000-000000000000")
-                    .is_none()
+                fs.document_index_page_v3(
+                    &manifest.revision,
+                    "00000000-0000-0000-0000-000000000000"
+                )
+                .is_none()
             );
 
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
                 .unwrap();
-            fs.refresh_acl_visible_record_index();
-            assert_eq!(fs.record_index_manifest_v3().unwrap(), before);
+            fs.refresh_acl_visible_document_index();
+            assert_eq!(fs.document_index_manifest_v3().unwrap(), before);
             assert!(
-                fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                fs.document_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .is_some()
             );
         }
         {
             const ME: [u8; 32] = [0xA5; 32];
             let (namespace, fs) = fixture().await;
-            let first_record = {
+            let first_document = {
                 let mut ns = namespace.lock_recover();
                 let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
                 ns.document_id_for(ino).unwrap()
@@ -1448,40 +1453,40 @@ mod predictive_tests {
             policy.grant_read(ME, "/");
             let handle = AclHandle::new(policy.clone());
             let fs = fs.with_acl(handle.clone(), ME);
-            let before: fs_protocol::projection::RecordIndexManifestV3 =
-                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-            assert!(fs.record_index_by_id_v2(first_record).is_some());
+            let before: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
+            assert!(fs.document_index_by_id_v2(first_document).is_some());
 
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "second.txt", None, 0, 1)
                 .unwrap();
-            fs.refresh_acl_visible_record_index();
-            let after: fs_protocol::projection::RecordIndexManifestV3 =
-                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+            fs.refresh_acl_visible_document_index();
+            let after: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
             assert_ne!(before.revision, after.revision);
             assert!(
-                fs.record_index_page_v3(&before.revision, &before.initial_cursor)
+                fs.document_index_page_v3(&before.revision, &before.initial_cursor)
                     .is_none()
             );
 
             handle.replace(WorkspaceAcl::new());
             let mut revoked = None;
             for _ in 0..64 {
-                revoked = fs.record_index_manifest_v3();
+                revoked = fs.document_index_manifest_v3();
                 if revoked.is_some() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            let revoked: fs_protocol::projection::RecordIndexManifestV3 =
+            let revoked: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&revoked.unwrap()).unwrap();
             assert_ne!(after.revision, revoked.revision);
             assert!(
-                fs.record_index_page_v3(&after.revision, &after.initial_cursor)
+                fs.document_index_page_v3(&after.revision, &after.initial_cursor)
                     .is_none()
             );
-            assert!(fs.record_index_by_id_v2(first_record).is_none());
+            assert!(fs.document_index_by_id_v2(first_document).is_none());
         }
     }
 
@@ -1515,12 +1520,12 @@ mod predictive_tests {
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/");
             let fs = fs.with_acl(policy, ME);
-            let manifest: fs_protocol::projection::RecordIndexManifestV3 =
-                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-            let rebuilds = namespace.lock_recover().record_index_rebuild_count();
-            let page_reads = namespace.lock_recover().record_index_page_read_count();
-            let first: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
-                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+            let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
+            let rebuilds = namespace.lock_recover().document_index_rebuild_count();
+            let page_reads = namespace.lock_recover().document_index_page_read_count();
+            let first: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
+                &fs.document_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
             )
             .unwrap();
@@ -1528,24 +1533,27 @@ mod predictive_tests {
                 first.records.len(),
                 fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES
             );
-            let second: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
-                &fs.record_index_page_v3(&manifest.revision, first.next_cursor.as_deref().unwrap())
-                    .unwrap(),
+            let second: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
+                &fs.document_index_page_v3(
+                    &manifest.revision,
+                    first.next_cursor.as_deref().unwrap(),
+                )
+                .unwrap(),
             )
             .unwrap();
             assert_eq!(second.records.len(), 1);
             assert!(second.next_cursor.is_none());
             assert!(
-                fs.record_index_by_id_v2(first.records[0].document_id)
+                fs.document_index_by_id_v2(first.records[0].document_id)
                     .is_some()
             );
             assert_eq!(
-                namespace.lock_recover().record_index_rebuild_count(),
+                namespace.lock_recover().document_index_rebuild_count(),
                 rebuilds,
                 "serving v3 continuations must not rebuild or walk the Automerge corpus"
             );
             assert_eq!(
-                namespace.lock_recover().record_index_page_read_count(),
+                namespace.lock_recover().document_index_page_read_count(),
                 page_reads,
                 "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
             );
@@ -1565,9 +1573,9 @@ mod predictive_tests {
             policy.grant_read(ME, "/visible");
             let acl = AclHandle::new(policy.clone());
             let fs = fs.with_acl(acl.clone(), ME);
-            let before: fs_protocol::projection::RecordIndexManifestV3 =
-                serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-            let page_reads = namespace.lock_recover().record_index_page_read_count();
+            let before: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
+            let page_reads = namespace.lock_recover().document_index_page_read_count();
 
             namespace
                 .lock_recover()
@@ -1578,19 +1586,19 @@ mod predictive_tests {
             }
             let mut hidden = None;
             for _ in 0..64 {
-                hidden = fs.record_index_manifest_v3();
+                hidden = fs.document_index_manifest_v3();
                 if hidden.is_some() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            let hidden: fs_protocol::projection::RecordIndexManifestV3 =
+            let hidden: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&hidden.unwrap()).unwrap();
             assert_eq!(
                 hidden.page_entries, before.page_entries,
                 "only the visible record is listed"
             );
-            let after_hidden_reads = namespace.lock_recover().record_index_page_read_count();
+            let after_hidden_reads = namespace.lock_recover().document_index_page_read_count();
             assert!(
                 after_hidden_reads.saturating_sub(page_reads) <= 2,
                 "a burst must coalesce before rebuilding the retained view"
@@ -1603,16 +1611,18 @@ mod predictive_tests {
             let mut updated = None;
             acl.replace(policy.clone());
             for _ in 0..64 {
-                updated = fs.record_index_manifest_v3();
+                updated = fs.document_index_manifest_v3();
                 if updated.as_ref().is_some_and(|bytes| {
-                    serde_json::from_slice::<fs_protocol::projection::RecordIndexManifestV3>(bytes)
-                        .is_ok_and(|manifest| manifest.revision != before.revision)
+                    serde_json::from_slice::<fs_protocol::projection::DocumentIndexManifestV3>(
+                        bytes,
+                    )
+                    .is_ok_and(|manifest| manifest.revision != before.revision)
                 }) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            let updated: fs_protocol::projection::RecordIndexManifestV3 =
+            let updated: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&updated.unwrap()).unwrap();
             assert_ne!(updated.revision, before.revision);
         }
@@ -1623,7 +1633,7 @@ mod predictive_tests {
             policy.grant_read(ME, "/");
             let acl = AclHandle::new(policy.clone());
             let fs = fs.with_acl(acl.clone(), ME);
-            let weak = Arc::downgrade(&fs.acl_visible_record_index);
+            let weak = Arc::downgrade(&fs.acl_visible_document_index);
             drop(fs);
             acl.replace(policy);
             for _ in 0..8 {
@@ -1656,14 +1666,14 @@ mod predictive_tests {
         policy.grant_read(ME, "/visible");
         let handle = AclHandle::new(policy);
         let fs = fs.with_acl(handle.clone(), ME);
-        let rows = || namespace.lock_recover().indexed_record_count();
-        let initial = fs.acl_visible_record_index().unwrap();
+        let rows = || namespace.lock_recover().indexed_document_count();
+        let initial = fs.acl_visible_document_index().unwrap();
         assert_eq!(initial.acl_evaluations, rows());
 
-        fs.refresh_acl_visible_record_index();
+        fs.refresh_acl_visible_document_index();
         assert!(Arc::ptr_eq(
             &initial,
-            &fs.acl_visible_record_index().unwrap()
+            &fs.acl_visible_document_index().unwrap()
         ));
 
         let revealed = {
@@ -1672,14 +1682,14 @@ mod predictive_tests {
             assert!(ns.rename(ROOT_INO, "hidden-000", visible, "revealed.txt", 2));
             ns.entry_at("visible/revealed.txt").unwrap().document_id
         };
-        fs.refresh_acl_visible_record_index();
-        let incremental = fs.acl_visible_record_index().unwrap();
+        fs.refresh_acl_visible_document_index();
+        let incremental = fs.acl_visible_document_index().unwrap();
         assert_eq!(incremental.acl_evaluations, 2);
         assert!(incremental.by_id.contains_key(&revealed));
 
-        *fs.acl_visible_record_index.lock_recover() = None;
-        fs.refresh_acl_visible_record_index();
-        let full = fs.acl_visible_record_index().unwrap();
+        *fs.acl_visible_document_index.lock_recover() = None;
+        fs.refresh_acl_visible_document_index();
+        let full = fs.acl_visible_document_index().unwrap();
         assert_eq!(full.acl_evaluations, rows());
         assert_eq!(full.records, incremental.records);
         assert_eq!(full.hidden, incremental.hidden);
@@ -1688,8 +1698,8 @@ mod predictive_tests {
         let mut widened = WorkspaceAcl::new();
         widened.grant_read(ME, "/");
         handle.replace(widened);
-        fs.refresh_acl_visible_record_index();
-        let regranted = fs.acl_visible_record_index().unwrap();
+        fs.refresh_acl_visible_document_index();
+        let regranted = fs.acl_visible_document_index().unwrap();
         assert_eq!(regranted.acl_evaluations, rows());
         assert!(regranted.hidden.is_empty());
     }
@@ -1766,7 +1776,11 @@ mod history_integration_tests {
         let reopened =
             Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
         assert_eq!(
-            reopened.record_history(document_id).unwrap().versions.len(),
+            reopened
+                .document_history(document_id)
+                .unwrap()
+                .versions
+                .len(),
             3
         );
     }

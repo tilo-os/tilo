@@ -4,9 +4,9 @@
 //! A launch names things beside the app: a file a person opened with it, the
 //! paths or URLs of its command line. The app answers in two steps, each
 //! through a concept it already has. Which record the launch opens is a
-//! [`DocumentId`](ui_core::record::DocumentId)
-//! ([`ResourceApp::launch_record`](super::ResourceApp::launch_record)): the
-//! file's own record ([`DocumentId::identify_file`](ui_core::record::DocumentId::identify_file)),
+//! [`DocumentId`](ui_core::resource::DocumentId)
+//! ([`ResourceApp::launch_resource`](super::ResourceApp::launch_resource)): the
+//! file's own record ([`DocumentId::identify_file`](ui_core::resource::DocumentId::identify_file)),
 //! a record derived from it, a minted one. What the launch then does in that
 //! record is the resource's actions
 //! ([`ResourceApp::launch`](super::ResourceApp::launch)), submitted through
@@ -19,7 +19,7 @@
 //! runs rather than what it opens: the layout an on-screen keyboard starts
 //! in, a debug overlay. The launch hands them over beside the arguments, and
 //! views and surfaces read them where they set themselves up
-//! ([`RecordEnv::launch_option`](super::RecordEnv::launch_option)).
+//! ([`ResourceEnv::launch_option`](super::ResourceEnv::launch_option)).
 
 use ui_core::application::{LaunchOption, OpenFile, PlaybackHandoff};
 
@@ -55,7 +55,7 @@ impl<'a> LaunchInput<'a> {
 
     /// The same launch on a record that is already there, as it is now.
     #[must_use]
-    pub fn with_record(mut self, state: &'a dyn std::any::Any) -> Self {
+    pub fn with_resource(mut self, state: &'a dyn std::any::Any) -> Self {
         self.record = Some(state);
         self
     }
@@ -180,7 +180,7 @@ pub struct Helper {
 
 /// Opens what a launch naming some arguments opens in the window an app runs
 /// in, in place of the record it shows: what
-/// [`RecordEnv::open_here`](super::RecordEnv::open_here) does, kept by a custom
+/// [`ResourceEnv::open_here`](super::ResourceEnv::open_here) does, kept by a custom
 /// surface for the input that later asks for it (a file chosen in a picker).
 #[derive(Clone)]
 pub struct OpenHere(std::rc::Rc<dyn Fn(Vec<String>) -> ui_core::application::ReplacementOutcome>);

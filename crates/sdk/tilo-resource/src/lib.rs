@@ -209,7 +209,7 @@ pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,
     Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape,
-    SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, by_app_refusal,
+    SearchText, SearchWeight, SharedResource, bind_declaration, build_action, by_app_refusal,
     child_by_id, declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms,
     publish, publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
     state_from_reading, with_origin_clock,
@@ -265,7 +265,7 @@ pub mod __private {
     /// acts: what its children would offer it bound on.
     #[must_use]
     pub fn holds_nested_items(
-        record: &crate::table::RecordDesc,
+        record: &crate::table::ResourceDesc,
         state: &dyn std::any::Any,
         action: &crate::items::ItemAction,
     ) -> bool {
@@ -1059,7 +1059,7 @@ pub mod __private {
     /// key, read from the shape so it is built by one function for every
     /// record type.
     #[must_use]
-    pub fn record_value_schema(shape: crate::Shape) -> serde_json::Value {
+    pub fn resource_value_schema(shape: crate::Shape) -> serde_json::Value {
         let properties: serde_json::Map<String, serde_json::Value> = shape
             .fields()
             .iter()

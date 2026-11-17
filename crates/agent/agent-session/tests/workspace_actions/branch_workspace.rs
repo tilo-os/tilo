@@ -86,7 +86,7 @@ pub(super) async fn person(on_relay: &OnRelay, name: &str) -> (SigningKey, Strin
 /// The notebook of `workspace` as its host keeps it, loaded.
 async fn notebook(workspaces: &Workspaces, workspace: &str) -> Option<automerge::AutoCommit> {
     let bytes = workspaces
-        .record_document(workspace, "so.tilo.notes", "")
+        .resource_document(workspace, "so.tilo.notes", "")
         .await
         .ok()??;
     automerge::AutoCommit::load(&bytes).ok()
@@ -249,7 +249,7 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
     // A conversation, as the workspace's governor keeps one: a part of Chat's
     // messages.
     workspaces
-        .author_workspace_record(
+        .author_workspace_document(
             &source,
             workspaces.serving_certificate(),
             ("so.tilo.chat", chat::parts::part(0).route()),

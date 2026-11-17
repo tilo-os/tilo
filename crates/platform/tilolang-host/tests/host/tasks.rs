@@ -515,7 +515,7 @@ fn joined_instance(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();

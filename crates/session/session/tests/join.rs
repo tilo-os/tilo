@@ -170,13 +170,13 @@ fn serving(
 }
 
 /// The channel key of `app` 's record in the workspace.
-fn record_channel(app: &str) -> String {
+fn document_channel(app: &str) -> String {
     tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
 
 /// The channel key of the app's record in the workspace.
 fn channel() -> String {
-    record_channel(APP)
+    document_channel(APP)
 }
 
 /// The app whose settings the keyboard shortcuts are.
@@ -184,7 +184,7 @@ const SETTINGS: &str = "so.tilo.settings";
 
 /// The channel key of Settings' record in the workspace.
 fn settings_channel() -> String {
-    record_channel(SETTINGS)
+    document_channel(SETTINGS)
 }
 
 /// One change of the record: `value` written under `key` , as an app writes it.
@@ -378,7 +378,7 @@ fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Valu
         let client = connect(socket, app);
         let handle = client
             .join_channel(
-                &record_channel(app),
+                &document_channel(app),
                 &presentation(&person.device, &person.cert),
             )
             .await

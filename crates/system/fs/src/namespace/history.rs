@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{Namespace, hash_from_hex, read_u64, str_at};
 
-pub use fs_protocol::history::RecordHistorySnapshot;
+pub use fs_protocol::history::DocumentHistorySnapshot;
 pub(crate) use fs_protocol::history::{CONFLICTS_KEY, HISTORY_KEY, VERSIONS_KEY};
 const ATTRIBUTIONS_KEY: &str = fs_protocol::history::ATTRIBUTIONS_KEY;
 const RESTORES_KEY: &str = "restores";
@@ -53,7 +53,7 @@ pub enum HistoryError {
     #[error("conflict id {0} is already bound to different content")]
     ConflictIdCollision(Uuid),
     #[error("record {0:?} has no history")]
-    UnknownRecord(FileDocumentId),
+    UnknownDocument(FileDocumentId),
     #[error("the record has no version {0:?}")]
     UnknownVersion(FileVersionId),
     #[error("conflict {0} is unknown")]
@@ -141,11 +141,11 @@ impl Namespace {
         fs_protocol::history::roots(&*self.doc)
     }
 
-    pub(crate) fn record_versions(
+    pub(crate) fn document_versions(
         &self,
         document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
-        fs_protocol::history::record_versions(&*self.doc, document_id)
+        fs_protocol::history::document_versions(&*self.doc, document_id)
     }
 
     pub(crate) fn record_conflicts(
@@ -208,29 +208,29 @@ impl Namespace {
         Ok(())
     }
 
-    pub fn record_history(&self, document_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
-        fs_protocol::history::record_history(&*self.doc, document_id)
+    pub fn document_history(&self, document_id: FileDocumentId) -> Option<DocumentHistorySnapshot> {
+        fs_protocol::history::document_history(&*self.doc, document_id)
     }
 
-    pub fn record_history_projection(
+    pub fn document_history_projection(
         &self,
         document_id: FileDocumentId,
     ) -> Option<HistoryProjectionV1> {
-        fs_protocol::history::record_history_projection(&*self.doc, document_id)
+        fs_protocol::history::document_history_projection(&*self.doc, document_id)
     }
 
-    pub fn record_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
-        fs_protocol::history::computed_heads(&self.record_versions(document_id))
+    pub fn document_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
+        fs_protocol::history::computed_heads(&self.document_versions(document_id))
             .into_iter()
             .collect()
     }
 
-    pub fn record_version(
+    pub fn document_version(
         &self,
         document_id: FileDocumentId,
         version_id: FileVersionId,
     ) -> (Option<FileVersionV1>, Vec<FileVersionId>) {
-        let versions = self.record_versions(document_id);
+        let versions = self.document_versions(document_id);
         let heads = fs_protocol::history::computed_heads(&versions);
         (
             versions.get(&version_id).cloned(),
@@ -246,7 +246,7 @@ impl Namespace {
         for version in versions {
             let current = known
                 .entry(version.document_id)
-                .or_insert_with(|| self.record_versions(version.document_id));
+                .or_insert_with(|| self.document_versions(version.document_id));
             check_version(current, version)?;
             current.insert(version.id, version.clone());
         }
@@ -269,7 +269,7 @@ impl Namespace {
         for version in versions {
             let current = known
                 .entry(version.document_id)
-                .or_insert_with(|| self.record_versions(version.document_id));
+                .or_insert_with(|| self.document_versions(version.document_id));
             if check_version(current, version)? {
                 current.insert(version.id, version.clone());
                 accepted.push(version.clone());
@@ -294,14 +294,14 @@ impl Namespace {
     }
 
     /// Record a conflict between existing versions of its record.
-    pub fn record_history_conflict(
+    pub fn document_history_conflict(
         &mut self,
         conflict: &FileConflictV1,
     ) -> Result<bool, HistoryError> {
         conflict.validate()?;
-        let versions = self.record_versions(conflict.document_id);
+        let versions = self.document_versions(conflict.document_id);
         if versions.is_empty() {
-            return Err(HistoryError::UnknownRecord(conflict.document_id));
+            return Err(HistoryError::UnknownDocument(conflict.document_id));
         }
         check_conflict(&versions, conflict)?;
         match self
@@ -336,7 +336,7 @@ impl Namespace {
         {
             return Ok(false);
         }
-        let versions = self.record_versions(document_id);
+        let versions = self.document_versions(document_id);
         let result = versions
             .get(&resolution.result)
             .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
@@ -368,7 +368,7 @@ impl Namespace {
         &self,
         document_id: FileDocumentId,
     ) -> Vec<FileVersionAttributionV1> {
-        let mut versions = self.record_versions(document_id);
+        let mut versions = self.document_versions(document_id);
         self.record_attributions(document_id)
             .into_iter()
             .filter(|(version_id, _)| versions.remove(version_id).is_some())
@@ -386,7 +386,7 @@ impl Namespace {
     ) -> Result<bool, HistoryError> {
         attributed.attribution.validate()?;
         if !self
-            .record_versions(document_id)
+            .document_versions(document_id)
             .contains_key(&attributed.version_id)
         {
             return Err(HistoryError::UnknownVersion(attributed.version_id));
@@ -410,7 +410,7 @@ impl Namespace {
 
     /// The admitted checked-history intent `intent`: the request and the
     /// receipt it settled, if this workspace recorded it.
-    pub(crate) fn restore_record(
+    pub(crate) fn restore_document(
         &self,
         intent: Uuid,
     ) -> Option<(CheckedHistoryRequestV1, FileRestoreReceiptV1)> {
@@ -437,7 +437,7 @@ impl Namespace {
         request: &CheckedHistoryRequestV1,
         receipt: &FileRestoreReceiptV1,
     ) -> Result<bool, HistoryError> {
-        if let Some((existing, _)) = self.restore_record(intent) {
+        if let Some((existing, _)) = self.restore_document(intent) {
             if existing == *request {
                 return Ok(false);
             }
@@ -471,7 +471,7 @@ impl Namespace {
             .and_then(|hash| hash_from_hex(&hash))
             .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         let byte_len = read_u64(&self.doc, &obj, "size");
-        let versions = self.record_versions(document_id);
+        let versions = self.document_versions(document_id);
         let heads = fs_protocol::history::computed_heads(&versions);
         let version = versions
             .values()
@@ -494,7 +494,7 @@ impl Namespace {
     }
 
     pub fn has_history(&self, document_id: FileDocumentId) -> bool {
-        !self.record_versions(document_id).is_empty()
+        !self.document_versions(document_id).is_empty()
     }
 }
 
@@ -573,7 +573,7 @@ mod tests {
                 vec![true, true]
             );
 
-            let snapshot = namespace.record_history(record).unwrap();
+            let snapshot = namespace.document_history(record).unwrap();
             assert_eq!(
                 snapshot.versions,
                 vec![root.clone(), left.clone(), right.clone()]
@@ -582,7 +582,7 @@ mod tests {
             expected_heads.sort();
             assert_eq!(snapshot.heads, expected_heads);
             assert_eq!(
-                namespace.record_history_heads(record),
+                namespace.document_history_heads(record),
                 expected_heads,
                 "a version no other supersedes heads the record"
             );
@@ -596,7 +596,7 @@ mod tests {
                 matches!(error, HistoryError::VersionIdCollision(_)),
                 "{error:?}"
             );
-            assert_eq!(namespace.record_history(record).unwrap(), snapshot);
+            assert_eq!(namespace.document_history(record).unwrap(), snapshot);
 
             let other = FileDocumentId::new();
             let good = version(other, vec![], FileProvenance::Create, 1);
@@ -606,7 +606,7 @@ mod tests {
                 namespace.append_versions(&[good, collision]),
                 Err(HistoryError::VersionIdCollision(_))
             ));
-            assert!(namespace.record_history(other).is_none());
+            assert!(namespace.document_history(other).is_none());
         }
 
         phase a_version_arriving_before_its_parent_is_kept;
@@ -616,11 +616,11 @@ mod tests {
             let root = version(record, vec![], FileProvenance::Create, 1);
             let child = version(record, vec![root.id], FileProvenance::Edit, 2);
             assert!(namespace.append_version(child.clone()).unwrap());
-            assert_eq!(namespace.record_history_heads(record), vec![child.id]);
+            assert_eq!(namespace.document_history_heads(record), vec![child.id]);
             assert!(namespace.append_version(root.clone()).unwrap());
-            assert_eq!(namespace.record_history_heads(record), vec![child.id]);
+            assert_eq!(namespace.document_history_heads(record), vec![child.id]);
             assert_eq!(
-                namespace.record_history(record).unwrap().versions,
+                namespace.document_history(record).unwrap().versions,
                 vec![root, child]
             );
         }
@@ -638,12 +638,12 @@ mod tests {
                 .apply_incremental(&here.changes_since(&[]))
                 .expect("the versions travel as the document's changes");
             assert_eq!(
-                there.record_history(record).unwrap().versions,
+                there.document_history(record).unwrap().versions,
                 vec![root.clone(), edit.clone()]
             );
-            assert_eq!(there.record_history_heads(record), vec![edit.id]);
+            assert_eq!(there.document_history_heads(record), vec![edit.id]);
 
-            let (found, heads) = there.record_version(record, root.id);
+            let (found, heads) = there.document_version(record, root.id);
             assert_eq!(found, Some(root));
             assert_eq!(heads, vec![edit.id]);
         }
@@ -665,13 +665,13 @@ mod tests {
                 status: ConflictStatus::Open,
                 resolution: None,
             };
-            assert!(namespace.record_history_conflict(&conflict).unwrap());
+            assert!(namespace.document_history_conflict(&conflict).unwrap());
             assert!(
-                !namespace.record_history_conflict(&conflict).unwrap(),
+                !namespace.document_history_conflict(&conflict).unwrap(),
                 "exact replay"
             );
             let error = namespace
-                .record_history_conflict(&FileConflictV1 {
+                .document_history_conflict(&FileConflictV1 {
                     versions: vec![left.id, FileVersionId::new()],
                     ..conflict.clone()
                 })
@@ -705,7 +705,7 @@ mod tests {
                     .unwrap(),
                 "exact replay"
             );
-            let stored = namespace.record_history(record).unwrap().conflicts[0].clone();
+            let stored = namespace.document_history(record).unwrap().conflicts[0].clone();
             assert_eq!(stored.status, ConflictStatus::Resolved);
             assert_eq!(
                 stored
@@ -735,7 +735,7 @@ mod tests {
                 parent = Some(item.id);
                 namespace.append_version(item).unwrap();
             }
-            let projection = namespace.record_history_projection(record).unwrap();
+            let projection = namespace.document_history_projection(record).unwrap();
             assert_eq!(projection.total_versions, 20);
             assert!(projection.versions_truncated);
             assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);

@@ -1,9 +1,9 @@
 //! Where the windows of this session are, as presence names them to the others: the app and record
 //! each window shows, and the screen the person's windows are laid out on.
 
-use tilo_desktop_surface::host::records::{app_of, wire_record};
-use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
-use ui::record::DocumentId;
+use tilo_desktop_surface::host::records::{app_of, wire_document};
+use tilo_relay_protocol::live::{LiveLayout, LiveResource};
+use ui::resource::DocumentId;
 
 /// Who each window of this session is, by tab, as presence names records: the app and record each
 /// window shows, and the digest presence names the record by. What places a person in the window
@@ -32,15 +32,15 @@ pub fn bindings_of(
 pub fn placed(
     area: Option<ui::kurbo::Rect>,
     shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
-    record_of: impl Fn(tilo_desktop_model::TabId) -> Option<(String, String)>,
+    resource_of: impl Fn(tilo_desktop_model::TabId) -> Option<(String, String)>,
     focused: Option<tilo_desktop_model::TabId>,
 ) -> Option<LiveLayout> {
-    let windows: Vec<(LiveRecord, [f64; 4], bool)> = shown
+    let windows: Vec<(LiveResource, [f64; 4], bool)> = shown
         .iter()
         .filter_map(|&(tab, rect)| {
-            let (app, record) = record_of(tab)?;
+            let (app, record) = resource_of(tab)?;
             Some((
-                LiveRecord { app, record },
+                LiveResource { app, record },
                 [rect.x0, rect.y0, rect.x1, rect.y1],
                 focused == Some(tab),
             ))
@@ -51,7 +51,7 @@ pub fn placed(
 }
 
 /// What the window `tab` shows, as presence names it to the others: the app it runs and its
-/// record's wire spelling ([`wire_record`]), the spelling a receiver matches against its own
+/// record's wire spelling ([`wire_document`]), the spelling a receiver matches against its own
 /// records. `None` for a window that runs no app, or shows a record this session does not know yet.
 /// The app is said by whoever knows it: a window drawn by its app's own surface names no app in
 /// the layout, and its app is what told the session what it shows.
@@ -60,11 +60,11 @@ pub(crate) fn live_record_as(
     tab: tilo_desktop_model::TabId,
     record: &str,
     app: Option<&str>,
-) -> Option<LiveRecord> {
+) -> Option<LiveResource> {
     let app = app
         .map(str::to_owned)
         .or_else(|| app_of(tree, tab).map(str::to_owned))?;
     let record = DocumentId::parse(record)
-        .map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
-    Some(LiveRecord { app, record })
+        .map_or_else(|| record.to_owned(), |id| wire_document(&id).to_owned());
+    Some(LiveResource { app, record })
 }

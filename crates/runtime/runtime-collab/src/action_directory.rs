@@ -38,7 +38,7 @@ pub struct BrokerActionSurface {
     pub provider: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub live: bool,
     pub actions: Vec<ExportedAction>,
 }
@@ -52,7 +52,7 @@ impl BrokerActionSurface {
             provider: self.provider.clone(),
             app_id: self.app_id.clone(),
             cluster_id: self.cluster_id.clone(),
-            record_id: self.record_id.clone(),
+            document_id: self.document_id.clone(),
             live: self.live,
         }
     }
@@ -65,7 +65,7 @@ impl BrokerActionSurface {
             provider: id.provider,
             app_id: id.app_id,
             cluster_id: id.cluster_id,
-            record_id: id.record_id,
+            document_id: id.document_id,
             live: id.live,
             actions: Vec::new(),
         }

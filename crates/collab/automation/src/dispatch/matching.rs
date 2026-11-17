@@ -142,7 +142,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
     match (trigger, event) {
         (TriggerSpec::Schedule { .. }, Event::Schedule(fired)) => fired.trigger == index,
         (
-            TriggerSpec::RecordChanged {
+            TriggerSpec::ResourceChanged {
                 kind,
                 actions,
                 fields,

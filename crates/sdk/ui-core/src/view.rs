@@ -100,7 +100,7 @@ pub(crate) fn capture_widget_view_bound(
         };
     };
     let open_resource =
-        crate::record::capability::record_intent(root).map(|c| c.id.as_str().to_string());
+        crate::resource::capability::record_intent(root).map(|c| c.id.as_str().to_string());
     let contribution = crate::view::capability::view_state(root).unwrap_or_default();
     View {
         scroll: contribution.scroll,
@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use crate::Theme;
     use crate::app::App;
-    use crate::record::{DocumentCheckout, DocumentId, ResourceType};
+    use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
     use crate::state::State;
     use crate::widget::TaffyTreeExt;
     use crate::widget::Widget;
@@ -332,7 +332,7 @@ mod tests {
 
     impl Widget for DocRoot {
         crate::provides!(
-            dyn crate::record::capability::RecordScoped,
+            dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::undo::UndoPoints
         );
@@ -384,7 +384,7 @@ mod tests {
         }
     }
 
-    impl crate::record::capability::RecordScoped for DocRoot {
+    impl crate::resource::capability::ResourceScoped for DocRoot {
         fn record_intent(&self) -> Option<DocumentCheckout> {
             DocumentId::parse(&self.resource)
                 .map(|id| DocumentCheckout::new(id, ResourceType::new("document")))
@@ -405,23 +405,23 @@ mod tests {
         // is silently dropped by capture.
         {
             #[cfg(windows)]
-            let file_record = r"file:C:\report.md";
+            let file_resource = r"file:C:\report.md";
             #[cfg(not(windows))]
-            let file_record = "file:/report.md";
+            let file_resource = "file:/report.md";
             // App 1: a document with real text, and a root carrying a non-default
             // presentation (scroll / caret / mode / open resource).
             let mut root = DocRoot::new();
             root.caret = "caret=42".into();
             root.scroll = vec![10.0, 20.0];
             root.mode = Some("grid".into());
-            root.resource = file_record.into();
+            root.resource = file_resource.into();
 
             let mut state = State::new();
             let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
             state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
-            crate::record::init(
+            crate::resource::init(
                 &mut state.doc,
-                &DocumentId::parse(file_record).unwrap(),
+                &DocumentId::parse(file_resource).unwrap(),
                 &ResourceType::new("document"),
                 "home-workspace",
             );
@@ -433,7 +433,7 @@ mod tests {
             let v1 = app1.capture_view();
             assert_eq!(v1.scroll, vec![10.0, 20.0]);
             assert_eq!(v1.view_mode.as_deref(), Some("grid"));
-            assert_eq!(v1.open_resource.as_deref(), Some(file_record));
+            assert_eq!(v1.open_resource.as_deref(), Some(file_resource));
             assert_eq!(v1.focus.as_ref().unwrap().ordinal, 0);
             assert_eq!(v1.focus.as_ref().unwrap().ephemeral, "caret=42");
 
@@ -461,8 +461,8 @@ mod tests {
                 "the CRDT document round-tripped through freeze/thaw"
             );
             assert_eq!(
-                crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
-                Some(file_record.to_string()),
+                crate::resource::identity(&doc2).map(|c| c.id.as_str().to_string()),
+                Some(file_resource.to_string()),
                 "thaw reopened the resource the View named — its document is live"
             );
 

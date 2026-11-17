@@ -1,7 +1,7 @@
 //! A person's record changes as trigger events.
 //! Each change of a record in a workspace a shortcut of this device may watch is read for the
 //! changes after the heads the record was last seen at, and each one that carries a history entry
-//! becomes a [`RecordEvent`]. The first look at a record only learns its heads: a shortcut saved
+//! becomes a [`DocumentEvent`]. The first look at a record only learns its heads: a shortcut saved
 //! today never fires on last year's messages.
 //! The records are followed as every role that follows them does: off the one stream of record
 //! changes ([`Changes`]) and through the store they are kept in, on a worker of the feed's own. The
@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use automerge::{AutoCommit, ChangeHash};
 use durable_store::DurableStore;
 use tilo_actions::ActionContext;
-use tilo_automation::dispatch::{RecordEvent, event_of};
+use tilo_automation::dispatch::{DocumentEvent, event_of};
 
 use crate::platform::Store;
 use crate::platform::records::{Changed, Changes, document, named_checkouts};
@@ -30,7 +30,7 @@ struct Worker {
     /// The heads each record was last read at, by its workspace, app and route.
     cursors: BTreeMap<(String, String, String), Vec<ChangeHash>>,
     /// What the worker found and the loop has not taken yet.
-    found: Vec<RecordEvent>,
+    found: Vec<DocumentEvent>,
 }
 
 /// A person's record changes as trigger events, followed on a worker.
@@ -117,7 +117,7 @@ impl RecordFeed {
     }
 
     /// The events the worker found since the last call, oldest first.
-    pub fn take(&self) -> Vec<RecordEvent> {
+    pub fn take(&self) -> Vec<DocumentEvent> {
         std::mem::take(&mut lock(&self.worker).found)
     }
 }
@@ -138,7 +138,7 @@ impl Worker {
         let Some(doc) = document(store, &changed.app, &changed.workspace, &changed.record) else {
             return false;
         };
-        let kind = ui::record::identity(&doc)
+        let kind = ui::resource::identity(&doc)
             .map(|identity| identity.kind.as_str().to_owned())
             .unwrap_or_default();
         let key = (
@@ -169,7 +169,7 @@ pub fn record_events(
     kind: &str,
     doc: &AutoCommit,
     since: &[ChangeHash],
-) -> Vec<RecordEvent> {
+) -> Vec<DocumentEvent> {
     let committed = doc.committed_document();
     if committed.get_heads() == since {
         return Vec::new();
@@ -269,17 +269,17 @@ mod tests {
                 .write(key, WriteOp::Replace(doc.save()), None)
                 .unwrap();
         };
-        let id = ui::record::DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
-        let kind = ui::record::ResourceType::new("word-processor.document");
+        let id = ui::resource::DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let kind = ui::resource::ResourceType::new("word-processor.document");
         let mut index = AutoCommit::new();
-        assert!(ui::record::index::reference(&mut index, &id, &kind));
+        assert!(ui::resource::index::reference(&mut index, &id, &kind));
         index.commit();
         let named = StorageKey::workspace_index(APP, WORKSPACE);
         let key = crate::platform::records::storage_key(APP, WORKSPACE, id.route()).unwrap();
         let _leases = (store.lease(&named).unwrap(), store.lease(&key).unwrap());
         write(&named, &mut index);
         let mut doc = AutoCommit::new();
-        ui::record::init(&mut doc, &id, &kind, WORKSPACE);
+        ui::resource::init(&mut doc, &id, &kind, WORKSPACE);
         doc.commit();
         write(&key, &mut doc);
 

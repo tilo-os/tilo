@@ -46,13 +46,13 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
 /// same on every device, derived as the person's document of a kind is.
 #[must_use]
 pub fn workspace_document_id(kind: &str) -> String {
-    crate::person_record_id(kind)
+    crate::person_document_id(kind)
 }
 
 /// The workspace document `app` keeps under `document`, when it is one.
 #[must_use]
 pub fn workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {
-    let kind = crate::person_record_kind(document)?;
+    let kind = crate::person_resource_type(document)?;
     WORKSPACE_DOCUMENTS
         .iter()
         .find(|known| known.app == app && known.kind == kind)

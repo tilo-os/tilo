@@ -13,7 +13,7 @@ fn a_directory_published_before_the_primary_route_joins_is_sent_once_it_joins() 
         app_id: "so.tilo.files".into(),
         cluster_id: workspace,
         record: Some("tab:0000000000000259".into()),
-        record_kind: None,
+        resource_type: None,
         handle: None,
     };
     // The window moves to its record's route; the broker refuses that join

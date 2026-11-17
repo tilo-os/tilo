@@ -37,10 +37,10 @@ use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, shared_record,
+    WorkspaceId, shared_resource,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::workspaces::RemoveMemberRequest;
@@ -1094,7 +1094,7 @@ impl LoungeHost {
             let held = block_on_within(
                 runtime,
                 "the lounge's records",
-                self.workspaces.record_routes(&self.workspace),
+                self.workspaces.document_routes(&self.workspace),
             )
             .expect("the lounge's records");
             held.iter()
@@ -1266,12 +1266,12 @@ impl Lounge {
         // founded by it, which is what a host replays to the devices that join later.
         let first = before.is_empty();
         assert!(
-            shared_record::write(&mut doc, desktop).expect("the page lays its workspace out"),
+            shared_resource::write(&mut doc, desktop).expect("the page lays its workspace out"),
             "the page's desktop is news to the record"
         );
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(shared_record::change_message(Some(&person))),
+                .with_message(shared_resource::change_message(Some(&person))),
         );
         let mutation = if first {
             DocumentMutation::Snapshot(doc.save())
@@ -1282,7 +1282,7 @@ impl Lounge {
             DocumentRoute {
                 app_id: DESKTOP_APP.to_owned(),
                 cluster_id: self.workspace.clone(),
-                record: DESKTOP_RECORD.to_owned(),
+                record: DESKTOP_DOCUMENT.to_owned(),
             },
             &mutation,
         )
@@ -1297,12 +1297,12 @@ impl Lounge {
                 &self.runtime,
                 "the lounge's desktop record",
                 self.workspaces
-                    .record_document(&self.workspace, DESKTOP_APP, DESKTOP_RECORD),
+                    .resource_document(&self.workspace, DESKTOP_APP, DESKTOP_DOCUMENT),
             )
             .expect("the lounge's desktop record");
             let recorded = held
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-                .and_then(|doc| shared_record::read(&doc, None));
+                .and_then(|doc| shared_resource::read(&doc, None));
             recorded.as_ref().map(recorded_layout) == Some(recorded_layout(desktop))
         });
     }
@@ -1869,7 +1869,7 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
             "the lounge's chat",
             lounge
                 .workspaces
-                .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
+                .resource_document(&lounge.workspace, CHAT, CHAT_RECORD),
         )
         .expect("the lounge's chat")
         .expect("the lounge holds its chat"),
@@ -1901,7 +1901,7 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
 fn chat_here(session: &Session, workspace: &str) -> Option<String> {
     // The workspace may hold nothing yet, and until this computer is admitted to the record's
     // channel its writes are not this computer's to open.
-    let Ok(Some(record)) = session.read_record(workspace, CHAT, CHAT_RECORD) else {
+    let Ok(Some(record)) = session.read_resource(workspace, CHAT, CHAT_RECORD) else {
         return None;
     };
     let chat = automerge::AutoCommit::load(&record).ok()?;
@@ -1966,7 +1966,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     // The record the line came in is the workspace's, sealed as its host keeps it: what the joined
     // device read it through is the channel service, not a plain copy of the workspace's document.
     let record = session
-        .read_record(&lounge.workspace, CHAT, CHAT_RECORD)
+        .read_resource(&lounge.workspace, CHAT, CHAT_RECORD)
         .expect("the chat is this computer's to read")
         .expect("the chat is here");
     assert!(

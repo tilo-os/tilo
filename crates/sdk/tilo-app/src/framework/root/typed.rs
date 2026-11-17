@@ -38,8 +38,8 @@ pub(crate) struct ResourceType {
     pub(crate) readable: bool,
     /// [`Resource::HAS_FACTS`].
     pub(crate) facts: bool,
-    /// [`Resource::RECORD_TABLE`].
-    pub(crate) record_table: Option<&'static tilo_resource::table::ModelTable>,
+    /// [`Resource::RESOURCE_TABLE`].
+    pub(crate) resource_table: Option<&'static tilo_resource::table::ModelTable>,
     /// [`Resource::local_operations`].
     pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     /// Whether a resource id names one of the resource's items, or a part
@@ -62,7 +62,7 @@ impl ResourceType {
             label: R::LABEL,
             readable: R::READABLE,
             facts: R::HAS_FACTS,
-            record_table: R::RECORD_TABLE,
+            resource_table: R::RESOURCE_TABLE,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
             opens_as_item: tilo_resource::kind::opens_as_item::<R>,

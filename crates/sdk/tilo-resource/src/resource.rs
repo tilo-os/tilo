@@ -379,7 +379,7 @@ pub trait Resource: Sized + 'static {
     /// (the framework, a window's [`Reactions`](crate::Reactions) with
     /// [`record_reactions`](crate::reactions::record_reactions)).
     /// `#[resource]` names the record's; none otherwise.
-    const RECORD_TABLE: Option<&'static crate::table::ModelTable> = None;
+    const RESOURCE_TABLE: Option<&'static crate::table::ModelTable> = None;
 
     /// What the resource holds as a compact summary of plain values, meant
     /// for checking it against a request: names, times, counts and text as
@@ -633,7 +633,7 @@ fn described_edit(
                 .and_then(serde_json::Value::as_str)
                 .is_none_or(|next| !next.starts_with(&format!("{title}.")))
         });
-        let in_record = shape
+        let in_resource = shape
             .iter()
             .rev()
             .take(2)
@@ -648,7 +648,7 @@ fn described_edit(
                     .find(|(path, ..)| path == parent)
                     .map(|(_, _, fields)| (fields, key))
             })
-            .filter(|_| in_record && leaf && ops == ["set"]);
+            .filter(|_| in_resource && leaf && ops == ["set"]);
         if let Some((fields, key)) = record {
             fields.push(format!("`{key}`"));
         } else {
@@ -2405,12 +2405,12 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
 ///
 /// # Errors
 /// Returns [`ModelError`] when the type keeps no JSON form
-/// ([`Resource::RECORD_TABLE`](Resource::RECORD_TABLE) is `None`) or
+/// ([`Resource::RESOURCE_TABLE`](Resource::RESOURCE_TABLE) is `None`) or
 /// `reading` is not one of it.
 pub fn state_from_reading<R: Resource>(
     reading: &serde_json::Value,
 ) -> Result<R::State, ModelError> {
-    let table = R::RECORD_TABLE.ok_or_else(|| {
+    let table = R::RESOURCE_TABLE.ok_or_else(|| {
         ModelError::invalid(format!("{} keeps no reading a host answers", R::LABEL))
     })?;
     crate::table::Run(table).from_json(reading)
@@ -2648,7 +2648,7 @@ fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
 /// device, kept in the person's own scope, which no route carries yet. Only
 /// [`OWNER`](Self::OWNER) and [`EDITORS`](Self::EDITORS) change it; every
 /// other app reads it (`ViewCx::shared_person` in `tilo-app`).
-pub trait SharedRecord: Resource {
+pub trait SharedResource: Resource {
     /// The app that keeps the record.
     const OWNER: &'static str;
     /// The other apps whose edits the record takes.

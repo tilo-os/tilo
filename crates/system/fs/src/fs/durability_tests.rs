@@ -71,7 +71,7 @@ fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
         .create_empty_file(crate::namespace::ROOT_INO, name)
         .unwrap();
     fs.publish();
-    fs.record_version(ino, fs_protocol::FileProvenance::Create, None);
+    fs.document_version(ino, fs_protocol::FileProvenance::Create, None);
     fs.install_stage(ino, Vec::new());
     fs.buffer_states().insert(
         ino,
@@ -246,7 +246,7 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         fs.publish();
         let fh = open_handle(&fs, ino, true);
         let document_id = fs.ns().document_id_for(ino).unwrap();
-        fs.record_version(ino, fs_protocol::FileProvenance::Create, None);
+        fs.document_version(ino, fs_protocol::FileProvenance::Create, None);
         fs.write_buffer(ino, 0, &bytes).unwrap();
         assert!(fs.stage(ino).unwrap().lock().is_file_backed());
         assert_eq!(fs.fsync_inode(ino), Ok(()));

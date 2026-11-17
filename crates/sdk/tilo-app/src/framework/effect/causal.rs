@@ -1,6 +1,6 @@
 //! Outbox entries an admitted local invocation queued, carried out under
 //! that invocation, which completes once they settled
-//! ([`RecordEnv::outbox_awaited`](crate::framework::RecordEnv::outbox_awaited)).
+//! ([`ResourceEnv::outbox_awaited`](crate::framework::ResourceEnv::outbox_awaited)).
 
 use super::{
     ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceOperation,

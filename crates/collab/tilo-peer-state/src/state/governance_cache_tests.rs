@@ -48,7 +48,7 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
             document.commit();
             SeedDocument {
                 app_id: "test.app".into(),
-                record_id: format!("tab:{index}"),
+                document_id: format!("tab:{index}"),
                 kind: "test".into(),
                 bytes: document.save(),
             }

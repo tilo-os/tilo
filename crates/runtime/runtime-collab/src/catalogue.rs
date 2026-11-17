@@ -25,7 +25,7 @@ pub struct CatalogueSurfaceId {
     pub provider: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub live: bool,
 }
 
@@ -433,7 +433,7 @@ mod tests {
                 provider: None,
                 app_id: format!("app-{peer}"),
                 cluster_id: "workspace".into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
             })
         }

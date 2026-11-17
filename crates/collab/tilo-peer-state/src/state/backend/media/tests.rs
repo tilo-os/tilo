@@ -17,7 +17,7 @@ fn original(peer: &StatePeer, policy: &WorkspaceMediaV1, complete: bool) -> Resu
     {
         let route = Route {
             app: call.binding.app_id.clone(),
-            record: call.binding.record_id.clone(),
+            record: call.binding.document_id.clone(),
         };
         match peer.core.documents.get(&route) {
             Some(document) if !document.encryption_required => {
@@ -172,7 +172,7 @@ fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
             .unwrap(),
             documents: vec![SeedDocument {
                 app_id: "so.tilo.chat".into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],

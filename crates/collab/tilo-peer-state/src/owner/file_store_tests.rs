@@ -24,7 +24,7 @@ fn directory() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
 
-fn record_path(directory: &tempfile::TempDir) -> PathBuf {
+fn resource_path(directory: &tempfile::TempDir) -> PathBuf {
     directory.path().join("state.owner.json")
 }
 
@@ -94,7 +94,7 @@ fn replacements<T>(operation: impl FnOnce() -> T) -> (T, usize) {
 #[tokio::test]
 async fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
@@ -150,7 +150,7 @@ async fn a_change_writes_only_its_own_workspace_file_and_the_index() {
 #[tokio::test]
 async fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
@@ -191,7 +191,7 @@ async fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was()
 #[tokio::test]
 async fn a_workspace_costs_its_own_record() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
@@ -233,7 +233,7 @@ async fn a_workspace_costs_its_own_record() {
 #[tokio::test]
 async fn a_released_workspace_leaves_no_file_behind() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
     let workspace = testing::founded(&owner, "One", &device, &key, SystemTime::now())
@@ -249,7 +249,7 @@ async fn a_released_workspace_leaves_no_file_behind() {
 #[tokio::test]
 async fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
     testing::founded(&owner, "One", &device, &key, SystemTime::now())
@@ -268,7 +268,7 @@ async fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
 #[tokio::test]
 async fn a_later_change_appends_to_its_workspace_journal() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
@@ -280,9 +280,9 @@ async fn a_later_change_appends_to_its_workspace_journal() {
     let journal = |path: &Path| journal_files(path).into_values().next().unwrap();
     let empty = journal(&path);
 
-    testing::start_record(&owner, founded, "so.tilo.chat", "a", &key, now);
+    testing::start_resource(&owner, founded, "so.tilo.chat", "a", &key, now);
     let one = journal(&path);
-    testing::start_record(&owner, founded, "so.tilo.chat", "b", &key, now);
+    testing::start_resource(&owner, founded, "so.tilo.chat", "b", &key, now);
     let two = journal(&path);
     assert!(empty.is_empty());
     assert!(
@@ -316,14 +316,14 @@ async fn a_later_change_appends_to_its_workspace_journal() {
 #[tokio::test]
 async fn a_journal_entry_cut_short_is_not_part_of_the_record() {
     let directory = directory();
-    let path = record_path(&directory);
+    let path = resource_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
     let founded = testing::founded(&owner, "One", &device, &key, now)
         .await
         .unwrap();
-    testing::start_record(&owner, founded, "so.tilo.chat", "a", &key, now);
+    testing::start_resource(&owner, founded, "so.tilo.chat", "a", &key, now);
     drop(owner);
     let journals = journal_files(&path);
     let (name, bytes) = journals.iter().next().unwrap();
@@ -340,7 +340,7 @@ async fn a_journal_entry_cut_short_is_not_part_of_the_record() {
             .unwrap()
     };
     assert!(held(&reopened, "a"));
-    testing::start_record(&reopened, founded, "so.tilo.chat", "b", &key, now);
+    testing::start_resource(&reopened, founded, "so.tilo.chat", "b", &key, now);
     drop(reopened);
     let reopened = open_file(&path).unwrap();
     assert!(held(&reopened, "a") && held(&reopened, "b"));

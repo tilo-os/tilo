@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
-use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_record};
+use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
+use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
 use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
@@ -72,14 +72,14 @@ async fn windows(relay: &Relay, workspace: &str) -> Vec<(u64, u64)> {
     let Some(bytes) = relay
         .workspaces()
         .unwrap()
-        .record_document(workspace, DESKTOP_APP, DESKTOP_RECORD)
+        .resource_document(workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
         .await
         .unwrap()
     else {
         return Vec::new();
     };
     let doc = AutoCommit::load(&bytes).unwrap();
-    let Some(desktop) = shared_record::read(&doc, None) else {
+    let Some(desktop) = shared_resource::read(&doc, None) else {
         return Vec::new();
     };
     desktop.tree.workspaces[0].strips[0]
@@ -122,7 +122,7 @@ impl Page<'_> {
         let held = relay
             .workspaces()
             .unwrap()
-            .record_document(&self.workspace, DESKTOP_APP, DESKTOP_RECORD)
+            .resource_document(&self.workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
             .await
             .unwrap();
         // A page's every write is its own: a refused one is never the base
@@ -134,7 +134,7 @@ impl Page<'_> {
             .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(&bytes).unwrap())
             .with_actor(automerge::ActorId::from(actor));
         let heads = doc.get_heads();
-        shared_record::write(&mut doc, desktop).unwrap();
+        shared_resource::write(&mut doc, desktop).unwrap();
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Native.change_message()),
@@ -152,13 +152,13 @@ impl Page<'_> {
                     collab_types::document_artifact_id(
                         DESKTOP_APP,
                         &self.workspace,
-                        DESKTOP_RECORD,
+                        DESKTOP_DOCUMENT,
                     ),
                     author,
                     collab_types::document_attestation_id(
                         DESKTOP_APP,
                         &self.workspace,
-                        DESKTOP_RECORD,
+                        DESKTOP_DOCUMENT,
                     ),
                     collab_types::OpKind::Change,
                     SystemTime::now(),
@@ -169,7 +169,7 @@ impl Page<'_> {
                     peer: tilo_peer_state::peer_handle(author.as_bytes()),
                     app_id: DESKTOP_APP.into(),
                     cluster_id: self.workspace.clone(),
-                    record_id: DESKTOP_RECORD.into(),
+                    document_id: DESKTOP_DOCUMENT.into(),
                     envelope: Box::new(op),
                     own: None,
                 }

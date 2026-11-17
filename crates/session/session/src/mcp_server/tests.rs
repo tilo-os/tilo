@@ -158,7 +158,7 @@ fn a_window_of_another_workspace_is_not_an_agents() {
 /// answers only between frames: only the apps the session's services keep are asked there.
 #[test]
 fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
-    use tilo_actions::remote::{RecordAddress, RecordReads as _};
+    use tilo_actions::remote::{ResourceAddress, ResourceReads as _};
     // A session that never answers, and no broker: a read asking the session waits it out.
     let records = ServiceRecords {
         state: None,
@@ -168,7 +168,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     let started = std::time::Instant::now();
     let read = records.read(
         &Caller::local_person("person"),
-        &RecordAddress {
+        &ResourceAddress {
             app: "so.tilo.chat".to_owned(),
             record: String::new(),
         },

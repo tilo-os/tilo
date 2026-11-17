@@ -29,7 +29,7 @@ use crate::model::{Doc, Model};
 use crate::path::Segment;
 use crate::shape::Shape;
 
-pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
+pub const RESOURCE_UNIT: &str = tilo_actions::surface::RESOURCE_UNIT;
 
 /// The document key of a record's unit index: the storage patterns of its
 /// units (`comments/*`, `body`), one string each.
@@ -86,7 +86,7 @@ pub fn has_units(shape: Shape) -> bool {
 
 fn unit_name(unit: &[Segment]) -> String {
     if unit.is_empty() {
-        return RECORD_UNIT.to_owned();
+        return RESOURCE_UNIT.to_owned();
     }
     unit.iter()
         .map(|segment| match segment {
@@ -150,7 +150,7 @@ fn is_outbox(shape: Shape, unit: &[Segment]) -> bool {
 /// item's unit (`comments.*`) and the units of the fields it declares.
 #[must_use]
 pub fn declared(shape: Shape, item: Option<&str>, fields: &[&str]) -> Vec<String> {
-    let mut units = vec![RECORD_UNIT.to_owned()];
+    let mut units = vec![RESOURCE_UNIT.to_owned()];
     let field_of = |key: &str| shape.fields().iter().find(|field| field.key == key);
     if let Some(collection) = item.and_then(field_of)
         && collection.unit
@@ -274,7 +274,7 @@ pub fn units_of(doc: &Doc, patches: &[automerge::Patch]) -> BTreeSet<String> {
             })
             .max_by_key(|pattern| pattern.len())
             .map_or_else(
-                || RECORD_UNIT.to_owned(),
+                || RESOURCE_UNIT.to_owned(),
                 |pattern| keys.get(..pattern.len()).unwrap_or_default().join("/"),
             );
         units.insert(unit);

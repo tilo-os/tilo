@@ -926,7 +926,7 @@ impl ResourceApp for FileExplorerShell {
     /// writes as files are created, renamed, moved and deleted, and the one
     /// the person's other devices and a shared workspace's members hold. The
     /// window shows it through the mount, and keeps it as theirs.
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
             fs_protocol::tree::FilesTree,
         >()];

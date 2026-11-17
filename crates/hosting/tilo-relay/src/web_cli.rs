@@ -184,7 +184,7 @@ pub struct AgentArgs {
     /// policy lets ask, such as a member linking their own account on the
     /// workspace's Discord from their profile card. `--agents` serves them too.
     #[arg(long)]
-    pub workspace_records: bool,
+    pub workspace_documents: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -364,11 +364,11 @@ pub async fn start_relay_lending(
         });
     }
     #[cfg(feature = "agents")]
-    if args.agents.workspace_records {
+    if args.agents.workspace_documents {
         let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let (relay, actions) = tilo_relay::agents::start_serving_records(
+        let (relay, actions) = tilo_relay::agents::start_serving_documents(
             cfg,
             identity,
             None,

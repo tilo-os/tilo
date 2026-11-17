@@ -128,7 +128,7 @@ fn json(value: &serde_json::Value) -> InvokeArgument {
 /// refuses what came before it.
 fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>> {
     let changes = member.documents.get(route)?;
-    let record = ui::record::DocumentId::parse(&route.record)?;
+    let record = ui::resource::DocumentId::parse(&route.record)?;
     let replica = tilo_agent_session::Replica::open(
         &crate::common::catalogue(),
         &route.app_id,
@@ -182,7 +182,7 @@ async fn retained_by(
 ) -> Vec<String> {
     hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace)
         .await
         .unwrap()
@@ -210,7 +210,7 @@ async fn retained_sealed(
 ) -> (usize, bool) {
     let bodies: Vec<bool> = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace)
         .await
         .unwrap()
@@ -220,10 +220,10 @@ async fn retained_sealed(
             |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
-                    record_id,
+                    document_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => {
+                }) if app_id == route.app_id && document_id == route.record => {
                     Some(envelope.encryption.as_ref().is_some())
                 }
                 _ => None,

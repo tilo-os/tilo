@@ -293,7 +293,7 @@ impl AppBrokerState {
                 "context": request.context,
                 "actor": actor.member(),
                 "app_id": app_id,
-                "record_id": "",
+                "document_id": "",
                 "resource": descriptor.address.resource,
                 "resource_kind": descriptor.resource_kind,
                 "action": descriptor.address.action,

@@ -1,6 +1,6 @@
 //! Who the members are, by name: what a view or surface shows for an
 //! id an action recorded ([`ActionCx::author`](tilo_resource::ActionCx::author))
-//! or the member reading ([`RecordEnv::me`](super::RecordEnv::me)).
+//! or the member reading ([`ResourceEnv::me`](super::ResourceEnv::me)).
 //!
 //! The document records ids — the same on every replica, whatever anyone is
 //! called — and the host knows the names: the workspace's roster announces them

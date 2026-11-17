@@ -26,7 +26,7 @@ impl BooksApp {
     /// device: one that is offline (`waiting`), or one connected device
     /// that says it does not have it.
     fn stage_open_elsewhere(&mut self, waiting: bool) {
-        use ui::collaboration::record_content::{ContentLane, RecordContent};
+        use ui::collaboration::document_content::{ContentLane, DocumentContent};
 
         self.view = View::Library;
         let Some(entry) = self
@@ -39,7 +39,7 @@ impl BooksApp {
             return;
         };
         let lane = Arc::new(ContentLane::default());
-        let store = RecordContent::store(tilo_content::ContentStore::memory(), Arc::clone(&lane));
+        let store = DocumentContent::store(tilo_content::ContentStore::memory(), Arc::clone(&lane));
         if let Some(hash) = entry.content_reference() {
             // Asked for, and the host says where it stands.
             let _ = store.read(&hash);

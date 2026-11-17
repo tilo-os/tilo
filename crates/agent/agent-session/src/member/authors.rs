@@ -13,7 +13,7 @@ use tilo_actions::api::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentMember;
-use crate::workspace_records::Reading;
+use crate::workspace_documents::Reading;
 
 /// The kind of the rich text a record publishes as its body: an app whose
 /// new record publishes it at the root (`word-processor.document/body`)
@@ -46,12 +46,12 @@ impl AgentMember {
         self.others_wrote.contains(route)
             && !self.own_wrote.contains(route)
             && self.writes_documents(&route.app_id)
-            && !self.names_record(route, task)
+            && !self.names_document(route, task)
     }
 
     /// Whether `task` names the record at `route`: by its id, or by its
     /// title (a document's first line).
-    fn names_record(&mut self, route: &DocumentRoute, task: &str) -> bool {
+    fn names_document(&mut self, route: &DocumentRoute, task: &str) -> bool {
         let lower = task.to_lowercase();
         let id = route.record.trim_start_matches("uuid:").to_lowercase();
         if !id.is_empty() && lower.contains(&id) {
@@ -76,7 +76,7 @@ impl AgentMember {
                         .find(|line| !line.is_empty())
                         .map(str::to_owned)
                 }),
-            None => self.record_title(route),
+            None => self.resource_title(route),
         }
     }
 

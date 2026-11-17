@@ -77,7 +77,7 @@ impl AppBrokerState {
         person: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<Result<RequestCaller, Box<RemoteActionMessage>>> {
-        if let RemoteActionMessage::RecordRead {
+        if let RemoteActionMessage::ResourceRead {
             on_behalf_of: Some(parent),
             ..
         } = message

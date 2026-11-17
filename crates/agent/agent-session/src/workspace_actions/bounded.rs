@@ -13,7 +13,7 @@
 //! Nobody acting for a person confirms by their own word, and the host does
 //! not take a person's word from a device that may be their agent: where an
 //! action asks first, the host puts it to the person on their own devices
-//! ([`WorkspaceRecordsLink::ask_person`]) and runs it on their answer, which
+//! ([`WorkspaceDocumentsLink::ask_person`]) and runs it on their answer, which
 //! it keeps as a token bound to that one invocation, its target and its
 //! arguments ([`Witnesses`]). A confirmation the host did not issue for the
 //! invocation is refused.
@@ -559,7 +559,7 @@ impl Worker {
                 &ui::permissions::MemberId::Person(who.person.clone()),
                 &member_actor(&policy, who)?,
                 Seed::Existing {
-                    record: reads::record_id(&holder.record).map_err(unavailable)?,
+                    record: reads::document_id(&holder.record).map_err(unavailable)?,
                     changes: vec![bytes],
                 },
             )
@@ -591,8 +591,8 @@ impl Worker {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held
                 .app
-                .apply_record(
-                    &reads::record_id(&route.record).map_err(unavailable)?,
+                .apply_document(
+                    &reads::document_id(&route.record).map_err(unavailable)?,
                     &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
@@ -725,7 +725,7 @@ impl Worker {
     ) -> About {
         About {
             record: self
-                .record_name(workspace_id, route)
+                .document_name(workspace_id, route)
                 .unwrap_or_else(|| descriptor.resource_label.clone()),
             descriptor: descriptor.clone(),
             arguments,
@@ -852,7 +852,7 @@ impl Worker {
             // What it wrote, from the record's own replica: neither the record
             // nor its history is read for what one change touched. Only a
             // record the replica does not hold is read before and diffed.
-            let written = reads::record_id(&changed.record)
+            let written = reads::document_id(&changed.record)
                 .ok()
                 .and_then(|record| self.app_at(holder)?.changed_keys(&record, mutation));
             let before = match written {
@@ -878,9 +878,9 @@ impl Worker {
                 let merged = if &changed == holder {
                     app.apply(&mutation)
                 } else {
-                    reads::record_id(&changed.record)
+                    reads::document_id(&changed.record)
                         .map_err(crate::apps::AppError::Merge)
-                        .and_then(|record| app.apply_record(&record, &mutation))
+                        .and_then(|record| app.apply_document(&record, &mutation))
                 };
                 if let Err(error) = merged {
                     tracing::warn!(%error, "workspace actions: a change made for someone did not merge here");

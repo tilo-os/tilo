@@ -153,14 +153,14 @@ pub(crate) enum Request {
     Apply { snapshot: bool, bytes: Vec<u8> },
     /// Merge another member's durable change into `record`, one the
     /// held record's app keeps beside it (a part of its chain).
-    ApplyRecord {
+    ApplyDocument {
         record: String,
         snapshot: bool,
         bytes: Vec<u8>,
     },
     /// The holder's own changes to the records held beside the held one
     /// since the last call.
-    TakeRecordMutations,
+    TakeDocumentMutations,
     /// Where the last operation left the member.
     Presence,
     /// Take the held record's store to come from its workspace's hosts
@@ -172,7 +172,7 @@ pub(crate) enum Request {
     /// it is another person's own.
     Answered {
         record: String,
-        answer: ui::record::WorkspaceAnswer,
+        answer: ui::resource::WorkspaceAnswer,
     },
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
@@ -264,7 +264,7 @@ pub(crate) enum Reply {
     Mutation(Option<(bool, Vec<u8>)>),
     /// The holder's changes to records held beside the held one: each
     /// record's id, whether it is a whole document, and the bytes.
-    RecordMutations(Vec<(String, bool, Vec<u8>)>),
+    DocumentMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
     /// Record ids the held record's store asks its workspace's hosts for.

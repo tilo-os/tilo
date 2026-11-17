@@ -19,7 +19,7 @@ use ui::accesskit;
 use ui::application::{ApplicationHost, ComponentRunnerInputs};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
-use ui::record::{DocumentCheckout, DocumentId};
+use ui::resource::{DocumentCheckout, DocumentId};
 use ui::widget::empty_state::{PaintedAction, record_painted_actions, take_painted_actions};
 
 const INSTANCE: u64 = 1;
@@ -53,7 +53,7 @@ fn open(app_id: &str) -> (FrameHarness, tempfile::TempDir) {
             INSTANCE,
             DocumentCheckout::new(
                 DocumentId::window_default(INSTANCE),
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             ),
             None,
             ComponentRunnerInputs::from_native_process(),

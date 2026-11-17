@@ -162,7 +162,7 @@ impl TestTree {
             ..Default::default()
         };
         let wrote =
-            tilo_desktop_model::shared_record::write(&mut self.doc, &layout).unwrap_or(false);
+            tilo_desktop_model::shared_resource::write(&mut self.doc, &layout).unwrap_or(false);
         if wrote {
             self.commit_workspace_change();
         }
@@ -236,7 +236,7 @@ impl TestTree {
 
     /// Show the layout the record holds, as the pane's next read of it does.
     pub fn resync_cache_from_doc(&mut self) {
-        let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None) else {
+        let Some(layout) = tilo_desktop_model::shared_resource::read(&self.doc, None) else {
             return;
         };
         for workspace in &mut self.desktop.workspaces {
@@ -553,7 +553,7 @@ pub use ui::apps::TASKS as RECORD_APP;
 /// checkout its index names and the document as its app last wrote it.
 pub(crate) fn detached_records(
     tree: &impl ActivityTree,
-    records: &ui::RecordStore,
+    records: &ui::ResourceStore,
 ) -> Vec<super::DetachedRecordHistory> {
     let held = tree
         .active_workspace()
@@ -576,11 +576,11 @@ pub(crate) fn detached_records(
 
 /// The tree and the store's records, read the way a host serves them.
 pub(crate) trait StoreRecords {
-    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::RecordStore);
+    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::ResourceStore);
 }
 
 impl StoreRecords for super::WorkspaceActivityPane {
-    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::RecordStore) {
+    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::ResourceStore) {
         let detached = detached_records(tree, records);
         self.refresh_detached_records(tree, detached);
     }

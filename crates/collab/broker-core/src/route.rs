@@ -22,7 +22,7 @@ pub struct CrdtRoute {
     /// is still one document per `(app, cluster)`. Finest granularity —
     /// two people editing different files in one workspace share app and
     /// cluster, and only the record tells them apart. Routing key only.
-    pub record_id: String,
+    pub document_id: String,
 }
 
 impl CrdtRoute {
@@ -32,7 +32,7 @@ impl CrdtRoute {
         Self {
             app_id: app_id.into(),
             cluster_id: cluster_id.into(),
-            record_id: String::new(),
+            document_id: String::new(),
         }
     }
 
@@ -41,7 +41,7 @@ impl CrdtRoute {
         Self {
             app_id: String::new(),
             cluster_id: cluster_id.into(),
-            record_id: String::new(),
+            document_id: String::new(),
         }
     }
 
@@ -49,20 +49,20 @@ impl CrdtRoute {
     pub fn record(
         app_id: impl Into<String>,
         cluster_id: impl Into<String>,
-        record_id: impl Into<String>,
+        document_id: impl Into<String>,
     ) -> Self {
         Self {
             app_id: app_id.into(),
             cluster_id: cluster_id.into(),
-            record_id: record_id.into(),
+            document_id: document_id.into(),
         }
     }
 
-    /// Narrow this route to a record; an empty `record_id` leaves it as
+    /// Narrow this route to a record; an empty `document_id` leaves it as
     /// it was (pre-record addressing).
     #[must_use]
-    pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
-        self.record_id = record_id.into();
+    pub fn on_resource(mut self, document_id: impl Into<String>) -> Self {
+        self.document_id = document_id.into();
         self
     }
 
@@ -78,17 +78,17 @@ impl CrdtRoute {
     /// joins by channel id. Encoding lives in
     /// [`collab_types::channel_key`] so both ends cannot drift.
     pub fn channel_key(&self) -> String {
-        collab_types::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
+        collab_types::channel_key::format(&self.app_id, &self.cluster_id, &self.document_id)
     }
 
     /// Split a wire channel id back into its route — the inverse of
     /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
-        let (app_id, cluster_id, record_id) = collab_types::channel_key::parse(key);
+        let (app_id, cluster_id, document_id) = collab_types::channel_key::parse(key);
         Self {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
         }
     }
 
@@ -133,6 +133,6 @@ impl CrdtRoute {
         if self.app_id != subscriber.app_id {
             return false;
         }
-        self.record_id == subscriber.record_id
+        self.document_id == subscriber.document_id
     }
 }

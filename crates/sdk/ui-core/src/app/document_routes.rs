@@ -44,7 +44,7 @@ struct LiveOwners {
     /// The records its views show ([`Widget::history_owner`]).
     shown: Vec<crate::history_mode::HistoryOwner>,
     /// The records kept beside what the views show
-    /// ([`Widget::record_owners`]: the person's, the workspace's emoji).
+    /// ([`Widget::resource_owners`]: the person's, the workspace's emoji).
     beside: Vec<crate::history_mode::HistoryOwner>,
 }
 
@@ -60,7 +60,7 @@ impl LiveOwners {
         }
         fn collect(root: &dyn Widget, owners: &mut LiveOwners) {
             let shown = root.history_owner();
-            let beside = root.record_owners();
+            let beside = root.resource_owners();
             if let Some(owner) = &shown {
                 push(&mut owners.shown, owner);
             }
@@ -249,7 +249,7 @@ impl App {
 
     fn restore_primary_publication_obligations(&mut self) {
         self.state.advance_outbound(Vec::new());
-        self.actions.bound_record_sync = None;
+        self.actions.bound_document_sync = None;
         self.document_routes.primary_whole = false;
         for owner in &mut self.document_routes.owners {
             owner.sent = crate::state::DocumentFrontier::default();
@@ -299,7 +299,7 @@ impl App {
         for join in joins {
             self.collaboration
                 .manager
-                .join_route(join.route, join.record_kind);
+                .join_route(join.route, join.resource_type);
         }
         if self.document_sync_status().as_deref() != before.as_deref() {
             self.layout.layout_dirty = true;
@@ -518,12 +518,12 @@ impl App {
     /// reads from is told, so whatever follows a tree there holds them, and
     /// they sync on their own routes from then on
     /// ([`crate::history_mode::routes`]).
-    pub(super) fn records_arrived(&mut self, records: &[String]) {
-        let records: Vec<crate::record::DocumentId> = records
+    pub(super) fn resources_arrived(&mut self, records: &[String]) {
+        let records: Vec<crate::resource::DocumentId> = records
             .iter()
-            .filter_map(|record| crate::record::DocumentId::parse(record))
+            .filter_map(|record| crate::resource::DocumentId::parse(record))
             .collect();
-        for store in &self.live_record_stores() {
+        for store in &self.live_resource_stores() {
             store.announce(records.iter().cloned());
         }
         self.needs_sync = true;
@@ -531,16 +531,16 @@ impl App {
 
     /// The workspace's hosts have nothing of the on-demand record on `route`, or
     /// none is connected: every store a live owner reads from is told
-    /// ([`crate::record::RecordStore::note_workspace_answered`]).
-    pub(super) fn record_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
+    /// ([`crate::resource::ResourceStore::note_workspace_answered`]).
+    pub(super) fn resource_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
         let Some(id) = route
             .record
             .as_deref()
-            .and_then(crate::record::DocumentId::parse)
+            .and_then(crate::resource::DocumentId::parse)
         else {
             return;
         };
-        for store in &self.live_record_stores() {
+        for store in &self.live_resource_stores() {
             store.note_workspace_answered(id.clone());
         }
         self.needs_sync = true;
@@ -549,9 +549,9 @@ impl App {
     /// The committed history of a record no window holds arrived (an
     /// on-demand record a store asked for and could not open yet): every
     /// store a live owner reads from looks again
-    /// ([`crate::record::RecordStore::note_kept`]), and what asked for it
+    /// ([`crate::resource::ResourceStore::note_kept`]), and what asked for it
     /// opens it.
-    pub(super) fn unheld_record_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
+    pub(super) fn unheld_resource_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
         let held = self
             .document_routes
             .owners
@@ -561,20 +561,20 @@ impl App {
             || !route
                 .record
                 .as_deref()
-                .and_then(crate::record::DocumentId::parse)
+                .and_then(crate::resource::DocumentId::parse)
                 .is_some_and(|id| id.arrives_on_demand())
         {
             return;
         }
-        for store in &self.live_record_stores() {
+        for store in &self.live_resource_stores() {
             store.note_kept();
         }
         self.needs_sync = true;
     }
 
     /// Every store a live document owner reads from, once each.
-    fn live_record_stores(&self) -> Vec<crate::record::RecordStore> {
-        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+    fn live_resource_stores(&self) -> Vec<crate::resource::ResourceStore> {
+        let mut stores: Vec<crate::resource::ResourceStore> = Vec::new();
         for owner in live_document_owners(self.root_widget.as_ref()) {
             let (store, _) = owner.store_checkout();
             if !stores.iter().any(|known| known.same_owner(store)) {

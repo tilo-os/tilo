@@ -207,7 +207,7 @@ pub async fn load(app_id: &str) -> Option<&'static ApplicationDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::ResourceType;
+    use crate::resource::ResourceType;
     use crate::widget::IconDescriptor;
 
     fn definition(app_id: &'static str) -> &'static ApplicationDefinition {
@@ -215,13 +215,13 @@ mod tests {
             app_id: app_id.into(),
             title: "Probe".into(),
             icon: IconDescriptor::Named("notes".into()),
-            record_kind: ResourceType::new("probe.page"),
+            resource_type: ResourceType::new("probe.page"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: |_, _, _| Err(crate::launch::LaunchError::MissingComponentHost),
         }))
     }

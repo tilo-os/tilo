@@ -309,7 +309,7 @@ impl NativeWorkspaceOwner {
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
-            self.change_record(workspace, |view, record| {
+            self.change_document(workspace, |view, record| {
                 if key.device_public_key() != record.device.device_public_key {
                     return Err("invitation is not signed by this device".into());
                 }
@@ -374,7 +374,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        self.change_record(workspace, |view, record| {
+        self.change_document(workspace, |view, record| {
             if key.device_public_key() != record.device.device_public_key {
                 return Err("invitation is not cancelled by this device".into());
             }

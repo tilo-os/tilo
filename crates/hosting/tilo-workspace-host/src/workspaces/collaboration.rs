@@ -22,7 +22,7 @@ use tilo_user_identity::{AgentScope, DeviceCert};
 use tilo_action_policy::roles::governance;
 
 use super::authority::WorkspaceOp;
-use super::{GovernedWorkspace, WorkspaceRecord, Workspaces, system_time};
+use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
 
@@ -90,7 +90,7 @@ impl GovernedWorkspace {
 
 /// `record` and `peer`, a workspace's committed state, as its join ledger reads it.
 fn governed<'a>(
-    record: &'a WorkspaceRecord,
+    record: &'a WorkspaceDocumentEntry,
     peer: tilo_peer_state::join_ledger::PeerRef<'a>,
 ) -> Governed<'a> {
     Governed {

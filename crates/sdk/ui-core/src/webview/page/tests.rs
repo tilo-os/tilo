@@ -1044,7 +1044,7 @@ tilo_test_env::scenario! {
         assert_eq!(failure.record.others.len(), 1);
         assert_eq!(
             PageFailure::new("busy", "x").record,
-            PageRecordNote::default()
+            PageResourceNote::default()
         );
         // More than an engine tells, or something that is no record, is
         // not an answer.
@@ -1596,11 +1596,11 @@ tilo_test_env::scenario! {
     // What a person typed straight into the page arrives as the entry the
     // engine set down and its place, and only as that.
     {
-        let typed = serde_json::json!({"event":"page_record","tab":2,"seq":4.0,"entry":{
+        let typed = serde_json::json!({"event":"page_resource","tab":2,"seq":4.0,"entry":{
             "seq":4.0,"time_ms":1_700_000_000_004.0_f64,"actor":"","how":"input","ok":true,
             "target":{"role":"textbox","name":"Email","nth":1},"text":"ada@example.org",
             "message":"Direct input into textbox \"Email\"","url":"https://shop.test/form"}});
-        let (seq, entry) = decode_record_event(&typed).expect("the event is what the host sends");
+        let (seq, entry) = decode_resource_event(&typed).expect("the event is what the host sends");
         assert_eq!(seq, 4);
         assert_eq!(
             entry["seq"], 4,
@@ -1613,7 +1613,7 @@ tilo_test_env::scenario! {
         let mut bare = typed.clone();
         bare["entry"].as_object_mut().unwrap().remove("seq");
         assert_eq!(
-            decode_record_event(&bare).map(|(seq, entry)| (seq, entry["seq"].clone())),
+            decode_resource_event(&bare).map(|(seq, entry)| (seq, entry["seq"].clone())),
             Some((4, serde_json::json!(4)))
         );
 
@@ -1640,7 +1640,7 @@ tilo_test_env::scenario! {
                 .as_object_mut()
                 .unwrap()
                 .extend(change.as_object().unwrap().clone());
-            assert!(decode_record_event(&event).is_none(), "{why}");
+            assert!(decode_resource_event(&event).is_none(), "{why}");
         }
     }
 

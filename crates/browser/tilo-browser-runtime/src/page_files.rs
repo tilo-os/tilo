@@ -3,7 +3,7 @@
 //!
 //! A computer's search walks its disk. A page has none: a workspace's files
 //! are its Files record, which this reads in the page's own store for the
-//! workspace ([`WorkspaceRecords`]) and hands to the palette's source
+//! workspace ([`WorkspaceResources`]) and hands to the palette's source
 //! ([`tilo_desktop_search::providers::tree`]), asking the workspace for the
 //! content of each file it names. What arrives is read for its words — a text
 //! file as it is, a PDF's pages through the engine that draws them, fetched
@@ -23,8 +23,8 @@ use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree};
 use tilo_desktop_search::Held;
 use tilo_desktop_search::providers::tree::{TreeFile, TreeFiles};
 use ui::automerge::{AutoCommit, ChangeHash};
-use ui::record::StoredRecord;
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::StoredResource;
+use ui::resource::workspace::WorkspaceResources;
 
 /// The most of a file read for its words: a bigger file is still found by
 /// its name, and the page keeps a workspace's files in its own memory.
@@ -41,7 +41,7 @@ struct Read {
 /// A workspace's tree, read for the palette.
 pub(crate) struct WorkspaceFiles {
     source: Arc<TreeFiles>,
-    records: WorkspaceRecords,
+    records: WorkspaceResources,
     content: tilo_content::ContentStore,
     read: RefCell<Read>,
 }
@@ -52,7 +52,7 @@ impl WorkspaceFiles {
     /// say the files are of, never the id its records are kept by.
     pub(crate) fn new(
         named: &str,
-        records: WorkspaceRecords,
+        records: WorkspaceResources,
         content: tilo_content::ContentStore,
     ) -> Self {
         Self {
@@ -78,7 +78,7 @@ impl WorkspaceFiles {
     }
 
     /// The records the page keeps of the workspace, which the tree is one of.
-    pub(crate) fn records(&self) -> &WorkspaceRecords {
+    pub(crate) fn records(&self) -> &WorkspaceResources {
         &self.records
     }
 
@@ -88,18 +88,18 @@ impl WorkspaceFiles {
     }
 
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
-    /// sent it or said they hold none ([`ui::record::RecordOpenError::Arriving`]).
-    pub(crate) fn tree_record(&self) -> Result<StoredRecord, ui::record::RecordOpenError> {
-        self.records.open_record_at(
+    /// sent it or said they hold none ([`ui::resource::ResourceOpenError::Arriving`]).
+    pub(crate) fn tree_record(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
+        self.records.open_resource_at(
             FILES_APP,
-            &collab_types::person_record_id(TREE_KIND),
+            &collab_types::person_document_id(TREE_KIND),
             TREE_KIND,
             &|_doc: &mut AutoCommit| Ok(()),
         )
     }
 
     /// The workspace's tree, as the record holds it now.
-    fn tree(&self) -> Option<(StoredRecord, Tree)> {
+    fn tree(&self) -> Option<(StoredResource, Tree)> {
         let record = self.tree_record().ok()?;
         let tree = record.read(|doc| {
             <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(doc).ok()
@@ -168,7 +168,7 @@ impl WorkspaceFiles {
     /// written from the record into the page's content, so a search reads its
     /// words and opens it as it does any other file. Whether every one was
     /// written: `false` while the code that writes them is still to come.
-    fn keep_documents(&self, record: &StoredRecord, tree: &mut Tree) -> bool {
+    fn keep_documents(&self, record: &StoredResource, tree: &mut Tree) -> bool {
         let documents: Vec<String> = tree
             .nodes
             .iter()
@@ -256,7 +256,7 @@ ui::lazy_code! {
 /// linked otherwise).
 #[derive(Clone, Copy)]
 pub struct DocumentFiles {
-    write: fn(&StoredRecord, &str, &tilo_content::ContentStore) -> Option<String>,
+    write: fn(&StoredResource, &str, &tilo_content::ContentStore) -> Option<String>,
 }
 
 /// The document writer this build links.
@@ -275,7 +275,7 @@ ui::lazy_code! {
 
 /// `id`'s file as the content store keeps it, by the hash it was written under.
 fn write_document(
-    record: &StoredRecord,
+    record: &StoredResource,
     id: &str,
     content: &tilo_content::ContentStore,
 ) -> Option<String> {

@@ -316,7 +316,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 }
 
 /// The record unit, where an action writes unless it says otherwise.
-pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
+pub const RECORD_UNIT: &str = tilo_actions::surface::RESOURCE_UNIT;
 
 /// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
 /// metadata: a text (or rich-text) field the first, a flag field the second, in declaration

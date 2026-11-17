@@ -256,11 +256,11 @@ pub const PAGE_KIND: &str = "notes.notebook.pages";
 #[must_use]
 pub fn heading_href(page: &Id, anchor: &str) -> Option<String> {
     use ui::tilo_reference::link::{
-        AppId, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
+        AppId, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment, Scope,
     };
     let mut target = LinkTarget::new(Scope::Own);
     target.app = Some(AppId::parse("so.tilo.notes").ok()?);
-    target.record = Some(RecordSegment::Primary);
+    target.record = Some(ResourceSegment::Primary);
     target.resource = Some(ResourceAddress {
         kind: PAGE_KIND.to_owned(),
         id: format!("{page}#{anchor}"),

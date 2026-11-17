@@ -138,7 +138,7 @@ impl ActionHost for Broker {
                     provider: "1".into(),
                     app_id: NOTES.into(),
                     workspace: self.workspace.clone(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     browsable: true,
                 }],
                 ..CataloguePage::default()

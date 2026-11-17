@@ -15,7 +15,7 @@ use crate::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
 use crate::ownership::{OpenedBy, SharedDesktop};
-use crate::{IdMinter, TileContent, shared_record};
+use crate::{IdMinter, TileContent, shared_resource};
 
 pub struct View<'a> {
     pub app_id: &'a str,
@@ -40,7 +40,7 @@ pub struct Opener<'a> {
 #[must_use]
 pub fn place_view(layout: &AutoCommit, opener: &Opener<'_>, view: &View<'_>) -> Option<Vec<u8>> {
     let mut doc = layout.clone();
-    let mut desktop = shared_record::read(&doc, None)?;
+    let mut desktop = shared_resource::read(&doc, None)?;
     if shown_at(&desktop, view.app_id, view.record).is_some()
         || (view.record.is_empty() && opening(&desktop, view.app_id))
     {
@@ -58,7 +58,7 @@ pub fn place_view(layout: &AutoCommit, opener: &Opener<'_>, view: &View<'_>) -> 
     }
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
-    shared_record::write(&mut doc, &desktop).ok()?;
+    shared_resource::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
 }
@@ -221,7 +221,7 @@ mod tests {
             opened_by: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
-        shared_record::write(&mut doc, &desktop).unwrap();
+        shared_resource::write(&mut doc, &desktop).unwrap();
         doc.commit();
         doc.save()
     }
@@ -235,7 +235,7 @@ mod tests {
     }
 
     fn read(changes: &[Vec<u8>]) -> SharedDesktop {
-        shared_record::read(&merged(changes), None).expect("a desktop")
+        shared_resource::read(&merged(changes), None).expect("a desktop")
     }
 
     #[test]
@@ -299,7 +299,7 @@ mod tests {
             opened_by: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
-        shared_record::write(&mut doc, &desktop).unwrap();
+        shared_resource::write(&mut doc, &desktop).unwrap();
         doc.commit();
         let notes = View {
             app_id: "so.tilo.notes",
@@ -345,7 +345,7 @@ mod tests {
             opened_by: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
-        shared_record::write(&mut doc, &desktop).unwrap();
+        shared_resource::write(&mut doc, &desktop).unwrap();
         doc.commit();
         let notes = View {
             app_id: "so.tilo.notes",

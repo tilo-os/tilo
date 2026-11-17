@@ -2,7 +2,7 @@
 //! on this device beside the workspace's records, and carried to the workspace's
 //! other devices on the topic the records travel.
 //! A record holds the address of its binaries, never the bytes. The
-//! [broker's service](tilo_action_broker::record_content) keeps the rules: content
+//! [broker's service](tilo_action_broker::document_content) keeps the rules: content
 //! is verified against its address, possessing an address never grants access to
 //! it, and nothing arrives unasked. This module supplies what a session adds:
 //! [`Shelf`], a store under the session's state, a directory per workspace and app,
@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use iroh::EndpointId;
 use neighbour_wire::{NeighbourMsg, peer_handle};
-use tilo_action_broker::record_content::{
+use tilo_action_broker::document_content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
     ContentState, MAX_CONTENT_BYTES, RouteContent,
 };
@@ -130,7 +130,7 @@ impl Plane {
     /// The store is the same one for the workspace and app every time: a session lends it to the
     /// services whose records it keeps (`tilo_service::Service::lend_content`) on every pass.
     pub(crate) fn store(&self, workspace: &str, app: &str) -> ContentStore {
-        let kept = self.kept_record(workspace, app);
+        let kept = self.kept_document(workspace, app);
         ContentStore::from_backend(kept as Arc<dyn tilo_content::ContentBackend>).sealing()
     }
 
@@ -146,12 +146,12 @@ impl Plane {
         let Some(secret) = secret else {
             return;
         };
-        *self.kept_record(workspace, app).secret.lock_recover() = Some(secret);
+        *self.kept_document(workspace, app).secret.lock_recover() = Some(secret);
     }
 
     /// The store of the record of `app` in `workspace`, as the session keeps it: the same one for
     /// the workspace and app every time.
-    fn kept_record(&self, workspace: &str, app: &str) -> Arc<Kept> {
+    fn kept_document(&self, workspace: &str, app: &str) -> Arc<Kept> {
         let scope = (workspace.to_owned(), app.to_owned());
         if let Some(kept) = self.kept.lock_recover().get(&scope) {
             return Arc::clone(kept);
@@ -277,7 +277,7 @@ fn inbound(
     peers: &Peers,
 ) -> Option<Inbound> {
     let entry = match msg {
-        NeighbourMsg::RecordContentWant {
+        NeighbourMsg::DocumentContentWant {
             requester,
             app_id,
             cluster_id,
@@ -299,7 +299,7 @@ fn inbound(
                 hash: hash.clone(),
             }
         }
-        NeighbourMsg::RecordContentPiece {
+        NeighbourMsg::DocumentContentPiece {
             responder,
             requester,
             app_id,
@@ -325,7 +325,7 @@ fn inbound(
                 },
             }
         }
-        NeighbourMsg::RecordContentLacks {
+        NeighbourMsg::DocumentContentLacks {
             responder,
             requester,
             app_id,
@@ -723,7 +723,7 @@ impl ContentPeers for Peers {
         let Some(ws) = topic(route) else {
             return;
         };
-        let msg = NeighbourMsg::RecordContentWant {
+        let msg = NeighbourMsg::DocumentContentWant {
             requester: self.own(),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
@@ -737,7 +737,7 @@ impl ContentPeers for Peers {
         let Some(ws) = topic(route) else {
             return;
         };
-        let msg = NeighbourMsg::RecordContentPiece {
+        let msg = NeighbourMsg::DocumentContentPiece {
             responder: self.own(),
             requester: peer,
             app_id: route.app_id.clone(),
@@ -754,7 +754,7 @@ impl ContentPeers for Peers {
         let Some(ws) = topic(route) else {
             return;
         };
-        let msg = NeighbourMsg::RecordContentLacks {
+        let msg = NeighbourMsg::DocumentContentLacks {
             responder: self.own(),
             requester: peer,
             app_id: route.app_id.clone(),

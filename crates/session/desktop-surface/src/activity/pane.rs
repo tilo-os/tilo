@@ -1352,12 +1352,12 @@ impl WorkspaceActivityPane {
         let Some((range, left_end, right_start)) = self.split_candidate() else {
             return false;
         };
-        let record_id = range.id.clone();
+        let document_id = range.id.clone();
         let label = range.label.clone();
         let right_label = format!("{label} — continued");
         if ui::history_groups::split_named_range(
             tree.document_mut(),
-            &record_id,
+            &document_id,
             &left_end,
             &right_start,
             &label,
@@ -3138,7 +3138,7 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file across rename/move and
         // the stable id is not useful activity copy.
-        Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
+        Scope::FsResource(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
     }

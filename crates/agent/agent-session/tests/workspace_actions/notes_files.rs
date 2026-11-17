@@ -7,7 +7,7 @@ use super::api_on_relay::{api_on_relay, approved_key, headers, json_of};
 use super::*;
 use fs_protocol::tree::FILES_APP;
 use serde_json::{Value, json};
-use tilo_fs::tree_record::record as tree_record;
+use tilo_fs::tree_document::record as tree_record;
 
 /// `POST path` with `body` under the key `token`, answered `200`.
 async fn post(api: &Arc<tilo_api::Server>, token: &str, path: &str, body: &Value) -> Value {
@@ -41,7 +41,7 @@ async fn folder(
         .relay
         .workspaces()
         .unwrap()
-        .record_document(workspace, FILES_APP, &tree_record())
+        .resource_document(workspace, FILES_APP, &tree_record())
         .await
         .unwrap()?;
     tilo_fs::Namespace::from_bytes("reader", &record).ok()

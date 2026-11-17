@@ -39,7 +39,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     // name another's surface, which this process cannot find.
     tilo_peer_state::decide_with_surfaces(
         Surfaces::from_source(std::sync::Arc::new(ContentSurfaces::new(
-            |_: &collab_types::Record<'_>, _: &str| -> Option<Vec<u8>> { None },
+            |_: &collab_types::WrittenDocument<'_>, _: &str| -> Option<Vec<u8>> { None },
         ))),
         |_| None,
     );

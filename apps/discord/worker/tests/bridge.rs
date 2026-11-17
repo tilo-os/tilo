@@ -94,7 +94,7 @@ impl Workspace {
         AutoCommit::load(
             &self
                 .workspaces
-                .record_document(&self.id, app, "")
+                .resource_document(&self.id, app, "")
                 .await
                 .unwrap()
                 .unwrap(),
@@ -114,7 +114,7 @@ impl Workspace {
     /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
         self.workspaces
-            .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
+            .resource_document(&self.id, CHAT, chat::parts::part(0).as_str())
             .await
             .ok()
             .flatten()
@@ -132,29 +132,29 @@ impl Workspace {
         use ui::collaboration::DocumentMutation;
         let chat = self
             .workspaces
-            .record_document(&self.id, CHAT, "")
+            .resource_document(&self.id, CHAT, "")
             .await
             .unwrap()
             .unwrap();
         let mut held = Vec::new();
-        for (app, record) in self.workspaces.record_routes(&self.id).await.unwrap() {
-            let Some(part) = ui::record::DocumentId::parse(&record)
+        for (app, record) in self.workspaces.document_routes(&self.id).await.unwrap() {
+            let Some(part) = ui::resource::DocumentId::parse(&record)
                 .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
             else {
                 continue;
             };
             let bytes = self
                 .workspaces
-                .record_document(&self.id, CHAT, &record)
+                .resource_document(&self.id, CHAT, &record)
                 .await
                 .unwrap()
                 .unwrap();
             held.push((part, bytes));
         }
         let ids = |page: &Replica| -> Vec<String> {
-            page.records_beside()
+            page.resources_beside()
                 .iter()
-                .filter_map(|record| page.read_record(record, chat::messages::read_part))
+                .filter_map(|record| page.read_resource(record, chat::messages::read_part))
                 .flat_map(|part| {
                     part.messages
                         .ids()
@@ -171,13 +171,13 @@ impl Workspace {
                 &ui::tilo_actions::MemberId::person(author),
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: ui::record::DocumentId::package_primary(),
+                    record: ui::resource::DocumentId::package_primary(),
                     changes: vec![chat],
                 },
             )
             .unwrap();
             for (part, bytes) in held {
-                page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
+                page.apply_document(&part, &DocumentMutation::Snapshot(bytes))
                     .unwrap();
             }
             let before = ids(&page);
@@ -191,13 +191,13 @@ impl Workspace {
                 .into_iter()
                 .filter(|id| !before.contains(id))
                 .collect();
-            (page.take_record_mutations().unwrap(), added)
+            (page.take_document_mutations().unwrap(), added)
         };
         for (record, mutation) in taken {
             match mutation {
                 DocumentMutation::Snapshot(bytes) => self
                     .workspaces
-                    .author_workspace_record(
+                    .author_workspace_document(
                         &self.id,
                         &self.cert,
                         (CHAT, record.as_str()),
@@ -1962,13 +1962,13 @@ impl Bridge {
         let saved = self
             .workspace
             .workspaces
-            .record_document(&self.workspace.id, CHAT, &record)
+            .resource_document(&self.workspace.id, CHAT, &record)
             .await
             .unwrap();
         let bytes = self.emoji_changed(&record, saved, change());
         self.workspace
             .workspaces
-            .author_workspace_record(
+            .author_workspace_document(
                 &self.workspace.id,
                 &self.workspace.cert,
                 (CHAT, record.as_str()),
@@ -1993,10 +1993,10 @@ impl Bridge {
         let mut doc = saved
             .map(|bytes| AutoCommit::load(&bytes).unwrap())
             .unwrap_or_default();
-        ui::record::init_scoped(
+        ui::resource::init_scoped(
             &mut doc,
-            &ui::record::DocumentId::parse(record).unwrap(),
-            &ui::record::ResourceType::new(KIND),
+            &ui::resource::DocumentId::parse(record).unwrap(),
+            &ui::resource::ResourceType::new(KIND),
             CHAT,
             Some(&self.workspace.id),
         );

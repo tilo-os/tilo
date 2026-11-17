@@ -56,21 +56,21 @@ pub fn personal_cluster_of(person: &str) -> Option<uuid::Uuid> {
 
 /// What every person record's id derives from: the app's base record
 /// (`tab:0`), whose role the person's record of a kind plays.
-const PERSON_RECORD_BASE: &str = "tab:0000000000000000";
+const PERSON_RESOURCE_BASE: &str = "tab:0000000000000000";
 
 /// The id of the person's record of `kind`: one per kind, the same on every
-/// device (`ui::record::person::record_id`).
+/// device (`ui::resource::person::document_id`).
 #[must_use]
-pub fn person_record_id(kind: &str) -> String {
-    format!("derived:{kind}@{PERSON_RECORD_BASE}")
+pub fn person_document_id(kind: &str) -> String {
+    format!("derived:{kind}@{PERSON_RESOURCE_BASE}")
 }
 
 /// The kind a person record's id names; `None` for any other record.
 #[must_use]
-pub fn person_record_kind(record: &str) -> Option<&str> {
+pub fn person_resource_type(record: &str) -> Option<&str> {
     record
         .strip_prefix("derived:")?
-        .strip_suffix(PERSON_RECORD_BASE)?
+        .strip_suffix(PERSON_RESOURCE_BASE)?
         .strip_suffix('@')
         .filter(|kind| !kind.is_empty() && !kind.contains('@'))
 }
@@ -85,9 +85,9 @@ mod tests {
 
         phase a_person_record_names_its_kind;
         {
-            let record = person_record_id("terminal.history");
+            let record = person_document_id("terminal.history");
             assert_eq!(record, "derived:terminal.history@tab:0000000000000000");
-            assert_eq!(person_record_kind(&record), Some("terminal.history"));
+            assert_eq!(person_resource_type(&record), Some("terminal.history"));
             for other in [
                 "tab:000000000000005c",
                 "tab:0000000000000000",
@@ -95,7 +95,7 @@ mod tests {
                 "derived:terminal.history@derived:default@tab:0000000000000000",
                 "derived:notes@tab:000000000000005c",
             ] {
-                assert_eq!(person_record_kind(other), None, "{other}");
+                assert_eq!(person_resource_type(other), None, "{other}");
             }
         }
 

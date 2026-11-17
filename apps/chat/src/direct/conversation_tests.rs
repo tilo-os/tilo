@@ -149,7 +149,7 @@ fn deliver_messages(sender: &mut Window, reader: &mut Window) {
         .hold(0)
         .expect("the reader opens the part the conversation is in");
     sender
-        .deliver_record_to(reader, &crate::parts::part(0))
+        .deliver_resource_to(reader, &crate::parts::part(0))
         .expect("the messages arrive");
     reader.harness().relayout();
 }

@@ -33,7 +33,7 @@ impl DocumentRoute {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             ..
         } = message
         else {
@@ -42,7 +42,7 @@ impl DocumentRoute {
         Some(Self {
             app_id: app_id.clone(),
             cluster_id: cluster_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
         })
     }
     /// The workspace that carries this route.
@@ -248,7 +248,7 @@ pub fn open_frame(
     let Ok(NeighbourMsg::AppDocument {
         app_id,
         cluster_id,
-        record_id,
+        document_id,
         envelope,
         ..
     }) = postcard::from_bytes::<NeighbourMsg>(body)
@@ -258,7 +258,7 @@ pub fn open_frame(
     let route = DocumentRoute {
         app_id,
         cluster_id,
-        record: record_id,
+        record: document_id,
     };
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
@@ -490,7 +490,7 @@ mod tests {
                 peer: neighbour_wire::peer_handle(author.as_bytes()),
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record_id: route.record,
+                document_id: route.record,
                 envelope: Box::new(op),
                 own: None,
             })

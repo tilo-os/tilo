@@ -38,7 +38,7 @@ fn write(fixture: &Fixture, seq: u64, sealed: bool) -> Envelope {
         peer: tilo_peer_state::peer_handle(&fixture.source.peer.device_public_key),
         app_id: app.into(),
         cluster_id: workspace.into(),
-        record_id: record.into(),
+        document_id: record.into(),
         envelope: Box::new(op),
         own: None,
     })

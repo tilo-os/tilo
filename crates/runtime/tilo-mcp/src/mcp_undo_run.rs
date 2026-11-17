@@ -243,7 +243,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     async fn standing(&self, target: &Target, run: &Run) -> Result<Standing, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("last".into(), json!(HISTORY_READ));
-        let value = self.on_record(target, "history", arguments).await?;
+        let value = self.on_resource(target, "history", arguments).await?;
         let entries = history_entries(&value)
             .ok_or_else(|| format!("{} answered no history to find the run in", target.path))?;
         Ok(standing(&entries, |entry| run.made(entry)))
@@ -253,7 +253,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     async fn undo_step(&self, target: &Target, change: &str) -> Result<(), String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("step".into(), json!(change));
-        let value = self.on_record(target, "undo", arguments).await?;
+        let value = self.on_resource(target, "undo", arguments).await?;
         if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") {
             return Ok(());
         }
@@ -265,7 +265,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Run the history verb `action` on `target`'s record with `arguments`.
-    async fn on_record(
+    async fn on_resource(
         &self,
         target: &Target,
         action: &str,

@@ -12,10 +12,10 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::parts::is_part;
 use super::running::{Running, step_brief};
-use super::{AgentMember, MOST_ARRIVED_CHARS, MOST_NEWS_REPLANS, MOST_WAIT_RECORDS};
+use super::{AgentMember, MOST_ARRIVED_CHARS, MOST_NEWS_REPLANS, MOST_WAIT_DOCUMENTS};
 use crate::message_lines::{member_names, names_member, shown_line};
 use crate::planner::{MESSAGE_APPS, MOST_WAITS, Step, StepAction, Wait};
-use crate::workspace_records::Reading;
+use crate::workspace_documents::Reading;
 
 /// A wait that ended on what arrived, kept until the plan after it is made
 /// ([`Running::rewake`]).
@@ -222,7 +222,7 @@ pub(super) fn wait_alternatives(wanted: &str) -> Vec<Vec<WaitWord>> {
 }
 
 /// The most records of an app read for the names they give members.
-const MOST_NAMING_RECORDS: usize = 4;
+const MOST_NAMING_DOCUMENTS: usize = 4;
 
 /// What arrived for a waiting task.
 #[derive(Clone, Debug)]
@@ -493,7 +493,7 @@ impl AgentMember {
     }
 
     /// What the message records `wait` covers hold now, at most
-    /// [`MOST_WAIT_RECORDS`] of them.
+    /// [`MOST_WAIT_DOCUMENTS`] of them.
     pub(super) fn message_texts(&mut self, wait: &Wait) -> BTreeMap<DocumentRoute, Arc<str>> {
         let covers = |app: &str| {
             MESSAGE_APPS.contains(&app)
@@ -511,7 +511,7 @@ impl AgentMember {
             .chain(held_parts)
             .chain(self.unopened.routes())
             .filter(|route| route.cluster_id == self.workspace && covers(&route.app_id))
-            .take(MOST_WAIT_RECORDS)
+            .take(MOST_WAIT_DOCUMENTS)
             .collect();
         // Read after the routes are gathered: reading needs the records
         // mutably.
@@ -600,7 +600,7 @@ impl AgentMember {
             .routes()
             .into_iter()
             .filter(|held| naming(held))
-            .take(MOST_NAMING_RECORDS)
+            .take(MOST_NAMING_DOCUMENTS)
             .collect();
         for held in unopened {
             if let Some(found) = self.unopened.read(&held, member_names) {
@@ -703,7 +703,7 @@ impl AgentMember {
         let device = self.news_from.get(route).copied();
         let from = device.and_then(|device| self.member_name(device));
         Some(Arrival {
-            title: self.record_title(route),
+            title: self.resource_title(route),
             lines: self.shown_lines(route, lines, from.as_deref()),
             from,
             route: route.clone(),
@@ -784,7 +784,7 @@ impl AgentMember {
             let device = self.news_from.get(&route).copied();
             let from = device.and_then(|device| self.member_name(device));
             arrivals.push(Arrival {
-                title: self.record_title(&route),
+                title: self.resource_title(&route),
                 lines: self.shown_lines(&route, lines, from.as_deref()),
                 from,
                 route,
@@ -821,7 +821,7 @@ impl AgentMember {
     }
 
     /// What the app of the record at `route` calls it, if it names it.
-    pub(super) fn record_title(&mut self, route: &DocumentRoute) -> Option<String> {
+    pub(super) fn resource_title(&mut self, route: &DocumentRoute) -> Option<String> {
         if self.apps.contains_key(route) {
             return None;
         }

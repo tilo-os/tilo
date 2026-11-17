@@ -124,22 +124,22 @@ struct TurnRecords {
 impl TurnRecords {
     fn elsewhere(
         &self,
-    ) -> Result<Arc<dyn tilo_actions::remote::RecordReads>, tilo_actions::remote::ActionHostError>
+    ) -> Result<Arc<dyn tilo_actions::remote::ResourceReads>, tilo_actions::remote::ActionHostError>
     {
-        self.host
-            .record_reads()
-            .ok_or_else(|| tilo_actions::remote::ActionHostError::Unavailable {
-                reason: tilo_actions::remote::RECORD_READS_UNAVAILABLE.to_owned(),
-            })
+        self.host.resource_reads().ok_or_else(|| {
+            tilo_actions::remote::ActionHostError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned(),
+            }
+        })
     }
 }
 
-impl tilo_actions::remote::RecordReads for TurnRecords {
+impl tilo_actions::remote::ResourceReads for TurnRecords {
     fn read(
         &self,
         caller: &tilo_actions::remote::Caller,
-        address: &tilo_actions::remote::RecordAddress,
-    ) -> Result<tilo_actions::remote::RecordCopy, tilo_actions::remote::ActionHostError> {
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionHostError> {
         if self.services.keeps(&address.app) {
             return self.kept.read(caller, address);
         }
@@ -150,7 +150,7 @@ impl tilo_actions::remote::RecordReads for TurnRecords {
         self: Arc<Self>,
         caller: &tilo_actions::remote::Caller,
         correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
     ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
@@ -158,8 +158,8 @@ impl tilo_actions::remote::RecordReads for TurnRecords {
     fn watch(
         &self,
         caller: &tilo_actions::remote::Caller,
-        address: &tilo_actions::remote::RecordAddress,
-        wake: &tilo_actions::remote::RecordWake,
+        address: &tilo_actions::remote::ResourceAddress,
+        wake: &tilo_actions::remote::ResourceWake,
     ) -> Result<(), tilo_actions::remote::ActionHostError> {
         // The records the session keeps are read as they are on its pass: nothing to wait on.
         if self.services.keeps(&address.app) {
@@ -169,17 +169,17 @@ impl tilo_actions::remote::RecordReads for TurnRecords {
     }
 }
 
-impl tilo_actions::remote::RecordChanges for TurnRecords {
+impl tilo_actions::remote::ResourceChanges for TurnRecords {
     fn apply(
         &self,
         caller: &tilo_actions::remote::Caller,
-        change: &tilo_actions::remote::RecordChange,
+        change: &tilo_actions::remote::ResourceChange,
     ) -> Result<serde_json::Value, tilo_actions::remote::ActionHostError> {
         if self.services.keeps(&change.app) {
             return self.kept.apply(caller, change);
         }
         self.host
-            .record_changes()
+            .resource_changes()
             .ok_or_else(|| tilo_actions::remote::ActionHostError::Unavailable {
                 reason: "this desktop applies no task's changes at a record's origin".to_owned(),
             })?
@@ -268,11 +268,11 @@ impl ActionHost for Current {
         self.host().here(caller)
     }
 
-    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.records()))
     }
 
-    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.records()))
     }
 

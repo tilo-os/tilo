@@ -29,8 +29,8 @@ pub(in crate::state) fn bindings<E>(
         .values()
         .filter(|call| call.phase == workspace::media::CallPhaseV1::Active)
     {
-        let present =
-            check(&call.binding.app_id, &call.binding.record_id).map_err(ReadinessError::Source)?;
+        let present = check(&call.binding.app_id, &call.binding.document_id)
+            .map_err(ReadinessError::Source)?;
         if !present && require_complete {
             return Err(ReadinessError::Incomplete);
         }

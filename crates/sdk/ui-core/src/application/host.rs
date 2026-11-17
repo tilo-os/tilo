@@ -3,10 +3,10 @@
 use super::{
     ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, DocumentCheckout,
     DocumentId, HostContext, HostContextInputs, InstanceId, InstanceViewStore, LaunchError,
-    LaunchTarget, MemberId, PermissionContext, PreparedComponentInputs, RecordOpenError,
-    RecordStore, RestoreInput, SavedInstanceView, View, validate_identity,
+    LaunchTarget, MemberId, PermissionContext, PreparedComponentInputs, ResourceOpenError,
+    ResourceStore, RestoreInput, SavedInstanceView, View, validate_identity,
 };
-use crate::record::RecordOwners;
+use crate::resource::ResourceOwners;
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use std::rc::Rc;
 /// a route to travel on and the content their windows store has somewhere to
 /// go.
 pub const PERSONAL_WORKSPACE: &str = "d1a4f6b2-3c58-4e07-9b6a-70e2c5d81f43";
-/// Names the directory the launcher keeps the person records of an app in ([`crate::record::person`]):
+/// Names the directory the launcher keeps the person records of an app in ([`crate::resource::person`]):
 /// one per app, bound into its launches in every workspace, so a record of the person's is one record
 /// on the device.
 pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
@@ -27,7 +27,7 @@ const DEVICE_ID_FILE: &str = ".tilo-device-id";
 pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
-    default_record: DocumentId,
+    default_resource: DocumentId,
     workspace_scoped: bool,
 }
 
@@ -71,12 +71,12 @@ impl NativeProcessHost {
         )?;
         host.package_id = Some(resolved.package_id);
         if let Some(person) = resolved.person_dir {
-            host.keep_person_records_in(Rc::new(app_state::FsStore::provisioned(person)));
+            host.keep_person_resources_in(Rc::new(app_state::FsStore::provisioned(person)));
         }
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
-            default_record: if launcher_instance {
+            default_resource: if launcher_instance {
                 DocumentId::window_default(resolved.instance_id)
             } else {
                 DocumentId::workspace_default()
@@ -114,9 +114,9 @@ impl NativeProcessHost {
         named: Option<DocumentId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        let kind = definition.record_kind.clone();
+        let kind = definition.resource_type.clone();
         match named {
-            Some(id) => self.host.prepare_record(
+            Some(id) => self.host.prepare_resource(
                 definition,
                 self.instance_id,
                 DocumentCheckout::new(id, kind),
@@ -125,7 +125,7 @@ impl NativeProcessHost {
             None => self.host.prepare_default(
                 definition,
                 self.instance_id,
-                DocumentCheckout::new(self.default_record.clone(), kind),
+                DocumentCheckout::new(self.default_resource.clone(), kind),
                 None,
                 inputs,
             ),
@@ -202,9 +202,9 @@ impl NativeProcessHost {
         named: Option<DocumentId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        let kind = definition.record_kind.clone();
+        let kind = definition.resource_type.clone();
         match named {
-            Some(id) => self.host.prepare_record(
+            Some(id) => self.host.prepare_resource(
                 definition,
                 instance,
                 DocumentCheckout::new(id, kind),
@@ -225,7 +225,7 @@ fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
     if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
         && crate::collaboration::native_initial::joining()
     {
-        return Err(LaunchError::RecordNotHere);
+        return Err(LaunchError::ResourceNotHere);
     }
     Ok(())
 }
@@ -514,13 +514,13 @@ impl NativeProfile {
         view: &SavedInstanceView,
         instance: InstanceId,
         record: &DocumentCheckout,
-    ) -> Result<Option<crate::record::transfer::Landing>, LaunchError> {
+    ) -> Result<Option<crate::resource::transfer::Landing>, LaunchError> {
         let adopted = SavedInstanceView {
             device_id: self.device_id.clone(),
             workspace_id: self.workspace_id.clone(),
             instance_id: instance,
-            record_id: record.id.as_str().to_owned(),
-            record_kind: record.kind.as_str().to_owned(),
+            document_id: record.id.as_str().to_owned(),
+            resource_type: record.kind.as_str().to_owned(),
             ..view.clone()
         };
         self.views
@@ -799,15 +799,15 @@ pub struct ApplicationHost {
     /// through this host.
     package_id: Option<String>,
     models: crate::models::Models,
-    owners: RecordOwners,
+    owners: ResourceOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
     permissions: crate::permissions::SharedPermissions,
     author: MemberId,
     action_context: tilo_actions::ActionContext,
     /// Where the person records are kept: the host's store unless the
-    /// host names another ([`Self::keep_person_records_in`]).
-    person: RecordOwners,
+    /// host names another ([`Self::keep_person_resources_in`]).
+    person: ResourceOwners,
 }
 
 impl ApplicationHost {
@@ -910,8 +910,8 @@ impl ApplicationHost {
         Ok(Self {
             package_id: None,
             models: crate::models::Models::default(),
-            person: RecordOwners::with_store(Rc::clone(&store)),
-            owners: RecordOwners::with_store(store),
+            person: ResourceOwners::with_store(Rc::clone(&store)),
+            owners: ResourceOwners::with_store(store),
             views,
             device_id,
             permissions,
@@ -920,28 +920,28 @@ impl ApplicationHost {
         })
     }
 
-    /// Keep the person records ([`crate::record::person`]) in `store` rather than the host's: the
+    /// Keep the person records ([`crate::resource::person`]) in `store` rather than the host's: the
     /// directory a launcher shares between an app's launches in every workspace.
-    pub fn keep_person_records_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
-        self.person = RecordOwners::with_store(store);
+    pub fn keep_person_resources_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
+        self.person = ResourceOwners::with_store(store);
     }
 
-    fn with_person_records(
+    fn with_person_resources(
         &mut self,
         definition: &ApplicationDefinition,
         mut context: HostContext,
     ) -> HostContext {
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
-        match crate::record::person::PersonRecords::open(
+        match crate::resource::person::PersonResources::open(
             &mut self.person,
             package_id,
             self.author.clone(),
         ) {
-            Ok(records) => context.provide_person_records(records),
+            Ok(records) => context.provide_person_resources(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
         }
-        context.provide_workspace_records(
-            crate::record::workspace::WorkspaceRecords::in_workspace(
+        context.provide_workspace_resources(
+            crate::resource::workspace::WorkspaceResources::in_workspace(
                 self.owners.clone(),
                 self.views.workspace_id().to_owned(),
                 self.author.clone(),
@@ -954,10 +954,10 @@ impl ApplicationHost {
     /// Migration adapters use this owner too; they must never start a second saver.
     /// # Errors
     /// Rejects denied requirements and invalid package/storage namespaces.
-    pub fn records_for(
+    pub fn resources_for(
         &mut self,
         definition: &ApplicationDefinition,
-    ) -> Result<RecordStore, LaunchError> {
+    ) -> Result<ResourceStore, LaunchError> {
         for required in &definition.required {
             if !self.permissions.borrow().check(required) {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
@@ -988,7 +988,7 @@ impl ApplicationHost {
     /// The record this instance's saved presentation names, with that presentation, when it names
     /// one of `definition`'s kind: a window carried in from another workspace arrives showing its
     /// record rather than the workspace's default.
-    fn saved_record(
+    fn saved_resource(
         &self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
@@ -997,16 +997,16 @@ impl ApplicationHost {
             return Ok(None);
         };
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
-        let id = DocumentId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
+        let id = DocumentId::parse(&saved.document_id).ok_or(LaunchError::BindingMismatch)?;
         if package_id != definition.app_id()
             || saved.app_id != package_id
-            || definition.record_kind.as_str() != saved.record_kind
+            || definition.resource_type.as_str() != saved.resource_type
             || id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
         }
         Ok(Some((
-            DocumentCheckout::new(id, definition.record_kind.clone()),
+            DocumentCheckout::new(id, definition.resource_type.clone()),
             saved,
         )))
     }
@@ -1029,13 +1029,13 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        if let Some(own) = definition.member_record_of(&self.author) {
-            return self.prepare_record(definition, instance_id, own, runner_inputs);
+        if let Some(own) = definition.member_resource_of(&self.author) {
+            return self.prepare_resource(definition, instance_id, own, runner_inputs);
         }
-        let records = self.records_for(definition)?;
-        if definition.keeps_workspace_record() {
-            let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
-            let target = if definition.opens_before_record
+        let records = self.resources_for(definition)?;
+        if definition.keeps_workspace_resource() {
+            let primary = DocumentCheckout::package_primary(definition.resource_type.clone());
+            let target = if definition.opens_before_resource
                 && records
                     .begin_opening(&primary)
                     .map_err(LaunchError::Record)?
@@ -1068,8 +1068,8 @@ impl ApplicationHost {
             let saved = if matches!(target, LaunchTarget::Record { .. }) {
                 self.saved_view(instance_id)?.filter(|saved| {
                     saved.app_id == package_id
-                        && saved.record_id == context.record().id.as_str()
-                        && definition.record_kind.names(&saved.record_kind)
+                        && saved.document_id == context.record().id.as_str()
+                        && definition.resource_type.names(&saved.resource_type)
                 })
             } else {
                 None
@@ -1081,13 +1081,13 @@ impl ApplicationHost {
                 })
                 .map_or(RestoreInput::None, RestoreInput::Local);
             return Ok(PreparedComponentInputs {
-                context: self.with_person_records(definition, context),
+                context: self.with_person_resources(definition, context),
                 target,
                 restore,
                 runner_inputs,
             });
         }
-        let (checkout, saved) = match self.saved_record(definition, instance_id)? {
+        let (checkout, saved) = match self.saved_resource(definition, instance_id)? {
             Some((checkout, saved)) => (checkout, Some(saved)),
             None => (default, None),
         };
@@ -1100,7 +1100,7 @@ impl ApplicationHost {
             initial_view,
         )?;
         Ok(PreparedComponentInputs {
-            context: self.with_person_records(definition, context),
+            context: self.with_person_resources(definition, context),
             target,
             restore,
             runner_inputs,
@@ -1114,27 +1114,28 @@ impl ApplicationHost {
     /// record; one of another record is left for the next save to replace.
     /// # Errors
     /// Rejects foreign kinds, contested writers, corrupt records and denied authority.
-    pub fn prepare_record(
+    pub fn prepare_resource(
         &mut self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
         checkout: DocumentCheckout,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        let records = self.records_for(definition)?;
-        if checkout.kind != definition.record_kind
+        let records = self.resources_for(definition)?;
+        if checkout.kind != definition.resource_type
             || DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
             || checkout.id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.saved_view(instance_id)?.filter(|saved| {
-            saved.record_id == checkout.id.as_str() && checkout.kind.as_str() == saved.record_kind
+            saved.document_id == checkout.id.as_str()
+                && checkout.kind.as_str() == saved.resource_type
         });
         let (context, target, restore) =
             self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
         Ok(PreparedComponentInputs {
-            context: self.with_person_records(definition, context),
+            context: self.with_person_resources(definition, context),
             target,
             restore,
             runner_inputs,
@@ -1144,7 +1145,7 @@ impl ApplicationHost {
     fn prepare_checkout(
         &self,
         definition: &ApplicationDefinition,
-        records: RecordStore,
+        records: ResourceStore,
         instance_id: InstanceId,
         mut checkout: DocumentCheckout,
         mut saved: Option<SavedInstanceView>,
@@ -1153,21 +1154,21 @@ impl ApplicationHost {
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
-            match records.try_open_record(&checkout) {
+            match records.try_open_resource(&checkout) {
                 Ok(_) => {
                     break LaunchTarget::Record {
                         checkout: checkout.clone(),
                         reveal: None,
                     };
                 }
-                Err(RecordOpenError::MissingRecord)
+                Err(ResourceOpenError::MissingResource)
                     if saved.as_ref().is_none_or(|saved| saved.shown().is_some()) =>
                 {
                     refuse_copy_while_joining(&LaunchTarget::New)?;
                     saved = None;
                     break LaunchTarget::New;
                 }
-                Err(RecordOpenError::Retired) if successors < MAX_SUCCESSORS => {
+                Err(ResourceOpenError::Retired) if successors < MAX_SUCCESSORS => {
                     successors += 1;
                     saved = None;
                     checkout = DocumentCheckout::new(
@@ -1179,7 +1180,7 @@ impl ApplicationHost {
             }
         };
         let mut context = if matches!(target, LaunchTarget::New) {
-            HostContext::prepare_new_record(
+            HostContext::prepare_new_resource(
                 definition,
                 HostContextInputs {
                     records,
@@ -1235,13 +1236,13 @@ mod native_process_tests {
             app_id: app_id.into(),
             title: "Host probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("H"),
-            record_kind: crate::record::ResourceType::new("host.probe"),
+            resource_type: crate::resource::ResourceType::new("host.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: rejected_factory,
         }
     }
@@ -1332,16 +1333,16 @@ mod native_process_tests {
                 native.prepare_launch(&definition, None, probe::runner_inputs())
             };
             let mut first = launch(41);
-            let mut first_record = prepare(&mut first).unwrap();
-            first_record
+            let mut first_resource = prepare(&mut first).unwrap();
+            first_resource
                 .context
-                .initialize_new_record(|_| Ok(()))
+                .initialize_new_resource(|_| Ok(()))
                 .unwrap();
             let mut second = launch(42);
-            let second_record = prepare(&mut second).unwrap();
+            let second_resource = prepare(&mut second).unwrap();
             assert_ne!(
-                first_record.context.record(),
-                second_record.context.record()
+                first_resource.context.record(),
+                second_resource.context.record()
             );
             // Naming the first record explicitly still contends with its actual
             // live writer: distinct defaults must never weaken the storage lock.
@@ -1349,24 +1350,24 @@ mod native_process_tests {
                 second
                     .prepare_launch(
                         &definition,
-                        Some(first_record.context.record().id.clone()),
+                        Some(first_resource.context.record().id.clone()),
                         probe::runner_inputs(),
                     )
                     .is_err()
             );
-            let first_id = first_record.context.record().id.clone();
+            let first_id = first_resource.context.record().id.clone();
             first
                 .host
                 .views
-                .save(&first_record.context.envelope(View::default(), None))
+                .save(&first_resource.context.envelope(View::default(), None))
                 .unwrap();
-            drop(first_record);
+            drop(first_resource);
             drop(first);
             let mut restored = launch(41);
-            let restored_record = prepare(&mut restored).unwrap();
-            assert_eq!(restored_record.context.record().id, first_id);
+            let restored_resource = prepare(&mut restored).unwrap();
+            assert_eq!(restored_resource.context.record().id, first_id);
             assert!(matches!(
-                restored_record.target,
+                restored_resource.target,
                 LaunchTarget::Record { .. }
             ));
         }
@@ -1375,10 +1376,10 @@ mod native_process_tests {
         {
             use crate::application_test_support as probe;
             let mut definition = definition(probe::APP);
-            definition.workspace_record = true;
-            definition.member_record = true;
+            definition.workspace_resource = true;
+            definition.member_resource = true;
             let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
-            let record_of = |person: &str| {
+            let resource_of = |person: &str| {
                 let temp = tempfile::tempdir().unwrap();
                 let mut native = NativeProcessHost::open_with(
                     &definition,
@@ -1401,17 +1402,17 @@ mod native_process_tests {
             };
             let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
             assert_eq!(
-                record_of(&ada),
+                resource_of(&ada),
                 DocumentId::of_member(&ada, "host.probe").unwrap(),
                 "Ada's window opens her own record of the workspace"
             );
             assert_eq!(
-                record_of(&bo),
+                resource_of(&bo),
                 DocumentId::of_member(&bo, "host.probe").unwrap(),
                 "Bo's opens his, never hers"
             );
             assert!(
-                record_of("person-a").is_package_primary(),
+                resource_of("person-a").is_package_primary(),
                 "someone without a root identity is a member of no workspace: the workspace's record"
             );
         }
@@ -1424,14 +1425,14 @@ mod native_process_tests {
             let mut standalone =
                 NativeProcessHost::open_with(&definition, environment(temp.path()), probe::author())
                     .unwrap();
-            let standalone_record = standalone
+            let standalone_resource = standalone
                 .prepare_launch(&definition, None, probe::runner_inputs())
                 .unwrap();
             assert_eq!(
-                standalone_record.context.record().id,
+                standalone_resource.context.record().id,
                 DocumentId::workspace_default()
             );
-            drop(standalone_record);
+            drop(standalone_resource);
             drop(standalone);
 
             let workspace = "3f2b1c00-0000-4000-8000-00000000000b";
@@ -1458,13 +1459,13 @@ mod native_process_tests {
                     51,
                     DocumentCheckout::new(
                         DocumentId::workspace_default(),
-                        definition.record_kind.clone(),
+                        definition.resource_type.clone(),
                     ),
                     None,
                     probe::runner_inputs(),
                 )
                 .unwrap();
-            old.context.initialize_new_record(|_| Ok(())).unwrap();
+            old.context.initialize_new_resource(|_| Ok(())).unwrap();
             legacy
                 .host
                 .views
@@ -1482,7 +1483,7 @@ mod native_process_tests {
             drop(restored);
 
             let mut primary_definition = self::definition(probe::APP);
-            primary_definition.workspace_record = true;
+            primary_definition.workspace_resource = true;
             let mut primary = launch();
             let prepared = primary
                 .prepare_launch(&primary_definition, None, probe::runner_inputs())
@@ -1498,7 +1499,7 @@ mod native_process_tests {
             let temp = tempfile::tempdir().unwrap();
             let per_window = definition(probe::APP);
             let mut per_workspace = definition(probe::APP);
-            per_workspace.workspace_record = true;
+            per_workspace.workspace_resource = true;
             let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
             let launch = |definition: &ApplicationDefinition, instance: u64| {
                 NativeProcessHost::open_with(
@@ -1533,7 +1534,7 @@ mod native_process_tests {
                 );
                 prepared
                     .context
-                    .initialize_new_record(|doc| {
+                    .initialize_new_resource(|doc| {
                         doc.put(automerge::ROOT, "note", text)
                             .map_err(|e| e.to_string())
                     })
@@ -1545,7 +1546,7 @@ mod native_process_tests {
                 .unwrap();
             assert!(created.context.record().id.is_package_primary());
             assert!(matches!(created.target, LaunchTarget::PrimaryNew));
-            let windows = created.context.window_records();
+            let windows = created.context.window_resources();
             assert_eq!(
                 windows
                     .iter()
@@ -1558,7 +1559,7 @@ mod native_process_tests {
             );
             created
                 .context
-                .initialize_new_record(|doc| {
+                .initialize_new_resource(|doc| {
                     doc.put(automerge::ROOT, "note", "shared")
                         .map_err(|e| e.to_string())
                 })
@@ -1572,10 +1573,10 @@ mod native_process_tests {
             assert!(reopened.context.record().id.is_package_primary());
             assert!(matches!(reopened.target, LaunchTarget::Record { .. }));
             assert_eq!(
-                reopened.context.read_record(note).unwrap(),
+                reopened.context.read_resource(note).unwrap(),
                 Some("shared".into())
             );
-            assert_eq!(reopened.context.window_records().len(), 2);
+            assert_eq!(reopened.context.window_resources().len(), 2);
             drop(reopened);
             drop(second);
             let mut old = launch(&per_window, 41);
@@ -1583,8 +1584,8 @@ mod native_process_tests {
                 .prepare_launch(&per_window, None, probe::runner_inputs())
                 .unwrap();
             assert!(matches!(old.target, LaunchTarget::Record { .. }));
-            assert_eq!(old.context.read_record(note).unwrap(), Some("first".into()));
-            assert!(old.context.window_records().is_empty());
+            assert_eq!(old.context.read_resource(note).unwrap(), Some("first".into()));
+            assert!(old.context.window_resources().is_empty());
         }
 
         phase a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data;
@@ -1594,7 +1595,7 @@ mod native_process_tests {
 
             let temp = tempfile::tempdir().unwrap();
             let mut original = definition(probe::APP);
-            original.workspace_record = true;
+            original.workspace_resource = true;
             let launch = |definition: &ApplicationDefinition| {
                 NativeProcessHost::open_with(
                     definition,
@@ -1614,7 +1615,7 @@ mod native_process_tests {
                 .unwrap();
             prepared
                 .context
-                .initialize_new_record(|doc| {
+                .initialize_new_resource(|doc| {
                     doc.put(automerge::ROOT, "body", "retained original")
                         .map_err(|error| error.to_string())
                 })
@@ -1622,12 +1623,12 @@ mod native_process_tests {
             prepared
                 .context
                 .records
-                .try_flush_record(&prepared.context.record().id)
+                .try_flush_resource(&prepared.context.record().id)
                 .unwrap();
             let mut incompatible = definition(probe::APP);
-            incompatible.workspace_record = true;
-            incompatible.record_kind = crate::record::ResourceType::new("host.changed");
-            let existing = native.host.records_for(&incompatible).unwrap();
+            incompatible.workspace_resource = true;
+            incompatible.resource_type = crate::resource::ResourceType::new("host.changed");
+            let existing = native.host.resources_for(&incompatible).unwrap();
             assert!(
                 existing.same_owner(&prepared.context.records),
                 "the new definition must address the original live owner"
@@ -1640,7 +1641,7 @@ mod native_process_tests {
             assert!(
                 matches!(
                     error,
-                    LaunchError::Record(crate::record::RecordOpenError::IdentityMismatch)
+                    LaunchError::Record(crate::resource::ResourceOpenError::IdentityMismatch)
                 ),
                 "{error}"
             );
@@ -1655,7 +1656,7 @@ mod native_process_tests {
             assert_eq!(
                 restored
                     .context
-                    .read_record(|doc| {
+                    .read_resource(|doc| {
                         doc.get(automerge::ROOT, "body")
                             .unwrap()
                             .unwrap()
@@ -1703,13 +1704,13 @@ mod native_process_tests {
             let definition = definition(probe::APP);
             let default = DocumentCheckout::new(
                 DocumentId::derived("default", &DocumentId::for_tab(0)),
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             );
-            let carried = DocumentCheckout::new(DocumentId::minted(), definition.record_kind.clone());
+            let carried = DocumentCheckout::new(DocumentId::minted(), definition.resource_type.clone());
             {
-                let mut owners = RecordOwners::new(temp.path().to_owned());
+                let mut owners = ResourceOwners::new(temp.path().to_owned());
                 let records = owners.open(probe::APP, workspace).unwrap();
-                records.create_record(&carried).unwrap();
+                records.create_resource(&carried).unwrap();
                 records
                     .with(&carried.id, |doc| {
                         doc.put(automerge::ROOT, "body", "arrived").unwrap();
@@ -1724,8 +1725,8 @@ mod native_process_tests {
                 device_id: "elsewhere".into(),
                 workspace_id: "elsewhere".into(),
                 instance_id: 7,
-                record_id: default.id.as_str().into(),
-                record_kind: default.kind.as_str().into(),
+                document_id: default.id.as_str().into(),
+                resource_type: default.kind.as_str().into(),
                 view: View::default(),
                 application: None,
                 shows: None,
@@ -1759,12 +1760,12 @@ mod native_process_tests {
             assert!(matches!(prepared.restore, RestoreInput::Local(_)));
             drop(prepared);
 
-            let _ = crate::record::transfer::retire(
+            let _ = crate::resource::transfer::retire(
                 profile.store(),
                 probe::APP,
                 workspace,
-                &crate::record::transfer::Origin::Record(carried.clone()),
-                &crate::record::transfer::Retirement::Moved(None),
+                &crate::resource::transfer::Origin::Record(carried.clone()),
+                &crate::resource::transfer::Retirement::Moved(None),
             )
             .unwrap();
             let prepared = host(temp.path())
@@ -1816,7 +1817,7 @@ mod native_process_tests {
             )
         };
         let mut per_workspace = definition(probe::APP);
-        per_workspace.workspace_record = true;
+        per_workspace.workspace_resource = true;
         let per_window = definition(probe::APP);
 
         for definition in [&per_workspace, &per_window] {
@@ -1824,7 +1825,7 @@ mod native_process_tests {
             let (construction, _broker) = joining();
             assert!(matches!(
                 host.prepare_launch(definition, None, probe::runner_inputs()),
-                Err(LaunchError::RecordNotHere)
+                Err(LaunchError::ResourceNotHere)
             ));
             drop(construction);
             let prepared = host
@@ -1840,7 +1841,7 @@ mod native_process_tests {
         let mut created = host
             .prepare_launch(&per_workspace, None, probe::runner_inputs())
             .unwrap();
-        created.context.initialize_new_record(|_| Ok(())).unwrap();
+        created.context.initialize_new_resource(|_| Ok(())).unwrap();
         drop(created);
         drop(host);
         let mut host = launch();
@@ -1863,8 +1864,8 @@ mod native_process_tests {
         let temp = tempfile::tempdir().unwrap();
         let workspace = "3f2b1c00-0000-4000-8000-00000000000d";
         let mut definition = definition(probe::APP);
-        definition.workspace_record = true;
-        definition.opens_before_record = true;
+        definition.workspace_resource = true;
+        definition.opens_before_resource = true;
         let launch = |instance: u64| {
             NativeProcessHost::open_with(
                 &definition,
@@ -1884,7 +1885,7 @@ mod native_process_tests {
             .unwrap();
         created
             .context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(automerge::ROOT, "note", "kept")
                     .map_err(|error| error.to_string())
             })
@@ -1899,7 +1900,7 @@ mod native_process_tests {
                 let _entry = scope.enter();
                 crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
                     crate::collaboration::RouteSpec::app(probe::APP, workspace.parse().unwrap()),
-                    definition.record_kind.as_str(),
+                    definition.resource_type.as_str(),
                     automerge::AutoCommit::new().save(),
                     runtime_collab::WorkspaceStatus::Ready,
                 )
@@ -1911,7 +1912,7 @@ mod native_process_tests {
             assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
             let opening = prepared
                 .context
-                .record_opening()
+                .resource_opening()
                 .expect("the record this device holds opens off the frame");
             construction
                 .bind_component(&prepared.context.callback_binding())
@@ -1919,7 +1920,7 @@ mod native_process_tests {
             assert!(opening.take_in(true).unwrap());
             prepared
                 .context
-                .read_record(|doc| {
+                .read_resource(|doc| {
                     assert_eq!(
                         doc.get(automerge::ROOT, "note")
                             .unwrap()

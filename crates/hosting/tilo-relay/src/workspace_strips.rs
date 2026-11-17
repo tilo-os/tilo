@@ -2,11 +2,13 @@
 //! operator lists, so the first person in finds them in the top bar. The
 //! desktop is the record members' pages keep their windows in, one entry
 //! per workspace, strip, group and window
-//! ([`tilo_desktop_model::shared_record`]). A listed strip is added where
+//! ([`tilo_desktop_model::shared_resource`]). A listed strip is added where
 //! its name is missing; everything people made, strips and windows alike,
 //! is kept.
 
-use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId, shared_record};
+use tilo_desktop_model::{
+    IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId, shared_resource,
+};
 
 /// The workspace record members' pages keep the shared desktop in.
 pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
@@ -36,7 +38,7 @@ pub(crate) fn settle_strips(
     if names.is_empty() {
         return Ok(false);
     }
-    let mut desktop = shared_record::read(doc, None).unwrap_or_default();
+    let mut desktop = shared_resource::read(doc, None).unwrap_or_default();
     let tree = &mut desktop.tree;
     let mut minter = Minter::new(workspace, tree);
     if tree.workspaces.is_empty() {
@@ -63,7 +65,7 @@ pub(crate) fn settle_strips(
     if !changed {
         return Ok(false);
     }
-    shared_record::write(doc, &desktop).map_err(|error| error.to_string())
+    shared_resource::write(doc, &desktop).map_err(|error| error.to_string())
 }
 
 /// Ids for the strips the workspace adds: under a namespace of the workspace's own,
@@ -119,7 +121,7 @@ mod tests {
     const WORKSPACE: &str = "0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11";
 
     fn desktop(doc: &automerge::AutoCommit) -> SharedDesktop {
-        shared_record::read(doc, None).unwrap()
+        shared_resource::read(doc, None).unwrap()
     }
 
     fn strips(doc: &automerge::AutoCommit) -> Vec<String> {
@@ -157,7 +159,7 @@ mod tests {
                 .strips
                 .push(Strip::new(StripId(77), "Someone's"));
             value.authors.insert(77, "alice".into());
-            shared_record::write(&mut doc, &value).unwrap();
+            shared_resource::write(&mut doc, &value).unwrap();
 
             assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main"])).unwrap());
             assert!(settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main", "Quiet"])).unwrap());
@@ -177,7 +179,7 @@ mod tests {
         {
             let mut doc = automerge::AutoCommit::new();
             assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &[]).unwrap());
-            assert!(shared_record::read(&doc, None).is_none());
+            assert!(shared_resource::read(&doc, None).is_none());
         }
 
         phase strip_names_are_trimmed_and_bounded;

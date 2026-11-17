@@ -59,10 +59,10 @@ pub struct SessionOwner {
 
 /// The Writer record as a record store reserves it, carrying its identity.
 fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
-    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
+    use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     let definition = word_processor::definition();
-    let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.record_kind.clone());
-    let mut owners = RecordOwners::portable(ui::portable_storage::PortableStorage::new(
+    let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.resource_type.clone());
+    let mut owners = ResourceOwners::portable(ui::portable_storage::PortableStorage::new(
         "test-owner-initialize",
         workspace,
     )?);
@@ -70,7 +70,7 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
         .open(definition.app_id(), workspace)
         .map_err(|e| e.to_string())?;
     records
-        .reserve_record(&checkout)
+        .reserve_resource(&checkout)
         .map_err(|e| e.to_string())?
         .initialize(word_processor::initialize_empty_document)
         .map_err(|e| e.to_string())?;
@@ -129,8 +129,8 @@ impl SessionOwner {
         let mut seeded = documents(&workspace)?;
         seeded.push(SeedDocument {
             app_id: WRITER.0.into(),
-            record_id: WRITER.1.into(),
-            kind: word_processor::definition().record_kind.as_str().into(),
+            document_id: WRITER.1.into(),
+            kind: word_processor::definition().resource_type.as_str().into(),
             bytes: writer,
         });
         peer.install_seed(

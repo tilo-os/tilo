@@ -1,7 +1,7 @@
 //! The Agents tab: who works in the workspace, held in Chat's record of the workspace's agents.
 //! An agent is a workspace record of its own kind ([`tilo_app::tilo_workspace_agent::KIND`]), kept
 //! by Chat ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every app of the
-//! workspace opens it ([`WorkspaceRecord`]): in the store this device's apps keep, as the person
+//! workspace opens it ([`WorkspaceResource`]): in the store this device's apps keep, as the person
 //! sitting here. Naming, bounding and retiring an agent are the record's own actions, decided by
 //! the workspace's grants on Chat's node — the decision the app windows and the action broker take
 //! — so the tab, the apps and the person's other devices hold the one record, and the tab decides
@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_action_policy::MemberId;
-use tilo_app::framework::WorkspaceRecord;
+use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
     OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
@@ -30,7 +30,7 @@ use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_resource::Id;
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::LivePermissions;
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::workspace::WorkspaceResources;
 
 /// How workspace settings' history names where a change came from.
 const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
@@ -48,7 +48,7 @@ pub trait Host {
         &self,
         workspace: &Workspace,
         person: &UserId,
-    ) -> (WorkspaceRecords, Option<LivePermissions>);
+    ) -> (WorkspaceResources, Option<LivePermissions>);
 
     /// Whether `person` looks after `workspace`'s agents: makes, bounds and retires them.
     fn manages(&self, workspace: &Workspace, person: &UserId) -> bool;
@@ -67,7 +67,7 @@ impl Host for crate::engine_records::EngineRecords {
         &self,
         workspace: &Workspace,
         person: &UserId,
-    ) -> (WorkspaceRecords, Option<LivePermissions>) {
+    ) -> (WorkspaceResources, Option<LivePermissions>) {
         use ui::permissions::PermissionContext;
         let context = PermissionContext::from_standing(tilo_action_policy::Standing::person(
             workspace.policy.clone(),
@@ -127,7 +127,7 @@ struct Open {
     /// opens the record again.
     policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
-    record: Option<WorkspaceRecord<Record>>,
+    record: Option<WorkspaceResource<Record>>,
 }
 
 /// What the tab drew at one frame.
@@ -148,7 +148,7 @@ struct May {
 /// the tab lists, and this device's apps and Settings.
 #[derive(Clone, Copy)]
 struct Review<'a> {
-    record: &'a WorkspaceRecord<Record>,
+    record: &'a WorkspaceResource<Record>,
     workspace: &'a Workspace,
     apps: &'a dyn domain::AppDirectory,
     names: &'a PeopleNames,
@@ -231,7 +231,7 @@ impl Agents {
     /// The tab as `workspace` stands for the person `record` is opened as.
     fn pane_of(
         workspace: &Workspace,
-        record: &WorkspaceRecord<Record>,
+        record: &WorkspaceResource<Record>,
         (names, apps): (&PeopleNames, &dyn domain::AppDirectory),
         may: May,
         review: Option<&str>,
@@ -496,7 +496,7 @@ impl Agents {
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-    ) -> Option<WorkspaceRecord<Record>> {
+    ) -> Option<WorkspaceResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
         let held = self.open.borrow();
@@ -510,7 +510,7 @@ impl Agents {
         }
         drop(held);
         let (records, permissions) = self.host.open(workspace, person);
-        let record = WorkspaceRecord::<Record>::open(
+        let record = WorkspaceResource::<Record>::open(
             &records,
             OWNER,
             SETTINGS_APP,
@@ -569,7 +569,7 @@ impl Agents {
     fn record_admitted(
         workspace: &Workspace,
         person: &UserId,
-        record: &WorkspaceRecord<Record>,
+        record: &WorkspaceResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
         let state = record.get();
@@ -635,7 +635,7 @@ impl Agents {
     #[cfg(target_os = "linux")]
     fn project_model(
         person: &UserId,
-        record: &WorkspaceRecord<Record>,
+        record: &WorkspaceResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
         let state = record.get();
@@ -955,7 +955,7 @@ fn limit_summary(limit_micros: Option<u64>) -> String {
 fn keeper_line(
     names: &PeopleNames,
     workspace: &Workspace,
-    record: &WorkspaceRecord<Record>,
+    record: &WorkspaceResource<Record>,
     keeper: &str,
 ) -> String {
     if keeper == record.me().id() {

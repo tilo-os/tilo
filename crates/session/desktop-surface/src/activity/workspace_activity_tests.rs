@@ -13,7 +13,7 @@ mod workspace_activity {
     };
     use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
     use tilo_desktop_model::{Layout, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-    use ui::record::RecordStore;
+    use ui::resource::ResourceStore;
 
     fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = Layout {
@@ -57,14 +57,14 @@ mod workspace_activity {
             });
             let mut layout = tilo_desktop_model::Workspace::new(workspace, "Design");
             layout.strips = vec![strip.clone()];
-            tilo_desktop_model::shared_record::device::write(
+            tilo_desktop_model::shared_resource::device::write(
                 &mut doc,
                 workspace,
                 &layout,
-                &tilo_desktop_model::shared_record::device::Writer {
+                &tilo_desktop_model::shared_resource::device::Writer {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 7,
-                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
+                    records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();
@@ -81,14 +81,14 @@ mod workspace_activity {
         // commits and the same private playback/keyboard controller.
         {
             let mut tree = causal_workspace();
-            let records = RecordStore::in_memory();
-            let record = ui::record::DocumentCheckout::new(
+            let records = ResourceStore::in_memory();
+            let record = ui::resource::DocumentCheckout::new(
                 DocumentId::for_file("review.note"),
-                ui::record::ResourceType::new("note"),
+                ui::resource::ResourceType::new("note"),
             );
-            assert!(records.open_record(&record));
+            assert!(records.open_resource(&record));
             records.with(&record.id, |doc| {
-                ui::record::init(
+                ui::resource::init(
                     doc,
                     &record.id,
                     &record.kind,

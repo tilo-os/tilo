@@ -3,7 +3,7 @@ use crate::application::{ApplicationDefinition, HostContext, HostContextInputs, 
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
 use crate::permissions::{MemberId, PermissionContext};
-use crate::record::{RecordOwners, ResourceType};
+use crate::resource::{ResourceOwners, ResourceType};
 use crate::widget::{IconDescriptor, Text};
 use std::cell::RefCell;
 struct BoundRoot {
@@ -39,20 +39,20 @@ impl Widget for BoundRoot {
 #[test]
 fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_run() {
     let temp = tempfile::tempdir().unwrap();
-    let mut owners = RecordOwners::new(temp.path().into());
+    let mut owners = ResourceOwners::new(temp.path().into());
     let records = owners.open("dev.tilo.manual-test", "A").unwrap();
     let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
     let definition = ApplicationDefinition {
         app_id: "dev.tilo.manual-test".into(),
         title: "Manual".into(),
         icon: IconDescriptor::Glyph("M"),
-        record_kind: ResourceType::new("manual"),
+        resource_type: ResourceType::new("manual"),
         required: vec![],
         optional: vec![],
         opens: &[],
-        workspace_record: false,
-        member_record: false,
-        opens_before_record: false,
+        workspace_resource: false,
+        member_resource: false,
+        opens_before_resource: false,
         create: |_, _, _| unreachable!(),
     };
     let prepare = |instance| {
@@ -72,7 +72,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
             &LaunchTarget::New,
         )
         .unwrap();
-        context.initialize_new_record(|_| Ok(())).unwrap();
+        context.initialize_new_resource(|_| Ok(())).unwrap();
         context
     };
     let context = prepare(1);

@@ -2155,7 +2155,7 @@ impl CameraApp {
             generation,
             id: id.clone(),
             source: crate::worker::ScanSource::Bytes(bytes),
-            record_history: true,
+            document_history: true,
         }) {
             self.toast.fail(error.clone());
             return Err(error);
@@ -2597,7 +2597,7 @@ impl CameraApp {
             match result.result {
                 Ok(Some(scanned)) => {
                     self.scanned = Some(scanned.clone());
-                    if result.record_history {
+                    if result.document_history {
                         self.record_scan(state, scanned.raw);
                     }
                     self.toast.show(format!("{} found", scanned.kind.title()));
@@ -3555,7 +3555,7 @@ mod tests {
         )
         .unwrap();
         let root = automerge::ROOT;
-        app.sync_record(&mut doc, &root);
+        app.sync_resource(&mut doc, &root);
         (app, doc, root)
     }
 
@@ -3565,7 +3565,7 @@ mod tests {
     }
 
     impl CameraApp {
-        fn sync_record(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        fn sync_resource(&mut self, doc: &mut AutoCommit, root: &ObjId) {
             Widget::update(self, doc, root);
             Widget::settle(self, &mut Edits::lend(doc), root);
             Widget::sync(self, doc, root);
@@ -3597,7 +3597,7 @@ mod tests {
     ) {
         let deadline = tilo_test_env::hang_deadline();
         while !done(app) && ui::time::now() < deadline {
-            app.sync_record(doc, root);
+            app.sync_resource(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(
@@ -3899,7 +3899,7 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 &root,
             ));
-            camera.sync_record(&mut state.doc, &root);
+            camera.sync_resource(&mut state.doc, &root);
             assert_eq!(camera.captures.len(), 1);
             assert_ne!(camera.captures[0].id, before);
         }
@@ -3912,7 +3912,7 @@ mod tests {
             let mut app = CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync_record(&mut doc, &root);
+            app.sync_resource(&mut doc, &root);
             app.camera_issue = Some(CameraIssue::PermissionDenied);
             let app = render_at(app, doc, 320.0, 680.0);
             let tree = app.accessibility().expect("camera has semantics");
@@ -4153,7 +4153,7 @@ mod tests {
             assert!(app.is_counting_down());
             assert_eq!(app.captures.len(), before, "timer does not capture early");
             app.countdown.as_mut().expect("armed timer").due = ui::time::now();
-            app.sync_record(&mut doc, &root);
+            app.sync_resource(&mut doc, &root);
             assert!(!app.is_counting_down());
             assert_eq!(app.captures.len(), 1);
             assert_ne!(
@@ -4170,7 +4170,7 @@ mod tests {
             let (mut app, mut doc, root) = sample_app();
             let before = app.captures[0].id.clone();
             app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
-            app.sync_record(&mut doc, &root);
+            app.sync_resource(&mut doc, &root);
             assert_eq!(app.captures.len(), 1);
             assert_ne!(app.captures[0].id, before);
             assert!(
@@ -4210,7 +4210,7 @@ mod tests {
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
             tilo_test_env::wait_until("a JPEG to land on disk", || {
-                app.sync_record(&mut doc, &root);
+                app.sync_resource(&mut doc, &root);
                 std::fs::read_dir(&dir).is_ok_and(|entries| {
                     entries.flatten().any(|e| {
                         e.path().extension().is_some_and(|x| x == "jpg")
@@ -4301,7 +4301,7 @@ mod tests {
             app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(app.is_recording());
             for _ in 0..6 {
-                app.sync_record(&mut doc, &root);
+                app.sync_resource(&mut doc, &root);
             }
             assert!(
                 app.frame_gen >= 6,
@@ -4339,7 +4339,7 @@ mod tests {
             let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync_record(&mut doc, &root);
+            app.sync_resource(&mut doc, &root);
             app.apply(
                 Action::SetMode(CaptureMode::Video),
                 &mut Edits::lend(&mut doc),
@@ -4858,7 +4858,7 @@ mod tests {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync_record(&mut doc, &root); // decodes the sample poster → scanned set
+            app.sync_resource(&mut doc, &root); // decodes the sample poster → scanned set
             // Force the scanner to decode by rendering once would need a GPU; the
             // sample scanner frame is produced lazily on draw, so seed a scanned
             // code directly to exercise the action path.
@@ -4899,7 +4899,7 @@ mod tests {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync_record(&mut doc, &root);
+            app.sync_resource(&mut doc, &root);
             app.scanned = Some(ScannedCode {
                 raw: payload.to_string(),
                 kind,

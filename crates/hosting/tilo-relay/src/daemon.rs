@@ -948,8 +948,8 @@ impl Relay {
     /// In-process access to the records of the workspaces this relay hosts,
     /// for a service embedded in the host process.
     #[must_use]
-    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
-        self.sessions.workspace_records()
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.sessions.workspace_documents()
     }
 }
 

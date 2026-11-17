@@ -179,7 +179,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         let idle = app.search_refresh_stats();
         assert_eq!(idle.rebuilds, initial.rebuilds);
         assert_eq!(idle.buffer_reads, initial.buffer_reads);
-        assert_eq!(idle.indexed_records, initial.indexed_records);
+        assert_eq!(idle.indexed_resources, initial.indexed_resources);
         assert!(idle.skipped >= initial.skipped.saturating_add(2));
 
         let node = app.active_file_node().expect("sample buffer");

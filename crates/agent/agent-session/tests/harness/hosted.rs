@@ -155,7 +155,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     }
 }
 
-/// [`serving_records`], with the action service it serves the records with: what the agents the
+/// [`serving_documents`], with the action service it serves the records with: what the agents the
 /// host runs for its workspaces act through.
 pub async fn serving_records_with_actions(
     root: &SigningKey,
@@ -171,7 +171,7 @@ pub async fn serving_records_with_actions(
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    tilo_relay::agents::start_serving_records(
+    tilo_relay::agents::start_serving_documents(
         cfg,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -193,7 +193,7 @@ pub async fn serving_records_with_actions(
 /// their devices, each action run in the record's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
 /// `catalogue`'s.
-pub async fn serving_records(
+pub async fn serving_documents(
     root: &SigningKey,
     host: &Device,
     state: &Path,
@@ -204,7 +204,7 @@ pub async fn serving_records(
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    tilo_relay::agents::start_serving_records(
+    tilo_relay::agents::start_serving_documents(
         cfg,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),

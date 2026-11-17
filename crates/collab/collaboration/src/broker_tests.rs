@@ -209,7 +209,7 @@ pub struct Captures {
     pub terminal_updates: usize,
     pub invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
     pub joined: Vec<(String, Vec<u8>)>,
-    pub joined_record_kinds: Vec<String>,
+    pub joined_resource_types: Vec<String>,
     pub signed_ops: Vec<Vec<u8>>,
     pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
     pub caret_publishes: Vec<(Vec<u8>, u64)>,
@@ -922,8 +922,8 @@ impl FakeHost {
             .joined
             .push((join.channel.clone(), join.identity.clone()));
         captures
-            .joined_record_kinds
-            .push(join.record_kind.clone().unwrap_or_default());
+            .joined_resource_types
+            .push(join.resource_type.clone().unwrap_or_default());
         let held = captures.join_gates.pop_front();
         if held.is_none()
             && let Some(error) = captures.join_refusal.clone()
@@ -1431,9 +1431,9 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
             .unwrap();
         assert!(matches!(
             FRAMING.read_value::<_, Request>(&mut host).unwrap(),
-            Some(Request::GroupKeys { workspace_id, app_id, record_id, known_generation })
+            Some(Request::GroupKeys { workspace_id, app_id, document_id, known_generation })
                 if workspace_id == expected_workspace && app_id == "notes"
-                    && record_id == "page" && known_generation == 3
+                    && document_id == "page" && known_generation == 3
         ));
         FRAMING
             .write_value(
@@ -1447,9 +1447,9 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
             .unwrap();
         assert!(matches!(
             FRAMING.read_value::<_, Request>(&mut host).unwrap(),
-            Some(Request::CollaborationOp { workspace_id, app_id, record_id, unsigned_op })
+            Some(Request::CollaborationOp { workspace_id, app_id, document_id, unsigned_op })
                 if workspace_id == expected_workspace && app_id == "notes"
-                    && record_id == "page" && unsigned_op == b"operation"
+                    && document_id == "page" && unsigned_op == b"operation"
         ));
         FRAMING
             .write_value(&mut host, &Response::Denied("role revoked".into()))
@@ -1670,7 +1670,7 @@ tilo_test_env::scenario! {
             matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
         );
         assert!(
-            matches!(&requests[2], runtime_identity::wire::Request::GroupKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
+            matches!(&requests[2], runtime_identity::wire::Request::GroupKeys { app_id, document_id, .. } if app_id == "so.tilo.notes" && document_id == "note"),
             "a joined route asks for its channel keys before its first edit"
         );
         let op = requests.iter().find(|request| is_op(request)).unwrap();
@@ -1678,12 +1678,12 @@ tilo_test_env::scenario! {
             runtime_identity::wire::Request::CollaborationOp {
                 workspace_id,
                 app_id,
-                record_id,
+                document_id,
                 unsigned_op,
             } => {
                 assert_eq!(workspace_id, &cluster_id.to_string());
                 assert_eq!(app_id, "so.tilo.notes");
-                assert_eq!(record_id, "note");
+                assert_eq!(document_id, "note");
                 let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
                 assert_eq!(
                     op.author,
@@ -2834,7 +2834,7 @@ fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_time
         app_id: "so.tilo.test".into(),
         cluster_id: Uuid::new_v4(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -2916,7 +2916,7 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
         app_id: app_id.into(),
         cluster_id: cluster,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -2991,7 +2991,7 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
         app_id: "so.tilo.test".into(),
         cluster_id: Uuid::new_v4(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -3147,7 +3147,7 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
         app_id: app_id.into(),
         cluster_id: cluster,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -3273,7 +3273,7 @@ fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
         app_id: "so.tilo.test".into(),
         cluster_id: Uuid::new_v4(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -3344,7 +3344,7 @@ fn keyed_endpoint(
         app_id: "so.tilo.test".into(),
         cluster_id: Uuid::new_v4(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -3426,7 +3426,7 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
         app_id: "worker".into(),
         cluster_id: Uuid::new_v4(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();
@@ -3591,9 +3591,9 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace,
         record: Some(
-            collab_types::OwnRecord::new("chat.drafts", [0xad; 32])
+            collab_types::OwnResource::new("chat.drafts", [0xad; 32])
                 .unwrap()
-                .record_id(),
+                .document_id(),
         ),
     };
     manager.join_route(
@@ -5855,7 +5855,7 @@ pub fn notebook_action_catalogue_fixture(
             provider: None,
             app_id: "so.tilo.notes".into(),
             cluster_id: cluster.to_string(),
-            record_id: record.into(),
+            document_id: record.into(),
             live: true,
         })
     };

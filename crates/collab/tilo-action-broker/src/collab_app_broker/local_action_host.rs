@@ -828,7 +828,7 @@ mod tests {
                 provider: provider.into(),
                 app_id: "test-app".into(),
                 workspace: "workspace".into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 browsable: true,
             })
             .collect();

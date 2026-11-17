@@ -707,7 +707,7 @@ impl StatePeer {
 fn encode_document(
     route: &Route,
     entry: &Document,
-    own: Option<&collab_types::OwnRecord>,
+    own: Option<&collab_types::OwnResource>,
 ) -> Result<backend::EncodedDocument, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
@@ -769,7 +769,7 @@ fn length_and_digest(bytes: &[u8]) -> super::StretchDigest {
 fn digest_document(
     route: &Route,
     entry: &Document,
-    own: Option<&collab_types::OwnRecord>,
+    own: Option<&collab_types::OwnResource>,
 ) -> Result<Vec<super::StretchDigest>, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)

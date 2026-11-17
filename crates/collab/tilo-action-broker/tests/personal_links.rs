@@ -194,7 +194,7 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
         .recv_timeout(Duration::from_secs(60))
         .expect("the app here hears the contact their other device added");
     assert_eq!(route.app_id, APP);
-    assert_eq!(route.record_id, RECORD);
+    assert_eq!(route.document_id, RECORD);
     assert_eq!(route.cluster_id, cluster);
     assert_eq!(
         envelope.author.as_bytes(),

@@ -140,7 +140,7 @@ pub(crate) fn restore_reviewed_history(
         )),
     };
     let mut context = tilo_actions::ActionContext::for_resource(
-        review.resource().record_id.as_str(),
+        review.resource().document_id.as_str(),
         "document",
         title,
     )
@@ -155,7 +155,7 @@ pub(crate) fn restore_reviewed_history(
             &current,
             author,
             &review.resource().app_id,
-            file.then_some(&review.resource().record_id),
+            file.then_some(&review.resource().document_id),
         ) {
             return Err(match refusal {
                 RestoreRefusal::App => {
@@ -224,7 +224,7 @@ fn check_restore_authority(
     current: &PermissionContext,
     author: &MemberId,
     app_id: &str,
-    record: Option<&crate::record::DocumentId>,
+    record: Option<&crate::resource::DocumentId>,
 ) -> Result<(), RestoreRefusal> {
     use crate::permissions::{Access, ActionKind, MemberId};
     // The installed solo-workspace person is the runner's existing local-author mapping.
@@ -246,7 +246,7 @@ fn check_restore_authority(
     {
         return Err(RestoreRefusal::App);
     }
-    if let Some(path) = record.and_then(crate::record::DocumentId::file_path)
+    if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
         && !current.check(&crate::permissions::PermissionScope::path(
             path.to_string_lossy().into_owned(),
             Access::Write,
@@ -283,14 +283,14 @@ pub(crate) fn describe_history(
         .committed_heads(&state.doc)
         .map_err(|_| OwnedRestoreError::Denied)?;
     let context =
-        tilo_actions::ActionContext::for_resource(resource.record_id.as_str(), "document", title)
+        tilo_actions::ActionContext::for_resource(resource.document_id.as_str(), "document", title)
             .with_app(&resource.app_id, title);
     let apply = |authority: &PermissionContext, author: &MemberId, state: &mut State| {
         check_restore_authority(
             &authority.clone().at_unix_time(now),
             author,
             &resource.app_id,
-            file.then_some(&resource.record_id),
+            file.then_some(&resource.document_id),
         )
         .map_err(|_| OwnedRestoreError::Denied)?;
         let admitted = ConfirmedRestore {

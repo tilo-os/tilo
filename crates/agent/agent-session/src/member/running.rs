@@ -86,7 +86,7 @@ pub(super) struct Running {
     /// offered, whatever the rest of the task calls them.
     pub(super) touched: Vec<DocumentRoute>,
     /// The records its steps opened new, oldest first: where an import
-    /// naming no record goes ([`Running::record_for`]).
+    /// naming no record goes ([`Running::document_for`]).
     pub(super) made: Vec<DocumentRoute>,
     /// How many of its performed steps did something (not only opened a
     /// record).
@@ -321,7 +321,7 @@ impl Running {
     /// latest of their app the task made, else the latest it acted on, else
     /// one open, written ones first; never one `foreign` says is another
     /// member's written document. `None` opens a new record.
-    pub(super) fn record_for<'a>(
+    pub(super) fn document_for<'a>(
         &self,
         step: &Step,
         open: impl IntoIterator<Item = &'a DocumentRoute>,
@@ -435,11 +435,11 @@ impl Running {
             let Some(edited) = self.edited_at.get(&step.app) else {
                 continue;
             };
-            let same_record = |other: &Step| other.app == step.app && other.record == step.record;
+            let same_document = |other: &Step| other.app == step.app && other.record == step.record;
             let newer_ran = self
                 .exports
                 .iter()
-                .any(|(later, other)| later > at && same_record(other));
+                .any(|(later, other)| later > at && same_document(other));
             if edited > at && !newer_ran {
                 stale.push(step.clone());
             }

@@ -126,7 +126,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             Some(Envelope::Ready {
                 workspace_id: COEDIT_WORKSPACE,
                 pending_deltas: 1,
-                records_when_opened: false,
+                documents_when_opened: false,
             })
         ));
     }
@@ -288,7 +288,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 Envelope::Ready {
                     workspace_id: SECOND_WORKSPACE,
                     pending_deltas: 0,
-                    records_when_opened: false,
+                    documents_when_opened: false,
                 } => {}
                 other => panic!("expected Ready(42, 0), got {other:?}"),
             }
@@ -371,7 +371,7 @@ async fn wait_for_ready_with_pending(
             Ok(Some(Envelope::Ready {
                 workspace_id: WORKSPACE,
                 pending_deltas,
-                records_when_opened: false,
+                documents_when_opened: false,
             })) => {
                 assert!(pending_deltas >= 1);
                 break;

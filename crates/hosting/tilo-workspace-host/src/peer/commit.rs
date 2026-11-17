@@ -3,7 +3,7 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_record,
+    desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_document,
     unix_now_ns, unpublished,
 };
 use crate::member_limits::Standing;
@@ -339,7 +339,7 @@ impl AdmittedCommit {
         }
         drop(admitting);
         // The author holds what it committed; a resume never replays it to it.
-        if let Some(position) = resume_record(session, workspace_id, [&authored]) {
+        if let Some(position) = resume_document(session, workspace_id, [&authored]) {
             let _ = session.outbound.try_send(position);
         }
         let seq = remember_commit(

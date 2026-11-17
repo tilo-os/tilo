@@ -15,7 +15,7 @@
 
 use serde_json::{Map, Value as Json};
 
-use crate::link::{Link, RecordSegment};
+use crate::link::{Link, ResourceSegment};
 use crate::{ResourceAt, ResourceRef};
 
 /// The mark a reference's run carries, valued with what it refers to ([`Embed::mark_value`]).
@@ -211,8 +211,8 @@ fn resource_of_link(value: &str) -> Option<ResourceAt> {
     Some(ResourceAt {
         app: app.as_str().to_owned(),
         record: match target.record {
-            Some(RecordSegment::Id(id)) => Some(id),
-            Some(RecordSegment::Primary) | None => None,
+            Some(ResourceSegment::Id(id)) => Some(id),
+            Some(ResourceSegment::Primary) | None => None,
         },
         reference: resource.into_ref(String::new()),
     })
@@ -320,12 +320,12 @@ mod tests {
                 "chat.channel:general"
             ))
         );
-        let in_record = Embed::of_mark("tilo://open#/me/so.tilo.notes/note:plan/notes.block/b7")
+        let in_resource = Embed::of_mark("tilo://open#/me/so.tilo.notes/note:plan/notes.block/b7")
             .and_then(|e| e.as_resource().cloned())
             .expect("a resource");
-        assert_eq!(in_record.record.as_deref(), Some("note:plan"));
-        assert_eq!(in_record.reference.kind, "notes.block");
-        assert_eq!(in_record.reference.id, "b7");
+        assert_eq!(in_resource.record.as_deref(), Some("note:plan"));
+        assert_eq!(in_resource.reference.kind, "notes.block");
+        assert_eq!(in_resource.reference.id, "b7");
         // A link that names no item, and malformed references, refer to nothing.
         assert_eq!(Embed::of_mark("tilo://open#/me/so.tilo.notes"), None);
         assert_eq!(Embed::of_mark("tl:nothing"), None);

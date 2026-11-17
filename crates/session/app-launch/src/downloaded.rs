@@ -529,7 +529,7 @@ impl Core {
             return false;
         };
         let moved = record
-            .and_then(workspace_record)
+            .and_then(workspace_resource)
             .filter(|path| std::fs::metadata(path).is_ok_and(|meta| meta.is_file()));
         let changed = match moved {
             Some(path) => store.locate(desktop_id, &path, &locales()).is_ok(),
@@ -937,7 +937,7 @@ fn copies(downloaded: &DownloadedProgram) -> Vec<String> {
 
 /// Where the file with record id `record` is now, under the workspace mounts
 /// this device has: the mount's exact record index, one bounded read.
-fn workspace_record(record: [u8; 16]) -> Option<PathBuf> {
+fn workspace_resource(record: [u8; 16]) -> Option<PathBuf> {
     let id = uuid::Uuid::from_bytes(record);
     for root in workspace_roots() {
         let name = format!(
@@ -950,11 +950,11 @@ fn workspace_record(record: [u8; 16]) -> Option<PathBuf> {
         if bytes.len() > fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES {
             continue;
         }
-        let Ok(exact) = fs_protocol::projection::RecordIndexExactV2::from_json(&bytes) else {
+        let Ok(exact) = fs_protocol::projection::DocumentIndexExactV2::from_json(&bytes) else {
             continue;
         };
         if exact.schema_version != fs_protocol::projection::RECORD_INDEX_V2_VERSION
-            || !fs_protocol::projection::valid_record_index_revision(&exact.revision)
+            || !fs_protocol::projection::valid_document_index_revision(&exact.revision)
             || exact.record.document_id.0 != id
             || exact.record.is_dir
         {

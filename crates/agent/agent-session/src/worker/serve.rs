@@ -14,11 +14,11 @@ use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::collaboration::record_content::{ContentLane, RecordContent};
+use ui::collaboration::document_content::{ContentLane, DocumentContent};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
-use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
 
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
@@ -182,7 +182,7 @@ impl WorkerContent {
         // resolves in it.
         let local = ContentStore::memory().for_one_workspace();
         let lane = Arc::new(ContentLane::default());
-        let store = RecordContent::store(local.clone(), Arc::clone(&lane));
+        let store = DocumentContent::store(local.clone(), Arc::clone(&lane));
         Self { local, lane, store }
     }
 
@@ -341,7 +341,7 @@ impl Worker {
                 record,
                 snapshot,
                 bytes,
-            } => record_change(&record, mutation(snapshot, bytes), |record, change| {
+            } => document_change(&record, mutation(snapshot, bytes), |record, change| {
                 changed_keys(replica.changed_keys(record, &change))
             }),
             Request::Resolve { address } => match decode(&address) {
@@ -382,14 +382,14 @@ impl Worker {
             Request::Apply { snapshot, bytes } => {
                 applied(replica.apply(&mutation(snapshot, bytes)))
             }
-            Request::ApplyRecord {
+            Request::ApplyDocument {
                 record,
                 snapshot,
                 bytes,
-            } => record_change(&record, mutation(snapshot, bytes), |record, change| {
-                applied(replica.apply_record(record, &change))
+            } => document_change(&record, mutation(snapshot, bytes), |record, change| {
+                applied(replica.apply_document(record, &change))
             }),
-            Request::TakeRecordMutations => taken_record_mutations(replica),
+            Request::TakeDocumentMutations => taken_document_mutations(replica),
             request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
                 workspace_reply(replica, request)
             }
@@ -416,7 +416,7 @@ impl Worker {
         }
         let seed = match seed {
             None => Seed::New,
-            Some((record, changes)) => match parse_record(&record) {
+            Some((record, changes)) => match parse_document(&record) {
                 Some(record) if changes.is_empty() => Seed::NewAt(record),
                 Some(record) => Seed::Existing { record, changes },
                 None => return Reply::Failed("invalid record id".into()),
@@ -432,7 +432,7 @@ impl Worker {
             Some(self.content.store.clone()),
         ) {
             Ok(replica) => {
-                let record = replica.record_id().as_str().to_owned();
+                let record = replica.document_id().as_str().to_owned();
                 self.replica = Some(replica);
                 Reply::Opened { record }
             }
@@ -471,7 +471,7 @@ impl Worker {
         if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
             return Reply::Failed(error.to_string());
         }
-        let entries = ui::framework::record_index::hosted_entries(app_id, &doc);
+        let entries = ui::framework::resource_index::hosted_entries(app_id, &doc);
         match serde_json::to_string(&entries) {
             Ok(entries) => Reply::Entries(entries),
             Err(error) => Reply::Failed(error.to_string()),
@@ -514,7 +514,7 @@ impl Worker {
         let Some(text_renderer) = self.text.take() else {
             return Reply::Failed("this slot mounts one component".into());
         };
-        let (Some(record), Ok(policy)) = (parse_record(record), decode(policy)) else {
+        let (Some(record), Ok(policy)) = (parse_document(record), decode(policy)) else {
             return Reply::Failed("invalid read request".into());
         };
         let source = ReadSource {
@@ -577,12 +577,12 @@ fn wire_mutation(mutation: DocumentMutation) -> (bool, Vec<u8>) {
 
 /// What the record `wire` names answers about `change`, or the reply that says
 /// `wire` names no record.
-fn record_change(
+fn document_change(
     wire: &str,
     change: DocumentMutation,
     asked: impl FnOnce(&DocumentId, DocumentMutation) -> Reply,
 ) -> Reply {
-    match parse_record(wire) {
+    match parse_document(wire) {
         Some(record) => asked(&record, change),
         None => Reply::Failed(format!("{wire} is not a record id")),
     }
@@ -619,12 +619,12 @@ fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
         }
         Request::Wanted => Reply::Wanted(
             replica
-                .wanted_records()
+                .wanted_resources()
                 .into_iter()
                 .map(|record| record.as_str().to_owned())
                 .collect(),
         ),
-        Request::Answered { record, answer } => match parse_record(&record) {
+        Request::Answered { record, answer } => match parse_document(&record) {
             Some(record) => {
                 replica.workspace_answered(record, answer);
                 Reply::Done
@@ -636,7 +636,7 @@ fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
 }
 
 /// A record id as [`DocumentId::as_str`] spells it.
-pub(super) fn parse_record(text: &str) -> Option<DocumentId> {
+pub(super) fn parse_document(text: &str) -> Option<DocumentId> {
     let primary = DocumentId::package_primary();
     if text == primary.as_str() {
         Some(primary)
@@ -711,8 +711,8 @@ impl ReadSession {
         text_renderer: ui::TextRenderer,
     ) -> Result<Self, String> {
         let definition = catalogue.get(source.app_id).ok_or("unknown source app")?;
-        let checkout = DocumentCheckout::new(source.record, definition.record_kind.clone());
-        if definition.keeps_workspace_record() != checkout.id.is_package_primary() {
+        let checkout = DocumentCheckout::new(source.record, definition.resource_type.clone());
+        if definition.keeps_workspace_resource() != checkout.id.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
         // Hydrate existing history; a new-record initializer must never
@@ -735,7 +735,7 @@ impl ReadSession {
             source.bytes,
             Some(automerge::ActorId::random().to_bytes().to_vec()),
         )?;
-        let records = RecordOwners::portable(cache.clone())
+        let records = ResourceOwners::portable(cache.clone())
             .open(definition.app_id(), source.workspace)
             .map_err(|error| error.to_string())?;
         let views = Rc::new(
@@ -833,9 +833,9 @@ fn taken_mutation(replica: &mut crate::Replica) -> Reply {
 }
 
 /// [`taken_mutation`], for the records held beside the replica's own.
-fn taken_record_mutations(replica: &mut crate::Replica) -> Reply {
-    match replica.take_record_mutations() {
-        Ok(taken) => Reply::RecordMutations(
+fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
+    match replica.take_document_mutations() {
+        Ok(taken) => Reply::DocumentMutations(
             taken
                 .into_iter()
                 .map(|(record, mutation)| {

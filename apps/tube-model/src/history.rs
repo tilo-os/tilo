@@ -1,5 +1,5 @@
 //! Watch history: the videos the person watched, newest first, in a record beside the
-//! library ([`RecordEnv::person`](ui::framework::RecordEnv::person)), kept in the workspace
+//! library ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), kept in the workspace
 //! Tube is open in and synced with it; the library never holds it.
 
 use std::collections::BTreeMap;

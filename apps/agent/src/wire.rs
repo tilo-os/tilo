@@ -15,7 +15,7 @@ use ui::collaboration::{
     DocumentPublicationError, RouteSpec,
 };
 use ui::lock::MutexRecover as _;
-use ui::record::ResourceType;
+use ui::resource::ResourceType;
 
 /// One connection to the broker.
 pub struct Link {

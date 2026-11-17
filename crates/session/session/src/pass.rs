@@ -25,7 +25,7 @@ fn secret_of(
     app: &str,
 ) -> Option<tilo_seal::SymmetricKey> {
     match engine.seal_keys(workspace) {
-        Ok(crate::engine::SealKeys::Here(keys)) => keys.record_content_secret().ok(),
+        Ok(crate::engine::SealKeys::Here(keys)) => keys.document_content_secret().ok(),
         Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
         Err(error) => {
             // A session that takes no part in the collaboration plane keeps no channel of its

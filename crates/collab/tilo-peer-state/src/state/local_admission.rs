@@ -146,8 +146,11 @@ impl StatePeer {
                 if document.is_some() {
                     return Err("the record exists already".into());
                 }
-                if !self.may_create_record(&self.membership(*author.as_bytes(), now)?, &route, now)
-                {
+                if !self.may_create_document(
+                    &self.membership(*author.as_bytes(), now)?,
+                    &route,
+                    now,
+                ) {
                     return Err("the workspace does not let this device create the record".into());
                 }
             }
@@ -182,13 +185,13 @@ impl StatePeer {
             })
             .map(|claims| {
                 self.surfaces.with_footprints(
-                    &collab_types::Record {
+                    &collab_types::WrittenDocument {
                         workspace: &self.core.workspace,
                         app,
-                        record,
+                        document: record,
                     },
                     document
-                        .and_then(|held| super::record_kind(&*held.doc))
+                        .and_then(|held| super::resource_type(&*held.doc))
                         .as_deref(),
                     surface.as_ref(),
                     claims,
@@ -409,7 +412,7 @@ mod tests {
         // No surface this process has is the one the write names.
         crate::decide_with_surfaces(
             Surfaces::from_source(std::sync::Arc::new(ContentSurfaces::new(
-                |_: &collab_types::Record<'_>, _: &str| -> Option<Vec<u8>> { None },
+                |_: &collab_types::WrittenDocument<'_>, _: &str| -> Option<Vec<u8>> { None },
             ))),
             |_| None,
         );

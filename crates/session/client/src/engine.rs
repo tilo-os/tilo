@@ -40,7 +40,7 @@ use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_peer_state::owner::{DocumentRead, History, Holding};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
-use tilo_peer_state::{KeptRecord, Member};
+use tilo_peer_state::{KeptDocument, Member};
 use tilo_user_identity::RevocationList;
 use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
@@ -250,7 +250,7 @@ struct NamedHosts {
 
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
 /// opened each.
-type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptRecord)>;
+type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
@@ -271,7 +271,7 @@ type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
 /// Opens one sealed write of a record into its plaintext.
 type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
-/// How many sealed records [`Engine::read_record`] keeps opened between reads.
+/// How many sealed records [`Engine::read_resource`] keeps opened between reads.
 const KEPT_RECORDS: usize = 64;
 
 /// How much of the workspaces' sealed history this device keeps to hand their other devices: every
@@ -288,7 +288,7 @@ type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
 /// in custody. The session that writes them keeps them here, and its readers read them over the
-/// replica ([`Engine::read_record`]); nobody else sees them until they land.
+/// replica ([`Engine::read_resource`]); nobody else sees them until they land.
 #[derive(Clone, Default)]
 pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
 
@@ -299,8 +299,8 @@ impl HeldWrites {
     }
 }
 
-/// What a read of one of a workspace's records found ([`Engine::read_record`]).
-pub enum RecordReading {
+/// What a read of one of a workspace's records found ([`Engine::read_resource`]).
+pub enum ResourceReading {
     /// The record as the workspace holds it, sealed writes opened with the record's channel keys.
     Captured {
         /// Names exactly these heads: equal revisions are equal documents.
@@ -586,7 +586,7 @@ impl Engine {
 
     /// What `workspace` holds of `app`'s `record` for a reader that merged it last at the sorted
     /// `heads` an earlier read handed out, or holds nothing of it: only the changes since those
-    /// heads where the record holds them ([`RecordReading::Changes`]), the record whole where it
+    /// heads where the record holds them ([`ResourceReading::Changes`]), the record whole where it
     /// does not, so a reader that follows a record merges what changed rather than all of it.
     /// # Errors
     /// As [`Self::record`].
@@ -596,9 +596,9 @@ impl Engine {
         app: &str,
         record: &str,
         heads: Option<&[[u8; 32]]>,
-    ) -> Result<RecordReading, String> {
+    ) -> Result<ResourceReading, String> {
         let heads = heads.unwrap_or_default();
-        self.read_record(
+        self.read_resource(
             workspace,
             (app, record),
             Holding {
@@ -623,7 +623,7 @@ impl Engine {
         known: Option<[u8; 32]>,
     ) -> Result<SavedRecord, String> {
         Ok(
-            match self.read_record(
+            match self.read_resource(
                 workspace,
                 (app, record),
                 Holding {
@@ -632,12 +632,12 @@ impl Engine {
                 },
                 MAX_DOCUMENT_BYTES,
             )? {
-                RecordReading::Captured {
+                ResourceReading::Captured {
                     revision, bytes, ..
                 } => Some((bytes, revision)),
-                RecordReading::Changes { .. }
-                | RecordReading::Unchanged(_)
-                | RecordReading::Pending => None,
+                ResourceReading::Changes { .. }
+                | ResourceReading::Unchanged(_)
+                | ResourceReading::Pending => None,
             },
         )
     }
@@ -649,13 +649,13 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, this device may not read the record, the record is sealed
     /// and this device holds no keys of it, or the document cannot be read.
-    pub fn read_record(
+    pub fn read_resource(
         &self,
         workspace: &str,
         (app, record): (&str, &str),
         holding: Holding<'_>,
         maximum: usize,
-    ) -> Result<RecordReading, String> {
+    ) -> Result<ResourceReading, String> {
         let Some(held) = self.own_writes(workspace, app, record) else {
             return self.read_replica(workspace, (app, record), holding, maximum);
         };
@@ -666,7 +666,7 @@ impl Engine {
         }
         // This device's own writes the replica has not taken in yet read over what it holds.
         let base = match self.read_replica(workspace, (app, record), Holding::default(), maximum) {
-            Ok(RecordReading::Captured { bytes, .. }) => Some(bytes),
+            Ok(ResourceReading::Captured { bytes, .. }) => Some(bytes),
             _ => None,
         };
         let author = self.identity.device_cert.device_public_key;
@@ -676,16 +676,16 @@ impl Engine {
             revision,
         } = tilo_peer_state::document_frame::with_own_writes(base.as_deref(), author, &held)?;
         if holding.revision == Some(revision) {
-            return Ok(RecordReading::Unchanged(revision));
+            return Ok(ResourceReading::Unchanged(revision));
         }
-        Ok(RecordReading::Captured {
+        Ok(ResourceReading::Captured {
             revision,
             heads,
             bytes,
         })
     }
 
-    /// [`Self::read_record`] of a record this device wrote to and its replica has not taken in yet
+    /// [`Self::read_resource`] of a record this device wrote to and its replica has not taken in yet
     /// (`held`), for a reader `holding` heads of an earlier read: what the replica changed since what
     /// the reader holds of it, then those of the writes the reader lacks, so a record that
     /// changes while this device's writes wait is never read whole. `None` where only a whole read
@@ -698,7 +698,7 @@ impl Engine {
         holding: Holding<'_>,
         maximum: usize,
         held: &[Vec<u8>],
-    ) -> Result<Option<RecordReading>, String> {
+    ) -> Result<Option<ResourceReading>, String> {
         if holding.heads.is_empty() {
             return Ok(None);
         }
@@ -718,9 +718,9 @@ impl Engine {
                 maximum,
             );
             match replica {
-                Ok(RecordReading::Changes { bytes, heads, .. }) => Some((bytes, heads)),
-                Ok(RecordReading::Unchanged(_)) => Some((Vec::new(), base.to_vec())),
-                Ok(RecordReading::Captured { .. } | RecordReading::Pending) => None,
+                Ok(ResourceReading::Changes { bytes, heads, .. }) => Some((bytes, heads)),
+                Ok(ResourceReading::Unchanged(_)) => Some((Vec::new(), base.to_vec())),
+                Ok(ResourceReading::Captured { .. } | ResourceReading::Pending) => None,
                 Err(error) => {
                     failed = Some(error);
                     None
@@ -735,9 +735,9 @@ impl Engine {
         };
         let revision = tilo_peer_state::owner::revision_of_heads(&heads);
         if bytes.is_empty() && heads.as_slice() == holding.heads {
-            return Ok(Some(RecordReading::Unchanged(revision)));
+            return Ok(Some(ResourceReading::Unchanged(revision)));
         }
-        Ok(Some(RecordReading::Changes {
+        Ok(Some(ResourceReading::Changes {
             revision,
             heads,
             bytes,
@@ -745,13 +745,13 @@ impl Engine {
     }
 
     /// The revision `workspace`'s `app`'s `record` stands at for the reader this device is,
-    /// decided as [`Self::read_record`] decides it but reading nothing out: `None` while the
+    /// decided as [`Self::read_resource`] decides it but reading nothing out: `None` while the
     /// record is not here yet, or only a read decides it (this device's own writes the replica
     /// has not taken in yet).
     ///
     /// # Errors
-    /// As [`Self::read_record`].
-    pub fn record_revision(
+    /// As [`Self::read_resource`].
+    pub fn document_revision(
         &self,
         workspace: &str,
         app: &str,
@@ -810,12 +810,12 @@ impl Engine {
         route: (&str, &str),
         holding: Holding<'_>,
         maximum: usize,
-    ) -> Result<RecordReading, String> {
+    ) -> Result<ResourceReading, String> {
         Ok(self
             .opened(workspace, route, &mut |workspace, open, kept| {
                 self.read_in(workspace, route, holding, maximum, History { open, kept })
             })?
-            .unwrap_or(RecordReading::Pending))
+            .unwrap_or(ResourceReading::Pending))
     }
 
     /// `read` of the record of `workspace` at `route`, with how its sealed writes open — the
@@ -825,13 +825,13 @@ impl Engine {
         &self,
         workspace: &str,
         (app, record): (&str, &str),
-        read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptRecord) -> Result<T, String>,
+        read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptDocument) -> Result<T, String>,
     ) -> Result<Option<T>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let own = self.identity.device_cert.device_public_key;
         let (sealed, admission) = self.owner.with_current(workspace, |view| {
             Ok((
-                view.peer().publication().is_sealed_record(app, record),
+                view.peer().publication().is_sealed_document(app, record),
                 Admission::of(view, own),
             ))
         })?;
@@ -924,7 +924,7 @@ impl Engine {
         }
     }
 
-    /// [`Self::read_record`] under keys the caller holds itself rather than this device's channel
+    /// [`Self::read_resource`] under keys the caller holds itself rather than this device's channel
     /// service: what a caller that sealed a record's writes reads them back with. Nothing of it
     /// is kept: what these keys open is the caller's alone.
     fn read_in(
@@ -934,7 +934,7 @@ impl Engine {
         holding: Holding<'_>,
         maximum: usize,
         history: History<'_>,
-    ) -> Result<RecordReading, String> {
+    ) -> Result<ResourceReading, String> {
         let own = self.identity.device_cert.device_public_key;
         self.owner
             .with_current(workspace, |view| {
@@ -948,33 +948,33 @@ impl Engine {
                 )
             })
             .map(|read| match read {
-                DocumentRead::Captured(document) => RecordReading::Captured {
+                DocumentRead::Captured(document) => ResourceReading::Captured {
                     revision: document.revision,
                     heads: document.heads,
                     bytes: document.bytes,
                 },
-                DocumentRead::Changes(changes) => RecordReading::Changes {
+                DocumentRead::Changes(changes) => ResourceReading::Changes {
                     revision: changes.revision,
                     heads: changes.heads,
                     bytes: changes.bytes,
                 },
-                DocumentRead::Unchanged(revision) => RecordReading::Unchanged(revision),
-                DocumentRead::CheckpointPending => RecordReading::Pending,
+                DocumentRead::Unchanged(revision) => ResourceReading::Unchanged(revision),
+                DocumentRead::CheckpointPending => ResourceReading::Pending,
             })
     }
 
     /// The member's own record `app`'s `record` in `workspace` is, as the writes of it this
     /// device holds name it.
     #[must_use]
-    pub fn own_record(
+    pub fn own_resource(
         &self,
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Option<collab_types::OwnRecord> {
+    ) -> Option<collab_types::OwnResource> {
         let workspace = WorkspaceId::parse(workspace)?;
         self.owner
-            .with_current(workspace, |view| Ok(view.peer().own_record(app, record)))
+            .with_current(workspace, |view| Ok(view.peer().own_resource(app, record)))
             .ok()
             .flatten()
     }
@@ -982,7 +982,7 @@ impl Engine {
     /// Whether `workspace` holds `app`'s `record` here now: what a read of it opens, or a record
     /// this device holds nothing of that may still be on its way.
     #[must_use]
-    pub fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+    pub fn holds_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
             self.owner.with_current(workspace, |view| {
                 Ok(view.peer().document(app, record).is_some())
@@ -993,7 +993,7 @@ impl Engine {
     /// Whether `workspace`'s host finished replaying to this device what it retains: every record
     /// comes with it, so one that is not here then is one the workspace has none of — unless the
     /// host sends records only when they are opened
-    /// ([`Self::records_when_opened`]).
+    /// ([`Self::documents_when_opened`]).
     #[must_use]
     pub fn host_replayed(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -1007,24 +1007,24 @@ impl Engine {
 
     /// Whether `workspace`'s host sends this device only the workspace's governance, its shared
     /// desktop and the heads of its chained records, and every other record once this device opens
-    /// it ([`Self::open_record`]): a record that is not here is not new until the host answered it
-    /// holds none of it ([`Self::record_answer`]).
+    /// it ([`Self::open_resource`]): a record that is not here is not new until the host answered it
+    /// holds none of it ([`Self::resource_answer`]).
     #[must_use]
-    pub fn records_when_opened(&self, workspace: &str) -> bool {
+    pub fn documents_when_opened(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return false;
         };
         self.link
             .lock_recover()
             .as_ref()
-            .is_some_and(|link| link.records_when_opened(workspace))
+            .is_some_and(|link| link.documents_when_opened(workspace))
     }
 
     /// Ask `workspace`'s hosts for `app`'s `record`
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
     /// then on. Asked once per record while the plane runs; `false` when there is no plane to ask
     /// on, so nothing was asked.
-    pub fn open_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+    pub fn open_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return false;
         };
@@ -1036,7 +1036,7 @@ impl Engine {
             record,
             self.identity.device_cert.user_public_key,
         );
-        link.open_record(
+        link.open_resource(
             workspace,
             neighbour_wire::app_document_channel(app, record),
             own,
@@ -1044,21 +1044,21 @@ impl Engine {
     }
 
     /// What `workspace`'s host answered about `app`'s `record`: `None` while the answer to
-    /// [`Self::open_record`] is owed; once it came, the frames it sent — none when the workspace
+    /// [`Self::open_resource`] is owed; once it came, the frames it sent — none when the workspace
     /// has none of the record, which is then new here — or that it is another person's own.
     #[must_use]
-    pub fn record_answer(
+    pub fn resource_answer(
         &self,
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Option<tilo_relay_protocol::RecordAnswer> {
+    ) -> Option<tilo_relay_protocol::DocumentAnswer> {
         let workspace = WorkspaceId::parse(workspace)?;
         let channel = neighbour_wire::app_document_channel(app, record);
         self.link
             .lock_recover()
             .as_ref()?
-            .record_answer(workspace, &channel)
+            .resource_answer(workspace, &channel)
     }
 
     /// What ticks whenever a host answered for a record this device opened; `None` with no plane.
@@ -1172,7 +1172,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, a founding write finds the record held already, or the
     /// workspace refused the write.
-    pub async fn write_record(
+    pub async fn write_resource(
         &self,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
@@ -1249,7 +1249,7 @@ impl Engine {
             peer: neighbour_wire::peer_handle(&device),
             app_id: app.to_owned(),
             cluster_id: workspace.to_string(),
-            record_id: record.to_owned(),
+            document_id: record.to_owned(),
             author: author.ok_or("the write was not made")?,
             replayed: false,
             envelope: *envelope,
@@ -2466,7 +2466,7 @@ mod tests {
             let engine = engine(state.path(), laptop);
             pollster::block_on(engine.found(workspace, "Office", Some(&at)));
             engine.hand_keys(workspace, keys.clone());
-            pollster::block_on(engine.write_record(
+            pollster::block_on(engine.write_resource(
                 workspace,
                 ("so.tilo.notes", "note"),
                 &written,
@@ -2502,7 +2502,7 @@ mod tests {
         );
         automerge::transaction::Transactable::put(&mut note, automerge::ROOT, "title", "Changed")
             .expect("a change");
-        let refused = pollster::block_on(copy.write_record(
+        let refused = pollster::block_on(copy.write_resource(
             workspace,
             ("so.tilo.notes", "note"),
             &note.save_incremental(),

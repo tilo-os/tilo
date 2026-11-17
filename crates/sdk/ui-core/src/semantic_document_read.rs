@@ -297,9 +297,9 @@ impl SelectedSemanticRead<'_> {
                 scope
                     .check_read_loan(document)
                     .map_err(|_| SemanticReadError::InvalidOwner)?;
-                crate::invocation_scope::RecordStamp::from(scope.route())
+                crate::invocation_scope::ResourceStamp::from(scope.route())
             }
-            None => crate::invocation_scope::identified_record(document)
+            None => crate::invocation_scope::identified_resource(document)
                 .ok_or(SemanticReadError::MissingQualifiedOwner)?,
         };
         if document.pending_ops() != 0 {
@@ -314,7 +314,7 @@ impl SelectedSemanticRead<'_> {
             "record": {
                 "workspaceId": record.workspace.map(|workspace| workspace.to_string()),
                 "appId": record.app_id,
-                "recordId": record.record_id,
+                "recordId": record.document_id,
             },
             "basis": { "heads": hex },
             "content": page.content,

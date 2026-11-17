@@ -376,3 +376,28 @@ reason = "the account-slot variants are renamed at the same indexes; the request
 file = "crates/lang/tilolang/src/meta.rs"
 enum = "TriggerArgMeta"
 reason = "it is part of a compiled package's metadata, which the compiler writes from the package's sources on every build; no stored record or other version keeps it"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "RemoteActionMessage"
+reason = "renames RecordRead and RecordReading to ResourceRead and ResourceReading in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/automation/src/shortcut.rs"
+enum = "TriggerSpec"
+reason = "renames RecordChanged to ResourceChanged in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/collab-types/src/caps.rs"
+enum = "Scope"
+reason = "renames FsRecord to FsResource in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "ContextUpdate"
+reason = "renames RecordsArrived to ResourcesArrived in place: the runtime interface version is bumped with it"
+
+[[break]]
+file = "crates/session/network-actor/src/lib.rs"
+enum = "PersonalFabricPayload"
+reason = "renames the RecordContent variants to DocumentContent in place: devices of one person speak one build's format"

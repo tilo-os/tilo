@@ -65,7 +65,7 @@ tilo_test_env::scenario! {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: Some("grace".to_owned()),
         }));
         let (ours, theirs) = Channel::pair().unwrap();

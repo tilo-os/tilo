@@ -134,7 +134,7 @@ fn page(
 ) -> String {
     // The workspace's own record (Chat's) is not mounted from a copy: its
     // document is what the browser holds.
-    let Some(record) = ui::record::DocumentId::parse(&route.record) else {
+    let Some(record) = ui::resource::DocumentId::parse(&route.record) else {
         use tilo_automerge::ApplyIncoming as _;
         let mut doc = automerge::AutoCommit::new();
         for change in changes {
@@ -344,9 +344,9 @@ async fn every_web_app_over_the_session() {
 
     // A task in plain words, planned by the model planner: a verb with a
     // text parameter the planner fills from the words.
-    let record_of = |app: &str| {
+    let resource_of = |app: &str| {
         agent
-            .known_records()
+            .known_resources()
             .into_iter()
             .chain(
                 browser
@@ -363,8 +363,8 @@ async fn every_web_app_over_the_session() {
             .find(|route| route.app_id == app)
             .unwrap()
     };
-    let scratchpad = record_of("so.tilo.scratchpad");
-    let notes = record_of("so.tilo.notes");
+    let scratchpad = resource_of("so.tilo.scratchpad");
+    let notes = resource_of("so.tilo.notes");
     control
         .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
@@ -576,7 +576,7 @@ async fn every_web_app_over_the_session() {
     browser.close();
     let retained = host
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace())
         .await
         .unwrap();
@@ -1778,9 +1778,9 @@ fn chat_parts_text(agent: &AgentMember, route: &DocumentRoute) -> String {
     let Some(chat) = agent.app(route) else {
         return String::new();
     };
-    chat.records_beside()
+    chat.resources_beside()
         .iter()
-        .filter_map(|part| chat.read_record(part, tilo_agent_session::search::plain_text))
+        .filter_map(|part| chat.read_resource(part, tilo_agent_session::search::plain_text))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1990,7 +1990,7 @@ fn post_in_chat(poster: &mut AgentMember, control: &AgentControl, text: &str) {
 
 /// The plain text of the chat record `agent` holds at `route` (its roster,
 /// its channels), without its messages.
-fn chat_record_text(agent: &AgentMember, route: &DocumentRoute) -> String {
+fn chat_document_text(agent: &AgentMember, route: &DocumentRoute) -> String {
     agent
         .app(route)
         .and_then(|chat| chat.read(tilo_agent_session::search::plain_text))
@@ -2109,7 +2109,7 @@ impl RelayWorkspace {
             let seen = workspace
                 .ana
                 .0
-                .known_records()
+                .known_resources()
                 .iter()
                 .any(|route| route.app_id == CHAT);
             async move { seen.then_some(()) }
@@ -2133,7 +2133,7 @@ impl RelayWorkspace {
         wait_for("Ben to see the chat", || {
             self.ben.0.pump();
             self.rae.0.pump();
-            let seen = self.ben.0.known_records().contains(&ours);
+            let seen = self.ben.0.known_resources().contains(&ours);
             async move { seen.then_some(()) }
         })
         .await;
@@ -2150,7 +2150,7 @@ impl RelayWorkspace {
             self.ana.0.pump();
             self.ben.0.pump();
             self.rae.0.pump();
-            let held = chat_record_text(&self.ana.0, &ours).contains("Ben");
+            let held = chat_document_text(&self.ana.0, &ours).contains("Ben");
             async move { held.then_some(()) }
         })
         .await;
@@ -2300,7 +2300,7 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
     wait_for("Ana to hold Ben's new name", || {
         workspace.ana.0.pump();
         workspace.ben.0.pump();
-        let held = chat_record_text(&workspace.ana.0, &ours).contains("Ben Ortiz");
+        let held = chat_document_text(&workspace.ana.0, &ours).contains("Ben Ortiz");
         async move { held.then_some(()) }
     })
     .await;

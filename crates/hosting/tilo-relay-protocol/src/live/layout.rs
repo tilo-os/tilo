@@ -2,14 +2,14 @@
 //! others draw from their own copies of what is shared.
 //!
 //! A layout names each window by its app and a short digest of its live
-//! record ([`super::LiveRecord::short_digest`]), never by title or record
+//! record ([`super::LiveResource::short_digest`]), never by title or record
 //! id: a receiver learns only the app of a window on something not shared
 //! with it, and matches the digest against records it already holds to
 //! show the rest from its own replica. Nothing is streamed.
 
 use serde::{Deserialize, Serialize};
 
-use super::LiveRecord;
+use super::LiveResource;
 
 /// Most windows a layout carries: the focused one and those beside it.
 pub const MAX_LAYOUT_WINDOWS: usize = 8;
@@ -35,7 +35,7 @@ pub struct LiveLayout {
 pub struct LiveWindow {
     /// The app it shows, 1..=[`MAX_LAYOUT_APP_BYTES`] bytes.
     pub app: String,
-    /// [`LiveRecord::short_digest`] of the record it shows.
+    /// [`LiveResource::short_digest`] of the record it shows.
     pub record: [u8; 8],
     /// `x0, y0, x1, y1` in [`LAYOUT_UNITS`] parts of the layout's size.
     pub rect: [u16; 4],
@@ -56,7 +56,7 @@ impl LiveLayout {
     /// the focused one always among them. `None` for an area of no size.
     /// Native shells and browser tabs place their windows by this one rule.
     #[must_use]
-    pub fn place(area: [f64; 4], windows: &[(LiveRecord, [f64; 4], bool)]) -> Option<Self> {
+    pub fn place(area: [f64; 4], windows: &[(LiveResource, [f64; 4], bool)]) -> Option<Self> {
         let [ax0, ay0, ax1, ay1] = area;
         let (width, height) = (ax1 - ax0, ay1 - ay0);
         if !(width >= 1.0 && height >= 1.0) {
@@ -120,7 +120,7 @@ impl LiveLayout {
     }
 }
 
-impl LiveRecord {
+impl LiveResource {
     /// The first 8 bytes of [`Self::digest`]: what a layout names a window's
     /// record by, enough to find it among the records a receiver holds.
     #[must_use]
@@ -179,7 +179,7 @@ mod tests {
                     // Wholly out of view, or of an app the wire cannot carry.
                     (record("r3"), [1100.0, 40.0, 1500.0, 540.0], false),
                     (
-                        LiveRecord {
+                        LiveResource {
                             app: "a".repeat(MAX_LAYOUT_APP_BYTES + 1),
                             record: "r4".into(),
                         },
@@ -225,7 +225,7 @@ mod tests {
 
         phase a_short_digest_is_the_head_of_the_digest;
         {
-            let record = LiveRecord {
+            let record = LiveResource {
                 app: "so.tilo.notes".into(),
                 record: "r1".into(),
             };
@@ -233,8 +233,8 @@ mod tests {
         }
     }
 
-    fn record(name: &str) -> LiveRecord {
-        LiveRecord {
+    fn record(name: &str) -> LiveResource {
+        LiveResource {
             app: "so.tilo.notes".into(),
             record: name.into(),
         }

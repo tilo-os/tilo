@@ -46,12 +46,12 @@ pub trait LocalPersonServices: Send + Sync {
 
 /// The origin of a workspace's records on this device: it applies the change an agent's
 /// invocation was admitted for, running the action against the record as it is then.
-pub trait RecordChangeServices: Send + Sync {
+pub trait DocumentChangeServices: Send + Sync {
     /// Apply `change` in `workspace` as `invoker`'s step: the origin's answer.
     fn apply(
         &self,
         workspace: &str,
-        change: &tilo_actions::remote::RecordChange,
+        change: &tilo_actions::remote::ResourceChange,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<serde_json::Value, String>;
 }
@@ -514,7 +514,7 @@ pub trait SearchIndexServices: Send + Sync {
 /// workspace wrote it here, or a peer's change of it was taken in. The content
 /// the record holds may have moved, and the search index that reads it without
 /// the app's window is out of date.
-pub trait RecordIndexChanges: Send + Sync {
+pub trait DocumentIndexChanges: Send + Sync {
     /// The record `record` of `app` in `workspace` changed.
     fn changed(&self, workspace: &str, app: &str, record: &str);
 }

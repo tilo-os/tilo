@@ -547,7 +547,7 @@ impl Publisher {
             provider: self.provider.into(),
             app_id: self.provider.into(),
             workspace: workspace.to_owned(),
-            record_id: String::new(),
+            document_id: String::new(),
             browsable: false,
         }
     }
@@ -785,7 +785,7 @@ impl Args {
         match self.required_text("operation")? {
             "start" => Ok(CallOperation::Start {
                 app_id: self.required_text("app")?.to_owned(),
-                record_id: self.required_text("record")?.to_owned(),
+                document_id: self.required_text("record")?.to_owned(),
                 channel_id: self.required_text("channel")?.to_owned(),
                 allowed: self.directions()?,
             }),

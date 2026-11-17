@@ -4,16 +4,16 @@
 //! are runs in a confined app worker ([`crate::worker::ConfinedRead`]), which
 //! is handed the retained source and the caller's current policy and nothing
 //! else.
-use super::{AppCatalogue, Caller, DocumentRoute, ViewReadPolicy, WorkspaceRecordsLink};
+use super::{AppCatalogue, Caller, DocumentRoute, ViewReadPolicy, WorkspaceDocumentsLink};
 use crate::worker::ConfinedRead;
 use tilo_actions::{
     ActionDescriptor, ActionOutput,
     api::{ActionAddress, ApiError},
 };
 use tilo_relay_protocol::WorkspaceId;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 
-pub(super) fn record_id(wire: &str) -> Result<DocumentId, String> {
+pub(super) fn document_id(wire: &str) -> Result<DocumentId, String> {
     DocumentId::from_route(wire).ok_or_else(|| "invalid record route".into())
 }
 
@@ -26,7 +26,7 @@ pub(super) struct CanonicalRead {
 impl CanonicalRead {
     pub(super) fn prepare(
         catalogue: &AppCatalogue,
-        link: &dyn WorkspaceRecordsLink,
+        link: &dyn WorkspaceDocumentsLink,
         workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
@@ -41,8 +41,8 @@ impl CanonicalRead {
         // uncommitted peer write.
         let source = link.view_document(workspace, caller, route)?;
         let definition = catalogue.get(&route.app_id).ok_or("unknown source app")?;
-        let record = record_id(&route.record)?;
-        if definition.keeps_workspace_record() != record.is_package_primary() {
+        let record = document_id(&route.record)?;
+        if definition.keeps_workspace_resource() != record.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
         let read = ConfinedRead::prepare(
@@ -76,7 +76,7 @@ impl CanonicalRead {
 
     pub(super) fn recheck(
         &mut self,
-        link: &dyn WorkspaceRecordsLink,
+        link: &dyn WorkspaceDocumentsLink,
         workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
@@ -95,7 +95,7 @@ impl CanonicalRead {
 
     pub(super) fn invoke(
         &mut self,
-        link: &dyn WorkspaceRecordsLink,
+        link: &dyn WorkspaceDocumentsLink,
         workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,

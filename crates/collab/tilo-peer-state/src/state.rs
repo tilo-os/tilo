@@ -23,7 +23,7 @@ use web_time::{Duration, SystemTime};
 mod backend;
 mod document_capture;
 pub use document_capture::{
-    KeptRecord, PeerDocumentCapture, PeerDocumentReadError, changes_since,
+    KeptDocument, PeerDocumentCapture, PeerDocumentReadError, changes_since,
     committed_document_revision, saved_whole,
 };
 #[cfg(test)]
@@ -31,9 +31,9 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
-mod covered_records;
-mod member_records;
-use member_records::{empty_genesis, empty_genesis_op};
+mod covered_documents;
+mod member_documents;
+use member_documents::{empty_genesis, empty_genesis_op};
 mod facades;
 mod governance;
 mod governance_writes;
@@ -87,7 +87,7 @@ mod sealed_compaction;
 mod sealed_history;
 mod unsent_bases;
 pub use sealed_compaction::{
-    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
+    OpenedDocument, OpenedHistory, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
 /// authority a device holds there, the records it keeps, what it takes in and
@@ -148,7 +148,7 @@ pub fn peer_handle(key: &[u8; 32]) -> u64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeedDocument {
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub kind: String,
     pub bytes: Vec<u8>,
 }
@@ -262,7 +262,7 @@ struct DurableDocument {
     covered_snapshot: Option<Vec<u8>>,
     /// The member's own record this is, as its writes named it: kept with the
     /// record, so a restored replica sends and refuses its writes as before.
-    own: Option<collab_types::OwnRecord>,
+    own: Option<collab_types::OwnResource>,
 }
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
@@ -356,13 +356,13 @@ fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
     match message {
         NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } => Some((
             Route {
                 app: app_id.clone(),
-                record: record_id.clone(),
+                record: document_id.clone(),
             },
             envelope.seq,
         )),
@@ -420,7 +420,7 @@ fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp)
 }
 
 /// The surface a record document's identity names (`tilo:record.surface`).
-fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
+fn document_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
     let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
     match doc.get(&meta, "surface").ok()?? {
         (automerge::Value::Scalar(hash), _) => hex::decode(hash.as_str()?).ok()?.try_into().ok(),
@@ -429,7 +429,7 @@ fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
 }
 
 /// The kind a record document's identity names (`tilo:record.kind`).
-fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
+fn resource_type(doc: &impl automerge::ReadDoc) -> Option<String> {
     let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
     match doc.get(&meta, "kind").ok()?? {
         (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),

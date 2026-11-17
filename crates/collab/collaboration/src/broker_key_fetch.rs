@@ -59,7 +59,7 @@ pub(super) fn update_route_keys(
 /// Let the content `spec`'s record references be sealed under the secret
 /// of the members `keys` belong to, while they hold one.
 pub(super) fn hold_content_secret(spec: &crate::RouteSpec, keys: &crate::route_keys::RouteKeys) {
-    crate::record_content::ContentLane::of(spec).hold_secret(keys.content_secret());
+    crate::document_content::ContentLane::of(spec).hold_secret(keys.content_secret());
 }
 
 /// One route's question to the identity service, taken off the route so it
@@ -68,7 +68,7 @@ pub(super) struct KeyQuery {
     route: String,
     workspace_id: String,
     app_id: String,
-    record_id: String,
+    document_id: String,
     generation: u64,
 }
 
@@ -78,7 +78,7 @@ impl KeyQuery {
             route: route.spec.channel_id(),
             workspace_id: route.spec.cluster_id.to_string(),
             app_id: route.spec.app_id.clone(),
-            record_id: route.spec.record.clone().unwrap_or_default(),
+            document_id: route.spec.record.clone().unwrap_or_default(),
             generation,
         }
     }
@@ -100,8 +100,8 @@ pub(super) async fn certified_channel_keys(
 ) -> FetchedKeys {
     endpoint_channel_keys(
         std::sync::Arc::new(
-            move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
-                identity.group_keys(workspace_id, app_id, record_id, generation)
+            move |workspace_id: &str, app_id: &str, document_id: &str, generation: u64| {
+                identity.group_keys(workspace_id, app_id, document_id, generation)
             },
         ),
         queries,
@@ -122,7 +122,7 @@ pub(super) async fn endpoint_channel_keys(
                 let reply = keys(
                     &query.workspace_id,
                     &query.app_id,
-                    &query.record_id,
+                    &query.document_id,
                     query.generation,
                 );
                 (

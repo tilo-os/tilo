@@ -35,7 +35,7 @@ pub(crate) struct ReactionsIndicator {
 
 /// What the indicator reads on a sync.
 pub(crate) struct ReactionsInput<'a> {
-    /// The record's own table ([`tilo_resource::Resource::RECORD_TABLE`]).
+    /// The record's own table ([`tilo_resource::Resource::RESOURCE_TABLE`]).
     pub(crate) table: Option<&'static tilo_resource::table::ModelTable>,
     /// The record as it stands now.
     pub(crate) state: &'a dyn std::any::Any,

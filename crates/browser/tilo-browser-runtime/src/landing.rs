@@ -14,7 +14,7 @@
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 use ui::automerge::ChangeHash;
-use ui::record::{RecordStore, WorkspaceAnswer};
+use ui::resource::{ResourceStore, WorkspaceAnswer};
 
 /// What a page did with a record its host sent.
 #[derive(Debug, PartialEq, Eq)]
@@ -84,7 +84,7 @@ pub(crate) fn keep(
 /// each of `stores` that holds or wants it is told so. Says whether one was, so
 /// the windows waiting for it are built again.
 pub(crate) fn answered(
-    stores: &[RecordStore],
+    stores: &[ResourceStore],
     app: &str,
     record: &str,
     answer: WorkspaceAnswer,
@@ -95,11 +95,11 @@ pub(crate) fn answered(
             continue;
         }
         let found = store
-            .open_records()
+            .open_resources()
             .into_iter()
             .map(|checkout| checkout.id)
-            .chain(store.wanted_records())
-            .find(|id| tilo_desktop_surface::host::records::wire_record(id) == record);
+            .chain(store.wanted_resources())
+            .find(|id| tilo_desktop_surface::host::records::wire_document(id) == record);
         if let Some(id) = found {
             store.note_workspace_answer(id, answer);
             answered = true;

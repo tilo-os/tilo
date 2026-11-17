@@ -31,7 +31,7 @@ impl Widget for Root {
     }
     fn sync(&mut self, model: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         let (doc, _) = ui::doc::document_ref(model, path);
-        assert!(ui::record::identity(doc).is_some());
+        assert!(ui::resource::identity(doc).is_some());
         self.0.syncs.set(
             self.0
                 .syncs
@@ -68,7 +68,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "current retained owner")
                 .map_err(|e| e.to_string())?;
             doc.commit();
@@ -84,7 +84,7 @@ fn factory(
     ))
 }
 struct Source {
-    owners: ui::record::RecordOwners,
+    owners: ui::resource::ResourceOwners,
     root: std::path::PathBuf,
     queue: OwnerWakeQueue,
     signals: Rc<RefCell<HashMap<u64, Signal>>>,
@@ -99,10 +99,10 @@ impl TileSource for Source {
             app_id: APP.into(),
             title: "Retained owner".into(),
             icon: IconDescriptor::Glyph("R"),
-            record_kind: ui::record::ResourceType::new("retained-owner"),
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            resource_type: ui::resource::ResourceType::new("retained-owner"),
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             required: vec![],
             optional: vec![],
             opens: &[],
@@ -173,7 +173,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
     let signals = Rc::new(RefCell::new(HashMap::new()));
     let queue = OwnerWakeQueue::default();
     let source = Source {
-        owners: ui::record::RecordOwners::new(root.clone()),
+        owners: ui::resource::ResourceOwners::new(root.clone()),
         root: root.clone(),
         queue: queue.clone(),
         signals: signals.clone(),
@@ -223,11 +223,9 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
     assert_eq!(after, (before.0 + 1, before.1));
     assert!(no_paint && empty);
     assert_eq!(reports.len(), 2);
-    assert!(
-        reports.iter().all(|r| r.record_error.is_none()
-            && r.view_error.is_none()
-            && r.teardown_error.is_none())
-    );
+    assert!(reports.iter().all(|r| r.resource_error.is_none()
+        && r.view_error.is_none()
+        && r.teardown_error.is_none()));
     assert!(closed_empty);
 }
 
@@ -246,7 +244,7 @@ fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
     let before = width_of(&tree);
     let queue = OwnerWakeQueue::default();
     let source = Source {
-        owners: ui::record::RecordOwners::new(root.clone()),
+        owners: ui::resource::ResourceOwners::new(root.clone()),
         root: root.clone(),
         queue: queue.clone(),
         signals: Rc::default(),

@@ -215,7 +215,7 @@ impl HostAgents {
     /// Look at every governed workspace now, then again whenever a member writes to a record an
     /// ask or an agent is kept in, until the host stops.
     pub async fn run(self) {
-        let mut writes = self.workspaces.record_writes();
+        let mut writes = self.workspaces.document_writes();
         let mut due: BTreeSet<String> = self
             .workspaces
             .list()
@@ -289,14 +289,14 @@ impl HostAgents {
         }
         let routes = self
             .workspaces
-            .record_routes(workspace)
+            .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
         let mut turns = Vec::new();
         if let Some(chat) = self.read::<chat::record::Chat>(workspace, CHAT, "").await? {
             for (app, record) in &routes {
                 if app != CHAT
-                    || ui::record::DocumentId::parse(record)
+                    || ui::resource::DocumentId::parse(record)
                         .is_none_or(|part| chat::parts::part_index(&part).is_none())
                 {
                     continue;
@@ -332,7 +332,7 @@ impl HostAgents {
         }
         for (app, record) in &routes {
             if app != TASKS
-                || ui::record::DocumentId::parse(record)
+                || ui::resource::DocumentId::parse(record)
                     .and_then(|id| id.chain_part())
                     .is_none_or(|(chain, _)| chain != tasks::part::chain())
             {
@@ -394,7 +394,7 @@ impl HostAgents {
     ) -> Result<Option<R::State>, String> {
         let Some(bytes) = self
             .workspaces
-            .record_document(workspace, app, record)
+            .resource_document(workspace, app, record)
             .await
             .map_err(|error| error.to_string())?
         else {

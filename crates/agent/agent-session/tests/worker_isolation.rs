@@ -55,7 +55,7 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
         &MemberId::person("host"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![kept.save()],
         },
     )
@@ -100,16 +100,16 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
     assert_seed_route(
         "so.tilo.sheets",
-        ui::record::DocumentId::workspace_default(),
+        ui::resource::DocumentId::workspace_default(),
     );
 }
 
 #[test]
 fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
-    assert_seed_route("so.tilo.notes", ui::record::DocumentId::package_primary());
+    assert_seed_route("so.tilo.notes", ui::resource::DocumentId::package_primary());
 }
 
-fn assert_seed_route(app: &str, default: ui::record::DocumentId) {
+fn assert_seed_route(app: &str, default: ui::resource::DocumentId) {
     let catalogue = catalogue();
     let source = crate::common::confined(
         app,
@@ -118,23 +118,23 @@ fn assert_seed_route(app: &str, default: ui::record::DocumentId) {
         Seed::NewAt(default.clone()),
     )
     .unwrap();
-    assert_eq!(source.record_id(), &default);
+    assert_eq!(source.document_id(), &default);
     let Some(DocumentMutation::Snapshot(genesis)) = source.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let doc = automerge::AutoCommit::load(&genesis).unwrap();
-    let kind = catalogue.get(app).unwrap().record_kind.clone();
+    let kind = catalogue.get(app).unwrap().resource_type.clone();
     if default.is_package_primary() {
         // A package primary uses its store namespace, not a minted identity.
-        assert_eq!(ui::record::identity(&doc), None);
+        assert_eq!(ui::resource::identity(&doc), None);
     } else {
         assert_eq!(
-            ui::record::workspace_scope(&doc).as_deref(),
+            ui::resource::workspace_scope(&doc).as_deref(),
             Some(WORKSPACE)
         );
         assert_eq!(
-            ui::record::identity(&doc),
-            Some(ui::record::DocumentCheckout::new(default, kind))
+            ui::resource::identity(&doc),
+            Some(ui::resource::DocumentCheckout::new(default, kind))
         );
     }
     // Both route shapes must reopen through the actual confined factory.
@@ -143,7 +143,7 @@ fn assert_seed_route(app: &str, default: ui::record::DocumentId) {
         &MemberId::person("member"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: source.record_id().clone(),
+            record: source.document_id().clone(),
             changes: vec![genesis],
         },
     )
@@ -173,7 +173,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
         &MemberId::person("writer"),
         &ReplicaActor::Agent,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![snapshot],
         },
     )
@@ -385,7 +385,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
         &MemberId::person("writer"),
         &ReplicaActor::Agent,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![snapshot],
         },
     )
@@ -415,7 +415,7 @@ const SHEETS: &str = "so.tilo.sheets";
 
 /// A new record of `app` held for an agent, lent `workspace`'s content when
 /// there is a workspace.
-fn agents_record(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
+fn agents_document(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
     let agent = crate::common::confined(
         app,
         &MemberId::person("painter"),
@@ -501,13 +501,13 @@ fn content_the_workspace_holds_reaches_the_worker_an_operation_names_it_in() {
     let hash = workspace.put(&png(3, 0x80)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
 
-    let unlent = agents_record(CANVAS, None);
+    let unlent = agents_document(CANVAS, None);
     assert!(
         open_picture(&unlent, &address).is_err(),
         "a worker lent no store has nothing at the address"
     );
 
-    let agent = agents_record(CANVAS, Some(&workspace));
+    let agent = agents_document(CANVAS, Some(&workspace));
     open_picture(&agent, &address)
         .expect("the worker reads the workspace's content at the address");
     agent.take_mutation().unwrap().unwrap();
@@ -529,7 +529,7 @@ fn content_an_app_stores_in_its_worker_is_kept_by_the_workspace() {
     let workspace = ContentStore::memory();
     let picture = png(2, 0x40);
     let inline = format!("data:image/png;base64,{}", base64(&picture));
-    let agent = agents_record(CANVAS, Some(&workspace));
+    let agent = agents_document(CANVAS, Some(&workspace));
     open_picture(&agent, &inline).unwrap();
     agent.take_mutation().unwrap().unwrap();
     let body = agent.body();
@@ -554,7 +554,7 @@ fn tagged(descriptor: &ActionDescriptor, tag: &str) -> bool {
 
 #[test]
 fn an_agent_is_offered_the_effects_and_views_that_answer() {
-    let agent = agents_record(CANVAS, None);
+    let agent = agents_document(CANVAS, None);
     let export = offered(&agent, "export").expect("an agent sees the canvas's export");
     assert_eq!(export.kind, OperationKind::Effect);
     assert!(
@@ -609,12 +609,12 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
     // Effects that need a person attending, or answer nothing, are neither
     // offered to an agent nor run for it: the calendar's file import and
     // export, and its account sync.
-    let calendar = agents_record("so.tilo.calendar", None);
+    let calendar = agents_document("so.tilo.calendar", None);
     let offered_all = calendar.survey();
     let kind = catalogue()
         .get("so.tilo.calendar")
         .unwrap()
-        .record_kind
+        .resource_type
         .as_str()
         .to_owned();
     for (effect, code) in [
@@ -640,7 +640,7 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
 fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
     let workspace = ContentStore::memory();
     let address = tilo_actions::content_resource(&workspace.put(&png(8, 0x80)).unwrap()).unwrap();
-    let agent = agents_record(CANVAS, Some(&workspace));
+    let agent = agents_document(CANVAS, Some(&workspace));
     open_picture(&agent, &address).unwrap();
     agent.take_mutation().unwrap().unwrap();
 
@@ -669,7 +669,7 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
         &MemberId::person("exporter"),
         &ReplicaActor::Agent,
         Seed::Existing {
-            record: agent.record_id().clone(),
+            record: agent.document_id().clone(),
             changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],
         },
     )
@@ -690,7 +690,7 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
 #[test]
 fn an_agent_imports_a_workbook_the_workspace_keeps_unasked() {
     let workspace = ContentStore::memory();
-    let source = agents_record(SHEETS, Some(&workspace));
+    let source = agents_document(SHEETS, Some(&workspace));
     let export = operation(&source, "export-xlsx-content");
     let exported = source
         .invoke(&export.address, &serde_json::Map::new(), false)
@@ -700,7 +700,7 @@ fn an_agent_imports_a_workbook_the_workspace_keeps_unasked() {
     };
     // The bare hash, as a step carrying the content gives it.
     let hash = tilo_actions::content_hash(address).unwrap().to_owned();
-    let target = agents_record(SHEETS, Some(&workspace));
+    let target = agents_document(SHEETS, Some(&workspace));
     let import = operation(&target, "import-xlsx-content");
     target
         .invoke(
@@ -716,7 +716,7 @@ fn an_agent_imports_a_workbook_the_workspace_keeps_unasked() {
 /// person is asked about first.
 #[test]
 fn an_agent_adds_a_local_event_unasked_and_is_asked_for_a_remote_one() {
-    let calendar = agents_record("so.tilo.calendar", None);
+    let calendar = agents_document("so.tilo.calendar", None);
     let new_event = operation(&calendar, "new-event");
     let event = |calendar_id: &str| {
         arguments(serde_json::json!({"event": {
@@ -742,7 +742,7 @@ fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
     // The address an export answered with, as `tilo.content:latest` binds.
     let hash = workspace.put(&png(8, 0x40)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
-    let writer = agents_record(WRITER, Some(&workspace));
+    let writer = agents_document(WRITER, Some(&workspace));
     let replace = operation(&writer, "replace-body");
     writer
         .invoke(
@@ -780,7 +780,7 @@ fn an_agent_places_a_picture_the_workspace_keeps_under_a_heading() {
 fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing() {
     let state = tempfile::tempdir().unwrap();
     let target = state.path().join("export.png");
-    let agent = agents_record(CANVAS, Some(&ContentStore::memory()));
+    let agent = agents_document(CANVAS, Some(&ContentStore::memory()));
     let export = operation(&agent, "export").address;
     let to_path = arguments(serde_json::json!({ "path": target.to_string_lossy() }));
     match agent.invoke(&export, &to_path, true) {
@@ -791,11 +791,11 @@ fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing(
 
     // Replacing the document from a file answers nothing an agent could
     // use and edits the document out of sight of any plan: refused.
-    let writer = agents_record(WRITER, None);
+    let writer = agents_document(WRITER, None);
     let kind = catalogue()
         .get(WRITER)
         .unwrap()
-        .record_kind
+        .resource_type
         .as_str()
         .to_owned();
     let open = ActionAddress::new(kind.as_str(), "open-document");
@@ -811,7 +811,7 @@ fn an_agent_reads_and_looks_at_its_artwork_through_the_canvass_views() {
     let workspace = ContentStore::memory();
     let picture = png(40, 0x80);
     let address = tilo_actions::content_resource(&workspace.put(&picture).unwrap()).unwrap();
-    let agent = agents_record(CANVAS, Some(&workspace));
+    let agent = agents_document(CANVAS, Some(&workspace));
     open_picture(&agent, &address).unwrap();
     agent.take_mutation().unwrap().unwrap();
 
@@ -913,7 +913,7 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
             "Lamps in the cellar",
         ]))
         .unwrap();
-    let agent = agents_record(PDF, Some(&workspace));
+    let agent = agents_document(PDF, Some(&workspace));
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     pin_pdf(&agent, &reference, "inventory.pdf");
 
@@ -950,7 +950,7 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
             &MemberId::person("reader"),
             &ReplicaActor::Agent,
             Seed::Existing {
-                record: agent.record_id().clone(),
+                record: agent.document_id().clone(),
                 changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],
             },
         )
@@ -983,7 +983,7 @@ fn an_agent_looks_at_a_pdf_page_in_its_worker() {
     let reference = workspace
         .put(&pdf(&["Floor plan: hall", "Floor plan: attic"]))
         .unwrap();
-    let agent = agents_record(PDF, Some(&workspace));
+    let agent = agents_document(PDF, Some(&workspace));
     pin_pdf(&agent, &reference, "plan.pdf");
 
     let look = operation(&agent, "look-page");
@@ -1016,7 +1016,7 @@ fn an_agent_reads_a_document_the_workspace_holds_with_the_word_processor() {
     let hash = workspace
         .put(b"# Lamps\n\nThe cellar lamp flickers.\n")
         .unwrap();
-    let agent = agents_record(WRITER, Some(&workspace));
+    let agent = agents_document(WRITER, Some(&workspace));
     let read = operation(&agent, "read-content");
     assert!(tilo_agent_session::apps::readable(&read), "{read:?}");
     let output = agent

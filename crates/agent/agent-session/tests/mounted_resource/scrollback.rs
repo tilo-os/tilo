@@ -126,7 +126,7 @@ pub async fn run(bundle: &str) {
     // fill each part until the next starts.
     let head = |source: &Replica| {
         source
-            .records_beside()
+            .resources_beside()
             .iter()
             .filter_map(chat::parts::part_index)
             .max()
@@ -172,14 +172,14 @@ pub async fn run(bundle: &str) {
     let route = super::super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_record().into(),
+        record: source.wire_document().into(),
     };
     native
         .peer
         .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let mut handed = Vec::new();
-    for (changed, mutation) in source.take_record_mutations().unwrap() {
+    for (changed, mutation) in source.take_document_mutations().unwrap() {
         let part = chat::parts::part_index(&changed).expect("only parts change beside the chat");
         // The host never had part 0: nobody can send the reader its history.
         if part == 0 {

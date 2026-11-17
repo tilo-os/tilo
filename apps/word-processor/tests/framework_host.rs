@@ -578,7 +578,7 @@ fn a_file_launch_opens_the_files_own_record() {
     let report = report.to_string_lossy().into_owned();
 
     let mut app = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
-    assert_eq!(app.record(), &ui::record::DocumentId::for_file(&report));
+    assert_eq!(app.record(), &ui::resource::DocumentId::for_file(&report));
     assert_eq!(paragraphs(&app), ["Report", "Our committee met."]);
     app.harness().type_text("Draft: ");
     let edited = paragraphs(&app);
@@ -591,7 +591,7 @@ fn a_file_launch_opens_the_files_own_record() {
     std::fs::write(&notes, "first line\nsecond line\n").unwrap();
     let notes = notes.to_string_lossy().into_owned();
     let app = app.relaunch(&[&notes]).unwrap();
-    assert_eq!(app.record(), &ui::record::DocumentId::for_file(&notes));
+    assert_eq!(app.record(), &ui::resource::DocumentId::for_file(&notes));
     assert_eq!(paragraphs(&app), ["first line", "second line"]);
 }
 

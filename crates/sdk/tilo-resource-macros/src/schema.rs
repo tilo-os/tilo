@@ -496,7 +496,7 @@ fn field_type_body(input: &DeriveInput, options: &ContainerOptions) -> syn::Resu
             match (&data.fields, kept.as_slice()) {
                 (Fields::Named(_), _) if !options.transparent => {
                     let fields = typed_fields(&data.fields, rule)?;
-                    quote!(#krate::surface::record_of(
+                    quote!(#krate::surface::resource_of(
                         types,
                         ::core::any::type_name::<Self>(),
                         #name,

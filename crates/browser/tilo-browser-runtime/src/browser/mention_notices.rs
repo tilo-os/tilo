@@ -1,7 +1,7 @@
 //! Telling this page's person when someone mentions them, wherever in the workspace.
 //!
 //! The records are what this page's replication took in from the workspace and wrote
-//! ([`crate::replicated::changes`], [`crate::replicated::record_document`]), so a record open in
+//! ([`crate::replicated::changes`], [`crate::replicated::resource_document`]), so a record open in
 //! a window or not is looked at as the change reaches it, and the notices are the session's own
 //! role ([`tilo_session::mentions`]) shown through this host's notifications
 //! ([`tilo_session::platform::notice::Toolkit`]). Choosing one opens the place the mention is in,
@@ -36,7 +36,7 @@ impl Records for Taken {
     }
 
     fn document(&self, app: &str, _workspace: &str, record: &str) -> Option<AutoCommit> {
-        crate::replicated::record_document(self.peer, app, record)
+        crate::replicated::resource_document(self.peer, app, record)
     }
 
     fn since(
@@ -80,7 +80,7 @@ pub(super) fn role(
             changes: crate::replicated::changes(),
             kind: Rc::new(|app| {
                 crate::desktop::application(app)
-                    .map(|definition| definition.record_kind.as_str().to_owned())
+                    .map(|definition| definition.resource_type.as_str().to_owned())
                     .unwrap_or_default()
             }),
         })),

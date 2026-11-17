@@ -175,7 +175,7 @@ impl ActionHost for Host {
                     provider: "1".into(),
                     app_id: NOTES.into(),
                     workspace: "workspace".into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     browsable: true,
                 }],
                 ..CataloguePage::default()

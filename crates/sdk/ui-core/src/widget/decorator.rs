@@ -480,7 +480,7 @@ decorator_trait! {
         fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
         fn has_separate_document_owner() -> bool;
         fn history_owner() -> Option<crate::history_mode::HistoryOwner>;
-        fn record_owners() -> Vec<crate::history_mode::HistoryOwner>;
+        fn resource_owners() -> Vec<crate::history_mode::HistoryOwner>;
         #[doc(hidden)]
         fn manual_layout_policy() -> Option<ManualPolicy>;
         fn layout_info() -> Option<LayoutInfo>;

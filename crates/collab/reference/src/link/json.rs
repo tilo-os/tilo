@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AppId, HostOrigin, Link, LinkError, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
+    AppId, HostOrigin, Link, LinkError, LinkTarget, Mode, ResourceAddress, ResourceSegment, Scope,
     Slug,
 };
 use crate::{Span, SpanUnit};
@@ -140,7 +140,11 @@ impl TryFrom<TargetJson> for LinkTarget {
         let target = Self {
             scope,
             app: json.app.as_deref().map(AppId::parse).transpose()?,
-            record: json.record.as_deref().map(RecordSegment::new).transpose()?,
+            record: json
+                .record
+                .as_deref()
+                .map(ResourceSegment::new)
+                .transpose()?,
             resource: json
                 .resource
                 .map(|resource| -> Result<ResourceAddress, LinkError> {

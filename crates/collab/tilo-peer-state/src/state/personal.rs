@@ -373,13 +373,13 @@ impl PersonalStore {
 
     /// The route of the record that lists the person's devices.
     fn devices_route() -> Route {
-        Self::route(DEVICES_APP, &collab_types::person_record_id(DEVICES_KIND))
+        Self::route(DEVICES_APP, &collab_types::person_document_id(DEVICES_KIND))
     }
 
     /// Whether `record` of `app` is the record that lists the person's
     /// devices: the store's own, which no app reads or is handed.
-    fn is_devices_record(app: &str, record: &str) -> bool {
-        app == DEVICES_APP && record == collab_types::person_record_id(DEVICES_KIND)
+    fn is_devices_document(app: &str, record: &str) -> bool {
+        app == DEVICES_APP && record == collab_types::person_document_id(DEVICES_KIND)
     }
 
     /// Whether this store holds a certificate for `device` that makes it one
@@ -660,7 +660,7 @@ impl PersonalStore {
             .filter(|(route, _)| **route != devices)
             .map(|(route, held)| DocumentRow {
                 app_id: route.app.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
                 heads: held
                     .doc
                     .base_heads()
@@ -721,7 +721,7 @@ impl PersonalStore {
             let reason = refused.to_string();
             // The record of their devices is the store's, not a write of
             // theirs: nobody is told of it.
-            if !Self::is_devices_record(app, record) {
+            if !Self::is_devices_document(app, record) {
                 self.file_refusal(app, record, &envelope, &reason, key, now)?;
             }
             return Err(reason);
@@ -899,7 +899,7 @@ impl PersonalStore {
             peer,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -912,7 +912,7 @@ impl PersonalStore {
         {
             crate::AdmissionError::Rejected("transport author or store key mismatch".to_owned())
         } else {
-            match self.write(&app_id, &record_id, &envelope, now, false) {
+            match self.write(&app_id, &document_id, &envelope, now, false) {
                 Ok(outcome) => return Ok(outcome),
                 Err(reason) => reason,
             }
@@ -926,8 +926,8 @@ impl PersonalStore {
         // write's author is told, and its history joins it to the write. The
         // record of the person's devices is no write of theirs to be told of.
         let reason = refused.to_string();
-        if !Self::is_devices_record(&app_id, &record_id) {
-            self.file_refusal(&app_id, &record_id, &envelope, &reason, key, now)?;
+        if !Self::is_devices_document(&app_id, &document_id) {
+            self.file_refusal(&app_id, &document_id, &envelope, &reason, key, now)?;
         }
         Err(reason)
     }
@@ -1003,7 +1003,7 @@ impl PersonalStore {
             .insert(envelope.artifact, app.into());
         candidate
             .channel
-            .artifact_records
+            .artifact_resources
             .insert(envelope.artifact, record.into());
         candidate.channel.workspace.clone_from(&store_key);
         let mut validated = candidate.channel.clone();
@@ -1038,7 +1038,7 @@ impl PersonalStore {
         self.exact.insert(&admitted).map_err(err)?;
         self.documents.insert(route, candidate);
         self.landed(&source, app, record, envelope.seq);
-        let learned = Self::is_devices_record(app, record) && self.devices_written(now);
+        let learned = Self::is_devices_document(app, record) && self.devices_written(now);
         Ok(ReceiveOutcome {
             changed,
             metadata_changed: changed || learned,
@@ -1100,7 +1100,7 @@ impl PersonalStore {
             peer: peer_handle(envelope.author.as_bytes()),
             app_id: app.into(),
             cluster_id: self.store_key(),
-            record_id: record.into(),
+            document_id: record.into(),
             envelope: Box::new(envelope),
             // The person's own store holds only theirs: none is a member's own
             // record of a workspace.
@@ -1214,7 +1214,7 @@ impl PersonalStore {
             let mut channel = InboundState::default();
             channel.artifacts.insert(artifact, ArtifactKind::Note);
             channel.artifact_apps.insert(artifact, document.app);
-            channel.artifact_records.insert(artifact, document.record);
+            channel.artifact_resources.insert(artifact, document.record);
             channel.workspace.clone_from(&store_key);
             channel.surfaces = default_surfaces();
             channel.last_seq_per_author = document
@@ -1883,7 +1883,7 @@ mod tests {
 
     /// The record of the person's devices listing `certificates` as they
     /// are, as a device holding them would write it.
-    fn devices_record(certificates: &[DeviceCert]) -> DocumentMutation {
+    fn devices_document(certificates: &[DeviceCert]) -> DocumentMutation {
         let mut doc = AutoCommit::new();
         for certificate in certificates {
             doc.put(
@@ -1983,7 +1983,7 @@ mod tests {
                 &mut b,
                 &a_key,
                 &mut a,
-                &devices_record(&[
+                &devices_document(&[
                     sibling.clone(),
                     anothers.clone(),
                     forged.clone(),
@@ -2029,7 +2029,7 @@ mod tests {
                 &mut b,
                 &a_key,
                 &mut a,
-                &devices_record(std::slice::from_ref(&gone)),
+                &devices_document(std::slice::from_ref(&gone)),
             )
             .unwrap();
             assert!(a.holds_device(&gone.device_public_key, now()));
@@ -2049,7 +2049,7 @@ mod tests {
 
             // Listed again, with a later certificate even, it stays out.
             let (_, later) = certificate(&root, root_key, [10; 32], "lost", 5, None);
-            hand_on(&b_key, &mut b, &a_key, &mut a, &devices_record(&[later])).unwrap();
+            hand_on(&b_key, &mut b, &a_key, &mut a, &devices_document(&[later])).unwrap();
             assert!(!a.holds_device(&gone.device_public_key, now()));
             assert!(a.admits_device(&gone.device_public_key, now()).is_err());
             // And A lists it to no one: what it adds to the record leaves it out.
@@ -2083,7 +2083,7 @@ mod tests {
                 &mut b,
                 &a_key,
                 &mut a,
-                &devices_record(std::slice::from_ref(&earlier)),
+                &devices_document(std::slice::from_ref(&earlier)),
             )
             .unwrap();
             assert_eq!(label(&a).as_deref(), Some("phone"));
@@ -2092,7 +2092,7 @@ mod tests {
                 &mut b,
                 &a_key,
                 &mut a,
-                &devices_record(std::slice::from_ref(&later)),
+                &devices_document(std::slice::from_ref(&later)),
             )
             .unwrap();
             assert_eq!(label(&a).as_deref(), Some("renamed phone"));
@@ -2101,7 +2101,7 @@ mod tests {
                 &mut b,
                 &a_key,
                 &mut a,
-                &devices_record(std::slice::from_ref(&earlier)),
+                &devices_document(std::slice::from_ref(&earlier)),
             )
             .unwrap();
             assert_eq!(label(&a).as_deref(), Some("renamed phone"));
@@ -2125,7 +2125,7 @@ mod tests {
                     certificate(&root, root_key, seed, "one of many", 1, None).1
                 })
                 .collect();
-            hand_on(&b_key, &mut b, &a_key, &mut a, &devices_record(&many)).unwrap();
+            hand_on(&b_key, &mut b, &a_key, &mut a, &devices_document(&many)).unwrap();
             assert_eq!(
                 a.devices().len(),
                 MAX_DEVICES + 2,
@@ -2158,8 +2158,8 @@ mod tests {
             let (stranger_key, stranger_cert) = device(&other, 10, DeviceCapabilities::member());
             let stranger = stranger_key.verifying_key().to_bytes();
             let devices = |message: &NeighbourMsg| {
-                matches!(message, NeighbourMsg::AppDocument { app_id, record_id, .. }
-                    if PersonalStore::is_devices_record(app_id, record_id))
+                matches!(message, NeighbourMsg::AppDocument { app_id, document_id, .. }
+                    if PersonalStore::is_devices_document(app_id, document_id))
             };
 
             // A's record lists itself and the device it met.
@@ -2199,7 +2199,7 @@ mod tests {
             let (_, sibling_cert) = certificate(&root, root_key, [5; 32], "sibling", 1, None);
             let route = PersonalStore::devices_route();
             let envelope = devices_write(
-                &devices_record(&[sibling_cert.clone(), stranger_cert.clone()]),
+                &devices_document(&[sibling_cert.clone(), stranger_cert.clone()]),
                 &stranger_key,
                 &a.store_key(),
             );
@@ -2210,7 +2210,7 @@ mod tests {
                     peer: peer_handle(&stranger),
                     app_id: route.app,
                     cluster_id: a.store_key(),
-                    record_id: route.record,
+                    document_id: route.record,
                     envelope: Box::new(envelope),
                     own: None,
                 },

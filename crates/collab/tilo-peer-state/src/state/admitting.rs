@@ -48,12 +48,12 @@ impl StatePeer {
             // held until it may. A record this device seals refuses the
             // cleartext below, whichever of the two it is.
             let genesis = empty_genesis_op(app, record, &self.core.workspace, &envelope);
-            if !envelope.is_whole_record() && !genesis {
+            if !envelope.is_whole_resource() && !genesis {
                 return Err("local app publication cannot create a record owner".into());
             }
             if genesis
                 && !self.signed_by_owner(&source)
-                && !self.may_create_record(
+                && !self.may_create_document(
                     &self.membership(source, now)?,
                     &Route {
                         app: app.into(),
@@ -71,7 +71,7 @@ impl StatePeer {
                 peer: peer_handle(&source),
                 app_id: app.into(),
                 cluster_id: self.core.workspace.clone(),
-                record_id: record.into(),
+                document_id: record.into(),
                 envelope: Box::new(envelope),
                 own: self.core.own_write(app, record, &source),
             },
@@ -100,7 +100,7 @@ impl StatePeer {
             peer,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             own,
         } = message
@@ -113,15 +113,15 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
-        self.core.learn_own(&app_id, &record_id, own.as_ref());
+        self.core.learn_own(&app_id, &document_id, own.as_ref());
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)
             && !self
                 .publication()
-                .holds_sealed(&app_id, &record_id, &envelope)
+                .holds_sealed(&app_id, &document_id, &envelope)
         {
-            match self.gather_compaction_piece((&app_id, &record_id), *envelope)? {
+            match self.gather_compaction_piece((&app_id, &document_id), *envelope)? {
                 Some(head) => Box::new(head),
                 None => return Ok(AdmissionReport::metadata(ReceiveOutcome::default())),
             }
@@ -133,7 +133,7 @@ impl StatePeer {
                 source,
                 &app_id,
                 &cluster_id,
-                &record_id,
+                &document_id,
                 &envelope,
                 now,
             )?
@@ -148,7 +148,7 @@ impl StatePeer {
         }
         let route = Route {
             app: app_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
         };
         if !local_app
             && self
@@ -161,7 +161,7 @@ impl StatePeer {
             let input = DroppedInput {
                 author: source,
                 app: app_id,
-                record: record_id,
+                record: document_id,
                 sequence: envelope.seq,
                 waiting_for: Some(waiting.clone()),
                 reason: crate::admission::DropReason::Superseded,
@@ -184,8 +184,13 @@ impl StatePeer {
         } else {
             now
         };
-        let Some(member) =
-            self.authorize_document(&source, &app_id, &record_id, &envelope, authorization_time)?
+        let Some(member) = self.authorize_document(
+            &source,
+            &app_id,
+            &document_id,
+            &envelope,
+            authorization_time,
+        )?
         else {
             return self.defer(
                 source,
@@ -193,7 +198,7 @@ impl StatePeer {
                     peer,
                     app_id,
                     cluster_id,
-                    record_id,
+                    document_id,
                     envelope,
                     own: own.clone(),
                 },
@@ -207,7 +212,7 @@ impl StatePeer {
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
-            &record_id,
+            &document_id,
             &envelope,
         )
         .map_err(err)?;
@@ -215,16 +220,16 @@ impl StatePeer {
         // write it. The workspace's own host commits the documents of its records, so its writes
         // are the workspace's like any other.
         if !self.signed_by_owner(&source) {
-            tilo_desktop_model::shared_record::guard::may_write(
+            tilo_desktop_model::shared_resource::guard::may_write(
                 &app_id,
-                &record_id,
+                &document_id,
                 person_of(&member)?,
             )
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
         let route = Route {
             app: app_id.clone(),
-            record: record_id,
+            record: document_id,
         };
         let route_existed = self.core.documents.contains_key(&route);
         let mut candidate = self.core.documents.get(&route).cloned().unwrap_or_else(|| {
@@ -248,7 +253,7 @@ impl StatePeer {
             .insert(envelope.artifact, app_id);
         candidate
             .channel
-            .artifact_records
+            .artifact_resources
             .insert(envelope.artifact, route.record.clone());
         if let Some(own) = self.core.own_write(&route.app, &route.record, &source) {
             candidate
@@ -319,7 +324,7 @@ impl StatePeer {
                         peer,
                         app_id: route.app,
                         cluster_id,
-                        record_id: route.record,
+                        document_id: route.record,
                         envelope,
                         own: own.clone(),
                     },
@@ -366,20 +371,20 @@ impl StatePeer {
                 // founds the route for a replica that holds none of it, as a
                 // device catching up from a store that holds only ciphertext
                 // does.
-                if !route_existed && !envelope.is_whole_record() {
+                if !route_existed && !envelope.is_whole_resource() {
                     return self.defer(
                         source,
                         NeighbourMsg::AppDocument {
                             peer,
                             app_id: route.app,
                             cluster_id,
-                            record_id: route.record,
+                            document_id: route.record,
                             envelope,
                             own: own.clone(),
                         },
                         Held {
                             retained_replay,
-                            prerequisite: MissingPrerequisite::RecordCheckpoint,
+                            prerequisite: MissingPrerequisite::DocumentCheckpoint,
                             now,
                         },
                     );
@@ -414,7 +419,7 @@ impl StatePeer {
         let genesis = empty && !route_existed;
         if genesis
             && !self.signed_by_owner(&source)
-            && !self.may_create_record(&member, &route, authorization_time)
+            && !self.may_create_document(&member, &route, authorization_time)
         {
             return self.defer(
                 source,
@@ -422,13 +427,13 @@ impl StatePeer {
                     peer,
                     app_id: route.app,
                     cluster_id,
-                    record_id: route.record,
+                    document_id: route.record,
                     envelope,
                     own: own.clone(),
                 },
                 Held {
                     retained_replay,
-                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    prerequisite: MissingPrerequisite::DocumentCheckpoint,
                     now,
                 },
             );
@@ -463,7 +468,7 @@ impl StatePeer {
                         peer,
                         app_id: route.app,
                         cluster_id,
-                        record_id: route.record,
+                        document_id: route.record,
                         envelope,
                         own: own.clone(),
                     },
@@ -481,7 +486,7 @@ impl StatePeer {
                         peer,
                         app_id: route.app,
                         cluster_id,
-                        record_id: route.record,
+                        document_id: route.record,
                         envelope,
                         own: own.clone(),
                     },
@@ -552,13 +557,13 @@ impl StatePeer {
                     peer,
                     app_id: route.app,
                     cluster_id,
-                    record_id: route.record,
+                    document_id: route.record,
                     envelope,
                     own: own.clone(),
                 },
                 Held {
                     retained_replay,
-                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    prerequisite: MissingPrerequisite::DocumentCheckpoint,
                     now,
                 },
             );
@@ -566,7 +571,7 @@ impl StatePeer {
         // A member's write of the shared desktop is decided by what each of
         // its changes did ([`Self::check_shared_desktop`]).
         let desktop_before = (!self.signed_by_owner(&source)
-            && tilo_desktop_model::shared_record::guard::is_shared_desktop(
+            && tilo_desktop_model::shared_resource::guard::is_shared_desktop(
                 &route.app,
                 &route.record,
             ))
@@ -582,7 +587,7 @@ impl StatePeer {
                         peer,
                         app_id: route.app,
                         cluster_id,
-                        record_id: route.record,
+                        document_id: route.record,
                         envelope,
                         own: own.clone(),
                     },
@@ -638,7 +643,7 @@ impl StatePeer {
     }
     /// A member's write of the workspace's shared desktop closes, moves or
     /// renames only what its writer made, or what the workspace lets them
-    /// moderate ([`tilo_desktop_model::shared_record::guard`]): decided on
+    /// moderate ([`tilo_desktop_model::shared_resource::guard`]): decided on
     /// the changes `doc` holds beyond `before`, against the policy this peer
     /// holds.
     fn check_shared_desktop(
@@ -658,10 +663,10 @@ impl StatePeer {
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(workspace, act), ActionKind::Undoable, now)
         };
-        tilo_desktop_model::shared_record::guard::judge(
+        tilo_desktop_model::shared_resource::guard::judge(
             doc,
             before,
-            &tilo_desktop_model::shared_record::guard::Writer {
+            &tilo_desktop_model::shared_resource::guard::Writer {
                 person: person_of(member)?,
                 members: members.as_ref(),
                 allows: &allows,

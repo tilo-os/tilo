@@ -411,7 +411,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let host = ProbeHost::new();
         LAYOUT_ONLY.set(true);
         let mut first = component(&host, 1);
-        let first_record = first.record().id.as_str().to_owned();
+        let first_resource = first.record().id.as_str().to_owned();
         let mut second = component(&host, 2);
         let (tx1, rx1) = std::sync::mpsc::channel();
         first
@@ -463,7 +463,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         assert_eq!(captures.len(), 2);
         for (record, _, state) in captures {
             assert!(state.writer().try_set(1));
-            if record == first_record {
+            if record == first_resource {
                 assert!(rx1.try_recv().is_ok());
                 assert!(rx2.try_recv().is_err());
             } else {
@@ -499,8 +499,8 @@ thread_local! {
     static QUEUED_CONTROL: RefCell<Option<tilo_actions::ControlInvocation>> = const { RefCell::new(None) };
     static QUEUED_ORIGIN: Cell<tilo_ui::widget::controls::Origin> = const { Cell::new(tilo_ui::widget::controls::Origin::Person) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
-    static LEGACY_INTENT: RefCell<Option<tilo_ui::record::DocumentCheckout>> = const { RefCell::new(None) };
-    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::record::DocumentId>> = const { RefCell::new(vec![]) };
+    static LEGACY_INTENT: RefCell<Option<tilo_ui::resource::DocumentCheckout>> = const { RefCell::new(None) };
+    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::resource::DocumentId>> = const { RefCell::new(vec![]) };
     static LEGACY_MUTABLE: Cell<bool> = const { Cell::new(false) };
     static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
@@ -765,7 +765,7 @@ impl Widget for Root {
     tilo_ui::provides!(
         dyn tilo_ui::widget::controls::ActionControls,
         dyn tilo_ui::search::capability::SearchSource,
-        dyn tilo_ui::record::capability::RecordScoped,
+        dyn tilo_ui::resource::capability::ResourceScoped,
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui::host_operation::ResourceOperations
     );
@@ -907,11 +907,11 @@ impl tilo_ui::view::capability::ViewState for Root {
     }
 }
 
-impl tilo_ui::record::capability::RecordScoped for Root {
-    fn record_intent(&self) -> Option<tilo_ui::record::DocumentCheckout> {
+impl tilo_ui::resource::capability::ResourceScoped for Root {
+    fn record_intent(&self) -> Option<tilo_ui::resource::DocumentCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
-    fn set_record_scope(&mut self, record: &tilo_ui::record::DocumentId) {
+    fn set_resource_scope(&mut self, record: &tilo_ui::resource::DocumentId) {
         if LEGACY_MUTABLE.get() {
             LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
         }
@@ -984,7 +984,7 @@ fn factory(
     let record = context.record().id.as_str().to_string();
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(ROOT, "marker", record.clone())
                     .map_err(|e| e.to_string())
             })
@@ -1117,7 +1117,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                             &ROOT,
                             |_, _, _| panic!("cross-record callback executed")
                         ),
-                        Err(BoundDispatchError::CrossRecordReentry)
+                        Err(BoundDispatchError::CrossResourceReentry)
                     ));
                 },
             )
@@ -1195,7 +1195,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             tilo_ui::permissions::MemberId::person("probe-author"),
         );
         host.records.try_flush().unwrap();
-        let record_path = app_state::DocStore::workspace_document_dir_at(
+        let resource_path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             crate::support::application::APP,
             crate::support::application::WORKSPACE,
@@ -1203,8 +1203,8 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         )
         .unwrap()
         .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&record_path).unwrap();
-        std::fs::create_dir(&record_path).unwrap();
+        std::fs::remove_file(&resource_path).unwrap();
+        std::fs::create_dir(&resource_path).unwrap();
         let view_path = host.view_path(1);
         std::fs::create_dir_all(&view_path).unwrap();
         host.records
@@ -1227,7 +1227,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         drop(host.owners);
         let report = reports.last_mut().unwrap();
         assert!(report.view_error.is_some());
-        assert!(report.record_error.is_some());
+        assert!(report.resource_error.is_some());
         assert!(report.recovery.is_some());
         assert_eq!(
             report
@@ -1246,13 +1246,13 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             "retained"
         );
         std::fs::remove_dir(view_path).unwrap();
-        std::fs::remove_dir(record_path).unwrap();
+        std::fs::remove_dir(resource_path).unwrap();
         report.retry_view().unwrap();
-        report.retry_record().unwrap();
+        report.retry_resource().unwrap();
         assert!(report.view_retry.is_none());
         assert!(report.record_retry.is_none());
         assert!(report.view_error.is_none());
-        assert!(report.record_error.is_none());
+        assert!(report.resource_error.is_none());
     }
 }
 
@@ -1690,7 +1690,7 @@ fn nested_factory(
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     let record = context.record().id.as_str().to_owned();
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "marker", record.clone())
                 .map_err(|e| e.to_string())
         })
@@ -1801,7 +1801,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         let child = component(&child_host, 2);
         let checkout = child.record().clone();
         child_host.records.try_flush().unwrap();
-        let record_path = app_state::DocStore::workspace_document_dir_at(
+        let resource_path = app_state::DocStore::workspace_document_dir_at(
             &child_host.root(),
             crate::support::application::APP,
             crate::support::application::WORKSPACE,
@@ -1809,8 +1809,8 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         )
         .unwrap()
         .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&record_path).unwrap();
-        std::fs::create_dir(&record_path).unwrap();
+        std::fs::remove_file(&resource_path).unwrap();
+        std::fs::create_dir(&resource_path).unwrap();
         let view_path = child_host.view_path(2);
         std::fs::create_dir_all(&view_path).unwrap();
         child_host
@@ -1873,7 +1873,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         drop(parent_host);
         let report = reports.last_mut().unwrap();
         assert_eq!(report.recovery.as_ref().unwrap().instance_id, 2);
-        assert!(report.view_error.is_some() && report.record_error.is_some());
+        assert!(report.view_error.is_some() && report.resource_error.is_some());
         assert_eq!(
             report
                 .record_retry
@@ -1892,18 +1892,19 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
             "nested-retained"
         );
         std::fs::remove_dir(view_path).unwrap();
-        std::fs::remove_dir(record_path).unwrap();
+        std::fs::remove_dir(resource_path).unwrap();
         report.retry_view().unwrap();
-        report.retry_record().unwrap();
+        report.retry_resource().unwrap();
         assert!(report.view_retry.is_none() && report.record_retry.is_none());
-        let mut owners = tilo_ui::record::RecordOwners::new(child_host.temp.path().join("state"));
+        let mut owners =
+            tilo_ui::resource::ResourceOwners::new(child_host.temp.path().join("state"));
         let saved = owners
             .open(
                 crate::support::application::APP,
                 crate::support::application::WORKSPACE,
             )
             .unwrap();
-        saved.try_open_record(&checkout).unwrap();
+        saved.try_open_resource(&checkout).unwrap();
         assert_eq!(
             saved
                 .read(&checkout.id, |doc| {
@@ -2070,7 +2071,7 @@ fn fill_factory(
     _: RestoreInput,
 ) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     context
-        .initialize_new_record(|_| Ok(()))
+        .initialize_new_resource(|_| Ok(()))
         .map_err(tilo_ui::launch::LaunchError::Record)?;
     Ok(AppComponent::new(
         context,

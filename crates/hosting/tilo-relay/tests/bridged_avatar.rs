@@ -88,7 +88,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
 
     let requester = peer_handle(&laptop.device_pubkey());
     let want = |hash: &str| {
-        postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
+        postcard::to_stdvec(&NeighbourMsg::DocumentContentWant {
             requester,
             app_id: CHAT.into(),
             cluster_id: workspace.workspace.clone(),
@@ -106,13 +106,14 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     let mut lacking = Vec::new();
     tilo_test_env::within("the avatar arrives", async {
         loop {
-            let Inbound::RecordContent { from, frame } =
+            let Inbound::DocumentContent { from, frame } =
                 session.recv().await.expect("the session stays open")
             else {
                 continue;
             };
             assert_eq!(from, host.device_pubkey(), "the host answers");
-            if let Ok(NeighbourMsg::RecordContentLacks { hash, .. }) = postcard::from_bytes(&frame)
+            if let Ok(NeighbourMsg::DocumentContentLacks { hash, .. }) =
+                postcard::from_bytes(&frame)
             {
                 lacking.push(hash);
                 if !received.is_empty() && received.len() == avatar.len() {
@@ -120,7 +121,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
                 }
                 continue;
             }
-            let NeighbourMsg::RecordContentPiece {
+            let NeighbourMsg::DocumentContentPiece {
                 requester: to,
                 app_id,
                 cluster_id,

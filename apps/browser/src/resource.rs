@@ -575,7 +575,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
         cx.waker(),
     );
     // A picture of the page is content: the store the host lent this window
-    // (`RecordEnv::content`), not what `content::current()` answers, which is the wake
+    // (`ResourceEnv::content`), not what `content::current()` answers, which is the wake
     // scope entered now and holds nothing for an action applying outside the window.
     if let Some(content) = cx.content() {
         window.page_mut().attach_content(content);
@@ -614,7 +614,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     // recording and the person's other devices read it there. A private
     // window keeps none.
     if !cx.is_private()
-        && let Some(record) = cx.person::<crate::page_record::PageRecord>()
+        && let Some(record) = cx.person::<crate::page_resource::PageResource>()
     {
         window
             .page_mut()

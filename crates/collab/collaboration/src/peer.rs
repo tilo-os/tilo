@@ -26,7 +26,7 @@ pub trait PeerTransport {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         None
     }
-    /// Join `route`, whose record holds `record_kind`. The kind is what a
+    /// Join `route`, whose record holds `resource_type`. The kind is what a
     /// host needs to create the record on this device's first change.
     fn join_route(
         &mut self,
@@ -184,7 +184,9 @@ impl super::CollabTransport for PeerTransportAdapter {
         let result = match command {
             TransportCommand::Primary(request) => self.peer.send(request),
             TransportCommand::ToRoute(route, request) => self.peer.send_to_route(route, request),
-            TransportCommand::Join(route, record_kind) => self.peer.join_route(route, record_kind),
+            TransportCommand::Join(route, resource_type) => {
+                self.peer.join_route(route, resource_type)
+            }
             // The adapter reports the real acknowledgement of the latest Hello
             // through `take_primary_route_result`; there is nothing to enqueue.
             TransportCommand::ConfirmPrimaryRoute => Ok(()),

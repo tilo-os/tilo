@@ -21,7 +21,7 @@ impl ApprovedCheckContext {
         &self.original.route().cluster_id
     }
     pub fn record(&self) -> &str {
-        &self.original.route().record_id
+        &self.original.route().document_id
     }
     pub fn resource(&self) -> &str {
         &self.original.request().address.resource

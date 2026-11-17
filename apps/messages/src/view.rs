@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, Live, PersonRecord, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Live, PersonResource, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
@@ -34,8 +34,8 @@ pub(crate) struct WorkspacePerson {
 
 #[derive(Clone)]
 pub(crate) struct Sources {
-    directory: Option<PersonRecord<ContactDirectory>>,
-    accounts: Option<PersonRecord<PersonAccounts>>,
+    directory: Option<PersonResource<ContactDirectory>>,
+    accounts: Option<PersonResource<PersonAccounts>>,
     record: Option<Live<Messages>>,
     pub(crate) tilo: bool,
     pub(crate) me: Option<PersonId>,
@@ -77,13 +77,14 @@ impl Sources {
     pub(crate) fn contacts(&self) -> Rc<ContactDirectory> {
         self.directory.as_ref().map_or_else(
             || Rc::new(self.fixture.directory.clone()),
-            PersonRecord::get,
+            PersonResource::get,
         )
     }
     pub(crate) fn accounts(&self) -> Rc<PersonAccounts> {
-        self.accounts
-            .as_ref()
-            .map_or_else(|| Rc::new(self.fixture.accounts.clone()), PersonRecord::get)
+        self.accounts.as_ref().map_or_else(
+            || Rc::new(self.fixture.accounts.clone()),
+            PersonResource::get,
+        )
     }
     pub(crate) fn record(&self) -> Rc<Messages> {
         self.record
@@ -92,8 +93,8 @@ impl Sources {
     }
     fn revision(&self) -> (u64, u64, u64) {
         (
-            self.directory.as_ref().map_or(0, PersonRecord::revision),
-            self.accounts.as_ref().map_or(0, PersonRecord::revision),
+            self.directory.as_ref().map_or(0, PersonResource::revision),
+            self.accounts.as_ref().map_or(0, PersonResource::revision),
             self.record.as_ref().map_or(0, Live::revision),
         )
     }
@@ -604,7 +605,7 @@ fn sending_and_drafts(
     services: &Services,
 ) -> (
     crate::sending::Sending,
-    Option<PersonRecord<crate::drafts::MessageDrafts>>,
+    Option<PersonResource<crate::drafts::MessageDrafts>>,
 ) {
     let drafts = cx.person::<crate::drafts::MessageDrafts>();
     let sending = crate::sending::Sending::new(
@@ -660,7 +661,7 @@ fn navigation(
     selected: &Selection,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
     // Nobody to message only when the record holds no conversation either: a Messages with
@@ -928,11 +929,11 @@ fn overview(
     sources: &Sources,
     actions: &Actions<Messages>,
     selected: &Selection,
-    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
 ) -> Element {
     // The words left in a conversation are shown where the conversation is listed, beside
     // the person they were written for: a draft you cannot find is a draft you have lost.
-    let kept = drafts.map(PersonRecord::get);
+    let kept = drafts.map(PersonResource::get);
     let entries: Vec<_> = held(&sources.record())
         .into_iter()
         .map(Entry::Held)

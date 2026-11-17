@@ -245,7 +245,7 @@ mod tests {
         {
             let mut history = crate::history::History::new();
             for index in 0..6_000 {
-                history.record_at(
+                history.document_at(
                     &format!("https://{index}.example.test"),
                     &format!("Page {index}"),
                     index,
@@ -270,7 +270,7 @@ mod tests {
 
         {
             let mut history = crate::history::History::new();
-            history.record_at("https://stale.example.test", "Stale", 1);
+            history.document_at("https://stale.example.test", "Stale", 1);
             let index = BrowserSearchIndex::default();
             index.sync(&history);
             let provider = index.provider();
@@ -288,7 +288,7 @@ mod tests {
             use ui::tilo_resource::Resource as _;
 
             let mut history = crate::history::History::new();
-            history.record_at("https://rust.example.test", "Rust notes", 1);
+            history.document_at("https://rust.example.test", "Rust notes", 1);
             let mut document = ui::tilo_resource::Replica::<crate::resource::Browser>::new();
             document
                 .apply(crate::resource::Browser::ADD_BOOKMARK.with(

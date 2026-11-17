@@ -7,7 +7,7 @@ use tilo_ui::application::{
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
-use tilo_ui::record::DocumentId;
+use tilo_ui::resource::DocumentId;
 use tilo_ui::view::{FocusView, ThawError, View};
 
 #[test]
@@ -85,7 +85,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             Err(LaunchError::CapabilityDenied(_))
         ));
         assert_eq!(calls(), 0);
-        assert!(host.records.reserve_record(&checkout).is_ok());
+        assert!(host.records.reserve_resource(&checkout).is_ok());
     }
 
     {
@@ -131,7 +131,7 @@ fn a_window_remembers_its_record_before_it_closes() {
         .load(12)
         .unwrap()
         .expect("the window's record is remembered");
-    assert_eq!(saved.record_id, checkout.id.as_str());
+    assert_eq!(saved.document_id, checkout.id.as_str());
 }
 
 #[allow(
@@ -182,8 +182,8 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
                 "app" => bad.app_id = "foreign.app".into(),
                 "device" => bad.device_id = "other-device".into(),
                 "workspace" => bad.workspace_id = "other-workspace".into(),
-                "record" => bad.record_id = DocumentId::minted().as_str().into(),
-                "kind" => bad.record_kind = "other-kind".into(),
+                "record" => bad.document_id = DocumentId::minted().as_str().into(),
+                "kind" => bad.resource_type = "other-kind".into(),
                 "instance" => bad.instance_id = 99,
                 _ => unreachable!(),
             }
@@ -206,7 +206,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let minted = context.record().clone();
         let saved = SavedInstanceView {
-            record_id: minted.id.as_str().into(),
+            document_id: minted.id.as_str().into(),
             ..old_saved
         };
         let error = definition
@@ -224,7 +224,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         else {
             panic!("missing restore failure owner")
         };
-        let records = recovery.into_record_store().unwrap().unwrap();
+        let records = recovery.into_resource_store().unwrap().unwrap();
         assert!(matches!(*source, LaunchError::Restore(_)));
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
@@ -289,8 +289,8 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
                 "instance" => bad.instance_id = 12,
                 "version" => bad.version = SavedInstanceView::VERSION + 1,
                 "geometry" => bad.view.viewport.width = f64::NAN,
-                "record" => bad.record_id.clear(),
-                "kind" => bad.record_kind.clear(),
+                "record" => bad.document_id.clear(),
+                "kind" => bad.resource_type.clear(),
                 "app" => bad.app_id.clear(),
                 _ => unreachable!(),
             }
@@ -406,7 +406,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         else {
             panic!("missing retained binding")
         };
-        let records = recovery.into_record_store().unwrap().unwrap();
+        let records = recovery.into_resource_store().unwrap().unwrap();
         assert!(matches!(*source, LaunchError::Operation(_)));
         assert_eq!(record.id, minted.id);
         assert_eq!(body(&records, &record), "initialized");
@@ -445,7 +445,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
                 .is_err()
         );
         assert!(!host.records.is_ready(&record.id));
-        assert!(host.records.reserve_record(&record).is_ok());
+        assert!(host.records.reserve_resource(&record).is_ok());
         assert!(captured_handles().iter().all(|h| !h.is_active()));
         assert!(!host.view_path(11).exists());
     }
@@ -479,7 +479,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         else {
             panic!("missing Ready owner")
         };
-        let records = recovery.into_record_store().unwrap().unwrap();
+        let records = recovery.into_resource_store().unwrap().unwrap();
         assert!(matches!(*source, LaunchError::Restore(_)));
         assert_eq!(record.id, checkout.id);
         assert_eq!(body(&records, &record), "initialized");
@@ -532,7 +532,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         let foreign = host
             .prepare(probe_definition(), 12, &LaunchTarget::New)
             .unwrap();
-        let foreign_record = foreign.record().clone();
+        let foreign_resource = foreign.record().clone();
         set_foreign_context(foreign);
         let error = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -546,10 +546,10 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         else {
             panic!("missing original binding")
         };
-        let records = recovery.into_record_store().unwrap().unwrap();
+        let records = recovery.into_resource_store().unwrap().unwrap();
         assert!(matches!(*source, LaunchError::BindingMismatch));
         assert_eq!(record.id, expected.id);
-        assert_ne!(record.id, foreign_record.id);
+        assert_ne!(record.id, foreign_resource.id);
         assert_eq!(body(&records, &record), "initialized");
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
     }
@@ -564,10 +564,10 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .err()
             .unwrap();
         assert!(
-            matches!(error, LaunchError::Record(tilo_ui::record::RecordOpenError::Initialization(reason)) if reason == "schema initialization refused")
+            matches!(error, LaunchError::Record(tilo_ui::resource::ResourceOpenError::Initialization(reason)) if reason == "schema initialization refused")
         );
         assert!(!host.records.is_ready(&record.id));
-        assert!(host.records.reserve_record(&record).is_ok());
+        assert!(host.records.reserve_resource(&record).is_ok());
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
         let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
@@ -663,7 +663,7 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
             .unwrap();
         assert_eq!(before, after);
         assert_eq!(initializations(), 1);
-        assert_eq!(host.records.open_records().len(), 1);
+        assert_eq!(host.records.open_resources().len(), 1);
         let directory = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
@@ -730,7 +730,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             })
             .unwrap();
         let report = component.close();
-        assert!(report.record_error.is_some());
+        assert!(report.resource_error.is_some());
         assert!(report.recovery.is_some());
         assert!(report.view_error.is_none());
         drop(component);
@@ -852,8 +852,8 @@ fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
         device_id: device.into(),
         workspace_id: workspace.into(),
         instance_id: 11,
-        record_id: format!("record:{workspace}:{device}"),
-        record_kind: "test".into(),
+        document_id: format!("record:{workspace}:{device}"),
+        resource_type: "test".into(),
         view: local_view(scroll, "caret=1"),
         application: None,
         shows: None,
@@ -963,7 +963,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         } else {
             target
         };
-        // Only the context owns the record now; RecordOwners entries are weak.
+        // Only the context owns the record now; ResourceOwners entries are weak.
         let error = definition
             .instantiate(context, target, RestoreInput::Local(bad))
             .err()
@@ -977,7 +977,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         else {
             panic!("Ready validation must retain its last owner: {case}")
         };
-        let records = recovery.into_record_store().unwrap().unwrap();
+        let records = recovery.into_resource_store().unwrap().unwrap();
         match case {
             "definition" | "target" | "foreign" => {
                 assert!(matches!(*source, LaunchError::BindingMismatch));
@@ -1024,7 +1024,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert_eq!(initializations(), 1);
         assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
         std::fs::remove_dir(&path).unwrap();
-        assert!(retry.close().record_error.is_none());
+        assert!(retry.close().resource_error.is_none());
     }
 }
 
@@ -1234,7 +1234,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         host.records.try_flush().unwrap();
         assert_eq!(
             host.records.save_status(&checkout.id).unwrap(),
-            tilo_ui::record::RecordSaveStatus::Saved
+            tilo_ui::resource::ResourceSaveStatus::Saved
         );
     }
 }
@@ -1244,15 +1244,15 @@ mod save_status_fixture {
     use std::cell::RefCell;
     use tilo_ui::{
         Widget,
-        record::{DocumentCheckout, RecordOpenError, RecordSaveStatus, RecordStore},
+        resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore},
         widget::{AppKind, AppWidget, IconDescriptor, TileHost},
     };
     thread_local! {
-        static STORE: RefCell<Option<RecordStore>> = const { RefCell::new(None) };
-        static DELIVERED: RefCell<Vec<RecordSaveStatus>> = const { RefCell::new(Vec::new()) };
+        static STORE: RefCell<Option<ResourceStore>> = const { RefCell::new(None) };
+        static DELIVERED: RefCell<Vec<ResourceSaveStatus>> = const { RefCell::new(Vec::new()) };
     }
     struct StatusRoot {
-        records: RecordStore,
+        records: ResourceStore,
         checkout: DocumentCheckout,
     }
     impl Widget for StatusRoot {
@@ -1272,7 +1272,7 @@ mod save_status_fixture {
             // are immutable projections and may share durability reads.
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
-                Err(RecordOpenError::Busy)
+                Err(ResourceOpenError::Busy)
             ));
         }
     }
@@ -1286,7 +1286,7 @@ mod save_status_fixture {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Named("status".into())
         }
-        fn record_save_status(&mut self, status: RecordSaveStatus) {
+        fn resource_save_status(&mut self, status: ResourceSaveStatus) {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
         }
@@ -1298,7 +1298,7 @@ mod save_status_fixture {
     ) -> Result<tilo_ui::application::AppComponent, LaunchError> {
         if matches!(target, LaunchTarget::New) {
             context
-                .initialize_new_record(|_| Ok(()))
+                .initialize_new_resource(|_| Ok(()))
                 .map_err(LaunchError::Record)?;
         }
         let root = StatusRoot {
@@ -1377,7 +1377,7 @@ mod save_status_fixture {
             tile.sync(&outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().clone()),
-                vec![RecordSaveStatus::Saved]
+                vec![ResourceSaveStatus::Saved]
             );
             Self {
                 tile,
@@ -1429,10 +1429,10 @@ mod save_status_fixture {
             );
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(RecordSaveStatus::Saving)
+                Some(ResourceSaveStatus::Saving)
             );
             // Queue the older revision, then leave a newer transaction open while the
-            // real writer makes that older checkpoint visible. The private RecordStore
+            // real writer makes that older checkpoint visible. The private ResourceStore
             // predicate test separately observes the producer acknowledgement.
             self.host.records.tick().unwrap();
             let older = self
@@ -1469,7 +1469,7 @@ mod save_status_fixture {
             self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(RecordSaveStatus::Saving)
+                Some(ResourceSaveStatus::Saving)
             );
             assert_eq!(
                 self.host
@@ -1492,7 +1492,7 @@ mod save_status_fixture {
             self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(RecordSaveStatus::Saved)
+                Some(ResourceSaveStatus::Saved)
             );
             // Presenting it measures and draws what shows the status; it
             // rebuilds no layout tree, which would repaint the whole window
@@ -1525,7 +1525,7 @@ mod save_status_fixture {
                 self.pump();
                 assert!(matches!(
                     DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                    Some(RecordSaveStatus::Failed(_))
+                    Some(ResourceSaveStatus::Failed(_))
                 ));
             }
             assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
@@ -1533,19 +1533,19 @@ mod save_status_fixture {
             self.pump();
             assert!(matches!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(RecordSaveStatus::Failed(_))
+                Some(ResourceSaveStatus::Failed(_))
             ));
             self.host.records.try_flush().unwrap();
             self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(RecordSaveStatus::Saved)
+                Some(ResourceSaveStatus::Saved)
             );
         }
         pub(super) fn close(&mut self) {
             let reports = tilo_ui::component_lifecycle::close_components(&mut self.tile);
             assert!(!reports.is_empty());
-            assert!(reports.iter().all(|report| report.record_error.is_none()
+            assert!(reports.iter().all(|report| report.resource_error.is_none()
                 && report.view_error.is_none()
                 && report.teardown_error.is_none()));
             let delivered = DELIVERED.with(|seen| seen.borrow().len());
@@ -1698,7 +1698,7 @@ mod paired_local {
     ) -> Result<AppComponent, LaunchError> {
         if matches!(target, LaunchTarget::New) {
             context
-                .initialize_new_record(|doc| {
+                .initialize_new_resource(|doc| {
                     doc.put(ROOT, "body", "current canonical body")
                         .map_err(|e| e.to_string())
                 })
@@ -1730,8 +1730,8 @@ mod paired_local {
                 .unwrap();
             let mut saved = envelope(DEVICE, WORKSPACE, 12.0);
             saved.app_id = APP.into();
-            saved.record_id = component.record().id.as_str().into();
-            saved.record_kind = component.record().kind.as_str().into();
+            saved.document_id = component.record().id.as_str().into();
+            saved.resource_type = component.record().kind.as_str().into();
             saved.application = Some(ApplicationLocalView {
                 app_id: APP.into(),
                 version: 1,

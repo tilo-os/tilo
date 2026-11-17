@@ -219,7 +219,7 @@ pub const DOCUMENT_READ_TAG: &str = "read:document";
 /// run who may read the record, and it discloses the record it sits on to
 /// them: History's `review-restore`, a step for agents, is how an agent is
 /// shown a record that has no document read (Terminal's session).
-pub const RECORD_READ_TAG: &str = "read:record";
+pub const RESOURCE_READ_TAG: &str = "read:record";
 
 /// [`ActionContract::tags`] entry of the action that opens the file its
 /// `path` parameter names in this app instance, reading it inside the app's
@@ -584,7 +584,7 @@ pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 /// ([`ActionContract::need`]). What it does stays its
 /// [`kind`](ActionContract::kind): a change Undo takes back is still
 /// [`Undoable`](ActionKind::Undoable), and asks nothing before it runs.
-pub const OWN_RECORD_SCOPE: &str = "tilo.scope.own-record";
+pub const OWN_RESOURCE_SCOPE: &str = "tilo.scope.own-record";
 
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,12 +747,12 @@ impl ActionContract {
     /// accounted for. The kind says what the action does (whether Undo takes
     /// it back, whether it asks first); the need says what a grant must
     /// allow, and the scope is where they part: a change of the person's own
-    /// record ([`OWN_RECORD_SCOPE`]) and an outside effect on the person's
+    /// record ([`OWN_RESOURCE_SCOPE`]) and an outside effect on the person's
     /// own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reach nothing a
     /// workspace's grants govern, so they need only what reading needs.
     #[must_use]
     pub fn scoped(&self, mut need: ActionNeed) -> ActionNeed {
-        if self.is_own_record()
+        if self.is_own_resource()
             || (need.kind == ActionKind::Outside && self.runs_on_invokers_device())
         {
             need.kind = ActionKind::Read;
@@ -806,17 +806,17 @@ impl ActionContract {
     }
 
     /// Whether the action changes a record of the invoking person's own.
-    /// See [`OWN_RECORD_SCOPE`].
-    pub fn is_own_record(&self) -> bool {
-        self.tags.iter().any(|tag| tag == OWN_RECORD_SCOPE)
+    /// See [`OWN_RESOURCE_SCOPE`].
+    pub fn is_own_resource(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OWN_RESOURCE_SCOPE)
     }
 
     /// Mark the action as carried out on a record of the invoking person's
     /// own: it keeps its kind and needs only what reading needs. See
-    /// [`OWN_RECORD_SCOPE`].
-    pub fn set_own_record(&mut self) {
-        if !self.is_own_record() {
-            self.tags.push(OWN_RECORD_SCOPE.to_owned());
+    /// [`OWN_RESOURCE_SCOPE`].
+    pub fn set_own_resource(&mut self) {
+        if !self.is_own_resource() {
+            self.tags.push(OWN_RESOURCE_SCOPE.to_owned());
         }
     }
 
@@ -871,18 +871,18 @@ impl ActionContract {
 
     /// Whether the action reads what its record holds and moves nothing: a
     /// document read ([`DOCUMENT_READ_TAG`]) or another read of the record's
-    /// state ([`RECORD_READ_TAG`]).
-    pub fn reads_record(&self) -> bool {
-        self.reads_document() || self.tags.iter().any(|tag| tag == RECORD_READ_TAG)
+    /// state ([`RESOURCE_READ_TAG`]).
+    pub fn reads_resource(&self) -> bool {
+        self.reads_document() || self.tags.iter().any(|tag| tag == RESOURCE_READ_TAG)
     }
 
     /// Whether a view under this contract shows its resource to callers other
-    /// than its publisher: a read of the record ([`Self::reads_record`]) or
+    /// than its publisher: a read of the record ([`Self::reads_resource`]) or
     /// the caller's own presence view. Any other view changes only what
     /// its caller sees, and keeps the resource it alone discloses private
     /// (the action directory's disclosure, `agent_disclosure`).
     pub fn discloses_resource(&self) -> bool {
-        self.reads_record() || self.is_presence_view()
+        self.reads_resource() || self.is_presence_view()
     }
 
     /// Which of a resource's views the action directory discloses it
@@ -891,7 +891,7 @@ impl ActionContract {
     pub fn disclosure_rank(&self) -> u8 {
         if self.reads_document() {
             0
-        } else if self.reads_record() {
+        } else if self.reads_resource() {
             1
         } else {
             2

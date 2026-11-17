@@ -343,7 +343,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // The node holds the document only as ciphertext.
     let writes: Vec<_> = relay
-        .workspace_records()
+        .workspace_documents()
         .retained(acme.workspace_id)
         .await
         .unwrap()
@@ -351,10 +351,10 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .filter_map(
             |retained| match postcard::from_bytes::<NeighbourMsg>(&retained.body) {
                 Ok(NeighbourMsg::AppDocument {
-                    record_id,
+                    document_id,
                     envelope,
                     ..
-                }) if record_id == "plan" => Some(envelope),
+                }) if document_id == "plan" => Some(envelope),
                 _ => None,
             },
         )

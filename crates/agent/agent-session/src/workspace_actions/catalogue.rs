@@ -6,8 +6,8 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
     ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
-    DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, WorkspaceState, catalogue_keys,
-    provider_workspace, record_of, record_provider,
+    DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, provider_workspace,
+    record_provider, resource_of,
 };
 use tilo_relay_protocol::WorkspaceId;
 
@@ -64,12 +64,12 @@ impl Worker {
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
             Some(provider) if provider == own_provider => Vec::new(),
             Some(provider) => {
-                let route = record_of(provider, &cluster_id)
+                let route = resource_of(provider, &cluster_id)
                     .filter(|route| routes.contains(route))
                     .ok_or(ActionHostError::UnknownAction)?;
                 vec![route]
             }
-            None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
+            None => routes.iter().take(DEFAULT_DOCUMENTS).cloned().collect(),
         };
         let bounded = self.bounded(caller);
         let page_began = std::time::Instant::now();
@@ -94,7 +94,7 @@ impl Worker {
             // Paged where each record is held: a page costs its rows, however
             // many items the records hold.
             let at = (caller, bounded.as_ref());
-            self.records_page(
+            self.documents_page(
                 workspace_id,
                 at,
                 (&wanted, own_rows),
@@ -110,14 +110,14 @@ impl Worker {
                     provider: record_provider(route),
                     app_id: route.app_id.clone(),
                     workspace: cluster_id.clone(),
-                    record_id: route.record.clone(),
+                    document_id: route.record.clone(),
                     browsable: true,
                 })
                 .chain(std::iter::once(CatalogueProvider {
                     provider: own_provider,
                     app_id: String::new(),
                     workspace: cluster_id.clone(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     browsable: false,
                 }))
                 .collect();

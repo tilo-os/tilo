@@ -718,7 +718,7 @@ impl Notes {
                 provider: provider.into(),
                 app_id: app_id.into(),
                 workspace: "workspace".into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 browsable: true,
             };
             return Pending::ready(Ok(CataloguePage {

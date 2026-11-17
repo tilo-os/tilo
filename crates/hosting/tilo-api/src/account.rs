@@ -899,7 +899,7 @@ impl Server {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        match self.store.record_key(&minted, &name, kind, None, now) {
+        match self.store.resource_key(&minted, &name, kind, None, now) {
             Ok((minted, token)) => Outcome::Ok(json!({
             "grant": minted.id,
             "name": minted.client_name,

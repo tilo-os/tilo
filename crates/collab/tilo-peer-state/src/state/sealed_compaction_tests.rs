@@ -86,7 +86,7 @@ fn fixture() -> Fixture {
                 workspace_changes,
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],
@@ -198,7 +198,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
         peer: peer_handle(op.author.as_bytes()),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(op),
         own: None,
     }
@@ -689,7 +689,7 @@ tilo_test_env::scenario! {
             "the bound refuses the write past it"
         );
         assert!(
-            !f.host.publication().sealed_records_to_compact().is_empty(),
+            !f.host.publication().sealed_to_compact().is_empty(),
             "a full record is due for its writer's checkpoint"
         );
 
@@ -712,7 +712,7 @@ tilo_test_env::scenario! {
             9,
             "the checkpoint and the writes after it"
         );
-        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        assert!(f.host.publication().sealed_to_compact().is_empty());
         let mut read_write = |op: &SignedOp| open(&keys, op);
         let opened = f
             .host
@@ -1174,10 +1174,10 @@ tilo_test_env::scenario! {
         impostor.seq = next_seq(&f.host, &f.owner);
         refused(&mut f.host, &f.owner, message(impostor), now);
 
-        let mut other_record = envelope_of(&forged(&f.host, &f.owner, &valid, now));
-        other_record.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
-        collab_types::sign_op(&mut other_record, &f.owner).unwrap();
-        refused(&mut f.host, &f.owner, message(other_record), now);
+        let mut other_document = envelope_of(&forged(&f.host, &f.owner, &valid, now));
+        other_document.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
+        collab_types::sign_op(&mut other_document, &f.owner).unwrap();
+        refused(&mut f.host, &f.owner, message(other_document), now);
 
         let mut delta = valid.1;
         delta.scheme = collab_types::EncryptionScheme::ContentKey {
@@ -1282,7 +1282,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 waited.primary(),
-                InputDisposition::RetryLater(MissingPrerequisite::RecordCheckpoint)
+                InputDisposition::RetryLater(MissingPrerequisite::DocumentCheckpoint)
             ),
             "waited for the record's checkpoint: {:?}",
             waited.primary()
@@ -1534,12 +1534,12 @@ tilo_test_env::scenario! {
         let mut author = Author::new(&f.host);
         let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
         admit(&mut f.host, &f.editor, first, now);
-        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        assert!(f.host.publication().sealed_to_compact().is_empty());
         let one = held(&f.host).remove(0);
         f.host.core.documents.get_mut(&route()).unwrap().sealed =
             vec![one; MAX_SEALED_OPS / 4 * 3].into();
         assert_eq!(
-            f.host.publication().sealed_records_to_compact(),
+            f.host.publication().sealed_to_compact(),
             vec![(APP.to_owned(), RECORD.to_owned())]
         );
     }
@@ -1563,7 +1563,7 @@ tilo_test_env::scenario! {
             );
             admit(&mut f.host, &f.other, next, now);
         }
-        assert!(f.host.publication().sealed_records_to_compact().is_empty());
+        assert!(f.host.publication().sealed_to_compact().is_empty());
         let mut sequence = 0;
         while !f.host.core.exact_admissions.pressed() {
             sequence += 1;
@@ -1583,7 +1583,7 @@ tilo_test_env::scenario! {
                 .unwrap();
         }
         assert_eq!(
-            f.host.publication().sealed_records_to_compact(),
+            f.host.publication().sealed_to_compact(),
             vec![(APP.to_owned(), RECORD.to_owned())]
         );
         let before = f.host.core.exact_admissions.len();
@@ -1682,7 +1682,7 @@ tilo_test_env::scenario! {
         let documents = |messages: &[NeighbourMsg]| {
             messages
                 .iter()
-                .any(|message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD))
+                .any(|message| matches!(message, NeighbourMsg::AppDocument { document_id, .. } if document_id == RECORD))
         };
 
         let mut published = host.clone();
@@ -1852,7 +1852,7 @@ tilo_test_env::scenario! {
         }
         let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
         let read = |maximum: usize| {
-            let mut kept = KeptRecord::default();
+            let mut kept = KeptDocument::default();
             joiner
                 .open_document(
                     f.authority.device_public_key,
@@ -2087,7 +2087,7 @@ tilo_test_env::scenario! {
         let f = fixture();
         let keys = f.keys();
         let mut host = f.host.clone();
-        assert!(!host.publication().is_sealed_record(APP, RECORD));
+        assert!(!host.publication().is_sealed_document(APP, RECORD));
         let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
         let heads = document.get_heads();
         document.put(ROOT, "value", "sealed").unwrap();
@@ -2104,7 +2104,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         assert!(envelope_of(&message).encryption.is_some());
-        assert!(host.publication().is_sealed_record(APP, RECORD));
+        assert!(host.publication().is_sealed_document(APP, RECORD));
         let opened = host
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
@@ -2128,7 +2128,7 @@ tilo_test_env::scenario! {
 
         let mut keyless = f.host.clone();
         admit(&mut keyless, &f.owner, message, f.now);
-        assert!(keyless.publication().is_sealed_record(APP, RECORD));
+        assert!(keyless.publication().is_sealed_document(APP, RECORD));
     }
 
     phase the_key_holder_writes_a_new_records_genesis_sealed;
@@ -2161,7 +2161,7 @@ tilo_test_env::scenario! {
                 f.now,
             )
             .unwrap();
-        assert!(host.publication().is_sealed_record(APP, record));
+        assert!(host.publication().is_sealed_document(APP, record));
         assert_eq!(
             AutoCommit::load(&host.document(APP, record).unwrap())
                 .unwrap()
@@ -2201,8 +2201,8 @@ tilo_test_env::scenario! {
     {
         let f = fixture();
         let mut host = f.host.clone();
-        assert!(host.seal_record(APP, RECORD));
-        assert!(host.publication().is_sealed_record(APP, RECORD));
+        assert!(host.seal_document(APP, RECORD));
+        assert!(host.publication().is_sealed_document(APP, RECORD));
         assert!(
             host.clone()
                 .publication_mut()
@@ -2210,15 +2210,15 @@ tilo_test_env::scenario! {
                 .is_err()
         );
         let restored = f.restore(&host.durable().unwrap()).unwrap();
-        assert!(restored.publication().is_sealed_record(APP, RECORD));
+        assert!(restored.publication().is_sealed_document(APP, RECORD));
         let messages = host
             .publication_mut()
             .durable_bootstrap_messages(&f.owner, f.now, 2)
             .unwrap();
         assert!(!messages.iter().any(
-            |message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD)
+            |message| matches!(message, NeighbourMsg::AppDocument { document_id, .. } if document_id == RECORD)
         ));
-        assert!(!host.seal_record(APP, "tab:2"));
+        assert!(!host.seal_document(APP, "tab:2"));
     }
 
     phase a_seal_waits_behind_the_cleartext_writes_held_before_it;
@@ -2270,7 +2270,7 @@ tilo_test_env::scenario! {
         f.host
             .receive_from_report(origin(&f.owner), first, now)
             .expect("a cleartext write before the seal is the record's base");
-        assert!(f.host.publication().is_sealed_record(APP, RECORD));
+        assert!(f.host.publication().is_sealed_document(APP, RECORD));
         let opened = f
             .host
             .publication()
@@ -2368,7 +2368,7 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
         admit(&mut f.host, &editor, sealed, now);
     }
     for index in 0..64u64 {
-        if !f.host.publication().sealed_records_to_compact().is_empty() {
+        if !f.host.publication().sealed_to_compact().is_empty() {
             let mut holder = f.host.clone();
             let pieces = mint_pieces(&mut holder, &keys, &owner, now).unwrap();
             assert!(pieces.len() > 3, "a snapshot of 10 MiB spans several ops");
@@ -2449,7 +2449,7 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
     let (now, editor) = (f.now, f.editor.clone());
     let mut author = Author::new(&f.host);
     for index in 0..PARTS {
-        if !f.host.publication().sealed_records_to_compact().is_empty() {
+        if !f.host.publication().sealed_to_compact().is_empty() {
             compact_set(&mut f, &keys, now);
         }
         let edit = author.edit_bytes(&format!("part-{index}"), noise(PART, index as u64));
@@ -2464,7 +2464,7 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
 
     let (mut compactions, mut compacted) = (0usize, 0usize);
     for index in 0..WRITES {
-        if !f.host.publication().sealed_records_to_compact().is_empty() {
+        if !f.host.publication().sealed_to_compact().is_empty() {
             compactions += 1;
             compacted += compact_set(&mut f, &keys, now);
         }
@@ -2876,7 +2876,7 @@ tilo_test_env::scenario! {
         );
         let stuck = write(&f.host, &f.other, &keys, &second, now);
         admit(&mut f.host, &f.other, stuck, now);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         let reader = f.authority.device_public_key;
         let mut opener = |op: &SignedOp| open(&keys, op);
         let read = f

@@ -34,7 +34,7 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     let relay = start(state.path(), &alice, &host).await;
     let workspace = create_and_enter(&relay, &laptop, "Lounge").await;
     let mut bob_peer =
-        super::sealed_records::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [7; 32])
+        super::sealed_documents::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [7; 32])
             .await
             .unwrap();
     let mut alice_peer = StatePeer::new(
@@ -93,7 +93,7 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     tilo_test_env::within("the reopened governor holds Bob's committed write", async {
         loop {
             let held = workspaces
-                .record_document(&workspace.workspace, APP, "")
+                .resource_document(&workspace.workspace, APP, "")
                 .await
                 .unwrap()
                 .and_then(|bytes| AutoCommit::load(&bytes).ok())

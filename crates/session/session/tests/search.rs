@@ -1210,9 +1210,13 @@ fn write_index(
     std::fs::create_dir_all(&staged).expect("the index's directory");
     let mut index = automerge::AutoCommit::new();
     for (id, kind) in rows {
-        let id = ui::record::DocumentId::parse(id).expect("a record id");
+        let id = ui::resource::DocumentId::parse(id).expect("a record id");
         assert!(
-            ui::record::index::reference(&mut index, &id, &ui::record::ResourceType::new(*kind)),
+            ui::resource::index::reference(
+                &mut index,
+                &id,
+                &ui::resource::ResourceType::new(*kind)
+            ),
             "the index names {id}"
         );
     }
@@ -1229,10 +1233,10 @@ fn known_in(package: &str, workspace: &str) -> Vec<String> {
     let Some(index) = store.load().ok().flatten() else {
         return Vec::new();
     };
-    let mut records = ui::record::RecordSet::in_memory().with_home(workspace);
+    let mut records = ui::resource::ResourceSet::in_memory().with_home(workspace);
     records.discover_workspace(&index);
     records
-        .known_records()
+        .known_resources()
         .iter()
         .map(|record| format!("{} {}", record.id.as_str(), record.kind.as_str()))
         .collect()
@@ -1320,7 +1324,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         .expect("a workspace that is not the one in front");
     let document = home.home().join(QUARTERLY);
     std::fs::write(&document, "what the plan says").unwrap();
-    let record = ui::record::DocumentId::for_file(&document);
+    let record = ui::resource::DocumentId::for_file(&document);
     write_index(
         &home,
         NOTES,
@@ -1351,7 +1355,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         within(|| known_in(NOTES, &here).contains(&format!(
             "{} {}",
             record.as_str(),
-            ui::record::ResourceType::new("document").as_str()
+            ui::resource::ResourceType::new("document").as_str()
         ))),
         "this workspace holds the record: {:?}",
         known_in(NOTES, &here)
@@ -2062,18 +2066,18 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
     session.step(Duration::from_millis(1)).unwrap();
     // The workbook the Sheets window shows, as its app's index of this workspace names it.
     let here = workspace_in_front(&session);
-    let workbook = ui::record::DocumentId::parse("uuid:6d1c1f36-0000-4000-8000-0000000000ab")
+    let workbook = ui::resource::DocumentId::parse("uuid:6d1c1f36-0000-4000-8000-0000000000ab")
         .expect("a record id");
     let directory = app_state::workspace_index_directory(home.data(), "so.tilo.sheets", &here)
         .expect("an index directory");
     std::fs::create_dir_all(&directory).expect("the index's directory");
     let mut index = automerge::AutoCommit::new();
-    assert!(ui::record::index::reference(
+    assert!(ui::resource::index::reference(
         &mut index,
         &workbook,
-        &ui::record::ResourceType::new("sheets.workbook")
+        &ui::resource::ResourceType::new("sheets.workbook")
     ));
-    assert!(ui::record::index::set_name(
+    assert!(ui::resource::index::set_name(
         &mut index,
         &workbook,
         Some("Sheet1")

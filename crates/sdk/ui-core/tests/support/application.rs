@@ -12,7 +12,7 @@ use tilo_ui::local_state::LocalState;
 use tilo_ui::permissions::{
     ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
 };
-use tilo_ui::record::{DocumentCheckout, RecordOwners, RecordStore, ResourceType};
+use tilo_ui::resource::{DocumentCheckout, ResourceOwners, ResourceStore, ResourceType};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
@@ -266,13 +266,13 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         app_id: APP.into(),
         title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
-        record_kind: ResourceType::new("probe"),
+        resource_type: ResourceType::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
-        workspace_record: false,
-        member_record: false,
-        opens_before_record: false,
+        workspace_resource: false,
+        member_resource: false,
+        opens_before_resource: false,
         create,
     }
 }
@@ -296,15 +296,15 @@ pub fn runner_permissions() -> SharedPermissions {
     )
 }
 pub struct ProbeHost {
-    pub owners: RecordOwners,
-    pub records: RecordStore,
+    pub owners: ResourceOwners,
+    pub records: ResourceStore,
     pub views: Rc<InstanceViewStore>,
     // Keep the filesystem alive until stores flush and join their owned workers.
     pub temp: tempfile::TempDir,
 }
 impl ProbeHost {
     pub fn new() -> Self {
-        Self::over(RecordOwners::new)
+        Self::over(ResourceOwners::new)
     }
 
     /// A host whose record store writes nothing until a test flushes it:
@@ -312,14 +312,14 @@ impl ProbeHost {
     /// pending save does, however slowly a loaded machine runs it.
     pub fn holding_writes() -> Self {
         Self::over(|root| {
-            RecordOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
+            ResourceOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
                 root,
                 std::time::Duration::from_secs(3600),
             )))
         })
     }
 
-    fn over(owners: impl FnOnce(std::path::PathBuf) -> RecordOwners) -> Self {
+    fn over(owners: impl FnOnce(std::path::PathBuf) -> ResourceOwners) -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
         COMMITTED_ACTION.set(None);
@@ -393,7 +393,7 @@ pub fn existing(checkout: &DocumentCheckout) -> LaunchTarget {
         reveal: None,
     }
 }
-pub fn body(records: &RecordStore, checkout: &DocumentCheckout) -> String {
+pub fn body(records: &ResourceStore, checkout: &DocumentCheckout) -> String {
     records
         .read(&checkout.id, |doc| {
             doc.get(ROOT, "body")
@@ -414,7 +414,7 @@ fn initialize(context: &mut HostContext, target: &LaunchTarget) -> Result<(), La
     HANDLES.with_borrow_mut(|v| v.push(context.wake_handle()));
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 INITIALIZATIONS.set(initializations().saturating_add(1));
                 doc.put(ROOT, "body", "initialized")
                     .map_err(|e| e.to_string())?;
@@ -423,13 +423,13 @@ fn initialize(context: &mut HostContext, target: &LaunchTarget) -> Result<(), La
             .map_err(LaunchError::Record)?;
         assert!(
             context
-                .initialize_new_record(|_| panic!("second initializer"))
+                .initialize_new_resource(|_| panic!("second initializer"))
                 .is_err()
         );
     } else {
         assert!(
             context
-                .initialize_new_record(|_| panic!("existing initializer"))
+                .initialize_new_resource(|_| panic!("existing initializer"))
                 .is_err()
         );
     }
@@ -469,7 +469,7 @@ fn build_probe(
     CALLS.set(calls().saturating_add(1));
     initialize(&mut context, target)?;
     let body = context
-        .read_record(|doc| {
+        .read_resource(|doc| {
             doc.get(ROOT, "body")
                 .unwrap()
                 .unwrap()
@@ -991,7 +991,7 @@ pub fn initializer_failure(
 ) -> Result<AppComponent, LaunchError> {
     HANDLES.with_borrow_mut(|handles| handles.push(context.wake_handle()));
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "unpublished")
                 .map_err(|e| e.to_string())?;
             Err("schema initialization refused".into())

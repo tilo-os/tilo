@@ -951,7 +951,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                 provider: "7".into(),
                 app_id: "so.tilo.notes".into(),
                 workspace: "workspace".into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 browsable: true,
             }];
         }

@@ -238,7 +238,7 @@ fn bound_factory(
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
     if matches!(target, crate::application::LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
+            .initialize_new_resource(|doc| {
                 doc.put(ROOT, "marker", "bound-record")
                     .map_err(|e| e.to_string())
             })
@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
         }));
         BOUND_PROBE.with_borrow_mut(|slot| *slot = Some(probe.clone()));
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open("dev.tilo.two-views", "00000000-0000-0000-0000-000000000009")
             .unwrap();
@@ -409,13 +409,13 @@ tilo_test_env::scenario! {
             app_id: "dev.tilo.two-views".into(),
             title: "Two views".into(),
             icon: crate::widget::IconDescriptor::Glyph("T"),
-            record_kind: crate::record::ResourceType::new("two-views"),
+            resource_type: crate::resource::ResourceType::new("two-views"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: bound_factory,
         };
         let target = crate::application::LaunchTarget::New;

@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
     InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
-    application_provider_record, pending, provider_workspace, workspace_provider,
+    application_provider_resource, pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -101,8 +101,8 @@ pub(super) struct ConnectionActionHost {
 }
 
 impl tilo_actions::remote::ActionHost for ConnectionActionHost {
-    fn record_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::RecordReads>> {
-        self.state.record_reads()
+    fn resource_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.state.resource_reads()
     }
 
     fn query(
@@ -711,7 +711,7 @@ impl AppBrokerState {
             }
             // The app's own records it reads as the person using it; another
             // app's as itself, acting for them, by what the workspace grants it.
-            RemoteActionMessage::RecordRead { read, .. } => Some(if read.app == app_id {
+            RemoteActionMessage::ResourceRead { read, .. } => Some(if read.app == app_id {
                 person.clone()
             } else {
                 match person.acting().person_id() {
@@ -745,9 +745,9 @@ impl AppBrokerState {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RetiredRecordRequest
-            | RemoteActionMessage::RetiredRecordResponse
-            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredResourceRequest
+            | RemoteActionMessage::RetiredResourceResponse
+            | RemoteActionMessage::ResourceReading { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
@@ -1122,7 +1122,7 @@ impl AppBrokerState {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
                     workspace: workspace_id.clone(),
-                    record_id: surface.route.record_id.clone(),
+                    document_id: surface.route.document_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
                 if !scope.wants_peer(surface.peer_id) || !scope.wants_app(&surface.app_id) {
@@ -1195,7 +1195,7 @@ impl AppBrokerState {
                     provider: root.peer_id.to_string(),
                     app_id: root.app_id.clone(),
                     workspace: workspace_id.clone(),
-                    record_id: root.record_id.clone(),
+                    document_id: root.document_id.clone(),
                     browsable: true,
                 });
             }
@@ -1209,7 +1209,7 @@ impl AppBrokerState {
                         provider: steps.provider().to_owned(),
                         app_id: steps.app_id().to_owned(),
                         workspace: workspace_id.clone(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         browsable: true,
                     });
                     if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
@@ -1516,7 +1516,7 @@ impl AppBrokerState {
                 provider,
                 app_id: surface.app_id.clone(),
                 workspace: workspace_id.clone(),
-                record_id: surface.route.record_id.clone(),
+                document_id: surface.route.document_id.clone(),
                 browsable: false,
             });
         }
@@ -1908,7 +1908,7 @@ impl AppBrokerState {
                 // runs the app, so the caller may launch it.
                 (workspace.to_owned(), app_id.to_owned(), None, None)
             } else if let Some((workspace, app_id, offered)) = self.application_offer(request) {
-                let record = application_provider_record(&request.target.provider);
+                let record = application_provider_resource(&request.target.provider);
                 (workspace, app_id, record.map(str::to_owned), offered)
             } else {
                 let retained = self
@@ -1925,7 +1925,7 @@ impl AppBrokerState {
                 (
                     retained.route.cluster_id,
                     retained.app_id,
-                    Some(retained.route.record_id),
+                    Some(retained.route.document_id),
                     Some(offered),
                 )
             };
@@ -2588,7 +2588,7 @@ impl AppBrokerState {
                 format!(
                     "connection {} on {}: {}{}{}publishes \"{}\" on [{}]",
                     surface.peer_id,
-                    surface.route.record_id,
+                    surface.route.document_id,
                     if surface.live { "" } else { "closed, " },
                     if subscribers.contains_key(&surface.peer_id) {
                         ""
@@ -2638,7 +2638,7 @@ impl AppBrokerState {
                     && !(shows && self.is_windowless(surface.peer_id))
                     && surface.app_id == app_id
                     && surface.route.cluster_id == workspace
-                    && record.is_none_or(|record| surface.route.record_id == record)
+                    && record.is_none_or(|record| surface.route.document_id == record)
                     && subscribers.contains_key(&surface.peer_id)
             })
             .filter_map(|surface| {

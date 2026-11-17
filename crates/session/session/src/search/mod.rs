@@ -48,7 +48,7 @@ use tilo_desktop_search::{
     DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
 };
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use ui::search::Scope;
 
 /// The action host as the session's search reaches it: what open apps publish and run, and running
@@ -1932,11 +1932,11 @@ mod tests {
                 .expect("an index directory");
         std::fs::create_dir_all(&directory).expect("the index's directory");
         let mut index = automerge::AutoCommit::new();
-        let kept = ui::record::DocumentId::parse("file:/work/Kept.odt").expect("a record id");
-        assert!(ui::record::index::reference(
+        let kept = ui::resource::DocumentId::parse("file:/work/Kept.odt").expect("a record id");
+        assert!(ui::resource::index::reference(
             &mut index,
             &kept,
-            &ui::record::ResourceType::new("document")
+            &ui::resource::ResourceType::new("document")
         ));
         std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
 
@@ -1987,13 +1987,13 @@ mod tests {
                 .expect("an index directory");
             std::fs::create_dir_all(&directory).expect("the index's directory");
             let mut index = automerge::AutoCommit::new();
-            let form = ui::record::DocumentId::parse(FORM).expect("a record id");
-            assert!(ui::record::index::reference(
+            let form = ui::resource::DocumentId::parse(FORM).expect("a record id");
+            assert!(ui::resource::index::reference(
                 &mut index,
                 &form,
-                &ui::record::ResourceType::new("pdf.document")
+                &ui::resource::ResourceType::new("pdf.document")
             ));
-            assert!(ui::record::index::set_name(
+            assert!(ui::resource::index::set_name(
                 &mut index,
                 &form,
                 Some("application.pdf")
@@ -2061,13 +2061,13 @@ mod tests {
                 .expect("an index directory");
             std::fs::create_dir_all(&directory).expect("the index's directory");
             let mut index = automerge::AutoCommit::new();
-            let form = ui::record::DocumentId::parse(FORM).expect("a record id");
-            assert!(ui::record::index::reference(
+            let form = ui::resource::DocumentId::parse(FORM).expect("a record id");
+            assert!(ui::resource::index::reference(
                 &mut index,
                 &form,
-                &ui::record::ResourceType::new("pdf.document")
+                &ui::resource::ResourceType::new("pdf.document")
             ));
-            assert!(ui::record::index::set_name(
+            assert!(ui::resource::index::set_name(
                 &mut index,
                 &form,
                 Some("application.pdf")
@@ -2142,17 +2142,17 @@ mod tests {
             let home = tilo_test_env::TestHome::new().expect("a home");
             let file = home.home().join("Budget.note");
             std::fs::write(&file, "what the record holds").expect("the record's file");
-            let record = ui::record::DocumentId::for_file(&file);
+            let record = ui::resource::DocumentId::for_file(&file);
             // The workspace that holds it names it in its index.
             let directory =
                 app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
                     .expect("an index directory");
             std::fs::create_dir_all(&directory).expect("the index's directory");
             let mut index = automerge::AutoCommit::new();
-            assert!(ui::record::index::reference(
+            assert!(ui::resource::index::reference(
                 &mut index,
                 &record,
-                &ui::record::ResourceType::new("document")
+                &ui::resource::ResourceType::new("document")
             ));
             std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
 
@@ -2532,7 +2532,7 @@ mod tests {
     ) -> (crate::platform::Store, String, String) {
         const NOTEBOOK: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000bb";
         // The page links Notes, as its bundle does.
-        let kind = notes::definition().record_kind.clone();
+        let kind = notes::definition().resource_type.clone();
         let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
         let mut write = |title: &str, text: &str| {
             let page = uuid::Uuid::new_v4();
@@ -2550,9 +2550,9 @@ mod tests {
         let handbook = write("files/notes/handbook.md", "Welcome to the team.");
         let store: crate::platform::Store =
             std::sync::Arc::new(app_state::FsStore::new(home.data()));
-        let record = ui::record::DocumentId::parse(NOTEBOOK).expect("a record id");
+        let record = ui::resource::DocumentId::parse(NOTEBOOK).expect("a record id");
         let mut index = automerge::AutoCommit::new();
-        assert!(ui::record::index::reference(&mut index, &record, &kind));
+        assert!(ui::resource::index::reference(&mut index, &record, &kind));
         for (key, bytes) in [
             (
                 durable_store::StorageKey::workspace_index(NOTES_APP, workspace),

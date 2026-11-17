@@ -347,8 +347,8 @@ impl OriginalWorkspace {
 
     /// The workspace on a host that keeps record content through `content`:
     /// `workspace` when it is the same workspace another host holds.
-    pub fn with_record_content(
-        content: Arc<crate::record_content::RouteContent>,
+    pub fn with_document_content(
+        content: Arc<crate::document_content::RouteContent>,
         workspace: Option<tilo_desktop_model::WorkspaceId>,
     ) -> Self {
         Self::hosting(
@@ -364,8 +364,8 @@ impl OriginalWorkspace {
         capabilities: DeviceCapabilities,
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
-        record_content: Option<(
-            Arc<crate::record_content::RouteContent>,
+        document_content: Option<(
+            Arc<crate::document_content::RouteContent>,
             Option<tilo_desktop_model::WorkspaceId>,
         )>,
         current_native: bool,
@@ -385,7 +385,7 @@ impl OriginalWorkspace {
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
-        let (record_content, workspace) = record_content.unzip();
+        let (document_content, workspace) = document_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
@@ -441,7 +441,7 @@ impl OriginalWorkspace {
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
-        services.record_content = record_content;
+        services.document_content = document_content;
         let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),

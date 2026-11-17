@@ -119,7 +119,7 @@ fn create(
 ) -> Result<AppComponent, LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|_| Ok(()))
+            .initialize_new_resource(|_| Ok(()))
             .map_err(LaunchError::Record)?;
     }
     let root = UiDocument::new(UiNode::Column {
@@ -256,7 +256,7 @@ fn locus_component_with_scroll(
     use tilo_ui::widget::{Button, Column, resource_actions};
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|_| Ok(()))
+            .initialize_new_resource(|_| Ok(()))
             .map_err(LaunchError::Record)?;
     }
     let resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
@@ -377,8 +377,8 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     let app = definition.app_id().to_owned();
-    let record_id = component.record().id.clone();
-    let record = record_id.as_str().to_owned();
+    let id = component.record().id.clone();
+    let record = id.as_str().to_owned();
     let mut frame = FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
     frame.relayout();
     let resources = frame.published_bound_resources_of(Some(12)).unwrap();
@@ -390,9 +390,9 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     assert!(address.resource.starts_with("tilo-ui-bound:v1:"));
     let before = frame.inspection_json().unwrap();
     let local_before = frame.state().doc.clone().save();
-    let record_before = host
+    let resource_before = host
         .records
-        .read(&record_id, automerge::transaction::Transactable::base_heads)
+        .read(&id, automerge::transaction::Transactable::base_heads)
         .unwrap();
     let bounds = frame
         .published_action_locus(12, &app, &record, &address)
@@ -402,9 +402,9 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     assert_eq!(frame.state().doc.clone().save(), local_before);
     assert_eq!(
         host.records
-            .read(&record_id, automerge::transaction::Transactable::base_heads)
+            .read(&id, automerge::transaction::Transactable::base_heads)
             .unwrap(),
-        record_before
+        resource_before
     );
     assert!(
         frame
@@ -601,7 +601,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         let mut context = host
             .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
             .unwrap();
-        context.initialize_new_record(|_| Ok(())).unwrap();
+        context.initialize_new_resource(|_| Ok(())).unwrap();
         let published = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
         let resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");

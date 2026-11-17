@@ -58,7 +58,7 @@ mod owner_commit_tests {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, connection_id: 1, verified_identity: admitted,
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::Own,
                 lease: None, _hold: None,
             });
@@ -66,9 +66,9 @@ mod owner_commit_tests {
             word_processor::initialize_empty_document(&mut document).unwrap();
             let mut op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(document.save()).encode().unwrap(),
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
                 Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::OpKind::Change, SystemTime::now(), 1);
             sign_op(&mut op, &device).unwrap();
             assert!(client.send(&postcard::to_stdvec(&op).unwrap()).await.is_err(),
@@ -163,7 +163,7 @@ mod owner_commit_tests {
                         peer_id: 1,
                         connection_id: 1,
                         verified_identity: admitted,
-                        record_kind: None,
+                        resource_type: None,
                         route_access: RouteAccess::Own,
                         lease: None,
                         _hold: None,
@@ -234,7 +234,7 @@ mod owner_commit_tests {
         fn join_route(
             &mut self,
             route: ui::collaboration::RouteSpec,
-            _: ui::record::ResourceType,
+            _: ui::resource::ResourceType,
         ) -> Result<(), String> {
             assert_eq!(route, self.route);
             Ok(())
@@ -258,7 +258,7 @@ mod owner_commit_tests {
         use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
         let workspace = uuid::Uuid::new_v4();
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
-        let mut owners = ui::record::RecordOwners::portable(cache.clone());
+        let mut owners = ui::resource::ResourceOwners::portable(cache.clone());
         let definition = word_processor::definition();
         let records = owners
             .open(definition.app_id(), &workspace.to_string())
@@ -300,7 +300,7 @@ mod owner_commit_tests {
             app_id: definition.app_id().into(),
             cluster_id: workspace,
             record: Some(record.id.as_str().into()),
-            record_kind: None,
+            resource_type: None,
             handle: None,
         });
         manager.poll();
@@ -439,7 +439,7 @@ mod owner_commit_tests {
                         workspace: fixture.route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
-                            record: fixture.route.record_id.clone(),
+                            record: fixture.route.document_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
                             own: None,
                         },
@@ -490,7 +490,7 @@ mod owner_commit_tests {
                     workspace: uuid::Uuid::new_v4().to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                         app: fixture.route.app_id.clone(),
-                        record: fixture.route.record_id.clone(),
+                        record: fixture.route.document_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
                         own: None,
                     },
@@ -612,7 +612,7 @@ mod owner_commit_tests {
             peer_id: 72,
             connection_id: 72,
             verified_identity: admitted,
-            record_kind: None,
+            resource_type: None,
             route_access: RouteAccess::Own,
             lease: None,
             _hold: None,
@@ -638,7 +638,7 @@ mod owner_commit_tests {
         let mut doc = automerge::AutoCommit::load(
             &f.owner
                 .peer()
-                .document(&f.route.app_id, &f.route.record_id)
+                .document(&f.route.app_id, &f.route.document_id)
                 .unwrap(),
         )
         .unwrap();
@@ -648,9 +648,9 @@ mod owner_commit_tests {
         let key = f.owner.signing_key().clone();
         let mut envelope = SignedOp::new_unsigned(
             DocumentMutation::Snapshot(doc.save()).encode().unwrap(),
-            document_artifact_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
+            document_artifact_id(&f.route.app_id, &f.route.cluster_id, &f.route.document_id),
             Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            document_attestation_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
+            document_attestation_id(&f.route.app_id, &f.route.cluster_id, &f.route.document_id),
             collab_types::OpKind::Change,
             SystemTime::now(),
             1000,
@@ -980,7 +980,7 @@ mod owner_commit_tests {
         use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use ui::portable_storage::{PortableStorage, StorageKey};
-        use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
         struct CurrentOwner(Arc<Mutex<Option<tilo_peer_state::StatePeer>>>);
         impl crate::certificate_authority::CertificateAuthority for CurrentOwner {
             fn authorize(
@@ -1141,7 +1141,7 @@ mod owner_commit_tests {
                 Some(cert.device_public_key.to_vec()),
             )
             .unwrap();
-        let mut owners = RecordOwners::portable(cache.clone());
+        let mut owners = ResourceOwners::portable(cache.clone());
         let records = owners
             .open(definition.app_id(), &workspace.to_string())
             .unwrap();
@@ -1149,7 +1149,7 @@ mod owner_commit_tests {
             ui::application_view::InstanceViewStore::portable(cache, &workspace.to_string())
                 .unwrap(),
         );
-        let checkout = DocumentCheckout::new(record.clone(), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(record.clone(), definition.resource_type.clone());
         let target = LaunchTarget::Record {
             checkout,
             reveal: None,
@@ -1426,7 +1426,7 @@ mod owner_commit_tests {
                 workspace: f.route.cluster_id.clone(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
-                    record: f.route.record_id.clone(),
+                    record: f.route.document_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
                     own: None,
                 },

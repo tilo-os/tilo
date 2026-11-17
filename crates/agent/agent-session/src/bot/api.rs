@@ -25,7 +25,7 @@ use tilo_actions::context::Cause;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
+    ReceiptStatus, ResourceAddress, ResourceCopy, ResourceReads, ResourceWake,
 };
 use tilo_actions::{
     ActionContext, ActionFailure, ActionInvoker, ActionOutput, Actor, InvocationId,
@@ -34,7 +34,7 @@ use tilo_actions::{
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::item_json::OutboxRow;
-use crate::member::actions::{api_status, record_of, record_provider};
+use crate::member::actions::{api_status, record_provider, resource_of};
 use tilo_lock::MutexRecover as _;
 
 /// What the API needs of the bot's session and replicas.
@@ -255,7 +255,7 @@ impl<P: ApiMember> BotApi<P> {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
                 workspace: workspace.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
                 browsable: false,
             });
             rows.extend(offered.into_iter().map(|mut row| {
@@ -277,7 +277,7 @@ impl<P: ApiMember> BotApi<P> {
         // a bot its installation lets post under other names.
         let invoker = self.invoker().with_appearance(request.appearance.clone());
         let mut member = self.lock();
-        let route = record_of(&request.target.provider, member.workspace())
+        let route = resource_of(&request.target.provider, member.workspace())
             .filter(|route| member.holds(route))
             .ok_or(ActionHostError::UnknownAction)?;
         let step = request.context.as_ref().and_then(RunStep::of);
@@ -480,12 +480,12 @@ struct BotReads<P: ApiMember> {
     installation: String,
 }
 
-impl<P: ApiMember + 'static> RecordReads for BotReads<P> {
+impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
     fn answer_read(
         self: Arc<Self>,
         caller: &Caller,
         correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
@@ -493,8 +493,8 @@ impl<P: ApiMember + 'static> RecordReads for BotReads<P> {
     fn read(
         &self,
         caller: &Caller,
-        address: &RecordAddress,
-    ) -> Result<RecordCopy, ActionHostError> {
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionHostError> {
         if !is_bot(caller, &self.installation) {
             return Err(ActionHostError::NotPermitted);
         }
@@ -505,8 +505,8 @@ impl<P: ApiMember + 'static> RecordReads for BotReads<P> {
             record: address.record.clone(),
         };
         match member.record(&route) {
-            Ok(Some(document)) => Ok(RecordCopy::Document(document)),
-            Ok(None) => Ok(RecordCopy::Absent),
+            Ok(Some(document)) => Ok(ResourceCopy::Document(document)),
+            Ok(None) => Ok(ResourceCopy::Absent),
             Err(reason) => Err(ActionHostError::Refused { reason }),
         }
     }
@@ -516,8 +516,8 @@ impl<P: ApiMember + 'static> RecordReads for BotReads<P> {
     fn watch(
         &self,
         caller: &Caller,
-        _: &RecordAddress,
-        _: &RecordWake,
+        _: &ResourceAddress,
+        _: &ResourceWake,
     ) -> Result<(), ActionHostError> {
         if is_bot(caller, &self.installation) {
             Ok(())
@@ -603,7 +603,7 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
 
-    fn record_reads(&self) -> Option<Arc<dyn RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
         Some(Arc::new(BotReads {
             member: Arc::clone(&self.member),
             installation: self.installation.clone(),

@@ -30,7 +30,7 @@ fn agents_held(device: &Device) -> Vec<String> {
 fn held_agents(device: &Device) -> Vec<(String, String)> {
     let record = collab_types::workspace_document_id("chat.agent");
     let answer = device.ask(&json!({
-        "op": "record_read",
+        "op": "resource_read",
         "app": "so.tilo.chat",
         "records": [record],
         "wait_ms": 0,
@@ -84,7 +84,7 @@ fn published(device: &Device, wanted: impl Fn(&Value) -> bool) -> Option<Value> 
 fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
     tilo_test_env::wait_until(Awaited(device, format!("holds {wanted:?} in Chat")), || {
         let answer = device.ask(&json!({
-            "op": "record_read",
+            "op": "resource_read",
             "app": "so.tilo.chat",
             "records": ["", chat::parts::part(0).to_string()],
             "wait_ms": 0,

@@ -10,7 +10,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, Publishes, ResourceApp, RunMode,
     ViewCx,
 };
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
@@ -109,7 +109,7 @@ impl ResourceApp for WordProcessorApp {
             .unwrap_or_else(|| "Document".to_owned())
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input.argument().map(DocumentId::for_file)
     }
 

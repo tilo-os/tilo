@@ -97,7 +97,7 @@ impl VaultOpener {
 }
 
 #[derive(Clone)]
-struct PersonAccountsRecord(ui::framework::PersonRecord<accounts::person::PersonAccounts>);
+struct PersonAccountsRecord(ui::framework::PersonResource<accounts::person::PersonAccounts>);
 
 impl std::fmt::Debug for PersonAccountsRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,7 +135,7 @@ impl AccountRoot {
     #[must_use]
     pub fn with_person(
         mut self,
-        record: ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+        record: ui::framework::PersonResource<accounts::person::PersonAccounts>,
     ) -> Self {
         self.person = Some(PersonAccountsRecord(record));
         self

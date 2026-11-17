@@ -27,7 +27,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         peer: 3,
         app_id: "so.tilo.notes".into(),
         cluster_id: "cluster".into(),
-        record_id: "note-1".into(),
+        document_id: "note-1".into(),
         envelope: Box::new(op),
         own: None,
     })

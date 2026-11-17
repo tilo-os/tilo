@@ -259,7 +259,7 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: agent.record_id().clone(),
+            record: agent.document_id().clone(),
             changes: vec![snapshot],
         },
     )

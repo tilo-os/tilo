@@ -348,7 +348,7 @@ impl Site {
     /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {
         self.runtime
-            .block_on(self.workspaces.record_routes(&self.workspace))
+            .block_on(self.workspaces.document_routes(&self.workspace))
             .expect("the site's records")
     }
 
@@ -359,7 +359,7 @@ impl Site {
         self.runtime
             .block_on(
                 self.workspaces
-                    .record_document(&self.workspace, app, record),
+                    .resource_document(&self.workspace, app, record),
             )
             .ok()
             .flatten()
@@ -386,10 +386,10 @@ impl Site {
     pub fn desktop(&self) -> Option<tilo_desktop_model::Layout> {
         let bytes = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
-            tilo_desktop_model::ownership::DESKTOP_RECORD,
+            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
         )?;
         let document = automerge::AutoCommit::load(&bytes).ok()?;
-        tilo_desktop_model::shared_record::read(&document, None).map(|shell| shell.tree)
+        tilo_desktop_model::shared_resource::read(&document, None).map(|shell| shell.tree)
     }
 
     /// The verdicts the workspace holds on writes, as the site keeps them
@@ -1998,7 +1998,7 @@ impl Chat<'_> {
     fn held(&self, after: Option<&str>) -> HeldChat {
         let wait = tilo_test_env::hang_bound();
         let answer = self.device.ask(&json!({
-            "op": "record_read",
+            "op": "resource_read",
             "app": "so.tilo.chat",
             "records": ["", chat::parts::part(0).to_string()],
             "after": after,

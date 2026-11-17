@@ -179,7 +179,7 @@ mod tests {
                     "session",
                     vec![
                         view("show-history", &[]),
-                        view("review", &[crate::RECORD_READ_TAG]),
+                        view("review", &[crate::RESOURCE_READ_TAG]),
                         effect("run"),
                     ],
                 ),

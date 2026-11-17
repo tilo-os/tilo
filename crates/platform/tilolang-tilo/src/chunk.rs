@@ -85,7 +85,7 @@ impl Default for Limits {
 }
 
 /// The record id of chunk `chunk` of the record `base`: `derived:chunk.<n>@<base>`, the id
-/// [`record_sync`](crate::chunk) syncs on demand and the channel its changes travel on. Chunk
+/// [`document_sync`](crate::chunk) syncs on demand and the channel its changes travel on. Chunk
 /// [`FIRST`] is the record itself, which has its own id (`base`).
 #[must_use]
 pub fn record_id(base: &str, chunk: ChunkNo) -> String {

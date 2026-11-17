@@ -166,11 +166,11 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
 
 #[test]
 fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
-    use ui::collaboration::record_content::{ContentLane, RecordContent};
+    use ui::collaboration::document_content::{ContentLane, DocumentContent};
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
     let hash = tilo_content::hash_bytes(&bytes);
     let lane = std::sync::Arc::new(ContentLane::default());
-    let content = RecordContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
+    let content = DocumentContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
     let mut app = PdfApp::empty_with_content(content);
     app.record_source = Some(crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),

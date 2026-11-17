@@ -63,7 +63,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         draw_prepared_component_test_frame(&mut app);
         app.close_components();
         assert_eq!(app.component_close_reports().len(), 1);
-        assert!(app.component_close_reports()[0].record_error.is_none());
+        assert!(app.component_close_reports()[0].resource_error.is_none());
     }
 
     {
@@ -370,13 +370,13 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
     }
 }
 
-fn wait_for_saved_record(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
+fn wait_for_saved_resource(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
     assert!(host.records.same_owner(&binding.records));
     host.records.await_submitted(&binding.checkout.id).unwrap();
     let status = host.records.save_status(&binding.checkout.id).unwrap();
     assert_eq!(
         status,
-        crate::record::RecordSaveStatus::Saved,
+        crate::resource::ResourceSaveStatus::Saved,
         "original writer did not acknowledge"
     );
 }
@@ -386,7 +386,7 @@ fn assert_saved_body(
     binding: &crate::bound_dispatch::CallbackBinding,
     expected: &str,
 ) {
-    wait_for_saved_record(host, binding);
+    wait_for_saved_resource(host, binding);
     let path = app_state::DocStore::workspace_document_dir_at(
         &host.root(),
         APP,
@@ -410,7 +410,7 @@ fn assert_saved_body(
     );
 }
 
-fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
+fn edit_bound_resource(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
         input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
@@ -430,7 +430,7 @@ fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBin
     assert_eq!(body(&binding.records, &binding.checkout), "edited");
     assert_eq!(
         binding.records.save_status(&binding.checkout.id).unwrap(),
-        crate::record::RecordSaveStatus::Saving
+        crate::resource::ResourceSaveStatus::Saving
     );
 }
 
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
         let mut app = App::from_component(component, runner_inputs()).unwrap();
         assert_saved_body(&host, &binding, "initialized");
 
-        edit_bound_record(&mut app, &binding);
+        edit_bound_resource(&mut app, &binding);
         app.service_native_idle_model();
 
         // Read the original writer's complete on-disk graph before close can flush it.
@@ -464,7 +464,7 @@ tilo_test_env::scenario! {
             let mut app = App::from_component(component, runner_inputs()).unwrap();
             assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
             assert_saved_body(&host, &binding, "initialized");
-            edit_bound_record(&mut app, &binding);
+            edit_bound_resource(&mut app, &binding);
             app.autosave_tick().unwrap();
             assert_saved_body(&host, &binding, "edited");
             assert!(binding.lifetime.is_active());
@@ -492,8 +492,8 @@ tilo_test_env::scenario! {
             );
             assert_saved_body(&first_host, &first_binding, "initialized");
             assert_saved_body(&second_host, &second_binding, "initialized");
-            edit_bound_record(&mut app, &first_binding);
-            edit_bound_record(&mut app, &second_binding);
+            edit_bound_resource(&mut app, &first_binding);
+            edit_bound_resource(&mut app, &second_binding);
             app.autosave_tick().unwrap();
             assert_saved_body(&first_host, &first_binding, "edited");
             assert_saved_body(&second_host, &second_binding, "edited");
@@ -979,9 +979,9 @@ fn activate_palette_action(app: &mut App, action: &str) {
 /// The component a window shows asking for another record of its app, as an
 /// app's own Open does: built through the same checked construction as the
 /// first, on the same store.
-fn request_another_record(component: &AppComponent) -> crate::record::DocumentId {
+fn request_another_resource(component: &AppComponent) -> crate::resource::DocumentId {
     let reopener = component.reopener();
-    let record = crate::record::DocumentId::minted();
+    let record = crate::resource::DocumentId::minted();
     let (context, target) = reopener
         .prepare(runner_probe_definition(), record.clone())
         .unwrap();
@@ -998,9 +998,9 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let host = ProbeHost::new();
         let component = editable_component(&host, 31);
         let first = component.callback_binding();
-        let wanted = request_another_record(&component);
+        let wanted = request_another_resource(&component);
         let mut app = App::from_component(component, runner_inputs()).unwrap();
-        edit_bound_record(&mut app, &first);
+        edit_bound_resource(&mut app, &first);
         assert!(
             app.swap_requested_component(),
             "the window shows another record"
@@ -1014,7 +1014,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         );
         assert_saved_body(&host, &first, "edited");
         assert_eq!(body(&shown.records, &shown.checkout), "initialized");
-        edit_bound_record(&mut app, &shown);
+        edit_bound_resource(&mut app, &shown);
         app.close_components();
     }
 
@@ -1026,7 +1026,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let (context, target) = reopener
             .prepare(
                 runner_probe_definition(),
-                crate::record::DocumentId::minted(),
+                crate::resource::DocumentId::minted(),
             )
             .unwrap();
         let replacement = runner_probe_definition()
@@ -1053,7 +1053,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let host = ProbeHost::new();
         let component = editable_component(&host, 32);
         let first = component.callback_binding();
-        let wanted = request_another_record(&component);
+        let wanted = request_another_resource(&component);
         let mut tile = TileHost::from_component(component);
         let mut state = crate::State::new();
         // An operation the outgoing component admitted is answered when the
@@ -1099,9 +1099,9 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     let component = editable_component(&host, 91);
     let first = component.callback_binding();
     let retained_reopener = component.reopener();
-    let wanted = request_another_record(&component);
+    let wanted = request_another_resource(&component);
     let mut app = App::from_component(component, runner_inputs()).unwrap();
-    edit_bound_record(&mut app, &first);
+    edit_bound_resource(&mut app, &first);
     let (tx, rx) = std::sync::mpsc::channel();
     app.wake_scope
         .as_mut()
@@ -1124,7 +1124,7 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     );
     assert_saved_body(&host, &first, "edited");
     assert_eq!(body(&shown.records, &shown.checkout), "initialized");
-    let retained_id = crate::record::DocumentId::minted();
+    let retained_id = crate::resource::DocumentId::minted();
     let (retained, target) = retained_reopener
         .prepare(runner_probe_definition(), retained_id.clone())
         .expect("retirement preserves the authorized same-store preparation capability");
@@ -1246,7 +1246,7 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
         .reopener()
         .prepare(
             runner_probe_definition(),
-            crate::record::DocumentId::minted(),
+            crate::resource::DocumentId::minted(),
         )
         .unwrap();
     let successor = context.wake_handle();
@@ -1266,7 +1266,7 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
 /// once the window it replaced closed, and loads when the bytes arrive there.
 #[test]
 fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
-    use crate::collaboration::record_content::{ContentLane, RecordContent};
+    use crate::collaboration::document_content::{ContentLane, DocumentContent};
     use crate::image_store::{HostImageLoader, ServedWindow};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1285,7 +1285,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
         )
         .unwrap();
     let first_lane = Arc::new(ContentLane::default());
-    first.provide_content(RecordContent::store(
+    first.provide_content(DocumentContent::store(
         tilo_content::ContentStore::memory(),
         Arc::clone(&first_lane),
     ));
@@ -1306,12 +1306,12 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
         .reopener()
         .prepare(
             runner_probe_definition(),
-            crate::record::DocumentId::minted(),
+            crate::resource::DocumentId::minted(),
         )
         .unwrap();
     let next_lane = Arc::new(ContentLane::default());
     let next_local = tilo_content::ContentStore::memory();
-    next.provide_content(RecordContent::store(
+    next.provide_content(DocumentContent::store(
         next_local.clone(),
         Arc::clone(&next_lane),
     ));

@@ -54,7 +54,7 @@ impl Workspace {
         .await
         .unwrap();
         let workspace = create_and_enter(&relay, &laptop, "Lounge").await;
-        super::sealed_records::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [5; 32])
+        super::sealed_documents::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [5; 32])
             .await
             .unwrap();
         let keeper = WorkspaceAttachments::new(
@@ -99,7 +99,7 @@ impl Workspace {
 fn asks_for(payload: &[u8], hash: &str) -> bool {
     matches!(
         postcard::from_bytes::<NeighbourMsg>(payload),
-        Ok(NeighbourMsg::RecordContentWant { hash: asked, .. }) if asked == hash
+        Ok(NeighbourMsg::DocumentContentWant { hash: asked, .. }) if asked == hash
     )
 }
 
@@ -312,7 +312,7 @@ fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
 /// What the host serves a member of `workspace` asking for `address`, its
 /// pieces put together.
 fn served(workspace: &Workspace, requester: u64, address: &str) -> Vec<u8> {
-    let want = postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
+    let want = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
         requester,
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.listing.workspace.clone(),
@@ -327,7 +327,7 @@ fn served(workspace: &Workspace, requester: u64, address: &str) -> Vec<u8> {
         .unwrap()
         .content_answer(&workspace.listing.workspace, &want)
     {
-        let NeighbourMsg::RecordContentPiece { offset, bytes, .. } =
+        let NeighbourMsg::DocumentContentPiece { offset, bytes, .. } =
             postcard::from_bytes(&frame).unwrap()
         else {
             panic!("the host serves what it keeps");
@@ -430,7 +430,7 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
     // holds it sealed.
     let carol = TestUser::fresh("Carol");
     let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
-    super::sealed_records::join(
+    super::sealed_documents::join(
         &workspace.relay,
         &workspace.laptop,
         &workspace.listing.workspace,

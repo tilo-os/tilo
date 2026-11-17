@@ -37,7 +37,7 @@ use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -354,7 +354,7 @@ fn desktop_route(service: &WorkspaceService) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
         cluster_id: service.workspace.clone(),
-        record: DESKTOP_RECORD.to_owned(),
+        record: DESKTOP_DOCUMENT.to_owned(),
     }
 }
 
@@ -651,11 +651,11 @@ fn a_computer_joins_the_lounge_through_its_workspace_services_own_entry() {
     let desktop = the_members_desktop(&member);
     {
         let mut doc = automerge::AutoCommit::new();
-        tilo_desktop_model::shared_record::write(&mut doc, &desktop)
+        tilo_desktop_model::shared_resource::write(&mut doc, &desktop)
             .expect("the member lays the service out");
         doc.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
-                tilo_desktop_model::shared_record::change_message(Some(&hex::encode(
+                tilo_desktop_model::shared_resource::change_message(Some(&hex::encode(
                     member.cert.user_public_key,
                 ))),
             ),

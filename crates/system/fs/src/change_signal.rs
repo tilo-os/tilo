@@ -156,7 +156,7 @@ mod worker {
                 let mut ns = namespace.lock_recover();
                 let seen = Seen {
                     heads: ns.heads(),
-                    catalogue: ns.indexed_record_revision().to_owned(),
+                    catalogue: ns.indexed_document_revision().to_owned(),
                 };
                 (ns.subscribe_changes(), seen)
             };
@@ -165,7 +165,7 @@ mod worker {
             let mount_point = mount_point.to_path_buf();
             let task = runtime.spawn(async move {
                 loop {
-                    let record_changed = async {
+                    let document_changed = async {
                         match records.as_mut() {
                             Some(records) => records.changed().await,
                             None => std::future::pending().await,
@@ -173,7 +173,7 @@ mod worker {
                     };
                     let woke = tokio::select! {
                         heard = changes.changed() => heard.is_ok(),
-                        heard = record_changed => heard.is_ok(),
+                        heard = document_changed => heard.is_ok(),
                     };
                     if !woke {
                         break;
@@ -246,7 +246,7 @@ mod worker {
             let records = self
                 .availability
                 .as_ref()
-                .map(|registry| registry.lock_recover().take_changed_records())
+                .map(|registry| registry.lock_recover().take_changed_documents())
                 .unwrap_or_default();
             let (nodes, directories, next) = {
                 let mut ns = self.namespace.lock_recover();
@@ -262,7 +262,7 @@ mod worker {
                 }
                 let next = Seen {
                     heads: ns.heads(),
-                    catalogue: ns.indexed_record_revision().to_owned(),
+                    catalogue: ns.indexed_document_revision().to_owned(),
                 };
                 let mut directories: BTreeSet<u64> = {
                     let listed = self.signal.listed.lock_recover();

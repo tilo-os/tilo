@@ -62,8 +62,8 @@ mod mail_for_agents;
 mod messages_for_agents;
 #[path = "model_planner.rs"]
 mod model_planner;
-#[path = "public_workspace_records.rs"]
-mod public_workspace_records;
+#[path = "public_workspace_documents.rs"]
+mod public_workspace_documents;
 #[path = "render_video.rs"]
 mod render_video;
 #[path = "replicas.rs"]

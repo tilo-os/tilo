@@ -639,7 +639,7 @@ impl WorkspaceActivityPane {
         if let Some(kept) = self.command_tails.borrow().get(hash) {
             return Some(kept.clone());
         }
-        let bytes = self.host.record_content(workspace?, app, hash)?;
+        let bytes = self.host.document_content(workspace?, app, hash)?;
         let tail = terminal_text::tail(&bytes, wire::COMMAND_TAIL_LINES, COMMAND_TAIL_BYTES);
         let mut tails = self.command_tails.borrow_mut();
         if tails.len() >= MAX_TAILS {
@@ -686,7 +686,7 @@ impl WorkspaceActivityPane {
         });
         let Some(bytes) = output_hash(&run).map_or(Some(Vec::new()), |hash| {
             self.host
-                .record_content(workspace.as_deref()?, &query.app_id, &hash)
+                .document_content(workspace.as_deref()?, &query.app_id, &hash)
         }) else {
             return unavailable;
         };

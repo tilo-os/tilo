@@ -180,7 +180,7 @@ impl ResourceApp for App {
 
     /// A file named on the command line opens a record of its own, the same one
     /// each time; a picture gets an artwork derived from it, edits and all.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let path = std::path::Path::new(input.argument()?);
         let extension = path
             .extension()

@@ -105,7 +105,7 @@ pub fn specs() -> Vec<ActionSpec> {
     // read the record may run it, and it shows them the record. It takes a
     // version and paths, so it is no document read a caller reads a file's
     // first page through.
-    .reads_record()
+    .reads_resource()
     // It answers a review object for `restore-reviewed` to take back: a
     // step an agent or script takes. A person restores in the app itself.
     .for_audience(tilo_actions::Audience::Agents);

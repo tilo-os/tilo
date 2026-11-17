@@ -15,8 +15,8 @@ use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Completer, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, RecordAddress, RecordCopy, RecordReads, RecordWake,
-    pending,
+    InvokeArgument, InvokeRequest, Pending, ResourceAddress, ResourceCopy, ResourceReads,
+    ResourceWake, pending,
 };
 
 use crate::{
@@ -358,7 +358,7 @@ impl ActionHost for FakeHost {
         Pending::ready(receipt)
     }
 
-    fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
+    fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
         Some(std::sync::Arc::new(NoteReads))
     }
 
@@ -1424,26 +1424,31 @@ tilo_test_env::scenario! {
 /// refused, any other is one the workspace holds none of.
 struct NoteReads;
 
-impl RecordReads for NoteReads {
+impl ResourceReads for NoteReads {
     fn answer_read(
         self: std::sync::Arc<Self>,
         caller: &Caller,
         correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 
-    fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
+    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionHostError> {
         if address.record == "private" {
             return Err(ActionHostError::Refused {
                 reason: "not yours".into(),
             });
         }
-        Ok(RecordCopy::Absent)
+        Ok(ResourceCopy::Absent)
     }
 
-    fn watch(&self, _: &Caller, _: &RecordAddress, _: &RecordWake) -> Result<(), ActionHostError> {
+    fn watch(
+        &self,
+        _: &Caller,
+        _: &ResourceAddress,
+        _: &ResourceWake,
+    ) -> Result<(), ActionHostError> {
         Ok(())
     }
 }
@@ -1512,7 +1517,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(
             read["records"],
-            json!([{"record": tilo_actions::record_sync::record_part("pages", 0), "absent": true}])
+            json!([{"record": tilo_actions::document_sync::document_part("pages", 0), "absent": true}])
         );
         assert!(read["revision"].is_string());
         assert!(host.started().is_empty(), "a read invokes nothing");
@@ -1598,7 +1603,7 @@ tilo_test_env::scenario! {
         let mut host = FakeHost::new();
         let own = "notes.settings:ada";
         let mut contract = ActionContract::default();
-        contract.tags.push(tilo_actions::OWN_RECORD_SCOPE.into());
+        contract.tags.push(tilo_actions::OWN_RESOURCE_SCOPE.into());
         assert_eq!(contract.kind, tilo_actions::contract::ActionKind::Undoable);
         assert_eq!(
             contract.need().kind,
@@ -2356,7 +2361,7 @@ tilo_test_env::scenario! {
     {
         use crate::{ActorFilter, EVENT_INPUT};
         let record: TriggerSpec = serde_json::from_value(json!({
-            "trigger": "record_changed",
+            "trigger": "resource_changed",
             "kind": "chat.workspace",
             "actions": ["post"],
             "by": "not_bots"
@@ -2364,14 +2369,14 @@ tilo_test_env::scenario! {
         .unwrap();
         assert_eq!(
             record,
-            TriggerSpec::RecordChanged {
+            TriggerSpec::ResourceChanged {
                 kind: "chat.workspace".into(),
                 actions: vec!["post".into()],
                 fields: vec![],
                 by: ActorFilter::NotBots,
             }
         );
-        assert_eq!(record.kind(), "record_changed");
+        assert_eq!(record.kind(), "resource_changed");
         let app_event: TriggerSpec = serde_json::from_value(json!({
             "trigger": "app_event",
             "app_id": "so.tilo.mail",
@@ -2410,10 +2415,10 @@ tilo_test_env::scenario! {
         }
         // Defaults: `by` is anyone, empty lists are any change.
         let any: TriggerSpec =
-            serde_json::from_value(json!({"trigger": "record_changed", "kind": "tilo.workspace"})).unwrap();
+            serde_json::from_value(json!({"trigger": "resource_changed", "kind": "tilo.workspace"})).unwrap();
         assert!(matches!(
             any,
-            TriggerSpec::RecordChanged {
+            TriggerSpec::ResourceChanged {
                 by: ActorFilter::Anyone,
                 ..
             }

@@ -122,7 +122,7 @@ fn validate_report_custody(
         || custody.agent != current.agent_id
         || custody.app_id != route.app_id
         || custody.workspace != route.cluster_id
-        || custody.document != route.record_id
+        || custody.document != route.document_id
     {
         return Err(rejected(
             "local report authenticated custody changed".into(),
@@ -181,7 +181,7 @@ fn cached_receipt(
     let intent_str = |field: &str| record.intent.get(field).and_then(serde_json::Value::as_str);
     if record.peer_id != channel.peer_id
         || intent_str("app_id") != Some(route.app_id.as_str())
-        || intent_str("record_id") != Some(route.record_id.as_str())
+        || intent_str("document_id") != Some(route.document_id.as_str())
         || record.report_digest != admission_request_digest(&report)
     {
         return Err(BrokerError::failed(

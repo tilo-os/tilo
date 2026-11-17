@@ -25,7 +25,7 @@ pub trait PeerPublishSink: Send + Sync {
         &self,
         app_id: String,
         cluster_id: String,
-        record_id: String,
+        document_id: String,
         envelope: SignedOp,
     );
 
@@ -37,19 +37,19 @@ pub trait PeerPublishSink: Send + Sync {
     fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
     /// Also show typed presence on the workspace's live plane, where browsers and
-    /// agents draw it in `record_id` (empty when the app announced none).
+    /// agents draw it in `document_id` (empty when the app announced none).
     fn app_live_presence(
         &self,
         _app_id: &str,
         _cluster_id: &str,
-        _record_id: &str,
+        _document_id: &str,
         _presence: &PeerPresence,
     ) {
     }
 
     /// A local app joined this route, so peers' documents for it must be
     /// routable here, including the history this device dropped before.
-    fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
+    fn local_route(&self, _app_id: &str, _cluster_id: &str, _document_id: &str) {}
 }
 
 /// The one place a local payload becomes a peer publish. Construct with
@@ -118,7 +118,7 @@ impl PeerPublisher {
     pub async fn commit_owner(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         let owner = self
             .owner_commit
@@ -126,7 +126,7 @@ impl PeerPublisher {
             .ok_or("durable owner commit unsupported")?;
         owner.health()?;
         let receipt = owner
-            .commit_with_record_kind(request.clone(), record_kind)
+            .commit_with_resource_type(request.clone(), resource_type)
             .await?;
         receipt.validate_for(&request)?;
         Ok(receipt)
@@ -139,7 +139,7 @@ impl PeerPublisher {
     pub async fn commit_owner_document(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> Result<
         (
             tilo_peer_state::owner_commit::OwnerCommitRequest,
@@ -152,7 +152,7 @@ impl PeerPublisher {
             .as_ref()
             .ok_or("durable owner commit unsupported")?;
         owner.health()?;
-        owner.commit_local_document(request, record_kind).await
+        owner.commit_local_document(request, resource_type).await
     }
 
     /// A publisher with nowhere to publish. Every call is a no-op,
@@ -179,7 +179,7 @@ impl PeerPublisher {
         sink.app_document(
             route.app_id.clone(),
             route.cluster_id.clone(),
-            route.record_id.clone(),
+            route.document_id.clone(),
             envelope,
         );
         true
@@ -195,7 +195,7 @@ impl PeerPublisher {
         sink.app_live_presence(
             &route.app_id,
             &route.cluster_id,
-            &route.record_id,
+            &route.document_id,
             &presence,
         );
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), presence);
@@ -205,9 +205,9 @@ impl PeerPublisher {
     /// Tell the network a local app holds `route`.
     pub fn local_route(&self, route: &CrdtRoute) {
         if let Some(sink) = self.sink.as_ref()
-            && !route.record_id.is_empty()
+            && !route.document_id.is_empty()
         {
-            sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
+            sink.local_route(&route.app_id, &route.cluster_id, &route.document_id);
         }
     }
 
@@ -299,7 +299,7 @@ pub mod recording {
         Signed {
             app_id: String,
             cluster_id: String,
-            record_id: String,
+            document_id: String,
             payload: Vec<u8>,
         },
         Presence {
@@ -341,13 +341,13 @@ pub mod recording {
             &self,
             app_id: String,
             cluster_id: String,
-            record_id: String,
+            document_id: String,
             envelope: SignedOp,
         ) {
             self.sent().push(Sent::Signed {
                 app_id,
                 cluster_id,
-                record_id,
+                document_id,
                 payload: envelope.payload,
             });
         }
@@ -419,7 +419,7 @@ mod tests {
                 vec![Sent::Signed {
                     app_id: "notes".into(),
                     cluster_id: "11111111-1111-4111-8111-111111111111".into(),
-                    record_id: "doc-7".into(),
+                    document_id: "doc-7".into(),
                     payload: vec![9, 9],
                 }],
                 "the wire must carry the same route the local fanout used, \
@@ -502,12 +502,12 @@ mod tests {
             fn commit(&self, _: OwnerCommitRequest) -> CommitFuture {
                 Box::pin(async { Err("only commits naming their kind are expected".into()) })
             }
-            fn commit_with_record_kind(
+            fn commit_with_resource_type(
                 &self,
                 _: OwnerCommitRequest,
-                record_kind: Option<String>,
+                resource_type: Option<String>,
             ) -> CommitFuture {
-                self.0.lock().unwrap().push(record_kind);
+                self.0.lock().unwrap().push(resource_type);
                 Box::pin(async { Err("recorded".into()) })
             }
             fn health(&self) -> Result<(), String> {

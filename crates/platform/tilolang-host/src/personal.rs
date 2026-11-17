@@ -13,8 +13,8 @@ use std::rc::Rc;
 use app_state::DocWriter;
 use automerge::ChangeHash;
 use collab_types::document::DocumentId;
+use collaboration::document::save::{open_stored, resource_document};
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
-use collaboration::record::save::{open_stored, record_document};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
 };
@@ -57,7 +57,7 @@ impl PersonalRecord {
         let stored = DocumentId::parse(&id)
             .ok_or_else(|| format!("`{id}` is no record id"))
             .and_then(|id| {
-                record_document(
+                resource_document(
                     documents,
                     personal::OWNER,
                     &workspace.to_string(),

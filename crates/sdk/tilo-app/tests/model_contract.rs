@@ -14,8 +14,8 @@ use tilo_actions::{
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjType, ROOT, ReadDoc};
 use tilo_app::prelude::*;
-use tilo_app::record::DocumentId;
-use tilo_app::record::transfer::Origin;
+use tilo_app::resource::DocumentId;
+use tilo_app::resource::transfer::Origin;
 use tilo_automerge::ReadTyped as _;
 use tilo_resource::{ActionDecl, Doc, Invoke, ModelError};
 
@@ -322,10 +322,10 @@ tilo_test_env::scenario! {
             .map(|version| version.hash)
             .collect();
         assert!(!carried.is_empty());
-        let origin = tilo_app::record::identity(&source).expect("record identity");
-        let from = tilo_app::record::workspace_scope(&source).expect("workspace scope");
+        let origin = tilo_app::resource::identity(&source).expect("record identity");
+        let from = tilo_app::resource::workspace_scope(&source).expect("workspace scope");
         let target = DocumentId::minted();
-        let mut arrived = tilo_app::record::transfer::rehome(
+        let mut arrived = tilo_app::resource::transfer::rehome(
             &source,
             &Origin::Record(origin.clone()),
             &from,
@@ -338,10 +338,10 @@ tilo_test_env::scenario! {
         arrived_ids.sort();
         assert_eq!(arrived_ids, ["local".to_string(), "remote".to_string()]);
         assert_eq!(
-            tilo_app::record::former_identities(&arrived),
+            tilo_app::resource::former_identities(&arrived),
             vec![origin.id]
         );
-        assert!(tilo_app::record::references(&arrived).is_empty());
+        assert!(tilo_app::resource::references(&arrived).is_empty());
         assert!(
             arrived.get(ROOT, "tilo:records").unwrap().is_none(),
             "a document listing other records cannot join a workspace"

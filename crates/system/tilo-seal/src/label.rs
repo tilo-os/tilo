@@ -51,7 +51,7 @@ pub enum Label {
     SealedInvitation,
     /// Content a record references, sealed under the key its reference
     /// carries.
-    RecordContent,
+    DocumentContent,
     /// One sender's media keys, sealed to the device that may publish with
     /// them and to no other.
     SenderMediaKeys,
@@ -86,7 +86,7 @@ impl Label {
         Self::SignInRecovery,
         Self::TpmLockoutAuth,
         Self::SealedInvitation,
-        Self::RecordContent,
+        Self::DocumentContent,
         Self::SenderMediaKeys,
     ];
 
@@ -121,7 +121,7 @@ impl Label {
             Self::SignInRecovery => "tilo-seal/v1/sign-in-recovery",
             Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
-            Self::RecordContent => "tilo-seal/v1/record-content",
+            Self::DocumentContent => "tilo-seal/v1/record-content",
             Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
         }
     }

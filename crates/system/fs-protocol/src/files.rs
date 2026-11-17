@@ -167,7 +167,7 @@ impl ContentRevisionV1 {
             ));
         }
         if self.document_id.0.is_nil() {
-            return Err(FileDocumentError::NilRecordId);
+            return Err(FileDocumentError::NilDocumentId);
         }
         if self.version_id.0.is_nil() {
             return Err(FileDocumentError::NilVersionId);
@@ -221,10 +221,10 @@ impl FileBindingV1 {
             ));
         }
         if self.document_id.0.is_nil() {
-            return Err(FileDocumentError::NilRecordId);
+            return Err(FileDocumentError::NilDocumentId);
         }
         if self.parent.is_some_and(|parent| parent.0.is_nil()) {
-            return Err(FileDocumentError::NilParentRecordId);
+            return Err(FileDocumentError::NilParentDocumentId);
         }
         if self.parent == Some(self.document_id) {
             return Err(FileDocumentError::BindingSelfParent);
@@ -653,13 +653,13 @@ pub enum FileMutationOperation {
         source_name: FileNameV1,
         destination_parent: FileDocumentId,
         destination_name: FileNameV1,
-        source_record: FileDocumentId,
-        replaced_record: FileDocumentId,
+        source_document: FileDocumentId,
+        replaced_document: FileDocumentId,
     },
     KeepBothContentConflict {
-        source_record: FileDocumentId,
-        sibling_record: FileDocumentId,
-        parent_record: FileDocumentId,
+        source_document: FileDocumentId,
+        sibling_document: FileDocumentId,
+        parent_document: FileDocumentId,
         source_name: FileNameV1,
         sibling_name: FileNameV1,
         conflict_id: Uuid,
@@ -667,8 +667,8 @@ pub enum FileMutationOperation {
         selected_version: FileVersionId,
     },
     MergeContentConflict {
-        source_record: FileDocumentId,
-        parent_record: FileDocumentId,
+        source_document: FileDocumentId,
+        parent_document: FileDocumentId,
         source_name: FileNameV1,
         conflict_id: Uuid,
         conflict_versions: Vec<FileVersionId>,
@@ -677,11 +677,11 @@ pub enum FileMutationOperation {
         codec: ConflictMergeCodecV1,
     },
     AtomicSave {
-        parent_record: FileDocumentId,
+        parent_document: FileDocumentId,
         document_name: FileNameV1,
         temporary_name: FileNameV1,
-        document_record: FileDocumentId,
-        temporary_record: FileDocumentId,
+        file_document: FileDocumentId,
+        temporary_document: FileDocumentId,
         prior_document_version: FileVersionId,
     },
 }
@@ -786,21 +786,21 @@ impl FileMutationTransactionManifest {
                 Ok(())
             }
             FileMutationOperation::AtomicSave {
-                parent_record,
+                parent_document,
                 document_name,
                 temporary_name,
-                document_record,
-                temporary_record,
+                file_document,
+                temporary_document,
                 prior_document_version,
             } => {
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V4
                     || self.files.len() != 2
-                    || parent_record.0.is_nil()
-                    || document_record.0.is_nil()
-                    || temporary_record.0.is_nil()
-                    || document_record == temporary_record
-                    || parent_record == document_record
-                    || parent_record == temporary_record
+                    || parent_document.0.is_nil()
+                    || file_document.0.is_nil()
+                    || temporary_document.0.is_nil()
+                    || file_document == temporary_document
+                    || parent_document == file_document
+                    || parent_document == temporary_document
                     || document_name == temporary_name
                     || prior_document_version.0.is_nil()
                     || !valid_transaction_name(document_name)
@@ -818,12 +818,12 @@ impl FileMutationTransactionManifest {
                     .iter()
                     .find(|p| p.role == TransactionFileRole::AtomicSaveTemporary)
                     .ok_or(FileDocumentError::InvalidTransactionFiles)?;
-                if document.document_id != *document_record
-                    || temporary.document_id != *temporary_record
+                if document.document_id != *file_document
+                    || temporary.document_id != *temporary_document
                     || document.expected_version != *prior_document_version
-                    || document.proposed_binding.parent != Some(*parent_record)
+                    || document.proposed_binding.parent != Some(*parent_document)
                     || document.proposed_binding.name != *document_name
-                    || temporary.proposed_binding.parent != Some(*parent_record)
+                    || temporary.proposed_binding.parent != Some(*parent_document)
                     || temporary.proposed_binding.name != *temporary_name
                     || document.proposed_version.timestamp_ms != self.timestamp_ms
                     || temporary.proposed_version.timestamp_ms != self.timestamp_ms
@@ -837,13 +837,13 @@ impl FileMutationTransactionManifest {
                 source_name,
                 destination_parent,
                 destination_name,
-                source_record,
-                replaced_record,
+                source_document,
+                replaced_document,
             } => {
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION
                     || source_parent.0.is_nil()
                     || destination_parent.0.is_nil()
-                    || source_record == replaced_record
+                    || source_document == replaced_document
                     || !valid_transaction_name(source_name)
                     || !valid_transaction_name(destination_name)
                 {
@@ -860,8 +860,8 @@ impl FileMutationTransactionManifest {
                 let (Some(source), Some(replaced)) = (source, replaced) else {
                     return Err(FileDocumentError::InvalidTransactionFiles);
                 };
-                if source.document_id != *source_record
-                    || replaced.document_id != *replaced_record
+                if source.document_id != *source_document
+                    || replaced.document_id != *replaced_document
                     || source.proposed_binding.parent != Some(*destination_parent)
                     || source.proposed_binding.name != *destination_name
                     || replaced.proposed_binding.parent != Some(*destination_parent)
@@ -872,9 +872,9 @@ impl FileMutationTransactionManifest {
                 Ok(())
             }
             FileMutationOperation::KeepBothContentConflict {
-                source_record,
-                sibling_record,
-                parent_record,
+                source_document,
+                sibling_document,
+                parent_document,
                 source_name,
                 sibling_name,
                 conflict_id,
@@ -882,8 +882,8 @@ impl FileMutationTransactionManifest {
                 selected_version,
             } => {
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V2
-                    || source_record == sibling_record
-                    || parent_record.0.is_nil()
+                    || source_document == sibling_document
+                    || parent_document.0.is_nil()
                     || conflict_id.is_nil()
                     || conflict_versions.len() != 2
                     || !conflict_versions.contains(selected_version)
@@ -910,11 +910,11 @@ impl FileMutationTransactionManifest {
                 let (Some(source), Some(sibling)) = (source, sibling) else {
                     return Err(FileDocumentError::InvalidTransactionFiles);
                 };
-                if source.document_id != *source_record
-                    || sibling.document_id != *sibling_record
-                    || source.proposed_binding.parent != Some(*parent_record)
+                if source.document_id != *source_document
+                    || sibling.document_id != *sibling_document
+                    || source.proposed_binding.parent != Some(*parent_document)
                     || source.proposed_binding.name != *source_name
-                    || sibling.proposed_binding.parent != Some(*parent_record)
+                    || sibling.proposed_binding.parent != Some(*parent_document)
                     || sibling.proposed_binding.name != *sibling_name
                     || sibling.expected_version != *selected_version
                     || !conflict_versions.contains(&source.expected_version)
@@ -930,8 +930,8 @@ impl FileMutationTransactionManifest {
                 Ok(())
             }
             FileMutationOperation::MergeContentConflict {
-                source_record,
-                parent_record,
+                source_document,
+                parent_document,
                 source_name,
                 conflict_id,
                 conflict_versions,
@@ -945,7 +945,7 @@ impl FileMutationTransactionManifest {
                     .collect::<std::collections::BTreeSet<_>>();
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V2
                     || self.files.len() != 1
-                    || parent_record.0.is_nil()
+                    || parent_document.0.is_nil()
                     || conflict_id.is_nil()
                     || conflict_versions.len() != 2
                     || unique.len() != 2
@@ -961,9 +961,9 @@ impl FileMutationTransactionManifest {
                     return Err(FileDocumentError::InvalidMergeTransaction);
                 };
                 if source.role != TransactionFileRole::MergeSource
-                    || source.document_id != *source_record
+                    || source.document_id != *source_document
                     || source.expected_version != *current_version
-                    || source.proposed_binding.parent != Some(*parent_record)
+                    || source.proposed_binding.parent != Some(*parent_document)
                     || source.proposed_binding.name != *source_name
                     || !conflict_versions
                         .iter()
@@ -1407,11 +1407,11 @@ pub enum FileDocumentError {
     #[error("invalid merge preflight projection")]
     InvalidMergePreflight,
     #[error("content revision has a nil record id")]
-    NilRecordId,
+    NilDocumentId,
     #[error("content revision has a nil version id")]
     NilVersionId,
     #[error("file binding has a nil parent record id")]
-    NilParentRecordId,
+    NilParentDocumentId,
     #[error("file binding cannot name itself as parent")]
     BindingSelfParent,
     #[error("workspace root binding is invalid")]
@@ -1654,12 +1654,14 @@ mod tests {
         {
             let record = FileDocumentId::new();
             let other = FileDocumentId::new();
-            let scope = collab_types::Scope::FsRecord(record.0.to_string());
+            let scope = collab_types::Scope::FsResource(record.0.to_string());
             assert!(
-                scope.matches_resource(&collab_types::ResourceRef::FsRecord(record.0.to_string()))
+                scope
+                    .matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
             );
             assert!(
-                !scope.matches_resource(&collab_types::ResourceRef::FsRecord(other.0.to_string()))
+                !scope
+                    .matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
             );
             assert!(
                 !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))
@@ -1811,11 +1813,11 @@ mod tests {
             actor,
             timestamp_ms: 44,
             operation: FileMutationOperation::AtomicSave {
-                parent_record: parent,
+                parent_document: parent,
                 document_name: "report.txt".into(),
                 temporary_name: "save-temp".into(),
-                document_record: document,
-                temporary_record: temporary,
+                file_document: document,
+                temporary_document: temporary,
                 prior_document_version: prior,
             },
             files,
@@ -1844,8 +1846,11 @@ mod tests {
         }
         assert!(changed.validate().is_err());
         let mut changed = manifest.clone();
-        if let FileMutationOperation::AtomicSave { parent_record, .. } = &mut changed.operation {
-            *parent_record = document;
+        if let FileMutationOperation::AtomicSave {
+            parent_document, ..
+        } = &mut changed.operation
+        {
+            *parent_document = document;
         }
         assert!(changed.validate().is_err());
         let mut changed = manifest.clone();
@@ -1891,18 +1896,18 @@ mod tests {
             };
             let source_parent = FileDocumentId::new();
             let destination_parent = FileDocumentId::new();
-            let source_record = FileDocumentId::new();
-            let replaced_record = FileDocumentId::new();
+            let source_document = FileDocumentId::new();
+            let replaced_document = FileDocumentId::new();
             let mut files = vec![
                 transaction_file(
-                    source_record,
+                    source_document,
                     TransactionFileRole::Source,
                     destination_parent,
                     "destination.txt",
                     actor,
                 ),
                 transaction_file(
-                    replaced_record,
+                    replaced_document,
                     TransactionFileRole::Replaced,
                     destination_parent,
                     "destination.txt",
@@ -1921,8 +1926,8 @@ mod tests {
                     source_name: "source.txt".into(),
                     destination_parent,
                     destination_name: "destination.txt".into(),
-                    source_record,
-                    replaced_record,
+                    source_document,
+                    replaced_document,
                 },
                 files,
             };
@@ -2102,8 +2107,8 @@ mod tests {
             actor,
             timestamp_ms: 50,
             operation: FileMutationOperation::MergeContentConflict {
-                source_record: document_id,
-                parent_record: parent,
+                source_document: document_id,
+                parent_document: parent,
                 source_name: "merge.txt".into(),
                 conflict_id: Uuid::new_v4(),
                 conflict_versions: vec![current, other],

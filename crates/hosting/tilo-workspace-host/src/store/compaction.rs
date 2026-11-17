@@ -60,7 +60,7 @@ fn lineage_name(author: &[u8; 32], channel: &[u8; 32]) -> String {
 
 /// Record files of a generation in replay order: the checkpoint, then the
 /// tail by name.
-pub(super) fn record_names(generation: &Path) -> Result<Vec<OsString>, StoreError> {
+pub(super) fn document_names(generation: &Path) -> Result<Vec<OsString>, StoreError> {
     let mut names = Vec::new();
     let mut checkpoint = false;
     for entry in fs::read_dir(generation)? {
@@ -133,7 +133,7 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage)? else {
                 continue;
             };
-            for name in record_names(&active)? {
+            for name in document_names(&active)? {
                 let bytes = fs::read(active.join(&name))?;
                 let body = super::retained::body_of(&bytes, self.workspace_id).unwrap_or_default();
                 out.push(ChannelEntry {
@@ -245,7 +245,7 @@ impl WorkspaceStore {
         let Some(active) = current(&lineage)? else {
             return Ok(None);
         };
-        for name in record_names(&active)? {
+        for name in document_names(&active)? {
             let bytes = fs::read(active.join(name))?;
             if let Some((cert, _)) = super::retained::body_of(&bytes, self.workspace_id)
                 .and_then(|body| self.payloads.identity(&body))
@@ -289,7 +289,7 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage)? else {
                 continue;
             };
-            let names = record_names(&active)?;
+            let names = document_names(&active)?;
             if names.is_empty() {
                 continue;
             }
@@ -341,7 +341,7 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage)? else {
                 continue;
             };
-            let names = record_names(&active)?;
+            let names = document_names(&active)?;
             if names.is_empty() {
                 continue;
             }
@@ -384,7 +384,7 @@ impl WorkspaceStore {
             };
             let kept = archive.join(lineage.file_name().unwrap_or_default());
             let mut linked = false;
-            for name in record_names(&active)? {
+            for name in document_names(&active)? {
                 let path = active.join(&name);
                 if !keeps(&fs::read(&path)?) {
                     continue;
@@ -409,7 +409,7 @@ fn survivors(
     outcome: &mut Replaced,
 ) -> Result<Vec<PathBuf>, StoreError> {
     let mut survivors = Vec::new();
-    for name in record_names(active)? {
+    for name in document_names(active)? {
         let path = active.join(&name);
         if remove(&fs::read(&path)?) {
             outcome.removed = outcome.removed.saturating_add(1);

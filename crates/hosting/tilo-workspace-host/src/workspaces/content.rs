@@ -6,7 +6,7 @@
 //! ([`crate::workspaces::ContentKeeper`]).
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
-//! presence ([`NeighbourMsg::RecordContentWant`]), as it asks any member.
+//! presence ([`NeighbourMsg::DocumentContentWant`]), as it asks any member.
 //! The host answers from everything it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
@@ -40,11 +40,11 @@ const PIECE_BYTES: usize = 192 * 1024;
 const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Word from the host `host` that it keeps none of what `body`, a
-/// member's `NeighbourMsg::RecordContentWant`, asks for, as a frame for the
+/// member's `NeighbourMsg::DocumentContentWant`, asks for, as a frame for the
 /// member's device alone: the member stops counting on this host for it.
 /// `None` for any other presence.
 pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
-    let Ok(NeighbourMsg::RecordContentWant {
+    let Ok(NeighbourMsg::DocumentContentWant {
         requester,
         app_id,
         cluster_id,
@@ -61,7 +61,7 @@ pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
     if !tilo_content::valid_hash(&hash) {
         return None;
     }
-    postcard::to_allocvec(&NeighbourMsg::RecordContentLacks {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentLacks {
         responder: peer_handle(host),
         requester,
         app_id,
@@ -80,7 +80,7 @@ pub trait WorkspaceContent: Send + Sync {
 
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
-    /// `frame`, a `NeighbourMsg::RecordContentPiece` the member device
+    /// `frame`, a `NeighbourMsg::DocumentContentPiece` the member device
     /// `from` sent this host in `workspace`.
     fn piece(&self, workspace: &str, from: [u8; 32], frame: &[u8]);
 
@@ -180,19 +180,19 @@ impl Workspaces {
     /// moment: the workspace takes writes while its records are read.
     /// A record that cannot be read whole (sealed for a channel this host has
     /// no keys of, or with sealed writes that do not open or merge yet) is
-    /// logged with why and listed in [`WholeRecords::unread`], and the rest
+    /// logged with why and listed in [`WholeDocuments::unread`], and the rest
     /// are read all the same: a caller that must see every reference checks
-    /// [`WholeRecords::is_whole`]. A person's own record sealed for their
-    /// devices alone is listed in [`WholeRecords::private`] instead.
+    /// [`WholeDocuments::is_whole`]. A person's own record sealed for their
+    /// devices alone is listed in [`WholeDocuments::private`] instead.
     ///
     /// # Errors
     ///
     /// The workspace is not governed here.
-    pub async fn whole_records(
+    pub async fn whole_documents(
         &self,
         workspace: &str,
         only: Option<&BTreeSet<(String, String)>>,
-    ) -> Result<WholeRecords, CollaborationError> {
+    ) -> Result<WholeDocuments, CollaborationError> {
         let state = self.workspace(workspace).await?;
         let (peer, device) = {
             let governed = state.lock().await;
@@ -205,10 +205,10 @@ impl Workspaces {
             .chain(peer.sealed_routes())
             .filter(|route| only.is_none_or(|only| only.contains(route)))
             .collect();
-        let mut read = WholeRecords::default();
+        let mut read = WholeDocuments::default();
         for (app, record) in routes {
             #[cfg(any(feature = "agents", feature = "web"))]
-            let document = super::sealed_records::whole_document(
+            let document = super::sealed_documents::whole_document(
                 &peer,
                 device.as_ref(),
                 workspace,
@@ -218,7 +218,7 @@ impl Workspaces {
             #[cfg(not(any(feature = "agents", feature = "web")))]
             let document = {
                 let _ = &device;
-                if peer.publication().is_sealed_record(&app, &record) {
+                if peer.publication().is_sealed_document(&app, &record) {
                     Err("it is sealed and this host opens no sealed records".to_owned())
                 } else {
                     peer.document(&app, &record)
@@ -226,7 +226,7 @@ impl Workspaces {
                 }
             };
             let document = document.and_then(|document| {
-                peer.record_revision(&app, &record)
+                peer.document_revision(&app, &record)
                     .map(|revision| (document, revision))
                     .ok_or_else(|| "it has no revision yet".to_owned())
             });
@@ -237,11 +237,11 @@ impl Workspaces {
                     read.documents.push(((app, record), document));
                 }
                 // A person's own record sealed for their devices alone
-                // ([`collab_types::OwnRecord`], their drafts) is not the
+                // ([`collab_types::OwnResource`], their drafts) is not the
                 // host's to read: it is named apart, not as unread.
                 Err(why)
-                    if peer.own_record(&app, &record).is_some()
-                        && peer.publication().is_sealed_record(&app, &record) =>
+                    if peer.own_resource(&app, &record).is_some()
+                        && peer.publication().is_sealed_document(&app, &record) =>
                 {
                     tracing::debug!(workspace, %app, %record, %why, "a person's own record is not the host's to read");
                     read.private.push((app, record));
@@ -273,7 +273,7 @@ impl Workspaces {
     pub async fn while_unwritten<R>(
         &self,
         workspace: &str,
-        read: &WholeRecords,
+        read: &WholeDocuments,
         act: impl FnOnce() -> R,
     ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
         let state = self.workspace(workspace).await?;
@@ -287,7 +287,7 @@ impl Workspaces {
             .chain(peer.sealed_routes())
             .filter(|(app, record)| {
                 read.revisions.get(&(app.clone(), record.clone()))
-                    != peer.record_revision(app, record).as_ref()
+                    != peer.document_revision(app, record).as_ref()
             })
             .collect();
         let answer = if changed.is_empty() {
@@ -380,7 +380,7 @@ impl Workspaces {
         }
     }
 
-    /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
+    /// Publish `body`, a `NeighbourMsg::DocumentContentWant` naming this
     /// host, to `workspace`'s members: the ones keeping the content answer the
     /// host. A member reaches the workspace's other devices only through this
     /// host, and the host asks them the same way they ask it — on the live
@@ -422,7 +422,7 @@ impl Workspaces {
     /// any other presence. What it keeps of app surfaces is the workspace's
     /// content plane, never a registry.
     pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
-        let Ok(NeighbourMsg::RecordContentWant {
+        let Ok(NeighbourMsg::DocumentContentWant {
             requester,
             app_id,
             cluster_id,
@@ -460,7 +460,7 @@ impl Workspaces {
                 .collect();
         };
         let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let piece = |offset: u64, chunk: &[u8]| NeighbourMsg::RecordContentPiece {
+        let piece = |offset: u64, chunk: &[u8]| NeighbourMsg::DocumentContentPiece {
             responder,
             requester,
             app_id: app_id.clone(),
@@ -499,10 +499,10 @@ impl Workspaces {
     }
 }
 
-/// Records of a workspace read whole ([`Workspaces::whole_records`]), with
+/// Records of a workspace read whole ([`Workspaces::whole_documents`]), with
 /// the revision each was read at, and those that did not read whole.
 #[derive(Default)]
-pub struct WholeRecords {
+pub struct WholeDocuments {
     /// Each record, by its app and id, saved with all of its history.
     pub documents: Vec<((String, String), Vec<u8>)>,
     /// Each record that did not read whole, by its app and id, with why.
@@ -513,7 +513,7 @@ pub struct WholeRecords {
     revisions: BTreeMap<(String, String), [u8; 32]>,
 }
 
-impl WholeRecords {
+impl WholeDocuments {
     /// Every record the host is to read read whole: what they name is all the
     /// workspace names that the host keeps for it. A person's own sealed
     /// record is theirs, not one the host reads.
@@ -562,7 +562,7 @@ mod tests {
     const WORKSPACE: &str = "2f10f463-8f4c-43a3-b9dd-18df422eb0bd";
 
     fn want(workspace: &str, hash: &str) -> Vec<u8> {
-        postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
+        postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
             requester: 42,
             app_id: "so.tilo.chat".into(),
             cluster_id: workspace.into(),
@@ -594,7 +594,7 @@ mod tests {
         let frames = workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &hash));
         let mut gathered = Vec::new();
         for frame in &frames {
-            let NeighbourMsg::RecordContentPiece {
+            let NeighbourMsg::DocumentContentPiece {
                 responder,
                 requester,
                 total,
@@ -640,7 +640,7 @@ mod tests {
             return None;
         };
         match postcard::from_bytes(frame).ok()? {
-            NeighbourMsg::RecordContentLacks {
+            NeighbourMsg::DocumentContentLacks {
                 responder,
                 requester,
                 ..

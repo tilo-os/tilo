@@ -223,7 +223,7 @@ pub fn application_action_target(
 /// delivers to the app showing that record, or launches the app on it.
 /// Opening a reference is the resource's `open` on this target.
 #[must_use]
-pub fn application_record_target(
+pub fn application_resource_target(
     workspace: &str,
     app_id: &str,
     record: &str,
@@ -242,10 +242,10 @@ pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
     application_parts(provider).map(|(workspace, app_id, _)| (workspace, app_id))
 }
 
-/// The record an [`application_record_target`] provider token names, or
+/// The record an [`application_resource_target`] provider token names, or
 /// `None` when it names none.
 #[must_use]
-pub fn application_provider_record(provider: &str) -> Option<&str> {
+pub fn application_provider_resource(provider: &str) -> Option<&str> {
     application_parts(provider).and_then(|(_, _, record)| record)
 }
 

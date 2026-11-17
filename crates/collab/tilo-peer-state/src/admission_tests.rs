@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
             workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: "test.app".into(),
-                record_id: "tab:1".into(),
+                document_id: "tab:1".into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],
@@ -519,7 +519,7 @@ tilo_test_env::scenario! {
                         .unwrap(),
                     documents: vec![SeedDocument {
                         app_id: "test.app".into(),
-                        record_id: "tab:1".into(),
+                        document_id: "tab:1".into(),
                         kind: "test".into(),
                         bytes: document.save(),
                     }],
@@ -1173,7 +1173,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
-                    record_id: "tab:1".into(),
+                    document_id: "tab:1".into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],
@@ -2592,7 +2592,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
-                    record_id: "tab:1".into(),
+                    document_id: "tab:1".into(),
                     kind: "test".into(),
                     bytes: doc.save(),
                 }],

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tilo_relay_protocol::WorkspaceId;
 
-use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceRecordsLink};
+use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceDocumentsLink};
 
 impl Job {
     /// The workspace whose thread serves the job: every job is about one.
@@ -51,7 +51,7 @@ impl Jobs {
     pub(super) fn start(
         shared: &Arc<Shared>,
         catalogue: &CatalogueFactory,
-        link: &Arc<dyn WorkspaceRecordsLink>,
+        link: &Arc<dyn WorkspaceDocumentsLink>,
     ) -> Result<Self, String> {
         let mut shards = Vec::new();
         for index in 0..crate::worker::pool_size() {

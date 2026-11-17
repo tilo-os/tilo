@@ -30,14 +30,14 @@ use super::{HostDevice, Job, Shared};
 fn kept(event: &Event) -> bool {
     matches!(
         event,
-        Event::HostReady { .. } | Event::RecordOpened { .. } | Event::Landed { .. }
+        Event::HostReady { .. } | Event::DocumentOpened { .. } | Event::Landed { .. }
     )
 }
 
 /// The workspace `event` is of.
 fn workspace_of(event: &Event) -> Option<WorkspaceId> {
     match event {
-        Event::HostReady { ws, .. } | Event::RecordOpened { ws, .. } => Some(*ws),
+        Event::HostReady { ws, .. } | Event::DocumentOpened { ws, .. } => Some(*ws),
         Event::Landed { route, .. } => WorkspaceId::parse(&route.cluster_id),
         _ => None,
     }

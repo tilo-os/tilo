@@ -303,7 +303,7 @@ impl CollabClient {
     }
 
     /// Join as an explicitly typed member (`person`, or `agent` with the
-    /// agent's id as the handle). `record_kind` names the resource kind of the
+    /// agent's id as the handle). `resource_type` names the resource kind of the
     /// record the channel carries, or is empty.
     ///
     /// # Errors
@@ -315,7 +315,7 @@ impl CollabClient {
         identity: &[u8],
         member_handle: &str,
         member_kind: &str,
-        record_kind: &str,
+        resource_type: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
         let handler = member_handle.to_owned();
         let member = match member_kind {
@@ -332,7 +332,7 @@ impl CollabClient {
             identity: identity.to_vec(),
             member,
             handle: handler,
-            record_kind: Some(record_kind.to_owned()).filter(|kind| !kind.is_empty()),
+            resource_type: Some(resource_type.to_owned()).filter(|kind| !kind.is_empty()),
         };
         match self
             .client
@@ -1787,7 +1787,7 @@ impl ContextStream {
                         .collect(),
                 );
             }
-            ContextUpdate::RecordsArrived(records) => context.records_arrived = records,
+            ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
             // Retired: a conversation is an ordinary record, carried by the
             // workspace like any other and never named here.
             ContextUpdate::RetiredPersonPairs => {}

@@ -289,7 +289,7 @@ fn a_provider_names_a_record_only_in_the_record_form() {
     for (provider, expected) in rows {
         let expected = expected.map(|(app, record)| route(WORKSPACE, app, record));
         assert_eq!(
-            super::record_of(provider, WORKSPACE),
+            super::resource_of(provider, WORKSPACE),
             expected,
             "{provider:?}"
         );
@@ -297,9 +297,9 @@ fn a_provider_names_a_record_only_in_the_record_form() {
     let named = route(WORKSPACE, "so.tilo.sheets", "uuid:6f1c");
     let provider = super::record_provider(&named);
     assert_eq!(provider, "record:so.tilo.sheets:uuid:6f1c");
-    assert_eq!(super::record_of(&provider, WORKSPACE), Some(named));
+    assert_eq!(super::resource_of(&provider, WORKSPACE), Some(named));
     assert_eq!(
-        super::record_of(&provider, OTHER_WORKSPACE),
+        super::resource_of(&provider, OTHER_WORKSPACE),
         Some(route(OTHER_WORKSPACE, "so.tilo.sheets", "uuid:6f1c")),
         "the workspace is the caller's, whatever record the provider names"
     );
@@ -338,16 +338,16 @@ fn a_request_waits_for_the_record_its_provider_names() {
         act,
     };
     let named = "record:so.tilo.notes:uuid:n1";
-    let no_record = "record:so.tilo.notes";
+    let no_document = "record:so.tilo.notes";
 
     assert_eq!(invoke_keys(&invoke(named)), record(true));
-    assert_eq!(invoke_keys(&invoke(no_record)), Keys::Joined);
+    assert_eq!(invoke_keys(&invoke(no_document)), Keys::Joined);
     assert_eq!(
         invoke_keys(&invoke(&format!("workspace:{WORKSPACE}"))),
         Keys::Joined
     );
     assert_eq!(catalogue_keys(&listing(Some(named))), record(false));
-    assert_eq!(catalogue_keys(&listing(Some(no_record))), Keys::Workspace);
+    assert_eq!(catalogue_keys(&listing(Some(no_document))), Keys::Workspace);
     assert_eq!(catalogue_keys(&listing(None)), Keys::Workspace);
     let view = CatalogueQuery {
         view_resource: Some(ViewResourceQuery {
@@ -430,7 +430,7 @@ fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
         super::opens_as_its_own(files, ""),
         "the workspace's own Files record"
     );
-    let tree = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
+    let tree = collab_types::person_document_id(fs_protocol::tree::TREE_KIND);
     assert!(
         !super::opens_as_its_own(files, &tree),
         "the tree of the workspace's folder is read where it is kept, never mounted as Files'"
@@ -469,13 +469,13 @@ fn an_apps_index_is_not_one_of_its_records() {
             app_id: app.into(),
             title: "Index probe".into(),
             icon: ui::widget::IconDescriptor::Glyph("P"),
-            record_kind: ui::record::ResourceType::new("probe"),
+            resource_type: ui::resource::ResourceType::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: no_component,
         }
     }

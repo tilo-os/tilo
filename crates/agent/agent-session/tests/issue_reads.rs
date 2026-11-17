@@ -20,9 +20,9 @@ use tilo_agent_session::{ReplicaActor, Seed};
 
 /// The address the tracker publishes its issues under.
 fn issues() -> String {
-    ui::record::chain_resource_id(&ui::record::DocumentId::derived(
+    ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",
-        &ui::record::DocumentId::workspace_default(),
+        &ui::resource::DocumentId::workspace_default(),
     ))
 }
 
@@ -43,7 +43,7 @@ fn an_issue_filed_through_the_api_is_listed_with_what_runs_on_it() {
         &MemberId::person("host"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![changes],
         },
     )

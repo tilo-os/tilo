@@ -599,7 +599,7 @@ impl Compactor {
                 tracing::warn!(
                     workspace = %route.cluster_id,
                     app = %route.app_id,
-                    record = %route.record_id,
+                    record = %route.document_id,
                     writer = %hex::encode(write.author.as_bytes()),
                     seq = write.seq,
                     "the store folds a record without a write stuck behind a change its writer never sent; the write is kept in the store's archive"
@@ -865,7 +865,7 @@ impl Compactor {
                 request,
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record: route.record_id.clone(),
+                record: route.document_id.clone(),
             })
             .is_err()
         {
@@ -1638,7 +1638,7 @@ fn sealed_compaction_frames(
     }
     let route = &folded.route;
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     let (metadata, compaction, segments) =
         sealed_compaction_payloads(keys, artifact, &superseded, &folded.snapshot)?;
     let author = key.verifying_key().to_bytes();
@@ -1654,8 +1654,8 @@ fn sealed_compaction_frames(
     let timestamp = std::time::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(std::time::UNIX_EPOCH);
-    let channel =
-        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let channel = *blake3::hash(format!("app\0{}\0{}", route.app_id, route.document_id).as_bytes())
+        .as_bytes();
     std::iter::once((metadata, compaction))
         .chain(segments)
         .enumerate()
@@ -1667,7 +1667,7 @@ fn sealed_compaction_frames(
                 collab_types::document_attestation_id(
                     &route.app_id,
                     &route.cluster_id,
-                    &route.record_id,
+                    &route.document_id,
                 ),
                 collab_types::OpKind::Compaction,
                 timestamp,
@@ -1757,15 +1757,15 @@ fn frames_of(
     use ed25519_dalek::Signer as _;
     let author = key.verifying_key().to_bytes();
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     let attestation =
-        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id);
     let now_ns = tilo_clock::unix_now_ns();
     let timestamp = std::time::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(std::time::UNIX_EPOCH);
-    let channel =
-        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let channel = *blake3::hash(format!("app\0{}\0{}", route.app_id, route.document_id).as_bytes())
+        .as_bytes();
     let encoded = DocumentMutation::Snapshot(snapshot.to_vec())
         .encode_frames()
         .map_err(|error| error.to_string())?;

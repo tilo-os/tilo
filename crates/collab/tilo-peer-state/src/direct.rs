@@ -1359,19 +1359,19 @@ impl DirectSync {
             .into_iter()
             .find(|certificate| certificate.device_public_key == device)
             .map(|certificate| certificate.user_public_key);
-        let owned = replica.own_records();
+        let owned = replica.own_resources();
         drop(replica);
         move |message| match message {
             NeighbourMsg::AppDocument {
                 app_id,
-                record_id,
+                document_id,
                 own,
                 ..
             } => own
                 .as_ref()
-                .filter(|own| own.names(record_id))
+                .filter(|own| own.names(document_id))
                 .map(|own| own.owner)
-                .or_else(|| owned.get(&(app_id.clone(), record_id.clone())).copied())
+                .or_else(|| owned.get(&(app_id.clone(), document_id.clone())).copied())
                 .is_none_or(|owner| person == Some(owner)),
             _ => true,
         }
@@ -1595,7 +1595,7 @@ impl DirectSync {
     fn member_history(&self, remote: [u8; 32], authored: &Authored) -> bool {
         let NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = &authored.message
@@ -1611,21 +1611,21 @@ impl DirectSync {
         }
         let now = tilo_clock::wall();
         let replica = self.0.replica.lock();
-        replica.holds_document(app_id, record_id)
+        replica.holds_document(app_id, document_id)
             || replica.permissions(remote, now).is_ok_and(|member| {
                 let node = collab_types::validator::document_node(
                     &member.policy.workspace,
                     app_id,
-                    record_id,
+                    document_id,
                 );
                 // A member's own record is its person's to start whatever
                 // their role.
                 let person = replica
-                    .own_write(app_id, record_id, &remote)
+                    .own_write(app_id, document_id, &remote)
                     .map(|own| own.person());
                 let mut cx = tilo_action_policy::Context::at_time(now);
                 if let Some(person) = &person {
-                    cx = cx.with_own_record(record_id, person);
+                    cx = cx.with_own_resource(document_id, person);
                 }
                 member.answer(&node, tilo_action_policy::ActionKind::Undoable, &cx)
                     == tilo_action_policy::Answer::Allow
@@ -2738,7 +2738,7 @@ mod tests {
             RevocationList::new(),
             vec![crate::SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: "test".into(),
                 bytes: record.save(),
             }],

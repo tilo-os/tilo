@@ -16,7 +16,7 @@
 //!
 //! An outside consequence a verb queued in an
 //! [`Outbox`](tilo_resource::Outbox) is carried out with
-//! [`RecordEnv::outbox`](super::RecordEnv::outbox): the framework runs the app's
+//! [`ResourceEnv::outbox`](super::ResourceEnv::outbox): the framework runs the app's
 //! handler in the live app on the device that owns the entry and records how
 //! it settled.
 
@@ -88,7 +88,7 @@ pub struct ChosenFile {
     /// file it can name: the same file chosen again, even renamed or moved,
     /// has the same identity, so an import can tell it already came in.
     /// `None` where files have no paths (a browser page).
-    pub identity: Option<ui_core::record::DocumentId>,
+    pub identity: Option<ui_core::resource::DocumentId>,
 }
 
 impl From<PickedContents> for ChosenFile {
@@ -97,7 +97,7 @@ impl From<PickedContents> for ChosenFile {
             identity: picked
                 .location
                 .as_deref()
-                .map(ui_core::record::DocumentId::identify_file),
+                .map(ui_core::resource::DocumentId::identify_file),
             name: picked.name,
             media_type: picked.media_type,
             bytes: picked.bytes,
@@ -133,7 +133,7 @@ impl Effected {
     }
 
     /// An outbox entry carried out, or failed for good: how it settled
-    /// ([`RecordEnv::outbox`](super::RecordEnv::outbox)). [`Self::value`] with the
+    /// ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)). [`Self::value`] with the
     /// result alone settles it done.
     pub fn settled<O: serde::Serialize>(settled: &Settled<O>) -> Self {
         Self::value(settled)
@@ -2077,7 +2077,7 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
     }
 }
 
-/// A registered projection drain ([`RecordEnv::outbox`](super::RecordEnv::outbox)),
+/// A registered projection drain ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)),
 /// as the view or surface that registered it holds it.
 ///
 /// A drain looks at the document after every change. When what it compares
@@ -2144,7 +2144,7 @@ type SettleEntry = Box<
 >;
 
 /// The drain of one [`Outbox`](tilo_resource::Outbox) on the device that
-/// owns its entries ([`RecordEnv::outbox`](super::RecordEnv::outbox)). Only
+/// owns its entries ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)). Only
 /// reading, running and settling an entry know the resource and the entry's
 /// types ([`Effects::outbox`] builds them); the bookkeeping is compiled once.
 struct OutboxDrain {
@@ -2336,7 +2336,7 @@ impl Drainer for OutboxDrain {
 }
 
 /// A drain shared by the drains that run what is pending and, for
-/// [`RecordEnv::outbox_awaited`](super::RecordEnv::outbox_awaited), by those that
+/// [`ResourceEnv::outbox_awaited`](super::ResourceEnv::outbox_awaited), by those that
 /// run what an invocation queued.
 impl<D: Drainer> Drainer for Rc<RefCell<D>> {
     fn run(&mut self, state: &dyn Any, revision: u64) {

@@ -125,7 +125,7 @@ mod tests {
         Arc::new(Envelope::Ready {
             workspace_id: WorkspaceId::from_u128(u128::from(n)),
             pending_deltas: 0,
-            records_when_opened: false,
+            documents_when_opened: false,
         })
     }
 

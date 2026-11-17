@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     AppId, HostOrigin, Link, LinkError, LinkSecrets, LinkTarget, MAX_ROUTE_BYTES, MAX_SPAN_OFFSET,
-    Mode, PACKAGE_PRIMARY, RecordSegment, ResourceAddress, Scope, Secret, Slug, WebEntries,
+    Mode, PACKAGE_PRIMARY, ResourceAddress, ResourceSegment, Scope, Secret, Slug, WebEntries,
     WebEntry, encode,
 };
 use crate::{Span, SpanUnit};
@@ -246,15 +246,15 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
     }
     if let Some(record) = segments.next() {
         target.record = Some(if record == "-" {
-            RecordSegment::Primary
+            ResourceSegment::Primary
         } else {
             let id = encode::decode_segment(record)?;
             if id == PACKAGE_PRIMARY {
                 return Err(LinkError::NonCanonical("write the primary record as -"));
             }
-            match RecordSegment::new(&id)? {
-                RecordSegment::Id(id) => RecordSegment::Id(id),
-                RecordSegment::Primary => return Err(LinkError::BadRecord),
+            match ResourceSegment::new(&id)? {
+                ResourceSegment::Id(id) => ResourceSegment::Id(id),
+                ResourceSegment::Primary => return Err(LinkError::BadRecord),
             }
         });
     }
@@ -350,7 +350,7 @@ fn discuss_thread(target: &mut LinkTarget) -> Result<(), LinkError> {
         return Ok(());
     }
     target.app = Some(AppId::parse(CHAT_APP)?);
-    target.record = Some(RecordSegment::Primary);
+    target.record = Some(ResourceSegment::Primary);
     target.resource = Some(ResourceAddress {
         kind: THREAD_KIND.to_owned(),
         id: format!("c_{}", slug.as_str().replace('-', "_")),

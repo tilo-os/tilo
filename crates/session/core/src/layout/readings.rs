@@ -324,12 +324,12 @@ pub(super) fn place_reading(
     let record = records.get(&tab.id).cloned().unwrap_or_default();
     // A window showing a record is named by that record: its window shows it, so its title is the
     // record's, unless the person named the window itself.
-    let record_title = catalog
+    let resource_title = catalog
         .get(&record)
         .map(|target| target.title.trim().to_owned())
         .unwrap_or_default();
-    let title = if tab.app_title.is_none() && !record_title.is_empty() {
-        record_title
+    let title = if tab.app_title.is_none() && !resource_title.is_empty() {
+        resource_title
     } else {
         tab.title.clone()
     };

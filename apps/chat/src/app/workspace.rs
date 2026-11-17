@@ -30,9 +30,9 @@ impl ChatApp {
     #[must_use]
     pub(crate) fn with_agents_record(
         mut self,
-        record: Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
+        record: Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     ) -> Self {
-        self.agents_record = record;
+        self.agents_document = record;
         self
     }
 
@@ -44,7 +44,7 @@ impl ChatApp {
     /// names it always, so an author reads by its name whether or not it is
     /// running. Whether any name changed, so the window shows them again.
     pub(super) fn follow_agents(&mut self) -> bool {
-        let Some(record) = self.agents_record.clone() else {
+        let Some(record) = self.agents_document.clone() else {
             return false;
         };
         let state = record.get();

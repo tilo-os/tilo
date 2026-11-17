@@ -20,7 +20,7 @@ mod test_store;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
 pub use composer::{
-    Composer, Consent, Control, FeedbackHost, ModelCheck, PickedReport, ReportWords, ShownRecord,
+    Composer, Consent, Control, FeedbackHost, ModelCheck, PickedReport, ReportWords, ShownResource,
     Subject,
 };
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};

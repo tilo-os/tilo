@@ -273,7 +273,7 @@ pub fn opened_app(offer: &Offer) -> Option<&str> {
 /// publishes operations — a second window on a new, empty document, as the
 /// launcher does for a person.
 fn open_note(catalogue: &Catalogue, offer: &Offer, app: &str) -> String {
-    if surface::opens_record(offer.address()).is_some() {
+    if surface::opens_document(offer.address()).is_some() {
         format!(
             " (opens this document of {app} the workspace already has; its operations then appear \
              and change it: to edit an existing document, open it this way)"

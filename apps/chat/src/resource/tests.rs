@@ -674,7 +674,8 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Summary: two open questions");
     assert_eq!(
-        posted.author, MemberId::agent("44444444-4444-4444-8444-444444444444"),
+        posted.author,
+        MemberId::agent("44444444-4444-4444-8444-444444444444"),
         "the post is the agent's, not its person's"
     );
     let react = crate::parts::ChatPart::paths()

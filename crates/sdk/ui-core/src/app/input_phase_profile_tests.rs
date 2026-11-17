@@ -82,7 +82,7 @@ fn stroke_factory(
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|_| Ok(()))
+        .initialize_new_resource(|_| Ok(()))
         .map_err(crate::launch::LaunchError::Record)?;
     let pressures = Rc::new(RefCell::new(Vec::new()));
     STROKE.with_borrow_mut(|slot| *slot = Some(Rc::clone(&pressures)));

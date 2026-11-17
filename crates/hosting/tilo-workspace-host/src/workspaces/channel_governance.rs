@@ -236,7 +236,7 @@ impl Workspaces {
         &self,
         workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<Vec<crate::workspace_records::WorkspaceAdmission>, String> {
+    ) -> Result<Vec<crate::workspace_documents::WorkspaceAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());
         for message in messages {
             let commit = channel_commit(&message)?;
@@ -255,11 +255,11 @@ impl Workspaces {
 /// A channel governance message, retained as this relay's own.
 fn channel_commit(
     message: &neighbour_wire::NeighbourMsg,
-) -> Result<crate::workspace_records::HostCommit, String> {
+) -> Result<crate::workspace_documents::HostCommit, String> {
     let (channel, retention) = neighbour_wire::retention(message, false)
         .ok_or("channel governance has no retention channel")?;
     let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
-    Ok(crate::workspace_records::HostCommit {
+    Ok(crate::workspace_documents::HostCommit {
         body,
         channel,
         checkpoint: retention == neighbour_wire::Retention::Checkpoint,

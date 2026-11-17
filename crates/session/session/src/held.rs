@@ -64,7 +64,7 @@ impl Session {
     ///
     /// # Errors
     /// The workspace is not held here, or this computer may not read it.
-    pub fn read_record(
+    pub fn read_resource(
         &self,
         workspace: &str,
         app: &str,

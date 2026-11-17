@@ -86,7 +86,7 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
     use crate::invocation_scope::{
         PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
     };
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
+    let fixture = crate::history_mode::owner::ResourceOwnerFixture::in_workspace(
         1980,
         "77777777-7777-4777-8777-777777777777",
     );

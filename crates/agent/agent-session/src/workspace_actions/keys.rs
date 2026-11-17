@@ -7,7 +7,7 @@
 
 use tilo_actions::remote::{CatalogueQuery, InvokeRequest};
 
-use super::{Needs, record_of};
+use super::{Needs, resource_of};
 
 /// What a job must have before it can read its workspace: the workspace's
 /// subscription, and the keys of what it reads. The service's thread holds a
@@ -64,7 +64,7 @@ pub(super) fn catalogue_keys(query: &CatalogueQuery) -> Keys {
     match query
         .provider
         .as_deref()
-        .and_then(|provider| record_of(provider, ""))
+        .and_then(|provider| resource_of(provider, ""))
     {
         Some(route) => Keys::Record {
             app_id: route.app_id,
@@ -78,7 +78,7 @@ pub(super) fn catalogue_keys(query: &CatalogueQuery) -> Keys {
 /// What running `request` waits for: the record it acts on, or, when it names
 /// none, the workspace alone.
 pub(super) fn invoke_keys(request: &InvokeRequest) -> Keys {
-    match record_of(&request.target.provider, "") {
+    match resource_of(&request.target.provider, "") {
         Some(route) => Keys::Record {
             app_id: route.app_id,
             record: route.record,

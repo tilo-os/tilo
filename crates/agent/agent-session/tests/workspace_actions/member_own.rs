@@ -170,7 +170,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let owner_person = hex::encode(owner_device.cert.user_public_key);
     loop {
         let saved = workspaces
-            .record_document(&workspace.workspace, "so.tilo.discord", "")
+            .resource_document(&workspace.workspace, "so.tilo.discord", "")
             .await
             .unwrap()
             .expect("the governor holds the Discord record");

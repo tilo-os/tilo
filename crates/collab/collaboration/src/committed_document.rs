@@ -1513,7 +1513,7 @@ async fn capture_using(
 /// whichever part of the chain is the newest, which holds nothing of its own and so is neither read
 /// nor followed here. The host sends that part on the part's own route, and the app holds it from
 /// there. Answered with nothing, the chain has no part at all, which the app is told
-/// ([`CollabEvent::RecordUnavailable`]) so that it starts the first.
+/// ([`CollabEvent::ResourceUnavailable`]) so that it starts the first.
 pub(super) async fn ask_chain_head(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
@@ -1537,7 +1537,7 @@ pub(super) async fn ask_chain_head(
             // the head at all: the chain starts its first part.
             Ok(Reply::Absent | Reply::Legacy) => {
                 if !inbound
-                    .send_durable(CollabEvent::RecordUnavailable {
+                    .send_durable(CollabEvent::ResourceUnavailable {
                         route: spec.clone(),
                     })
                     .await
@@ -1579,7 +1579,7 @@ pub(super) struct NativeReadJoin {
     pub(super) presentation: Vec<u8>,
     pub(super) member_handle: String,
     pub(super) member_kind: String,
-    pub(super) record_kind: String,
+    pub(super) resource_type: String,
 }
 impl NativeReadJoin {
     async fn renew(
@@ -1597,7 +1597,7 @@ impl NativeReadJoin {
                     &self.presentation,
                     &self.member_handle,
                     super::broker_member_kind(&self.member_kind),
-                    &self.record_kind,
+                    &self.resource_type,
                 )
                 .await
                 .map_err(|_| "original committed read renewal was not admitted")?;
@@ -1768,7 +1768,7 @@ pub(super) async fn install(
         Reply::Absent => {
             absent = true;
             if !inbound
-                .send_durable(CollabEvent::RecordUnavailable {
+                .send_durable(CollabEvent::ResourceUnavailable {
                     route: spec.clone(),
                 })
                 .await
@@ -1954,7 +1954,7 @@ pub(super) async fn install(
                     revision = None;
                     if !std::mem::replace(&mut absent, true)
                         && !inbound
-                            .send_durable(CollabEvent::RecordUnavailable {
+                            .send_durable(CollabEvent::ResourceUnavailable {
                                 route: spec.clone(),
                             })
                             .await

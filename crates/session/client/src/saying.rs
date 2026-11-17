@@ -81,7 +81,7 @@ mod tests {
     )]
 
     use super::*;
-    use tilo_relay_protocol::live::LiveRecord;
+    use tilo_relay_protocol::live::LiveResource;
 
     const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
@@ -119,7 +119,7 @@ mod tests {
         let agent = presence(7);
         let topic = topic_of(WorkspaceId::parse(WORKSPACE).expect("a workspace"));
         agent.taking_part(&[(topic, WORKSPACE.to_owned())], Some(topic));
-        let focus = LiveRecord {
+        let focus = LiveResource {
             app: "so.tilo.notes".into(),
             record: "file:/workspace/Notes/brief.md".into(),
         };

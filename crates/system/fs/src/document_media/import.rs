@@ -277,13 +277,13 @@ impl LegacyMediaImportHost {
             .store
             .ingest(bytes::Bytes::from(audit))
             .await?;
-        super::record_reference_tag(&self.destination.store, journal_tag.clone(), marker).await?;
+        super::document_reference_tag(&self.destination.store, journal_tag.clone(), marker).await?;
         for selected in selection {
             self.publish_one(&permit, selected, &destination_scope)
                 .await?;
         }
         self.check(&permit)?;
-        super::record_reference_tag(
+        super::document_reference_tag(
             &self.destination.store,
             format!("{journal_tag}/complete"),
             marker,
@@ -334,7 +334,7 @@ impl LegacyMediaImportHost {
             bail!("legacy import content mismatch");
         }
         self.check(permit)?;
-        super::record_reference(&self.destination.store, destination_scope, hash).await?;
+        super::document_reference(&self.destination.store, destination_scope, hash).await?;
         Ok(())
     }
 

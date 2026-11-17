@@ -129,7 +129,7 @@ impl NativeWorkspaceOwner {
                 }
                 Ok((receipt, changes))
             })?;
-            self.publish_record(workspace, &candidate, record, None)?;
+            self.publish_document(workspace, &candidate, record, None)?;
             self.0.governance_kept_here(workspace, hosted_here, changes);
             Ok(receipt)
         })

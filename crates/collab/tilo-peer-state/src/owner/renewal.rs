@@ -63,6 +63,6 @@ impl NativeWorkspaceOwner {
                 .ok_or("native owner generation exhausted")?;
             Ok(())
         })?;
-        self.publish_record(workspace, &candidate, record, None)
+        self.publish_document(workspace, &candidate, record, None)
     }
 }

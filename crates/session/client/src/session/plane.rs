@@ -53,7 +53,7 @@ pub(crate) fn route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: collab_types::scope::WORKSPACE_RECORD.to_owned(),
+        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 

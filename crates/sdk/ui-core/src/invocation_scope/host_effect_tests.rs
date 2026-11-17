@@ -17,7 +17,7 @@ tilo_test_env::scenario! {
     phase writer_scoped_picker_rechecks_expired_admitted_job_on_worker;
     {
         for expired in [false, true] {
-            let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
+            let fixture = crate::history_mode::owner::ResourceOwnerFixture::in_workspace(
                 1960 + u64::from(expired),
                 "77777777-7777-4777-8777-777777777777",
             );
@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
 }
 
 fn worker_case(expired: bool) {
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
+    let fixture = crate::history_mode::owner::ResourceOwnerFixture::in_workspace(
         1970 + u64::from(expired),
         "77777777-7777-4777-8777-777777777777",
     );

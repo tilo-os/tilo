@@ -406,7 +406,7 @@ impl Attached {
     #[must_use]
     pub fn provider(&self) -> Option<String> {
         let at = self.at()?;
-        let record = crate::link::RecordSegment::new(at.record.as_deref().unwrap_or_default())
+        let record = crate::link::ResourceSegment::new(at.record.as_deref().unwrap_or_default())
             .map(|segment| segment.provider_part().to_owned())
             .unwrap_or_default();
         Some(format!("record:{}:{record}", at.app))
@@ -466,11 +466,11 @@ impl Attached {
         let primary = at
             .record
             .as_deref()
-            .map(crate::link::RecordSegment::new)
+            .map(crate::link::ResourceSegment::new)
             .and_then(Result::ok);
         let record = match primary {
-            Some(crate::link::RecordSegment::Id(record)) => Some(record),
-            Some(crate::link::RecordSegment::Primary) | None => None,
+            Some(crate::link::ResourceSegment::Id(record)) => Some(record),
+            Some(crate::link::ResourceSegment::Primary) | None => None,
         };
         Some(
             at.reference
@@ -536,7 +536,7 @@ mod tests {
         );
         let target = attached.open_target("ws-1").expect("opens");
         assert_eq!(
-            tilo_actions::remote::application_provider_record(&target.provider),
+            tilo_actions::remote::application_provider_resource(&target.provider),
             Some("uuid:7")
         );
         assert_eq!(
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(primary.provider().as_deref(), Some("record:so.tilo.chat:"));
         let target = primary.open_target("ws-1").expect("opens");
         assert_eq!(
-            tilo_actions::remote::application_provider_record(&target.provider),
+            tilo_actions::remote::application_provider_resource(&target.provider),
             None
         );
 

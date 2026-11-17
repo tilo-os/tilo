@@ -13,7 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Actions, Dispatcher, Effected, Live, PersonRecord, Publishes, ViewCx};
+use ui::framework::{Actions, Dispatcher, Effected, Live, PersonResource, Publishes, ViewCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -54,7 +54,7 @@ pub(crate) struct Tube {
     model: TubeModel,
     dispatcher: Option<Dispatcher<Library>>,
     actions: Option<Actions<Library>>,
-    history: Option<PersonRecord<WatchHistory>>,
+    history: Option<PersonResource<WatchHistory>>,
     preferences: Option<ui::framework::Setting<crate::model::Settings>>,
     local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
     bus: ActionBus,
@@ -649,7 +649,7 @@ impl Tube {
         &mut self,
         dispatcher: Dispatcher<Library>,
         actions: Actions<Library>,
-        history: Option<PersonRecord<WatchHistory>>,
+        history: Option<PersonResource<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.actions = Some(actions);

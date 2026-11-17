@@ -44,10 +44,10 @@ impl HostActions {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRead { .. }
-            | RemoteActionMessage::RecordReading { .. }
-            | RemoteActionMessage::RetiredRecordRequest
-            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::ResourceRead { .. }
+            | RemoteActionMessage::ResourceReading { .. }
+            | RemoteActionMessage::RetiredResourceRequest
+            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }

@@ -48,7 +48,7 @@ impl ResourceApp for TlApp {
     const TITLE: &'static str = "tilolang";
     const ICON: Option<&'static str> = Some("code-editor");
     // The record is the workspace's: every package keeps its resources in it.
-    const WORKSPACE_RECORD: bool = true;
+    const WORKSPACE_RESOURCE: bool = true;
 
     fn named() -> Option<AppName> {
         let meta = &crate::installed_bundle()?.meta;
@@ -57,7 +57,7 @@ impl ResourceApp for TlApp {
             title: &meta.title,
             icon: meta.icon.as_deref().map(crate::icon_name),
             // A package declaring `records: .own` keeps each member's records in their own.
-            own_records: meta.own_records,
+            own_resources: meta.own_records,
         })
     }
 
@@ -74,7 +74,7 @@ impl ResourceApp for TlApp {
     }
 
     // The first frame shows what the workspace's indexes hold; the record is read off the frame.
-    const OPENS_BEFORE_RECORD: bool = true;
+    const OPENS_BEFORE_RESOURCE: bool = true;
 
     /// The window, before the record: in a session, the one whose instance its tilolang host
     /// runs; without one, the window running its instance in this process.

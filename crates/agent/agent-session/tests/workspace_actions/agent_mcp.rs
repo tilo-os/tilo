@@ -243,7 +243,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             || key.scope_digest().is_none(),
         "{key:?}"
     );
-    let wrote_in = tilo_relay_protocol::live::LiveRecord {
+    let wrote_in = tilo_relay_protocol::live::LiveResource {
         app: WRITER.into(),
         record: writer.record.clone(),
     };

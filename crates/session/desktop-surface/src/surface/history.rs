@@ -160,11 +160,11 @@ impl WorkspaceActivity {
             workspace,
             read: (revision, source.revision()),
         };
-        model.read_records(source, tree);
+        model.read_resources(source, tree);
         Some(model)
     }
 
-    fn read_records(&mut self, source: &mut dyn HistorySource, tree: &Layout) {
+    fn read_resources(&mut self, source: &mut dyn HistorySource, tree: &Layout) {
         let records = source.record_histories(tree, self.workspace);
         source.register_authors(self.pane.authors_mut());
         self.pane.refresh(&mut self.snapshot);
@@ -201,7 +201,7 @@ impl Served for WorkspaceActivity {
         if let Some(snapshot) = source.workspace_history(tree, self.workspace) {
             self.snapshot = snapshot;
         }
-        self.read_records(source, tree);
+        self.read_resources(source, tree);
     }
 
     fn act(

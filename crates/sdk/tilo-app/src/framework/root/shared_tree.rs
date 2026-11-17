@@ -59,7 +59,7 @@ pub(super) struct NestedViews {
 /// The children of the publication with the records kept beside the
 /// resource, at the records' revisions, one locale and whether `open` is
 /// offered on items.
-pub(super) struct RecordChildren {
+pub(super) struct ResourceChildren {
     document: SharedChildren,
     records: Vec<(String, u64)>,
     i18n: u64,
@@ -306,7 +306,7 @@ impl ResourceRoot {
     /// The view operation types beneath the live state and the records kept
     /// beside it, such as a chain's items' rich-text bodies.
     pub(super) fn nested_views(&self) -> Rc<HashSet<String>> {
-        let at = (self.version(), self.storage.records_key());
+        let at = (self.version(), self.storage.resources_key());
         if let Some(pinned) = self
             .nested_views
             .borrow()
@@ -321,8 +321,8 @@ impl ResourceRoot {
 
     /// Answer the nested views of `document`, until the live revision moves.
     pub(super) fn keep_nested_views(&self, document: &SharedChildren) -> Rc<HashSet<String>> {
-        let children = self.with_record_children(document.clone(), self.stages.opens());
-        let at = (self.version(), self.storage.records_key());
+        let children = self.with_resource_children(document.clone(), self.stages.opens());
+        let at = (self.version(), self.storage.resources_key());
         let mut kept = self.nested_views.borrow_mut();
         let views = match kept.as_ref() {
             Some(last) if last.children.ptr_eq(&children) => Rc::clone(&last.views),
@@ -376,7 +376,7 @@ impl ResourceRoot {
             } else {
                 document
             };
-            let children = self.with_record_children(document, opens);
+            let children = self.with_resource_children(document, opens);
             if opens && !head.actions.iter().any(|existing| existing.id == "open") {
                 head = head.with_action(open_spec());
             }
@@ -449,13 +449,13 @@ impl ResourceRoot {
     /// publication carries them (with `open` on their items when a view
     /// `opens` them). The same children while neither moved, so what reads
     /// the forest skips them as seen.
-    fn with_record_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
-        let records = self.storage.records_key();
+    fn with_resource_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
+        let records = self.storage.resources_key();
         if records.is_empty() {
             return document;
         }
         let i18n = ui_core::i18n::I18nManager::revision();
-        let mut kept = self.record_children.borrow_mut();
+        let mut kept = self.resource_children.borrow_mut();
         if let Some(kept) = kept.as_ref().filter(|kept| {
             kept.document.ptr_eq(&document)
                 && kept.records == records
@@ -470,7 +470,7 @@ impl ResourceRoot {
                 .cloned()
                 .chain(
                     self.storage
-                        .record_resources()
+                        .resource_resources()
                         .into_iter()
                         .map(|mut record| {
                             if opens {
@@ -481,7 +481,7 @@ impl ResourceRoot {
                 )
                 .collect(),
         );
-        *kept = Some(RecordChildren {
+        *kept = Some(ResourceChildren {
             document,
             records,
             i18n,
@@ -643,7 +643,7 @@ impl ResourceRoot {
         Adds {
             open: opens,
             jobs: self.typed.has_causal_drains(),
-            reads: self.resource.record_table.is_some(),
+            reads: self.resource.resource_table.is_some(),
         }
     }
 
@@ -658,7 +658,7 @@ impl ResourceRoot {
             offer_item_open(self.resource.opens_as_item, resource);
         }
         if adds.reads
-            && let Some(table) = self.resource.record_table
+            && let Some(table) = self.resource.resource_table
         {
             offer_item_reads(resource, table, self.resource.kind);
         }

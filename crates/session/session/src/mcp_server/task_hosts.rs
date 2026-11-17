@@ -23,14 +23,14 @@ fn installed_apps(
 ) {
     use runtime_portal::tilolang_host::App;
     let mut apps = Vec::new();
-    let mut records_under = BTreeMap::new();
+    let mut documents_under = BTreeMap::new();
     let mut named: BTreeSet<String> = kept.clone();
     for package in tilo_app_launch::tilolang_hosts::task_packages() {
         if !named.insert(package.app.clone()) {
             continue;
         }
-        if let Some(under) = package.records_under {
-            records_under.insert(package.app, under);
+        if let Some(under) = package.documents_under {
+            documents_under.insert(package.app, under);
         }
         apps.push(App::Module(package.module));
     }
@@ -56,7 +56,7 @@ fn installed_apps(
             surface,
         });
     }
-    (apps, records_under)
+    (apps, documents_under)
 }
 
 /// Where a session's task catalogue is read: what its own APIs answer of the packages it runs
@@ -81,11 +81,11 @@ impl TaskCatalogue for SessionCatalogue {
         self.session.ask(ApiAsk::Apps(done));
         let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
         let kept = self.session.kept.lock_recover().clone();
-        let (installed, records_under) = installed_apps(&kept);
+        let (installed, documents_under) = installed_apps(&kept);
         apps.extend(installed);
         Catalogue {
             apps,
-            records_under,
+            documents_under,
             changed_at_record: kept,
         }
     }

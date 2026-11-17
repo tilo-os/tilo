@@ -29,18 +29,20 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentMember;
 
-pub use tilo_actions::remote::RECORD_PROVIDER;
+pub use tilo_actions::remote::RESOURCE_PROVIDER;
 
 /// Invocations remembered for retries.
 const REMEMBERED: usize = 256;
 
 #[must_use]
 pub fn record_provider(route: &DocumentRoute) -> String {
-    format!("{RECORD_PROVIDER}:{}:{}", route.app_id, route.record)
+    format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.record)
 }
 
-pub(crate) fn record_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
-    let rest = provider.strip_prefix(RECORD_PROVIDER)?.strip_prefix(':')?;
+pub(crate) fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
+    let rest = provider
+        .strip_prefix(RESOURCE_PROVIDER)?
+        .strip_prefix(':')?;
     // App ids have no colon; record ids may (`uuid:…`).
     let (app_id, record) = rest.split_once(':')?;
     Some(DocumentRoute {
@@ -148,8 +150,8 @@ impl AgentMember {
                     reason: "an app action runs to completion when invoked".into(),
                 }),
             },
-            RemoteActionMessage::RecordRead { correlation, .. } => {
-                RemoteActionMessage::RecordReading {
+            RemoteActionMessage::ResourceRead { correlation, .. } => {
+                RemoteActionMessage::ResourceReading {
                     correlation,
                     result: Err(ActionHostError::Unavailable {
                         reason: "an agent keeps no records to lend".into(),
@@ -216,9 +218,9 @@ impl AgentMember {
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
-            | RemoteActionMessage::RecordReading { .. }
-            | RemoteActionMessage::RetiredRecordRequest
-            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::ResourceReading { .. }
+            | RemoteActionMessage::RetiredResourceRequest
+            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
@@ -266,7 +268,7 @@ impl AgentMember {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
                 workspace: workspace.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
                 browsable: false,
             });
             for mut row in self.survey_rows(&route) {
@@ -293,7 +295,7 @@ impl AgentMember {
                 provider,
                 app_id: String::new(),
                 workspace,
-                record_id: String::new(),
+                document_id: String::new(),
                 browsable: false,
             });
         }
@@ -372,7 +374,7 @@ impl AgentMember {
                 resources: Vec::new(),
             });
         }
-        let route = record_of(&target.provider, &self.workspace)
+        let route = resource_of(&target.provider, &self.workspace)
             .filter(|route| self.apps.contains_key(route))
             .ok_or_else(|| reject(ActionHostError::UnknownAction))?;
         let arguments = match &request.argument {

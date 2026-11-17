@@ -25,7 +25,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{self as sheet, WorkspaceSettingsEffect};
 
 use ui::permissions::{LivePermissions, SharedPermissions};
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::workspace::WorkspaceResources;
 
 use crate::host_asks::{HostAsks, Reply, refused};
 use crate::over_page::{OverSheet, PageSheet};
@@ -38,7 +38,7 @@ const NO_HOST: &str = "this page is in no workspace";
 /// it, as the workspace's host last answered.
 #[derive(Clone)]
 pub(crate) struct PageRecords {
-    pub records: WorkspaceRecords,
+    pub records: WorkspaceResources,
     pub permissions: SharedPermissions,
     pub administers: Arc<AtomicBool>,
     /// The shell the page shows, and its person.
@@ -51,7 +51,7 @@ impl PageRecords {
     /// as its person `author`, as `permissions` let them, over the shell `handle` shows.
     pub(crate) fn in_page(
         (owners, shared, permissions): (
-            &ui::record::RecordOwners,
+            &ui::resource::ResourceOwners,
             &crate::desktop::Shared,
             &SharedPermissions,
         ),
@@ -60,7 +60,7 @@ impl PageRecords {
         author: String,
     ) -> Self {
         Self {
-            records: crate::workspace_records::in_page(
+            records: crate::workspace_resources::in_page(
                 owners,
                 &shared.stores,
                 workspace,
@@ -81,7 +81,7 @@ impl AgentsHost for PageRecords {
         &self,
         _workspace: &tilo_desktop_model::Workspace,
         _person: &UserId,
-    ) -> (WorkspaceRecords, Option<LivePermissions>) {
+    ) -> (WorkspaceResources, Option<LivePermissions>) {
         (
             self.records.clone(),
             Some(LivePermissions::shared(self.permissions.clone())),

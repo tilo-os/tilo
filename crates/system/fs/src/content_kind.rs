@@ -11,7 +11,7 @@ pub enum SerializedDocumentSchema {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordContentKind {
+pub enum DocumentContentKind {
     /// Bytes nobody interprets; restoring a version puts them back.
     Opaque,
     /// A CRDT document stored as its serialization; restoring a version is a new
@@ -21,7 +21,7 @@ pub enum RecordContentKind {
     NamespaceDocument { codec: String },
 }
 
-impl RecordContentKind {
+impl DocumentContentKind {
     /// The kind a record of this name holds when the namespace keeps no codec
     /// for it.
     pub fn for_name(name: &FileNameV1) -> Self {
@@ -55,8 +55,8 @@ impl RecordContentKind {
 mod tests {
     use super::*;
 
-    fn kind(name: &str) -> RecordContentKind {
-        RecordContentKind::for_name(&FileNameV1(name.as_bytes().to_vec()))
+    fn kind(name: &str) -> DocumentContentKind {
+        DocumentContentKind::for_name(&FileNameV1(name.as_bytes().to_vec()))
     }
 
     tilo_test_env::scenario! {
@@ -64,18 +64,18 @@ mod tests {
 
         phase serialized_documents_are_known_by_name_not_bytes;
         {
-            let document = RecordContentKind::SerializedDocument {
+            let document = DocumentContentKind::SerializedDocument {
                 schema: SerializedDocumentSchema::TiloDoc,
             };
             assert_eq!(kind("notes.qdoc"), document);
             assert_eq!(kind("Notes.QDOC"), document);
             assert_eq!(kind("notes.tilo-doc"), document);
             assert_eq!(kind("Notes.TILO-DOC"), document);
-            assert_eq!(kind("notes.qdoc.bin"), RecordContentKind::Opaque);
-            assert_eq!(kind("notes.tilo-doc.bin"), RecordContentKind::Opaque);
-            assert_eq!(kind("qdoc"), RecordContentKind::Opaque);
-            assert_eq!(kind("tilo-doc"), RecordContentKind::Opaque);
-            assert_eq!(kind("report.docx"), RecordContentKind::Opaque);
+            assert_eq!(kind("notes.qdoc.bin"), DocumentContentKind::Opaque);
+            assert_eq!(kind("notes.tilo-doc.bin"), DocumentContentKind::Opaque);
+            assert_eq!(kind("qdoc"), DocumentContentKind::Opaque);
+            assert_eq!(kind("tilo-doc"), DocumentContentKind::Opaque);
+            assert_eq!(kind("report.docx"), DocumentContentKind::Opaque);
         }
 
         phase a_namespace_codec_makes_a_namespace_document;
@@ -88,15 +88,15 @@ mod tests {
                 .create_file(crate::namespace::ROOT_INO, "data.tilo-doc", None, 0, 1)
                 .unwrap();
             assert_eq!(
-                RecordContentKind::of(&namespace, document),
-                Some(RecordContentKind::NamespaceDocument { codec: "md".into() })
+                DocumentContentKind::of(&namespace, document),
+                Some(DocumentContentKind::NamespaceDocument { codec: "md".into() })
             );
             assert!(
-                RecordContentKind::of(&namespace, file)
+                DocumentContentKind::of(&namespace, file)
                     .unwrap()
                     .is_serialized_document()
             );
-            assert_eq!(RecordContentKind::of(&namespace, u64::MAX), None);
+            assert_eq!(DocumentContentKind::of(&namespace, u64::MAX), None);
         }
     }
 }

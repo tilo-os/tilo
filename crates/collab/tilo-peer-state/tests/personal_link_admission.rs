@@ -334,14 +334,14 @@ fn document(frame: &NeighbourMsg) -> bool {
 fn carries(frame: &NeighbourMsg, name: &str) -> Option<String> {
     let NeighbourMsg::AppDocument {
         app_id,
-        record_id,
+        document_id,
         envelope,
         ..
     } = frame
     else {
         return None;
     };
-    if app_id != APP || record_id != RECORD {
+    if app_id != APP || document_id != RECORD {
         return None;
     }
     match DocumentMutation::decode(&envelope.payload).unwrap() {

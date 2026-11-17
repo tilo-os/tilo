@@ -21,7 +21,7 @@ impl AppConnection {
             identity,
             member,
             handle: announced,
-            record_kind,
+            resource_type,
         } = join;
         let route = CrdtRoute::from_channel_key(&channel_id);
         // Decoded first, so the match scrutinizes a plain value: the join
@@ -72,10 +72,10 @@ impl AppConnection {
                 return Err(BrokerError::failed(reason));
             }
         }
-        // A renamed app keeps using the record of an id it had before (`kept_record`).
-        let record_route = route.clone();
+        // A renamed app keeps using the record of an id it had before (`kept_document`).
+        let resource_route = route.clone();
         let (route, as_app) =
-            kept_record::working_route(self.lease.local_media.as_deref(), &record_route);
+            kept_document::working_route(self.lease.local_media.as_deref(), &resource_route);
         // An attested launch joins its own route; another app's only to
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
@@ -85,7 +85,7 @@ impl AppConnection {
                     .owns_personal_cluster(&route.cluster_id);
                 let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
                 attested_route_access(&app.app_id, &route, personal_cluster, || {
-                    identity_reads_record(
+                    identity_reads_document(
                         state.membership.as_ref(),
                         &verified_identity,
                         &route,
@@ -122,7 +122,7 @@ impl AppConnection {
             })
             .flatten();
         if let Some(worker) = &self.worker {
-            if record_route != worker.route
+            if resource_route != worker.route
                 || verified_identity.verified.user_public_key != worker.root
                 || verified_identity.verified.device_public_key != worker.device
             {
@@ -144,15 +144,15 @@ impl AppConnection {
             && !route.app_id.is_empty()
             && matches!(route_access, RouteAccess::Own)
             && packaged_app.is_none()
-            && !kept_for_every_app_of_the_workspace(&record_route)
+            && !kept_for_every_app_of_the_workspace(&resource_route)
         {
             return Err(BrokerError::failed(
                 "application requires host-owned worker descriptor admission".into(),
             ));
         }
-        let record_kind = route_record_kind(
-            &record_route,
-            joined_record_kind(record_kind.as_deref().unwrap_or_default())?,
+        let resource_type = route_resource_type(
+            &resource_route,
+            joined_resource_type(resource_type.as_deref().unwrap_or_default())?,
         )?;
         let launcher_attested = packaged_app.is_some();
         if let Some(registration) = packaged_app {
@@ -255,7 +255,7 @@ impl AppConnection {
             peer_id: hold_id,
             connection_id: peer_id,
             verified_identity,
-            record_kind,
+            resource_type,
             route_access,
             lease: Some(Rc::clone(&self.lease)),
             _hold: Some(hold),
@@ -280,5 +280,5 @@ impl AppConnection {
 /// [`attested_route_access`] lets it change the record as the workspace's grants on the
 /// owner decide.
 fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
-    collab_types::workspace_document(&route.app_id, &route.record_id).is_some()
+    collab_types::workspace_document(&route.app_id, &route.document_id).is_some()
 }

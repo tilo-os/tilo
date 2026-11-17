@@ -65,7 +65,7 @@ pub mod page_files;
 pub mod page_forms;
 pub mod page_menu;
 pub mod page_popups;
-pub mod page_record;
+pub mod page_resource;
 mod page_review;
 pub mod page_sign_in;
 mod personal_bookmark_view;

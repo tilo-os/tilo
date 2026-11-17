@@ -16,13 +16,13 @@ pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
+pub mod document_content;
 mod evidence_signer;
 pub mod local_document_action;
 pub mod owner_commits;
 pub mod personal;
 pub mod policy_clock;
 pub mod published_authorization;
-pub mod record_content;
 /// The route an app's traffic is addressed on, the same on every host.
 pub use tilo_broker_core::route;
 pub mod services;
@@ -45,14 +45,14 @@ tilo_automerge_isolate::test_worker!();
 /// The person-record kinds an app's surface declares, as this process holds
 /// the surfaces of the apps it runs: what the identity service signs for an
 /// app in the person's own workspace, and the broker admits it to there.
-pub struct SurfacePersonRecords;
+pub struct SurfacePersonDocuments;
 
-impl tilo_identity_host::broker::PersonRecordKinds for SurfacePersonRecords {
-    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
-        ui::app_surface::person_record_kinds(app_id)
+impl tilo_identity_host::broker::PersonResourceTypes for SurfacePersonDocuments {
+    fn person_resource_types(&self, app_id: &str) -> Vec<String> {
+        ui::app_surface::person_resource_types(app_id)
     }
 
-    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+    fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
         ui::app_surface::reads_app(reader, owner)
     }
 }
@@ -118,7 +118,7 @@ pub fn register_package_surface_and_reads<I>(
 /// first source every change a host signs for a package that ships a surface
 /// would wait for it forever, its first record included.
 pub fn decide_receipt_against_surfaces(
-    read: impl Fn(&collab_types::Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
+    read: impl Fn(&collab_types::WrittenDocument<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
 ) {
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(

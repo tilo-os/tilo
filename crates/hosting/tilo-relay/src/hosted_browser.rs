@@ -667,7 +667,7 @@ impl HostedBrowsers {
                 provider: up.window.provider.clone(),
                 app_id: APP.to_owned(),
                 workspace: up.workspace.clone(),
-                record_id: up.record.clone(),
+                document_id: up.record.clone(),
                 browsable: true,
             });
         answer
@@ -1343,7 +1343,7 @@ impl HostedBrowsers {
             .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
         if let Err(error) = self.confine(
             &device,
-            crate::environment::EnvironmentScope::for_record(workspace_id, APP, record),
+            crate::environment::EnvironmentScope::for_resource(workspace_id, APP, record),
             until_ns,
         ) {
             tracing::warn!(%error, "the Browser's device could not be confined");
@@ -1435,7 +1435,7 @@ impl HostedBrowsers {
                 .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
             self.confine(
                 &device,
-                crate::environment::EnvironmentScope::for_record(
+                crate::environment::EnvironmentScope::for_resource(
                     workspace_id,
                     linux_apps::APP,
                     record,
@@ -2080,7 +2080,7 @@ pub async fn placed(
     observe: Option<Arc<ObserveInvocation>>,
     caller: &Caller,
 ) -> RemoteActionMessage {
-    let Some(record) = opened_record(&message) else {
+    let Some(record) = opened_resource(&message) else {
         if accepted(&message) {
             when_record(
                 browsers,
@@ -2299,7 +2299,7 @@ pub async fn placed_linux_app(
     observe: Option<Arc<ObserveInvocation>>,
     caller: &Caller,
 ) -> RemoteActionMessage {
-    let Some(record) = opened_record(&message) else {
+    let Some(record) = opened_resource(&message) else {
         if accepted(&message) {
             let launch = launch.clone();
             when_record(
@@ -2378,7 +2378,7 @@ pub fn refused_by_plan(
 /// The record an answered [`opens_browser`] open made, when it made one: the
 /// record its answer names.
 #[must_use]
-pub fn opened_record(message: &RemoteActionMessage) -> Option<String> {
+pub fn opened_resource(message: &RemoteActionMessage) -> Option<String> {
     let RemoteActionMessage::Receipt(receipt) = message else {
         return None;
     };
@@ -2526,9 +2526,9 @@ mod tests {
                     },
                 },
             });
-            assert_eq!(opened_record(&made).as_deref(), Some("abc"));
+            assert_eq!(opened_resource(&made).as_deref(), Some("abc"));
             let refused = refused(tilo_actions::InvocationId::new(), unplaced());
-            assert_eq!(opened_record(&refused), None);
+            assert_eq!(opened_resource(&refused), None);
         }
 
         phase a_host_that_places_nothing_says_why_instead_of_naming_an_unknown_app;

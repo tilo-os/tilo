@@ -48,7 +48,7 @@ pub(super) fn admitted_ops(
         return;
     };
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     for op in &admitted.state_for(artifact).op_log {
         if let Ok(op_bytes) = postcard::to_stdvec(op) {
             let _ = tx.send(OpEnvelope {
@@ -77,7 +77,7 @@ pub(super) fn held_tree_records(
         .map(|mut channels| channels.tree_records_held(&route))
         .unwrap_or_default();
     if !held.is_empty() {
-        let _ = tx.send(ContextUpdate::RecordsArrived(held));
+        let _ = tx.send(ContextUpdate::ResourcesArrived(held));
     }
 }
 
@@ -100,7 +100,7 @@ impl super::AppBrokerState {
     /// app came to be connected (a window the session connects for it, or the
     /// launcher handing the app its own). The instance the shell recorded for
     /// a connection it made itself answers for a window that names none.
-    pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
+    pub fn window_resources(&self) -> Vec<(u64, CrdtRoute)> {
         let Ok(instances) = self.window_instances.lock().map(|windows| windows.clone()) else {
             return Vec::new();
         };
@@ -139,7 +139,7 @@ impl super::AppBrokerState {
     pub fn window_peer(&self, instance: u64) -> Option<u64> {
         let windows = self.window_instances.lock().ok()?.clone();
         // A window that named itself on its own route is its connection, as
-        // [`Self::window_records`] reads it.
+        // [`Self::window_resources`] reads it.
         let named: Vec<u64> = self
             .channels
             .lock()
@@ -199,7 +199,7 @@ impl super::InvocationEnvelope {}
 /// The tab a window's own route names (`continuation:<tab>`): the window a
 /// connection carrying it is, as its app says.
 fn continuation_tab(route: &CrdtRoute) -> Option<u64> {
-    let tab = route.record_id.strip_prefix("continuation:")?;
+    let tab = route.document_id.strip_prefix("continuation:")?;
     tilo_failure::ignored!(
         "a route that says `continuation:` names no window unless a tab number follows",
         tab.parse().ok()
@@ -244,7 +244,7 @@ mod tests {
             let _note = state.subscribe_ops(&note.channel_key(), 2);
             let _other = state.subscribe_ops(&other.channel_key(), 3);
             let _second = state.subscribe_ops(&second.channel_key(), 4);
-            assert_eq!(state.window_records(), [(77, note.clone()), (78, second)]);
+            assert_eq!(state.window_resources(), [(77, note.clone()), (78, second)]);
             assert_eq!(
                 state.window_peer(78),
                 Some(4),
@@ -253,9 +253,9 @@ mod tests {
             assert_eq!(state.window_peer(79), None, "no window of that instance");
             state.remove_connection(4);
             assert_eq!(state.window_peer(78), None, "not once it closed");
-            assert_eq!(state.window_records(), [(77, note)], "a window closed");
+            assert_eq!(state.window_resources(), [(77, note)], "a window closed");
             state.remove_connection(2);
-            assert!(state.window_records().is_empty(), "gone with its app");
+            assert!(state.window_resources().is_empty(), "gone with its app");
         }
 
         phase a_window_that_names_itself_is_known_by_the_tab_it_says;
@@ -282,7 +282,7 @@ mod tests {
             let _note = state.subscribe_ops(&note.channel_key(), 5);
             let _window = state.subscribe_ops(&window.channel_key(), 5);
             assert_eq!(
-                state.window_records(),
+                state.window_resources(),
                 [(91, note)],
                 "the record its window shows, by the tab it named"
             );
@@ -295,7 +295,7 @@ mod tests {
     }
 
     /// An op of `record` of `app` in `workspace`, admitted the way the broker
-    /// admits every op it validated ([`BrokerChannels::record_history`] and
+    /// admits every op it validated ([`BrokerChannels::document_history`] and
     /// the channel's op log); sealed under a content key when `sealed`.
     fn admit(
         channels: &Mutex<BrokerChannels>,
@@ -324,17 +324,17 @@ mod tests {
             ));
         }
         let mut channels = channels.lock().unwrap();
-        let unsynced = channels.record_history(&route, &op);
+        let unsynced = channels.document_history(&route, &op);
         channels.state_for(artifact).record_validated_op(op);
         drop(channels);
         unsynced.sync().unwrap();
     }
 
-    /// The records each `RecordsArrived` the subscriber was sent named.
+    /// The records each `ResourcesArrived` the subscriber was sent named.
     fn told(rx: &mut mpsc::UnboundedReceiver<ContextUpdate>) -> Vec<Vec<String>> {
         let mut told = Vec::new();
         while let Ok(envelope) = rx.try_recv() {
-            if let ContextUpdate::RecordsArrived(records) = envelope {
+            if let ContextUpdate::ResourcesArrived(records) = envelope {
                 told.push(records);
             }
         }
@@ -364,8 +364,11 @@ mod tests {
     const CHAT: &str = ui::apps::CHAT;
 
     /// Chat's messages: a chain of parts of the workspace's default record.
-    fn messages() -> ui::record::DocumentId {
-        ui::record::DocumentId::derived("messages", &ui::record::DocumentId::workspace_default())
+    fn messages() -> ui::resource::DocumentId {
+        ui::resource::DocumentId::derived(
+            "messages",
+            &ui::resource::DocumentId::workspace_default(),
+        )
     }
 
     /// Part `index` of Chat's messages.
@@ -375,7 +378,7 @@ mod tests {
 
     /// A child of a note, a record of the note's tree.
     fn note_child() -> String {
-        ui::record::DocumentId::for_tab(7)
+        ui::resource::DocumentId::for_tab(7)
             .child("a")
             .unwrap()
             .to_string()
@@ -437,7 +440,7 @@ mod tests {
             // admitted, and every later window learns both.
             admit(&channels, CHAT, &workspace, &part(1), false);
             state.fanout_to_route(
-                &super::super::CollabEvent::RecordsArrived {
+                &super::super::CollabEvent::ResourcesArrived {
                     records: vec![part(1)],
                 },
                 u64::MAX,
@@ -491,14 +494,14 @@ mod tests {
         // subscribes, though the workspace sent it only once.
         {
             let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "derived:part.0@chain");
-            let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+            let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
             let op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"part".to_vec())
                     .encode()
                     .unwrap(),
                 artifact,
                 Ed25519PublicKey::from_bytes([5; 32]),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::OpKind::Change,
                 tilo_clock::wall(),
                 1,
@@ -539,14 +542,14 @@ mod tests {
         use std::sync::Arc;
         // A workspace by the id it is known by: the gate is registered under it.
         let route = CrdtRoute::record("so.tilo.chat", "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b", "");
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
         let op = SignedOp::new_unsigned(
             DocumentMutation::Incremental(b"general".to_vec())
                 .encode()
                 .unwrap(),
             artifact,
             Ed25519PublicKey::from_bytes([5; 32]),
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             1,

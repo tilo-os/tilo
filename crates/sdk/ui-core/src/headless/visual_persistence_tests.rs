@@ -5,7 +5,7 @@ use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
     self as probe, ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
 };
-use crate::record::{DocumentCheckout, RecordSaveStatus};
+use crate::resource::{DocumentCheckout, ResourceSaveStatus};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::rc::Rc;
 
@@ -24,7 +24,7 @@ impl Fixture {
     fn new(backend: durable_store::MemoryStore) -> Self {
         let backend = Rc::new(backend);
         let mut host = ProbeHost::new();
-        let mut owners = crate::record::RecordOwners::with_store(backend.clone());
+        let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
         host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
         host.views = Rc::new(
             crate::application_view::InstanceViewStore::with_store(
@@ -69,7 +69,7 @@ impl Fixture {
             .unwrap();
     }
 
-    fn status(&self) -> RecordSaveStatus {
+    fn status(&self) -> ResourceSaveStatus {
         self.host.records.save_status(&self.checkout.id).unwrap()
     }
 }
@@ -79,13 +79,13 @@ fn visual_wait_submits_and_samples_a_save_before_its_first_readiness_check() {
     let mut fixture = Fixture::new(durable_store::MemoryStore::new());
     fixture.edit();
     fixture.frame.relayout();
-    assert_eq!(fixture.status(), RecordSaveStatus::Saving);
+    assert_eq!(fixture.status(), ResourceSaveStatus::Saving);
     assert!(fixture.frame.root.has_pending_visual_work());
     fixture
         .frame
         .wait_for_visuals(crate::time::Duration::ZERO)
         .unwrap();
-    assert_eq!(fixture.status(), RecordSaveStatus::Saved);
+    assert_eq!(fixture.status(), ResourceSaveStatus::Saved);
     assert!(!fixture.frame.root.has_pending_visual_work());
 }
 
@@ -99,7 +99,7 @@ fn visual_wait_does_not_confuse_writer_submission_with_acknowledgement() {
             .wait_for_visuals(crate::time::Duration::ZERO)
             .is_err()
     );
-    assert_eq!(fixture.status(), RecordSaveStatus::Saving);
+    assert_eq!(fixture.status(), ResourceSaveStatus::Saving);
     let writes = fixture.backend.drain();
     assert_eq!(
         writes.len(),
@@ -119,14 +119,14 @@ fn visual_wait_does_not_confuse_writer_submission_with_acknowledgement() {
         .frame
         .wait_for_visuals(crate::time::Duration::ZERO)
         .unwrap();
-    assert_eq!(fixture.status(), RecordSaveStatus::Saved);
+    assert_eq!(fixture.status(), ResourceSaveStatus::Saved);
     assert!(!fixture.frame.root.has_pending_visual_work());
     // Reopen only the bytes the wait actually submitted, not the live
     // writer's cache or a close/flush that could conceal a missing tick.
-    let mut owners = crate::record::RecordOwners::with_store(committed);
+    let mut owners = crate::resource::ResourceOwners::with_store(committed);
     let reopened = owners.open(probe::APP, probe::WORKSPACE).unwrap();
     reopened
-        .open_existing_record_checked(&fixture.checkout)
+        .open_existing_resource_checked(&fixture.checkout)
         .unwrap();
     let value = reopened
         .read(&fixture.checkout.id, |doc| {
@@ -154,10 +154,13 @@ fn waiting_services_edits_arriving_after_the_initial_idle_pass() {
             records
                 .with(&id, |doc| doc.put(ROOT, "late", true).unwrap())
                 .unwrap();
-            assert_eq!(records.save_status(&id).unwrap(), RecordSaveStatus::Saving);
+            assert_eq!(
+                records.save_status(&id).unwrap(),
+                ResourceSaveStatus::Saving
+            );
             return false;
         }
-        records.save_status(&id).unwrap() == RecordSaveStatus::Saved
+        records.save_status(&id).unwrap() == ResourceSaveStatus::Saved
     }));
     assert!(!fixture.frame.root.has_pending_visual_work());
 }

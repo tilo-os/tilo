@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 use tilo_action_broker::{
-    record_content::{
+    document_content::{
         ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
         RouteContent,
     },
@@ -66,7 +66,7 @@ impl ContentPeers for JoinedPeers {
         let Some(live) = self.0.live(workspace) else {
             return;
         };
-        let message = NeighbourMsg::RecordContentWant {
+        let message = NeighbourMsg::DocumentContentWant {
             requester: self.0.own_handle(),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
@@ -83,7 +83,7 @@ impl ContentPeers for JoinedPeers {
         let Some(live) = self.0.live(workspace) else {
             return;
         };
-        let message = NeighbourMsg::RecordContentPiece {
+        let message = NeighbourMsg::DocumentContentPiece {
             responder: self.0.own_handle(),
             requester: peer,
             app_id: route.app_id.clone(),
@@ -103,7 +103,7 @@ impl ContentPeers for JoinedPeers {
         let Some(live) = self.0.live(workspace) else {
             return;
         };
-        let message = NeighbourMsg::RecordContentLacks {
+        let message = NeighbourMsg::DocumentContentLacks {
             responder: self.0.own_handle(),
             requester: peer,
             app_id: route.app_id.clone(),
@@ -138,7 +138,7 @@ impl ContentPeers for JoinedPeers {
 
 /// The profile's record-content service: its content store, served on
 /// `blob_socket`, and the joined workspaces' sessions.
-pub(in crate::standalone) fn record_content(
+pub(in crate::standalone) fn document_content(
     joined: &Arc<Joined>,
     blob_socket: &Path,
 ) -> Arc<RouteContent> {
@@ -168,7 +168,7 @@ impl Joined {
     /// A member of `workspace` asked it for content. Returns whether `message`
     /// was such a request.
     pub(super) fn content_wanted(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
-        let NeighbourMsg::RecordContentWant {
+        let NeighbourMsg::DocumentContentWant {
             requester,
             app_id,
             cluster_id,
@@ -199,7 +199,7 @@ impl Joined {
         from: [u8; 32],
         message: &NeighbourMsg,
     ) {
-        if let NeighbourMsg::RecordContentLacks {
+        if let NeighbourMsg::DocumentContentLacks {
             responder,
             requester,
             app_id,
@@ -221,7 +221,7 @@ impl Joined {
             }
             return;
         }
-        let NeighbourMsg::RecordContentPiece {
+        let NeighbourMsg::DocumentContentPiece {
             responder,
             requester,
             app_id,

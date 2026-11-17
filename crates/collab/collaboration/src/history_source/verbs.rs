@@ -283,7 +283,7 @@ fn view(
     // A read of the record's own versions, which moves nothing: anyone who may read the record
     // may run it — a reviewer listing who changed a form included — and it moves no one's focus
     // or viewport, the caller's own neither.
-    .reads_record();
+    .reads_resource();
     if let Some(icon) = icon_of(id) {
         spec = spec.with_icon(icon);
     }
@@ -853,7 +853,7 @@ pub fn entries_after(
     tilo_resource::history::committed_versions(doc)
         .iter()
         .filter(|version| since.contains(&version.hash))
-        .filter(|version| !steps::is_schema_genesis(version) && !is_record_making(version))
+        .filter(|version| !steps::is_schema_genesis(version) && !is_document_making(version))
         .map(|version| entry(version, &undone, &checkpoints, words))
         .collect()
 }
@@ -861,7 +861,7 @@ pub fn entries_after(
 /// Whether `version` is the framework making the record (its genesis, or the
 /// structure every member derives the same way): nobody's change, which a
 /// feed of what people and agents changed leaves out.
-fn is_record_making(version: &Version) -> bool {
+fn is_document_making(version: &Version) -> bool {
     version
         .message
         .as_deref()

@@ -21,13 +21,13 @@ pub(super) fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &Wor
         Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
     }
     for (part, merged) in &mut mounted.parts {
-        let Ok(record) = reads::record_id(&part.record) else {
+        let Ok(record) = reads::document_id(&part.record) else {
             continue;
         };
         let Ok(Some((mutation, heads))) = state.update(part, merged.as_deref()) else {
             continue;
         };
-        *merged = match mounted.app.apply_record(&record, &mutation) {
+        *merged = match mounted.app.apply_document(&record, &mutation) {
             Ok(()) => Some(heads),
             Err(error) => {
                 tracing::warn!(%error, "workspace actions: a change to a part did not merge");
@@ -56,14 +56,14 @@ const HOLD_ROUNDS: usize = 4;
 /// device or in another replica was neither listed nor read, and a write
 /// started a part beside the chain's newest.
 pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    let mut newest: std::collections::HashMap<ui::record::DocumentId, (u64, &DocumentRoute)> =
+    let mut newest: std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)> =
         std::collections::HashMap::new();
     for route in &state.records {
         if route.app_id != holder.app_id || route.cluster_id != holder.cluster_id {
             continue;
         }
         let Some((chain, index)) =
-            ui::record::DocumentId::parse(&route.record).and_then(|id| id.chain_part())
+            ui::resource::DocumentId::parse(&route.record).and_then(|id| id.chain_part())
         else {
             continue;
         };
@@ -90,7 +90,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
         }
         asked = mounted
             .app
-            .wanted_records()
+            .wanted_resources()
             .into_iter()
             .filter_map(|record| {
                 // The chain's head names whichever part is its newest.
@@ -119,7 +119,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
 /// Hand the part at `route` to `mounted` whole, as the workspace holds it;
 /// a part of another record's chain is remembered as not this one's.
 fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    let Ok(record) = reads::record_id(&route.record) else {
+    let Ok(record) = reads::document_id(&route.record) else {
         return;
     };
     let Ok((bytes, heads)) = state.document(route) else {
@@ -127,7 +127,7 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
     };
     match mounted
         .app
-        .apply_record(&record, &collab_types::DocumentMutation::Snapshot(bytes))
+        .apply_document(&record, &collab_types::DocumentMutation::Snapshot(bytes))
     {
         Ok(()) => {
             mounted.parts.insert(route.clone(), Some(heads));

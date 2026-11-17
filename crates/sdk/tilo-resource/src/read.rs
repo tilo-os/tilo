@@ -22,14 +22,14 @@ pub fn spec(item: Option<&str>) -> tilo_actions::ActionSpec {
 /// person's own record of a kind): the read names it, and the app's process
 /// answers it from that record.
 #[must_use]
-pub fn record_spec(record: &str) -> tilo_actions::ActionSpec {
+pub fn resource_spec(record: &str) -> tilo_actions::ActionSpec {
     spec_on(Some(record), None)
 }
 
 /// The record a `read` asked as `payload` names, when it is not the app's
-/// own ([`record_spec`]).
+/// own ([`resource_spec`]).
 #[must_use]
-pub fn record_of(payload: &[u8]) -> Option<String> {
+pub fn resource_of(payload: &[u8]) -> Option<String> {
     let args: serde_json::Value = tilo_actions::decode_json(payload).ok()?;
     args.get("record")?.as_str().map(str::to_owned)
 }
@@ -201,7 +201,7 @@ pub fn content<R: Resource>(
     item: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let reads_item = |item: &str| {
-        R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
+        R::RESOURCE_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
     };
     if R::READABLE {
         tilo_failure::ignored!(
@@ -213,7 +213,7 @@ pub fn content<R: Resource>(
             }
         )
     }
-    let table = R::RECORD_TABLE
+    let table = R::RESOURCE_TABLE
         .ok_or_else(|| format!("a {} does not answer reads of its parts", R::LABEL))?;
     crate::table::item_json(table, state, R::KIND, item.unwrap_or_default())
 }

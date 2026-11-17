@@ -30,7 +30,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc as _, ScalarValue, ValueRef}
 use fs::content::Manifest;
 use tilo_content::{Collected, WorkspaceStores};
 
-use crate::workspaces::{WholeRecords, Workspaces};
+use crate::workspaces::{WholeDocuments, Workspaces};
 
 /// How long content stays after it was last written, named or not.
 pub const GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -84,7 +84,7 @@ async fn collect_after(
 ) -> Option<Collected> {
     let store = stores.get(workspace).ok()?;
     // Read with no hold on the workspace: it takes writes all the while.
-    let mut read = whole_records(workspaces, workspace, None).await?;
+    let mut read = whole_documents(workspaces, workspace, None).await?;
     let mut live = names(workspace, &read.documents).await?;
     scanned.await;
     for _ in 0..ATTEMPTS {
@@ -120,7 +120,7 @@ async fn collect_after(
             }
             Ok(Err(changed)) => changed,
         };
-        let newer = whole_records(workspaces, workspace, Some(&changed)).await?;
+        let newer = whole_documents(workspaces, workspace, Some(&changed)).await?;
         live.extend(names(workspace, &newer.documents).await?);
         read.extend(newer);
     }
@@ -133,12 +133,12 @@ async fn collect_after(
 
 /// The records of `workspace` read whole, or of `only` among them; `None`
 /// when they do not all read whole.
-async fn whole_records(
+async fn whole_documents(
     workspaces: &Workspaces,
     workspace: &str,
     only: Option<&BTreeSet<(String, String)>>,
-) -> Option<WholeRecords> {
-    match workspaces.whole_records(workspace, only).await {
+) -> Option<WholeDocuments> {
+    match workspaces.whole_documents(workspace, only).await {
         Ok(records) if records.is_whole() => Some(records),
         Ok(records) => {
             tracing::info!(
@@ -218,7 +218,7 @@ pub async fn named(
     workspace: &str,
     read: impl Fn(&str) -> Option<Vec<u8>> + Send + 'static,
 ) -> Option<Named> {
-    let records = match workspaces.whole_records(workspace, None).await {
+    let records = match workspaces.whole_documents(workspace, None).await {
         Ok(records) => records,
         Err(error) => {
             tracing::warn!(workspace, %error, "a workspace's records are not readable here");
@@ -486,7 +486,7 @@ mod tests {
         // The pass has read every record and holds the workspace no longer.
         let edited = tokio::time::timeout(
             Duration::from_secs(5),
-            workspaces.author_workspace_record(
+            workspaces.author_workspace_document(
                 &workspace,
                 &governor,
                 ("so.tilo.notes", ""),
@@ -537,7 +537,7 @@ mod tests {
             frames,
             [frame] if matches!(
                 postcard::from_bytes(frame),
-                Ok(neighbour_wire::NeighbourMsg::RecordContentLacks { .. })
+                Ok(neighbour_wire::NeighbourMsg::DocumentContentLacks { .. })
             )
         )
     }
@@ -600,7 +600,7 @@ mod tests {
         // Days later the draft is sent: the conversation's record names the
         // attachment, and the message the host reads carries it.
         workspaces
-            .author_workspace_record(&workspace, &governor, (APP, "c_general"), |doc| {
+            .author_workspace_document(&workspace, &governor, (APP, "c_general"), |doc| {
                 doc.put(automerge::ROOT, "body", "look at this")
                     .map_err(|error| error.to_string())?;
                 doc.put(automerge::ROOT, "attachment", hash.as_str())
@@ -609,7 +609,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let records = workspaces.whole_records(&workspace, None).await.unwrap();
+        let records = workspaces.whole_documents(&workspace, None).await.unwrap();
         assert!(records.is_whole(), "{:?}", records.unread);
         let sent = records
             .documents
@@ -628,7 +628,7 @@ mod tests {
         // The host names it now and keeps none of it: it asks the workspace,
         // and the device answers with what it kept.
         let member = [7; 32];
-        let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
+        let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentWant {
             requester: neighbour_wire::peer_handle(&member),
             app_id: APP.into(),
             cluster_id: workspace.clone(),

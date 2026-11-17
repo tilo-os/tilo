@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use ui::application_view::InstanceViewStore;
 use ui::permissions::SharedPermissions;
-use ui::record::RecordOwners;
+use ui::resource::ResourceOwners;
 use wasm_bindgen::JsValue;
 
 use super::{Config, error};
@@ -25,7 +25,7 @@ pub(super) fn desktop_inputs(
     );
     Ok(crate::desktop::Inputs {
         feedback: config.peer.and_then(crate::feedback_code::take_startup),
-        owners: RecordOwners::with_store(Rc::clone(dyn_store)),
+        owners: ResourceOwners::with_store(Rc::clone(dyn_store)),
         store: Rc::clone(dyn_store),
         views,
         device: config.device.clone(),

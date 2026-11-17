@@ -27,7 +27,7 @@ use tilo_action_policy::{Answer, Role};
 use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
-use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
+use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
@@ -93,7 +93,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
     policy
 }
 
-impl WorkspaceRecordsLink for Member {
+impl WorkspaceDocumentsLink for Member {
     fn user_public_key(&self) -> [u8; 32] {
         self.host.endpoint.host_cert.user_public_key
     }

@@ -418,7 +418,7 @@ impl GovernedWorkspace {
         record: &str,
         channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        if !self.peer().publication().is_sealed_record(app, record) {
+        if !self.peer().publication().is_sealed_document(app, record) {
             return self
                 .peer()
                 .media()
@@ -490,7 +490,7 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
                     allowed: from_v1(entry.allowed),
                 },
                 app_id: entry.binding.app_id.clone(),
-                record_id: entry.binding.record_id.clone(),
+                document_id: entry.binding.document_id.clone(),
                 channel_id: entry.binding.channel_id.clone(),
                 members,
             }
@@ -726,17 +726,17 @@ impl Workspaces {
     ) -> Result<CallState, String> {
         let CallOperation::Open {
             app_id,
-            record_id,
+            document_id,
             channel_id,
         } = operation
         else {
             return Err("no one moderates the calls of a workspace without a governor here".into());
         };
         if app_id != "so.tilo.chat"
-            || record_id.len() > MAX_CARRIED_NAME
+            || document_id.len() > MAX_CARRIED_NAME
             || channel_id.is_empty()
             || channel_id.len() > MAX_CARRIED_NAME
-            || [record_id, channel_id]
+            || [document_id, channel_id]
                 .iter()
                 .any(|name| name.chars().any(char::is_control))
         {
@@ -744,7 +744,7 @@ impl Workspaces {
         }
         let binding = media::ChatCallBindingV1 {
             app_id: app_id.clone(),
-            record_id: record_id.clone(),
+            document_id: document_id.clone(),
             channel_id: channel_id.clone(),
             channel_object: String::new(),
             chat_workspace_id: String::new(),
@@ -833,17 +833,17 @@ impl Workspaces {
         let binding = match operation {
             CallOperation::Open {
                 app_id,
-                record_id,
+                document_id,
                 channel_id,
             }
             | CallOperation::Start {
                 app_id,
-                record_id,
+                document_id,
                 channel_id,
                 ..
             } => Some(
                 workspace
-                    .call_binding(app_id, record_id, channel_id)
+                    .call_binding(app_id, document_id, channel_id)
                     .await?,
             ),
             // A restarted call keeps its channel, which must still be one.
@@ -859,7 +859,7 @@ impl Workspaces {
                 match bound {
                     Some(bound) => Some(
                         workspace
-                            .call_binding(&bound.app_id, &bound.record_id, &bound.channel_id)
+                            .call_binding(&bound.app_id, &bound.document_id, &bound.channel_id)
                             .await?,
                     ),
                     None => None,
@@ -1259,7 +1259,7 @@ mod tests {
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
                     app_id: "so.tilo.chat".into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "voice".into(),
                     chat_workspace_id: "main".into(),

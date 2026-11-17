@@ -4,7 +4,7 @@
 
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::tilo_resource::{self, Id, Identified, Invoke, Keyed, Model, Refusal, resource};
 
 const MAX_PROFILES: usize = 16;
@@ -118,11 +118,11 @@ impl AddressBook {
 /// The address book a window fills forms from: the person's record, or nothing in a
 /// private window. Deliberately has no Debug implementation.
 pub struct AutofillStore {
-    record: Option<PersonRecord<AddressBook>>,
+    record: Option<PersonResource<AddressBook>>,
     saved: AddressBook,
 }
 impl AutofillStore {
-    pub fn open(mode: BrowsingMode, record: Option<PersonRecord<AddressBook>>) -> Self {
+    pub fn open(mode: BrowsingMode, record: Option<PersonResource<AddressBook>>) -> Self {
         let record = record.filter(|_| !mode.is_private());
         let saved = record
             .as_ref()
@@ -218,7 +218,7 @@ pub mod tests {
 
     pub fn address_book() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
-        PersonRecord<AddressBook>,
+        PersonResource<AddressBook>,
     ) {
         let mut app =
             ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();

@@ -1,10 +1,10 @@
 use automerge::AutoCommit as Doc;
-use ui::tilo_resource::MemberId;
 use ui::feedback::{
     Destination, FrameTimings, Hidden, Interaction, Outcome, Part, ReviewedFeedback,
     ReviewedSelection, ReviewedText, ScreenshotRef, Submission, TextKind,
 };
 use ui::tilo_resource::Id;
+use ui::tilo_resource::MemberId;
 
 use crate::resource::Chat;
 use crate::testing::{apply_as, submit_feedback};
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
         use ui::tilo_resource::Model as _;
         let (mut doc, submission) = picked(true);
         // What the record api answers every reader: the record as plain data.
-        let read = ui::tilo_actions::remote::RecordCopy::Document(doc.save())
+        let read = ui::tilo_actions::remote::ResourceCopy::Document(doc.save())
             .readable()
             .unwrap();
         let filed = read["feedback"]

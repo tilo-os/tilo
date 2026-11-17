@@ -315,7 +315,7 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
             a.invoke(&mut outer, |_, doc, _| {
                 assert!(matches!(
                     c.invoke(doc, |_, _, _| panic!("cross-record delivery")),
-                    Err(tilo_ui::bound_dispatch::BoundDispatchError::CrossRecordReentry)
+                    Err(tilo_ui::bound_dispatch::BoundDispatchError::CrossResourceReentry)
                 ));
                 doc.put(ROOT, "a", "survives unwind").unwrap();
                 panic!("controlled mutation unwind");

@@ -85,17 +85,17 @@ mode = "off"
 # image's system authority grant. A build is offered to, installed on and run
 # by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
 system = "required@1"
-collab = "optional@29"
-tilo-fs = "optional@29"
+collab = "optional@30"
+tilo-fs = "optional@30"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui   = "optional@34"
-tools = "optional@29"
+tools = "optional@30"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
 # requiring either socket here instead prevents every other settings pane from
 # opening at all.
-models = "optional@29"
-model-gateway = "optional@29"
+models = "optional@30"
+model-gateway = "optional@30"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
 app-host = "optional@5"

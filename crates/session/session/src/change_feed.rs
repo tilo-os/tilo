@@ -15,7 +15,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::engine::Engine;
-use ui::history_source::feed::{ChangeLog, RecordKey};
+use ui::history_source::feed::{ChangeLog, DocumentKey};
 
 /// The device's replica of its workspaces, once the session opened it, and each workspace's log.
 #[derive(Default)]
@@ -76,7 +76,7 @@ impl Feeds {
                 reason: CHANGE_FEED_UNAVAILABLE.into(),
             });
         };
-        let records: Vec<RecordKey> =
+        let records: Vec<DocumentKey> =
             engine
                 .records(workspace)
                 .map_err(|reason| ActionHostError::Unavailable {
@@ -88,7 +88,7 @@ impl Feeds {
             &records,
             |(app, record)| {
                 engine
-                    .record_revision(workspace, app, record)
+                    .document_revision(workspace, app, record)
                     .ok()
                     .flatten()
             },

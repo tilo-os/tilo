@@ -1139,7 +1139,7 @@ fn earlier_windows_libraries_merge_into_the_workspace_library() {
     let second = window_library(0x52, &["https://b.example/feed", "https://c.example/feed"]);
     let empty = window_library(0x53, &[]);
     let heads = [&first, &second, &empty].map(|doc| doc.clone().get_heads());
-    let app = TestApp::<FeedsShell>::with_window_records(&mut [first, second, empty]).unwrap();
+    let app = TestApp::<FeedsShell>::with_window_resources(&mut [first, second, empty]).unwrap();
     assert!(app.record().is_package_primary());
     assert_eq!(
         subscribed(&app),
@@ -1152,7 +1152,7 @@ fn earlier_windows_libraries_merge_into_the_workspace_library() {
     // Opening again adopts nothing more.
     let app = app.another_window().unwrap();
     assert_eq!(subscribed(&app).len(), 3);
-    for ((_, doc), heads) in app.window_records().iter().zip(heads) {
+    for ((_, doc), heads) in app.window_resources().iter().zip(heads) {
         assert_eq!(
             doc.clone().get_heads(),
             heads,

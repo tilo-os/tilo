@@ -213,7 +213,7 @@ fn pass() -> Vec<Step> {
             "messages",
             StepKind::Read {
                 app: CHAT_APP.into(),
-                record: ui::tilo_actions::record_sync::chain_head(chat::parts::chain().route()),
+                record: ui::tilo_actions::document_sync::chain_head(chat::parts::chain().route()),
                 joined: false,
             },
         ),
@@ -745,13 +745,13 @@ fn triggers() -> Vec<TriggerSpec> {
         // Every Chat change by anyone but the bridge itself, which the
         // dispatcher never fires on its own output: to the chat record
         // (channels, people) and to its messages.
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind: CHAT_KIND.into(),
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind: MESSAGES_KIND.into(),
             actions: Vec::new(),
             fields: Vec::new(),
@@ -759,20 +759,20 @@ fn triggers() -> Vec<TriggerSpec> {
         },
         // The workspace's own governance: who joined, whose role changed,
         // who was removed or banned.
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind: WORKSPACE_KIND.into(),
             actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
         // The workspace's emoji, which the bridge uploads to the server.
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind: discord::bridge::EMOJI_KIND.into(),
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind: KIND.into(),
             actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
             fields: Vec::new(),

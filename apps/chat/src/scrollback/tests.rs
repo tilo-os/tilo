@@ -110,7 +110,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
 fn join(writer: &mut Window, reader: &mut Window) {
     chain_of(reader).hold(2).unwrap();
     writer
-        .deliver_record_to(reader, &crate::parts::part(2))
+        .deliver_resource_to(reader, &crate::parts::part(2))
         .unwrap();
     reader.harness().relayout();
 }
@@ -180,7 +180,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view(ada: &mut
 
     // Part 1 arrives: its messages show above, and the message the reader
     // was looking at stays where it was.
-    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(1))
         .unwrap();
     bo.harness().relayout();
     assert_eq!(chain_of(&mut bo).waiting(1), None);
@@ -195,7 +195,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view(ada: &mut
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![0, 1, 2]);
-    ada.deliver_record_to(&mut bo, &crate::parts::part(0))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(0))
         .unwrap();
     bo.harness().relayout();
     let texts = shown(&mut bo);
@@ -210,12 +210,12 @@ fn a_short_channel_reads_back_until_it_has_something_to_show(ada: &mut Window) {
     // Two messages do not fill the view: the part before is opened at once.
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![1, 2]);
-    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(1))
         .unwrap();
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![0, 1, 2]);
-    ada.deliver_record_to(&mut bo, &crate::parts::part(0))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(0))
         .unwrap();
     bo.harness().relayout();
     assert_eq!(shown(&mut bo), ["0.0", "0.1", "1.0", "1.1", "2.0", "2.1"]);
@@ -244,7 +244,7 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     for part in [1, 0] {
         bo.harness().relayout();
         assert!(held(&mut bo).contains(&part), "part {part} is opened");
-        ada.deliver_record_to(&mut bo, &crate::parts::part(part))
+        ada.deliver_resource_to(&mut bo, &crate::parts::part(part))
             .unwrap();
         bo.harness().relayout();
     }
@@ -291,7 +291,7 @@ fn a_joined_device_counts_unread_across_parts_it_does_not_hold(ada: &mut Window)
     open_channel(&mut bo, CHAT_CHANNEL);
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![1, 2]);
-    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(1))
         .unwrap();
     bo.harness().relayout();
     let first = bo
@@ -378,7 +378,7 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
     join(ada, &mut bo);
     bo.harness().relayout();
-    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(1))
         .unwrap();
     bo.harness().relayout();
     bo.harness().relayout();
@@ -410,7 +410,7 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state(ada: &mut Window) {
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![0, 1, 2], "nothing more is asked for");
 
-    ada.deliver_record_to(&mut bo, &crate::parts::part(0))
+    ada.deliver_resource_to(&mut bo, &crate::parts::part(0))
         .unwrap();
     bo.harness().relayout();
     assert_eq!(state(&mut bo), (false, false, false));
@@ -468,7 +468,7 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     let chain = chain_of(&mut bo);
     assert!(chain.head_arriving(), "the newest part is on its way");
     assert!(
-        bo.wanted_records()
+        bo.wanted_resources()
             .contains(&crate::parts::chain().chain_head()),
         "the chain's head is asked for, whichever part it is"
     );
@@ -480,7 +480,7 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     );
     assert_eq!(held(&mut bo), Vec::<u64>::new(), "no part was started");
     assert!(
-        !bo.wanted_records().contains(&crate::parts::part(0)),
+        !bo.wanted_resources().contains(&crate::parts::part(0)),
         "the chat's first part is not taken for its newest"
     );
 

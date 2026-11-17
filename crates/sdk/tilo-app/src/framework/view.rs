@@ -12,7 +12,7 @@ use tilo_resource::{
 use ui_core::LocalState;
 use ui_core::arriving::Arriving;
 use ui_core::i18n::LabelKey;
-use ui_core::record::RecordSaveStatus;
+use ui_core::resource::ResourceSaveStatus;
 use ui_core::widget::{ArrivingView, SkeletonShape};
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 use ui_core::workspace_sync::WorkspaceUnreachable;
@@ -21,8 +21,8 @@ use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};
 use super::each::Each;
 use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects};
-use super::env::RecordEnv;
-use super::form::{Attached, Form, FormField, Forms, RecordField};
+use super::env::ResourceEnv;
+use super::form::{Attached, Form, FormField, Forms, ResourceField};
 use super::live::Live;
 use super::reactive::{Reads, Updaters};
 use super::scenario::Run;
@@ -177,7 +177,7 @@ pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> O
 /// `T` is what this scope reads — the resource state at the root, one item in
 /// a row built by [`ViewCx::each`].
 pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
-    pub(crate) env: RecordEnv<R>,
+    pub(crate) env: ResourceEnv<R>,
     pub(crate) focus: Focus<R, T>,
     pub(crate) updaters: Updaters<R>,
     /// The row of an [`Each`] this scope builds, whose readers run while it
@@ -198,8 +198,8 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
 }
 
 impl<R: Resource, T: 'static> std::ops::Deref for ViewCx<R, T> {
-    type Target = RecordEnv<R>;
-    fn deref(&self) -> &RecordEnv<R> {
+    type Target = ResourceEnv<R>;
+    fn deref(&self) -> &ResourceEnv<R> {
         &self.env
     }
 }
@@ -219,7 +219,7 @@ impl<R: Resource> ViewCx<R> {
         let app = dispatch.app_id();
         let fresh = FreshScope::new();
         Self {
-            env: RecordEnv {
+            env: ResourceEnv {
                 live,
                 alive: Rc::downgrade(alive),
                 dispatch,
@@ -265,7 +265,7 @@ fn current_specs(
 /// resource type: made here once rather than in every app's
 /// [`ViewCx::root`].
 struct FreshScope {
-    saved: LocalState<RecordSaveStatus>,
+    saved: LocalState<ResourceSaveStatus>,
     saves: super::Saves,
     controls: Rc<RefCell<HashMap<String, u32>>>,
     forms: Forms,
@@ -277,7 +277,7 @@ impl FreshScope {
     #[inline(never)]
     fn new() -> Self {
         Self {
-            saved: LocalState::new(RecordSaveStatus::Saved),
+            saved: LocalState::new(ResourceSaveStatus::Saved),
             saves: super::Saves::default(),
             controls: Rc::default(),
             forms: Forms::default(),
@@ -1219,7 +1219,7 @@ pub trait Bindable<R: Resource, V, M>: Sized {
     ) -> Attached<V, I>;
 }
 
-impl<R, V> Bindable<R, V, RecordField> for Path<R, V>
+impl<R, V> Bindable<R, V, ResourceField> for Path<R, V>
 where
     R: Resource<State = R> + Model,
     V: PartialEq + Default + Clone + Send + Sync + 'static,

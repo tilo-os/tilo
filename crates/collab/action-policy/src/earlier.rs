@@ -64,7 +64,7 @@ impl EarlierIds {
     /// the first it lists, else its own. A renamed app opens the record it had, wherever and
     /// under whatever it was written; nothing is copied to a record of its new id.
     #[must_use]
-    pub fn records_under<'a>(&'a self, app: &'a str) -> &'a str {
+    pub fn documents_under<'a>(&'a self, app: &'a str) -> &'a str {
         self.of(app).first().map_or(app, String::as_str)
     }
 
@@ -266,9 +266,9 @@ mod tests {
             );
             assert_eq!(ids.of("com.example.other"), ["com.example.old"]);
             assert_eq!(ids.current("so.tilo.lang.notes"), "so.tilo.lang.notes");
-            assert_eq!(ids.records_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
+            assert_eq!(ids.documents_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
             assert_eq!(
-                ids.records_under("so.tilo.lang.notes"),
+                ids.documents_under("so.tilo.lang.notes"),
                 "so.tilo.lang.notes"
             );
             assert!(ids.names("so.tilo.lang.todo", "so.tilo.lang.tasks"));

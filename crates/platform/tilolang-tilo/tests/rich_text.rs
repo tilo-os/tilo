@@ -321,7 +321,7 @@ tilo_test_env::scenario! {
         let read = |reference: &tilolang_runtime::rich::Reference| {
             tilolang_runtime::store::Store::reading(grace.host.store(), reference)
         };
-        let told = ui::mentions::in_record_for(&grace.doc, &read);
+        let told = ui::mentions::in_resource_for(&grace.doc, &read);
         assert_eq!(told.len(), 1, "{told:#?}");
         assert_eq!(
             told[0].excerpt,
@@ -382,14 +382,14 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
 
     // The workspace's record holds the mention as every app's does: the system finds it without
     // the app, and the task reference is a reference, not a person.
-    let found = ui::mentions::in_record(&grace.doc);
+    let found = ui::mentions::in_resource(&grace.doc);
     let people: Vec<&str> = found.iter().map(|m| m.person.as_str()).collect();
     assert_eq!(people, ["grace"], "{found:#?}");
     assert!(found[0].excerpt.contains("look at"), "{found:#?}");
 
     // Ada wrote it: the mention names grace alone.
     assert!(
-        ui::mentions::in_record(&ada.doc)
+        ui::mentions::in_resource(&ada.doc)
             .iter()
             .all(|found| found.person != "ada"),
         "the author is told nothing"
@@ -471,7 +471,7 @@ fn plain_paths(
     let at = tilolang_runtime::ResourceRef::parse_id(post, ty.id.clone()).unwrap();
     let read =
         |reference: &tilolang_runtime::rich::Reference| replica.host.store().reading(reference);
-    let notices = ui::mentions::in_record_for(&replica.doc, &read)
+    let notices = ui::mentions::in_resource_for(&replica.doc, &read)
         .into_iter()
         .map(|mention| mention.excerpt)
         .collect::<Vec<_>>()

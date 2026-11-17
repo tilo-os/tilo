@@ -76,14 +76,14 @@ pub(crate) fn timer_id(id: &str) -> String {
     format!("t{}", id.chars().take(14).collect::<String>())
 }
 
-pub(crate) fn alarm_activation(record: Option<&ui::record::DocumentId>, alarm: &str) -> String {
+pub(crate) fn alarm_activation(record: Option<&ui::resource::DocumentId>, alarm: &str) -> String {
     record.map_or_else(
         || format!("tilo-clocks:alarm/{alarm}"),
         |record| format!("tilo-clocks:record/{record}/alarm/{alarm}"),
     )
 }
 
-pub(crate) fn activation_record(uri: &str) -> Option<ui::record::DocumentId> {
+pub(crate) fn activation_record(uri: &str) -> Option<ui::resource::DocumentId> {
     let path = uri.strip_prefix("tilo-clocks:record/")?;
     let record = path
         .split_once("/alarm/")
@@ -101,12 +101,12 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
     })
 }
 
-fn activation_record_id(record: &str) -> Option<ui::record::DocumentId> {
-    let primary = ui::record::DocumentId::package_primary();
+fn activation_record_id(record: &str) -> Option<ui::resource::DocumentId> {
+    let primary = ui::resource::DocumentId::package_primary();
     if record == primary.as_str() {
         return Some(primary);
     }
-    ui::record::DocumentId::parse(record)
+    ui::resource::DocumentId::parse(record)
 }
 
 pub(crate) fn alarm_id(id: &str) -> String {
@@ -117,7 +117,7 @@ pub(crate) fn alarm_id(id: &str) -> String {
 /// and alarms, recording in `delivery` what this device owns. `persist` runs
 /// before the platform is touched, so a crash never loses a cancellation.
 pub(crate) fn reconcile(
-    record: Option<&ui::record::DocumentId>,
+    record: Option<&ui::resource::DocumentId>,
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
@@ -241,7 +241,7 @@ pub(crate) fn restore_alarms(
 }
 
 fn reconcile_alarms(
-    record: Option<&ui::record::DocumentId>,
+    record: Option<&ui::resource::DocumentId>,
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
@@ -431,7 +431,7 @@ mod tests {
             crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
             let captured = CapturedAlarm::default();
             let host: &dyn Notifier = &captured;
-            let record = ui::record::DocumentId::minted();
+            let record = ui::resource::DocumentId::minted();
             reconcile(
                 Some(&record),
                 &clocks,

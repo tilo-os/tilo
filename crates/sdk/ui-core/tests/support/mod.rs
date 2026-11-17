@@ -186,7 +186,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ClearContinuation
             | CollabRequest::ReportHandoff { .. }
             | CollabRequest::UpdateInvocation { .. }
-            | CollabRequest::RecordLocalEffect { .. }
+            | CollabRequest::ResourceLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
             | CollabRequest::LaunchInstalledApplication { .. } => {
                 // Session-local and shell-owned control-plane commands never

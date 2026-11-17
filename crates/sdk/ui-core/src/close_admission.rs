@@ -191,9 +191,9 @@ pub(crate) fn retry_reports(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for report in reports {
-        let _ = report.retry_record();
+        let _ = report.retry_resource();
         let _ = report.retry_view();
-        errors.extend(report.record_error.iter().cloned());
+        errors.extend(report.resource_error.iter().cloned());
         errors.extend(report.view_error.iter().cloned());
         errors.extend(report.teardown_error.iter().cloned());
     }

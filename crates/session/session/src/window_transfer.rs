@@ -6,7 +6,7 @@
 //! person was looking at is the record the window shows, so the move takes it
 //! along: the source document's whole history becomes a record of the
 //! destination under a freshly minted id
-//! ([`ui::record::transfer::rehome`]), the instance's presentation follows it,
+//! ([`ui::resource::transfer::rehome`]), the instance's presentation follows it,
 //! and the source record is stamped retired naming the copy, so wherever it is
 //! read it says where it went instead of looking live.
 //!
@@ -23,8 +23,8 @@ use std::sync::mpsc::{self, Receiver};
 
 use automerge::{AutoCommit, ChangeHash};
 use ui::application::NativeProfile;
-use ui::record::transfer::{self, Durability, Origin, Retirement, TransferError};
-use ui::record::{DocumentCheckout, DocumentId, RecordOpenError};
+use ui::resource::transfer::{self, Durability, Origin, Retirement, TransferError};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceOpenError};
 
 /// Why a step of a move could not be taken.
 #[derive(Debug)]
@@ -89,8 +89,8 @@ pub(crate) fn take(
     let from = source.open()?;
     let doc = transfer::read_by_id(from.store(), &source.app, from.workspace_id(), id)
         .map_err(Fault::Transfer)?;
-    let checkout = ui::record::identity(&doc).ok_or(Fault::Transfer(TransferError::Open(
-        RecordOpenError::IdentityMismatch,
+    let checkout = ui::resource::identity(&doc).ok_or(Fault::Transfer(TransferError::Open(
+        ResourceOpenError::IdentityMismatch,
     )))?;
     let origin = Origin::Record(checkout);
     let to = destination.open()?;

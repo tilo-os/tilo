@@ -160,7 +160,7 @@ fn write_of(addr: Addr, value: &serde_json::Value) -> Result<Option<CellWrite>, 
 /// # Errors
 /// A record that is not an object, a key no header names, a value that is
 /// not a cell value, or more than [`MAX_WRITES`] cells.
-fn record_writes(
+fn document_writes(
     columns: &Columns,
     rows: impl IntoIterator<Item = u32>,
     records: &[serde_json::Value],
@@ -199,7 +199,7 @@ pub(crate) fn new_sheet_writes(
 ) -> Result<Vec<CellWrite>, Refusal> {
     let columns = Columns::from_names(columns)?;
     let mut writes = columns.header_writes();
-    writes.extend(record_writes(&columns, 1.., records)?);
+    writes.extend(document_writes(&columns, 1.., records)?);
     Ok(writes)
 }
 
@@ -286,7 +286,7 @@ pub(crate) fn set_records_writes(
     };
     if let Some(key) = request.key {
         let rows = keyed_rows(snap, &columns, key, records).map_err(named)?;
-        return record_writes(&columns, rows, records).map_err(named);
+        return document_writes(&columns, rows, records).map_err(named);
     }
     let first = match request.row {
         Some(row) if row >= 1 => {
@@ -302,7 +302,7 @@ pub(crate) fn set_records_writes(
         }
         None => next_free_row(snap),
     };
-    record_writes(&columns, first.., records).map_err(named)
+    document_writes(&columns, first.., records).map_err(named)
 }
 
 /// The writes of an `upsert-item` on the sheet `snap`, whose cells show as
@@ -379,7 +379,7 @@ pub(crate) fn upsert_writes(
             )));
         }
     };
-    Ok((record_writes(&columns, [row], &record)?, appended))
+    Ok((document_writes(&columns, [row], &record)?, appended))
 }
 
 /// The sheet row each record goes to when rows are identified by the header
@@ -530,7 +530,7 @@ mod tests {
         phase a_left_out_key_leaves_its_cell;
         {
             let cols = columns(&["Item", "Per person", "People", "Total"]);
-            let writes = record_writes(
+            let writes = document_writes(
                 &cols,
                 1..,
                 &[json!({"Item": "Venue", "Per person": 145, "Total": "=[Per person]*[People]"})],

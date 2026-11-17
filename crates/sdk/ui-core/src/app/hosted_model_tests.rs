@@ -17,7 +17,7 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::ResourceType,
+        _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -208,7 +208,7 @@ fn owned_declared_directory_factory(
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| doc.put(ROOT, "seed", true).map_err(|e| e.to_string()))
+        .initialize_new_resource(|doc| doc.put(ROOT, "seed", true).map_err(|e| e.to_string()))
         .map_err(crate::launch::LaunchError::Record)?;
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<CounterAction>(COUNTER_TYPE);
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
         app.publish_action_surface();
         let old = app.action_directory_revision();
         catalog
-            .upsert_record(
+            .upsert_resource(
                 crate::search::SearchRecord::new(
                     "test.item:1",
                     crate::search::SearchResult::for_action(
@@ -414,7 +414,7 @@ tilo_test_env::scenario! {
             ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
         };
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
         let records = owners
             .open("test.directory", "00000000-0000-0000-0000-000000000004")
             .unwrap();
@@ -430,13 +430,13 @@ tilo_test_env::scenario! {
             app_id: "test.directory".into(),
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
-            record_kind: crate::record::ResourceType::new("directory"),
+            resource_type: crate::resource::ResourceType::new("directory"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
         let context = HostContext::prepare(

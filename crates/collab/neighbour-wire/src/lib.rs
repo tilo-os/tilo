@@ -27,8 +27,8 @@ pub mod retention;
 pub mod unit_chain;
 
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
-pub use tilo_actions::record_sync::{
-    RecordSync, chain_head, on_demand_record, record_chunk, record_part, record_sync,
+pub use tilo_actions::document_sync::{
+    DocumentSync, chain_head, document_chunk, document_part, document_sync, on_demand_document,
 };
 
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 51;
+pub const PEER_PROTOCOL_VERSION: u32 = 52;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -524,9 +524,9 @@ pub enum NeighbourMsg {
         /// component; empty means the sender announced no record. A local
         /// record id that embeds a filesystem path is never sent: it is
         /// replaced by its sealed, workspace-scoped name (the compositor's
-        /// `network::wire_record`), which receivers map back to their own
+        /// `network::wire_document`), which receivers map back to their own
         /// local id.
-        record_id: String,
+        document_id: String,
         /// The signed-op envelope; the receiving shell's validator decides whether
         /// to fan it to local apps or drop it with an audit-log entry.
         envelope: Box<collab_types::SignedOp>,
@@ -534,7 +534,7 @@ pub enum NeighbourMsg {
         /// app's manifest declares each member's own, and its person. Only that
         /// person's devices are sent it, and only they write it. In the clear
         /// for a sealed record too, so a host that cannot read it routes it.
-        own: Option<collab_types::OwnRecord>,
+        own: Option<collab_types::OwnResource>,
     },
     /// Retired: app-level presence crossing the host boundary. An app's
     /// presence is a frame on the workspace's live plane now; no build
@@ -671,13 +671,13 @@ pub enum NeighbourMsg {
     /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
     /// the workspace's topic, so only peers admitted to read the workspace see it;
     /// any of them holding the content answers with
-    /// [`Self::RecordContentPiece`]. `have` is what the asker already holds of
+    /// [`Self::DocumentContentPiece`]. `have` is what the asker already holds of
     /// it, which an answer leaves out: a device asks again while it is missing
     /// pieces, and every answer carries the next of them rather than all of
     /// them, so a large piece of content arrives without one device filling
     /// its peers' outbound queues. Appended to preserve every existing
     /// Postcard discriminant.
-    RecordContentWant {
+    DocumentContentWant {
         requester: PeerId,
         app_id: String,
         cluster_id: String,
@@ -685,11 +685,11 @@ pub enum NeighbourMsg {
         have: Vec<content::Span>,
     },
     /// One bounded piece of a record's content, answering
-    /// `requester`'s [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// `requester`'s [`Self::DocumentContentWant`]: `bytes` start at `offset` of the
     /// `total`-byte content named by `hash`. The receiver keeps the content
     /// only once every piece arrived and the bytes hash to `hash`. Appended
     /// to preserve every existing Postcard discriminant.
-    RecordContentPiece {
+    DocumentContentPiece {
         responder: PeerId,
         requester: PeerId,
         app_id: String,
@@ -732,12 +732,12 @@ pub enum NeighbourMsg {
         views: Vec<SurfaceView>,
         decode: Vec<SurfaceDecodeLimit>,
     },
-    /// `responder`'s answer to `requester`'s [`Self::RecordContentWant`]
+    /// `responder`'s answer to `requester`'s [`Self::DocumentContentWant`]
     /// when it keeps none of the content: the requester stops counting on
     /// it, and once every device it is connected to that could hold the
     /// content said so, the content is unavailable rather than on its way.
     /// Appended to preserve every existing Postcard discriminant.
-    RecordContentLacks {
+    DocumentContentLacks {
         responder: PeerId,
         requester: PeerId,
         app_id: String,
@@ -859,9 +859,9 @@ impl NeighbourMsg {
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
             | Self::PersonalWorkspaces { .. }
-            | Self::RecordContentWant { .. }
-            | Self::RecordContentPiece { .. }
-            | Self::RecordContentLacks { .. }
+            | Self::DocumentContentWant { .. }
+            | Self::DocumentContentPiece { .. }
+            | Self::DocumentContentLacks { .. }
             | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
@@ -910,12 +910,12 @@ impl NeighbourMsg {
             Self::MlsGovernance { .. } => "MlsGovernance",
             Self::MlsAccessRequest { .. } => "MlsAccessRequest",
             Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
-            Self::RecordContentWant { .. } => "RecordContentWant",
-            Self::RecordContentPiece { .. } => "RecordContentPiece",
+            Self::DocumentContentWant { .. } => "DocumentContentWant",
+            Self::DocumentContentPiece { .. } => "DocumentContentPiece",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
             Self::LivePresence { .. } => "LivePresence",
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
-            Self::RecordContentLacks { .. } => "RecordContentLacks",
+            Self::DocumentContentLacks { .. } => "DocumentContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
             Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
@@ -1046,7 +1046,7 @@ mod tests {
         ));
         all.push((
             "record content lacks",
-            NeighbourMsg::RecordContentLacks {
+            NeighbourMsg::DocumentContentLacks {
                 responder: 3,
                 requester: 4,
                 app_id: "so.tilo.slides".into(),
@@ -1342,9 +1342,9 @@ mod tests {
                     peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
                     cluster_id: WORKSPACE.into(),
-                    record_id: "uuid:1c2f".into(),
+                    document_id: "uuid:1c2f".into(),
                     envelope: dummy_envelope(),
-                    own: Some(collab_types::OwnRecord {
+                    own: Some(collab_types::OwnResource {
                         kind: "notes.page".into(),
                         owner: [7; 32],
                     }),
@@ -1365,7 +1365,7 @@ mod tests {
             ),
             (
                 "record content want",
-                NeighbourMsg::RecordContentWant {
+                NeighbourMsg::DocumentContentWant {
                     requester: 0x00AB_CDEF,
                     app_id: "so.tilo.slides".into(),
                     cluster_id: "workspace".into(),
@@ -1375,7 +1375,7 @@ mod tests {
             ),
             (
                 "record content piece",
-                NeighbourMsg::RecordContentPiece {
+                NeighbourMsg::DocumentContentPiece {
                     responder: 0x123_456,
                     requester: 0x00AB_CDEF,
                     app_id: "so.tilo.slides".into(),
@@ -1566,7 +1566,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b32",
+                "0b34",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

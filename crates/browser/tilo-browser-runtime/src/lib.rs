@@ -286,7 +286,7 @@ mod presence_value;
 mod sign_in_page;
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
-mod person_records;
+mod person_resources;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -359,7 +359,7 @@ mod way_in;
 #[cfg(any(target_arch = "wasm32", test))]
 mod window_pictures;
 #[cfg(target_arch = "wasm32")]
-mod workspace_records;
+mod workspace_resources;
 // When graphics start-up is said to stall: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(

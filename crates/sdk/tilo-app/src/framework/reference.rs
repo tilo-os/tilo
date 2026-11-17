@@ -37,7 +37,7 @@ pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
         .target
         .record
         .as_ref()
-        .map(tilo_reference::link::RecordSegment::provider_part)
+        .map(tilo_reference::link::ResourceSegment::provider_part)
         .filter(|id| !id.is_empty());
     opener.open(&app, record, &address.into_ref(String::new()))
 }
@@ -237,16 +237,16 @@ impl Opener {
 
     /// Read a record of the window's workspace through the host's record
     /// API, continuing `parent` as [`Self::call`] does.
-    pub(crate) fn read_record(
+    pub(crate) fn read_resource(
         &self,
         parent: Option<tilo_actions::InvocationId>,
-        read: tilo_actions::remote::RecordReadRequest,
-    ) -> ui_core::remote_actions::RecordReadCall {
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> ui_core::remote_actions::ResourceReadCall {
         self.0
             .borrow_mut()
             .api
             .get_or_insert_with(RemoteActions::current)
-            .read_record(parent, read)
+            .read_resource(parent, read)
     }
 
     /// Follow the result of the action at `target` on this view's API,

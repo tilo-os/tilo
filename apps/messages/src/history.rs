@@ -383,14 +383,14 @@ impl HistoryView {
             .filter(|me| !me.is_empty() && me != peer)
             .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
         let peer = PersonId::parse(peer).map_err(|_| CATALOG.t("messages-history-unavailable"))?;
-        let read = ui::tilo_actions::remote::RecordReadRequest {
+        let read = ui::tilo_actions::remote::ResourceReadRequest {
             app: CHAT.into(),
             record: CHAT_MESSAGES.into(),
             joined: true,
             after: None,
             wait_ms: None,
         };
-        Ok(cx.read_record(read, move |(), readings, cx| {
+        Ok(cx.read_resource(read, move |(), readings, cx| {
             then(direct_page(route, (&me, &peer), &readings?), cx)
         }))
     }

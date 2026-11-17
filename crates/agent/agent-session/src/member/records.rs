@@ -33,7 +33,7 @@ impl AgentMember {
     /// new document, so a blank one this task made (the host opened it for
     /// the task), else a new one; never one already open with content (a
     /// plan offered this open beside an open document wants a second one).
-    pub(super) fn new_record(&mut self, app: &str) -> Result<DocumentRoute, String> {
+    pub(super) fn new_resource(&mut self, app: &str) -> Result<DocumentRoute, String> {
         let made: Vec<DocumentRoute> = self
             .running
             .iter()
@@ -56,13 +56,13 @@ impl AgentMember {
     }
 
     /// The record `step`, which names none, acts on
-    /// ([`Running::record_for`]): one open, else (unless it imports) the
+    /// ([`Running::document_for`]): one open, else (unless it imports) the
     /// workspace's only record of its app that holds anything, else a new one
     /// the task made. A blank record the agent merely holds gives way to
     /// that written one: it is what another agent filled (the workbook it
     /// imported), where a new record would hold none of it.
-    pub(super) fn unnamed_record(&mut self, step: &Step) -> Result<DocumentRoute, String> {
-        if let Some(route) = self.existing_record(step)? {
+    pub(super) fn unnamed_document(&mut self, step: &Step) -> Result<DocumentRoute, String> {
+        if let Some(route) = self.existing_document(step)? {
             return Ok(route);
         }
         let route = self.open(&step.app, None)?;
@@ -74,9 +74,12 @@ impl AgentMember {
         Ok(route)
     }
 
-    /// The record of the workspace [`Self::unnamed_record`] finds for `step`
+    /// The record of the workspace [`Self::unnamed_document`] finds for `step`
     /// without making one: `None` where it would open a new record.
-    pub(super) fn existing_record(&mut self, step: &Step) -> Result<Option<DocumentRoute>, String> {
+    pub(super) fn existing_document(
+        &mut self,
+        step: &Step,
+    ) -> Result<Option<DocumentRoute>, String> {
         let open: Vec<DocumentRoute> = self
             .apps
             .keys()
@@ -111,7 +114,7 @@ impl AgentMember {
             .cloned()
             .collect();
         let found = match self.running.as_ref() {
-            Some(running) => running.record_for(
+            Some(running) => running.document_for(
                 step,
                 &open,
                 |route| blank.contains(route),

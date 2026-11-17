@@ -89,7 +89,7 @@ impl ClaimedAction {
             Some(what) => Self::of_did(what, &kind, item),
             // An entry that names no finer action (a window's own commit of
             // what its widgets wrote) is an edit of the whole record.
-            None => Ok(Self::whole_record_edit(kind)),
+            None => Ok(Self::whole_resource_edit(kind)),
         }
     }
 
@@ -203,7 +203,7 @@ impl ClaimedAction {
     /// An edit of the whole record of kind `kind`; an empty kind is the
     /// record's own.
     #[must_use]
-    pub fn whole_record_edit(kind: String) -> Self {
+    pub fn whole_resource_edit(kind: String) -> Self {
         Self::Edit {
             kind,
             path: Vec::new(),
@@ -272,7 +272,7 @@ impl ChangeClaim {
     ) -> Result<Self, ClaimError> {
         let message = message.ok_or(ClaimError::Unnamed)?;
         let action = match FrameworkChange::from_change_message(message) {
-            Some(FrameworkChange::Native) => ClaimedAction::whole_record_edit(String::new()),
+            Some(FrameworkChange::Native) => ClaimedAction::whole_resource_edit(String::new()),
             Some(change) => ClaimedAction::Framework(change),
             None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
                 ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
@@ -760,7 +760,7 @@ mod tests {
             claim(&FrameworkChange::Native.change_message())
                 .unwrap()
                 .action,
-            ClaimedAction::whole_record_edit(String::new())
+            ClaimedAction::whole_resource_edit(String::new())
         );
         let unspecific = ActionContext {
             invoker: Some(tilo_actions::ActionInvoker::person("alice")),
@@ -768,7 +768,7 @@ mod tests {
         };
         assert_eq!(
             claim(&unspecific.change_message().unwrap()).unwrap().action,
-            ClaimedAction::whole_record_edit("note".into())
+            ClaimedAction::whole_resource_edit("note".into())
         );
     }
 

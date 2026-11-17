@@ -32,7 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
 use ui::TextRole;
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::icons::Icon;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
@@ -240,7 +240,7 @@ pub struct MailApp {
     sending_notice_next: bool,
     unsend: bool,
     persisted_active_account: Option<String>,
-    person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    person_accounts: Option<(PersonResource<PersonAccounts>, Option<u64>)>,
     /// The host's mail session, when this window runs in a page: the host
     /// that keeps the accounts reads and sends here.
     #[cfg(any(test, not(feature = "live")))]
@@ -289,7 +289,7 @@ pub(crate) struct Mailroom {
 
     engine: Option<EngineHandle>,
     accounts_persist: AccountsPersist,
-    pub(crate) contact_directory: Option<PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    pub(crate) contact_directory: Option<PersonResource<tilo_contact_directory::ContactDirectory>>,
     pub(crate) has_contact_draft_conflict: bool,
     awaiting_engine: bool,
     pending_engine_requests: HashMap<EngineRequestId, PendingEngineRequest>,
@@ -2859,7 +2859,7 @@ impl MailApp {
             reason = "a page reads the accounts the host keeps, not a record of its own"
         )
     )]
-    pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
+    pub(crate) fn follow_person_accounts(&mut self, accounts: PersonResource<PersonAccounts>) {
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
             let device = accounts::AccountStore::load_in(&root);
@@ -2999,7 +2999,7 @@ impl MailApp {
             doc.doc().committed_heads(),
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
-            ui::collaboration::record_content::arrivals(),
+            ui::collaboration::document_content::arrivals(),
         );
         if self.hydrated_at.borrow().as_ref() == Some(&at) {
             return;
@@ -3011,7 +3011,7 @@ impl MailApp {
             doc.doc().committed_heads(),
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
-            ui::collaboration::record_content::arrivals(),
+            ui::collaboration::document_content::arrivals(),
         );
         *self.hydrated_at.borrow_mut() = Some(settled);
     }

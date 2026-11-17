@@ -1,7 +1,7 @@
 //! A window shown before its record ([`ResourceApp::opening`](super::ResourceApp::opening)).
 //!
 //! The workspace's record opens off the frame
-//! ([`RecordStore::begin_opening`](ui_core::record::RecordStore::begin_opening)); meanwhile the
+//! ([`ResourceStore::begin_opening`](ui_core::resource::ResourceStore::begin_opening)); meanwhile the
 //! window's component is an [`OpeningRoot`] over what the app shows before it. Once the record
 //! is decoded, the window, about to sync, asks the root for the component to show in its
 //! place ([`AppWidget::take_component_replacement`]): the root takes the record in and builds
@@ -15,14 +15,14 @@ use std::cell::RefCell;
 
 use ui_core::application::ComponentReplacement;
 use ui_core::launch::LaunchError;
-use ui_core::record::RecordOpening;
+use ui_core::resource::ResourceOpening;
 use ui_core::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use super::app::OpeningView;
 
 /// What a window showed before its record ([`ResourceApp::opening`](super::ResourceApp::opening)),
 /// lent to the view built once the record is had
-/// ([`RecordEnv::take_lent`](super::RecordEnv::take_lent)).
+/// ([`ResourceEnv::take_lent`](super::ResourceEnv::take_lent)).
 pub struct Opened(RefCell<Option<Box<dyn OpeningView>>>);
 
 impl Opened {
@@ -45,7 +45,7 @@ pub(crate) type Build =
 /// The root of a window's component while its record is read off the frame.
 pub(crate) struct OpeningRoot {
     shown: Box<dyn OpeningView>,
-    record: RecordOpening,
+    record: ResourceOpening,
     build: Option<Build>,
     title: &'static str,
     icon: IconDescriptor,
@@ -54,7 +54,7 @@ pub(crate) struct OpeningRoot {
 impl OpeningRoot {
     pub(crate) fn new(
         shown: Box<dyn OpeningView>,
-        record: RecordOpening,
+        record: ResourceOpening,
         build: Build,
         (title, icon): (&'static str, IconDescriptor),
     ) -> Self {

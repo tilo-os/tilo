@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::{self, Atom, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
@@ -213,7 +213,7 @@ impl ResourceApp for HexEditorShell {
 
     /// A file's buffer is a record of its own, derived from the file's, so another
     /// app's record of the same file is left alone.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
             .map(|path| DocumentId::derived("hex", &DocumentId::identify_file(path)))

@@ -167,7 +167,7 @@ impl ContentKeys {
     ///
     /// [`Error::MissingContentKey`] when this endpoint holds no key for the
     /// current epoch.
-    pub fn record_content_secret(&self) -> Result<SymmetricKey> {
+    pub fn document_content_secret(&self) -> Result<SymmetricKey> {
         let content = self
             .keyring
             .get(self.epoch)
@@ -629,7 +629,7 @@ mod tests {
         let secret = group
             .content_keys()
             .unwrap()
-            .record_content_secret()
+            .document_content_secret()
             .unwrap();
         assert_ne!(
             secret,
@@ -637,7 +637,7 @@ mod tests {
                 .unwrap()
                 .content_keys()
                 .unwrap()
-                .record_content_secret()
+                .document_content_secret()
                 .unwrap(),
             "another workspace has its own"
         );
@@ -650,7 +650,7 @@ mod tests {
             group
                 .content_keys()
                 .unwrap()
-                .record_content_secret()
+                .document_content_secret()
                 .unwrap(),
             "a new epoch has a new one"
         );

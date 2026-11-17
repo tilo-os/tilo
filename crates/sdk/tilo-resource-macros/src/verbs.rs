@@ -2231,7 +2231,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             const CATALOGUE: ::core::option::Option<&'static #krate::label::Catalogue> =
                 #catalogue_of_kind;
             const APP_ID: &'static str = #app_id;
-            const RECORD_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
+            const RESOURCE_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
@@ -2398,7 +2398,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
-                ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
+                ::core::option::Option::Some(#krate::schema::resource_action_schema::<Self>())
             }
         }
 

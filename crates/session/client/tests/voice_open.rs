@@ -75,7 +75,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let owner = owner.into_client();
     let open = || CallOperation::Open {
         app_id: CHAT.into(),
-        record_id: String::new(),
+        document_id: String::new(),
         channel_id: channel.clone(),
     };
 

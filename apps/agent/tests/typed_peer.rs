@@ -95,7 +95,7 @@ impl TypedPeer {
             app_id,
             cluster_id,
             record,
-            record_kind: _,
+            resource_type: _,
             handle,
         } = request
         else {

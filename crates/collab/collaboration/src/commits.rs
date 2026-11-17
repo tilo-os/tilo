@@ -252,7 +252,7 @@ mod tests {
     fn publication(
         commit: &WorkspaceCommit,
         app: &str,
-        record_id: &str,
+        document_id: &str,
         doc: &AutoCommit,
         seq: u64,
     ) -> SignedOp {
@@ -262,7 +262,7 @@ mod tests {
         let claims = mutation_claims(&mutation, record_unit).unwrap();
         SignedOp::new_unsigned(
             framed,
-            document_artifact_id(app, WORKSPACE, record_id),
+            document_artifact_id(app, WORKSPACE, document_id),
             Ed25519PublicKey::from_bytes(DEVICE),
             AttestationId::new(),
             OpKind::Change,
@@ -302,12 +302,12 @@ mod tests {
         state: &BridgeState,
         op: &SignedOp,
         app: &str,
-        record_id: &str,
+        document_id: &str,
         peer: &mut AutoCommit,
     ) -> bool {
         let commit = WorkspaceCommit::of_envelope(op).unwrap();
         let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
-        match gate(state, commit, &claims, (app, record_id), event(op)) {
+        match gate(state, commit, &claims, (app, document_id), event(op)) {
             Delivery::Now(event) => {
                 apply(peer, &event);
                 true

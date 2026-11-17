@@ -20,7 +20,7 @@ use tilo_action_policy::Standing;
 pub struct RemoteDocument {
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
     /// The author, the workspace's policy and any bound on them (a device not
     /// theirs), as the host established them for the authenticated peer.
     pub author: Standing,
@@ -29,9 +29,9 @@ pub struct RemoteDocument {
     pub replayed: bool,
     pub envelope: SignedOp,
     /// The member's own record it changes, as the write said
-    /// ([`collab_types::OwnRecord`]): only its person is granted anything in
+    /// ([`collab_types::OwnResource`]): only its person is granted anything in
     /// it.
-    pub own: Option<collab_types::OwnRecord>,
+    pub own: Option<collab_types::OwnResource>,
 }
 
 /// How far an admitted device's live op may be dated from this clock.
@@ -86,7 +86,11 @@ fn deliver_at(
 ) -> Delivery {
     let artifact = document.envelope.artifact;
     let replayed = document.replayed;
-    let route = CrdtRoute::record(&document.app_id, &document.cluster_id, &document.record_id);
+    let route = CrdtRoute::record(
+        &document.app_id,
+        &document.cluster_id,
+        &document.document_id,
+    );
     let payload = validate_route(&route, &document.envelope);
     let validation = match &payload {
         Ok(_) => {
@@ -102,12 +106,12 @@ fn deliver_at(
                     .artifact_apps
                     .insert(artifact, document.app_id.clone());
                 state
-                    .artifact_records
-                    .insert(artifact, document.record_id.clone());
+                    .artifact_resources
+                    .insert(artifact, document.document_id.clone());
                 if let Some(own) = document
                     .own
                     .as_ref()
-                    .filter(|own| own.names(&document.record_id))
+                    .filter(|own| own.names(&document.document_id))
                 {
                     state.artifact_owners.insert(artifact, own.person());
                 }
@@ -121,7 +125,7 @@ fn deliver_at(
             } else {
                 tracing::warn!(
                     app = %document.app_id,
-                    record = %document.record_id,
+                    record = %document.document_id,
                     epoch = encryption.map(|metadata| metadata.epoch),
                     replayed,
                     "collab_broker (net): a document op its workspace's gate does not take"
@@ -185,7 +189,7 @@ pub fn validate_route(
     collab_types::validate_document_payload_route(
         &route.app_id,
         &route.cluster_id,
-        &route.record_id,
+        &route.document_id,
         envelope,
     )
     .map_err(|_| ValidationError::DocumentRouteMismatch)
@@ -199,10 +203,10 @@ fn accept(
     route: &CrdtRoute,
 ) {
     let artifact = envelope.artifact;
-    let mut first_of_the_record = false;
+    let mut first_of_the_document = false;
     let unsynced = channels.lock().ok().map(|mut ch| {
-        first_of_the_record = !ch.routes.contains_key(&artifact);
-        let unsynced = ch.record_history(route, &envelope);
+        first_of_the_document = !ch.routes.contains_key(&artifact);
+        let unsynced = ch.document_history(route, &envelope);
         if envelope.encryption.is_some() {
             ch.sealed.insert(artifact);
         }
@@ -224,8 +228,8 @@ fn accept(
         apply_redaction_from_envelope(&envelope, artifact, channels);
     }
     fan_out(fanout, envelope, route);
-    if first_of_the_record {
-        announce_record(fanout, route);
+    if first_of_the_document {
+        announce_document(fanout, route);
     }
 }
 
@@ -254,14 +258,15 @@ fn fan_out(fanout: &FanoutState, envelope: SignedOp, route: &CrdtRoute) {
 /// tree yet, so nothing else brings the record to it. A window opened later
 /// learns the same records as it subscribes
 /// ([`crate::collab_core::BrokerChannels::tree_records_held`]).
-fn announce_record(fanout: &FanoutState, route: &CrdtRoute) {
-    if ui::record::DocumentId::parse(&route.record_id).is_none_or(|record| record.tree().is_none())
+fn announce_document(fanout: &FanoutState, route: &CrdtRoute) {
+    if ui::resource::DocumentId::parse(&route.document_id)
+        .is_none_or(|record| record.tree().is_none())
     {
         return;
     }
     fanout.fanout_to_route(
-        &CollabEvent::RecordsArrived {
-            records: vec![route.record_id.clone()],
+        &CollabEvent::ResourcesArrived {
+            records: vec![route.document_id.clone()],
         },
         u64::MAX,
         &CrdtRoute::app(route.app_id.clone(), route.cluster_id.clone()),
@@ -390,7 +395,7 @@ mod tests {
             let document = |envelope: SignedOp, replayed: bool| RemoteDocument {
                 app_id: "notes".into(),
                 cluster_id: WORKSPACE.into(),
-                record_id: "record".into(),
+                document_id: "record".into(),
                 author: editor(),
                 replayed,
                 envelope,
@@ -502,7 +507,7 @@ mod tests {
                     RemoteDocument {
                         app_id: "notes".into(),
                         cluster_id: WORKSPACE.into(),
-                        record_id: "record".into(),
+                        document_id: "record".into(),
                         author: editor(),
                         replayed: false,
                         envelope: envelope.clone(),
@@ -578,7 +583,7 @@ mod tests {
                 RemoteDocument {
                     app_id: "notes".into(),
                     cluster_id: WORKSPACE.into(),
-                    record_id: "record".into(),
+                    document_id: "record".into(),
                     author: editor(),
                     replayed,
                     envelope,
@@ -616,13 +621,13 @@ mod tests {
     #[test]
     fn a_peer_written_part_is_announced_to_the_apps_open_window() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let part = ui::record::DocumentId::derived(
+        let part = ui::resource::DocumentId::derived(
             "messages",
-            &ui::record::DocumentId::workspace_default(),
+            &ui::resource::DocumentId::workspace_default(),
         )
         .part(0)
         .to_string();
-        let conversation = ui::record::DocumentId::for_tab(7).to_string();
+        let conversation = ui::resource::DocumentId::for_tab(7).to_string();
         let write = |record: &str, sequence: u64, title: &str| {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
@@ -644,7 +649,7 @@ mod tests {
         let _app = fanout.subscribe_workspaces(
             vec![WORKSPACE.into()],
             Box::new(move |event, origin| {
-                if let CollabEvent::RecordsArrived { records } = event {
+                if let CollabEvent::ResourcesArrived { records } = event {
                     sink.lock().unwrap().push((origin.clone(), records.clone()));
                 }
             }),
@@ -656,7 +661,7 @@ mod tests {
                 RemoteDocument {
                     app_id: "so.tilo.chat".into(),
                     cluster_id: WORKSPACE.into(),
-                    record_id: record.into(),
+                    document_id: record.into(),
                     author: editor(),
                     replayed: false,
                     envelope,

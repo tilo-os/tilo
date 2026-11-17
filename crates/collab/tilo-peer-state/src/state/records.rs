@@ -12,7 +12,7 @@ impl StatePeer {
         let NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -24,7 +24,7 @@ impl StatePeer {
         }
         let Some(document) = self.core.documents.get(&Route {
             app: app_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
         }) else {
             return false;
         };
@@ -42,7 +42,10 @@ impl StatePeer {
         };
         let Ok(collab_types::WholeDocumentPayload::Cleartext(DocumentMutation::Incremental(bytes))) =
             collab_types::validate_whole_document_payload_route(
-                app_id, cluster_id, record_id, envelope,
+                app_id,
+                cluster_id,
+                document_id,
+                envelope,
             )
         else {
             return false;
@@ -70,7 +73,7 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DocumentRow {
                 app_id: route.app.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
                 heads: entry
                     .doc
                     .base_heads()
@@ -179,7 +182,7 @@ impl StatePeer {
     /// channel's key holder decided that its writes are sealed, so a write
     /// in the clear is refused as a downgrade and no checkpoint of it is
     /// published in the clear. Whether the record is held.
-    pub fn seal_record(&mut self, app: &str, record: &str) -> bool {
+    pub fn seal_document(&mut self, app: &str, record: &str) -> bool {
         let route = Route {
             app: app.into(),
             record: record.into(),

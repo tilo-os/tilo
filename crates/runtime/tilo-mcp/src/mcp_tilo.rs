@@ -1319,16 +1319,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The task's read of the record `record` (`{app, record}`): its committed content, as the
-    /// broker decides the task may read it now ([`tilo_actions::remote::RecordReads`]), with no
+    /// broker decides the task may read it now ([`tilo_actions::remote::ResourceReads`]), with no
     /// app asked: `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`.
     async fn task_record(&self, record: &Value) -> Value {
         let (Some(app), Some(id)) = (record["app"].as_str(), record["record"].as_str()) else {
             return json!({"err": "a record read names its app and record"});
         };
-        let Some(reads) = self.host().record_reads() else {
-            return json!({"err": tilo_actions::remote::RECORD_READS_UNAVAILABLE});
+        let Some(reads) = self.host().resource_reads() else {
+            return json!({"err": tilo_actions::remote::RESOURCE_READS_UNAVAILABLE});
         };
-        let address = tilo_actions::remote::RecordAddress {
+        let address = tilo_actions::remote::ResourceAddress {
             app: app.to_owned(),
             record: id.to_owned(),
         };
@@ -1337,11 +1337,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // API's sessions share one runtime.
         let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
         match read {
-            Ok(Ok(tilo_actions::remote::RecordCopy::Document(bytes))) => {
+            Ok(Ok(tilo_actions::remote::ResourceCopy::Document(bytes))) => {
                 use base64::Engine as _;
                 json!({"ok": {"document": base64::engine::general_purpose::STANDARD.encode(bytes)}})
             }
-            Ok(Ok(tilo_actions::remote::RecordCopy::Absent)) => json!({"absent": true}),
+            Ok(Ok(tilo_actions::remote::ResourceCopy::Absent)) => json!({"absent": true}),
             Ok(Err(error)) => {
                 let name = app_names(&[app.to_owned()]).join("");
                 json!({"err": format!("{name}: {error}")})
@@ -1405,7 +1405,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .lock_recover()
                 .records
                 .insert(app.to_owned(), record.to_owned());
-            let change = tilo_actions::remote::RecordChange {
+            let change = tilo_actions::remote::ResourceChange {
                 app: app.to_owned(),
                 record: record.to_owned(),
                 resource: resource.to_owned(),
@@ -1459,8 +1459,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Send `change` to its record's origin as the task, decided there by the broker: the
     /// invocation's answer as the task's host reads it.
-    async fn task_change(&self, change: tilo_actions::remote::RecordChange) -> Value {
-        let Some(changes) = self.host().record_changes() else {
+    async fn task_change(&self, change: tilo_actions::remote::ResourceChange) -> Value {
+        let Some(changes) = self.host().resource_changes() else {
             return json!({"failed": "this desktop applies no task's changes at a record's origin"});
         };
         let caller = self.execution_caller();
@@ -1809,7 +1809,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let mut arguments = Map::new();
                 arguments.insert("steps".to_owned(), json!(1));
                 let answer = self
-                    .task_change(tilo_actions::remote::RecordChange {
+                    .task_change(tilo_actions::remote::ResourceChange {
                         app: at.app.clone(),
                         record,
                         resource: at.resource.clone(),
@@ -2261,7 +2261,7 @@ mod tests {
                             provider: peer.to_string(),
                             app_id: app.clone(),
                             workspace: "workspace".into(),
-                            record_id: String::new(),
+                            document_id: String::new(),
                             browsable: true,
                         })
                         .collect(),

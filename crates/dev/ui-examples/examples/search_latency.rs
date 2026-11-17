@@ -119,7 +119,7 @@ fn main() {
         let before = resident_bytes();
         let started = Instant::now();
         let catalog = SearchCatalog::new("Files");
-        if let Err(error) = catalog.replace_all_records(records) {
+        if let Err(error) = catalog.replace_all_resources(records) {
             eprintln!("could not build the catalogue: {error}");
             return;
         }

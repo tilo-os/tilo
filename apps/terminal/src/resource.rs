@@ -786,7 +786,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         if cx.mode().is_live()
             && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
-                cx.record_id(),
+                cx.document_id(),
                 cx.me(),
             )
         {
@@ -798,7 +798,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
                 cx.device(),
             )
         {
-            self.recent_in(crate::target::RecentTarget::in_record(record, device));
+            self.recent_in(crate::target::RecentTarget::in_resource(record, device));
         }
     }
 
@@ -879,7 +879,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         if cx.mode().is_live()
             && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
-                cx.record_id(),
+                cx.document_id(),
                 cx.me(),
             )
         {
@@ -891,7 +891,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
                 cx.device(),
             )
         {
-            self.recent_in(crate::target::RecentTarget::in_record(record, device));
+            self.recent_in(crate::target::RecentTarget::in_resource(record, device));
         }
     }
     #[cfg(feature = "samples")]

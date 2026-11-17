@@ -770,7 +770,7 @@ impl Store {
     ///
     /// # Errors
     /// The store could not be written, or the parent is not live.
-    pub fn record_key(
+    pub fn resource_key(
         &self,
         key: &GrantKey,
         name: &str,

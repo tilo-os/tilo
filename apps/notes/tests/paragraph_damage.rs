@@ -106,7 +106,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // or its completion would land in the typing measured below.
     tilo_test_env::wait_until("the edit's write lands", || {
         driver.settle_for_capture(ui::time::Duration::from_millis(100));
-        f.records.save_status(&checkout.id).ok() == Some(ui::record::RecordSaveStatus::Saved)
+        f.records.save_status(&checkout.id).ok() == Some(ui::resource::ResourceSaveStatus::Saved)
     });
     let started = ui::time::now();
     let settled = driver.settle_for_capture(tilo_test_env::hang_bound());
@@ -264,8 +264,8 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
 
 fn report_unsettled_scene(
     driver: &FrameHarness,
-    records: &ui::record::RecordStore,
-    record: &ui::record::DocumentId,
+    records: &ui::resource::ResourceStore,
+    record: &ui::resource::DocumentId,
     background: Color,
 ) {
     eprintln!(

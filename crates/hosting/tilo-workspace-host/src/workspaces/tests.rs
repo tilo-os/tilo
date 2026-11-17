@@ -17,7 +17,7 @@ pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
 mod host_address;
-pub(crate) mod large_record;
+pub(crate) mod large_document;
 #[cfg(feature = "agents")]
 mod lookup;
 
@@ -552,8 +552,8 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     // An app whose windows each show a resource of their own: one that keeps
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
-    assert!(!catalogue.get(app).unwrap().keeps_workspace_record());
-    let record = ui::record::DocumentId::workspace_default()
+    assert!(!catalogue.get(app).unwrap().keeps_workspace_resource());
+    let record = ui::resource::DocumentId::workspace_default()
         .as_str()
         .to_owned();
     assert!(
@@ -563,16 +563,16 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
             .unwrap()
     );
     let bytes = workspaces
-        .record_document(&created.workspace, app, &record)
+        .resource_document(&created.workspace, app, &record)
         .await
         .unwrap()
         .expect("the workspace holds its default record");
     let doc = automerge::AutoCommit::load(&bytes).unwrap();
-    let kind = catalogue.get(app).unwrap().record_kind.clone();
+    let kind = catalogue.get(app).unwrap().resource_type.clone();
     assert_eq!(
-        ui::record::identity(&doc),
-        Some(ui::record::DocumentCheckout::new(
-            ui::record::DocumentId::workspace_default(),
+        ui::resource::identity(&doc),
+        Some(ui::resource::DocumentCheckout::new(
+            ui::resource::DocumentId::workspace_default(),
             kind
         ))
     );
@@ -1040,7 +1040,7 @@ async fn assert_canonical_chat_preparation(
 
 /// The workspace's copy of `record` of `app`, when it has one.
 #[cfg(feature = "agents")]
-async fn workspace_record(
+async fn workspace_resource(
     workspaces: &Workspaces,
     workspace: &str,
     (app, record): (&str, &str),
@@ -1064,7 +1064,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     let workspaces = relay.workspaces();
     let created = workspaces.create("Shared desktop").await.unwrap();
     let workspace = created.workspace.as_str();
-    let read = || workspace_record(workspaces, workspace, DESKTOP);
+    let read = || workspace_resource(workspaces, workspace, DESKTOP);
     let text = |doc: &automerge::AutoCommit| {
         doc.get(ROOT, "desktop")
             .unwrap()
@@ -1080,7 +1080,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
             .is_none_or(|doc| doc.get(ROOT, "desktop").unwrap().is_none())
     );
     workspaces
-        .author_workspace_record(workspace, &cert, DESKTOP, |doc| {
+        .author_workspace_document(workspace, &cert, DESKTOP, |doc| {
             doc.put(ROOT, "desktop", "first").map_err(|e| e.to_string())
         })
         .await
@@ -1088,12 +1088,12 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     let mut first = read().await.expect("the record was started");
     assert_eq!(text(&first), "first");
     workspaces
-        .author_workspace_record(workspace, &cert, DESKTOP, |_| Ok(()))
+        .author_workspace_document(workspace, &cert, DESKTOP, |_| Ok(()))
         .await
         .unwrap();
     assert_eq!(read().await.unwrap().get_heads(), first.get_heads());
     workspaces
-        .author_workspace_record(workspace, &cert, DESKTOP, |doc| {
+        .author_workspace_document(workspace, &cert, DESKTOP, |doc| {
             doc.put(ROOT, "desktop", "second")
                 .map_err(|e| e.to_string())
         })
@@ -1111,7 +1111,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
     assert!(
         workspaces
-            .author_workspace_record::<()>(workspace, &different, DESKTOP, |_| {
+            .author_workspace_document::<()>(workspace, &different, DESKTOP, |_| {
                 panic!("another certificate must never reach the change")
             })
             .await
@@ -1549,7 +1549,7 @@ impl AskedForKeys {
     async fn retains_the_request(&self) -> bool {
         let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.relay
-            .workspace_records()
+            .workspace_documents()
             .retained(workspace_id)
             .await
             .is_ok_and(|retained| {
@@ -1779,7 +1779,7 @@ fn write_windows(
 ) {
     let identity = tilo_desktop_model::WorkspaceId::parse(workspace).unwrap();
     let mut workspace = tilo_desktop_model::Workspace::new(identity, "Workspace");
-    if let Some(held) = tilo_desktop_model::shared_record::read(&*doc, None) {
+    if let Some(held) = tilo_desktop_model::shared_resource::read(&*doc, None) {
         workspace.strips = held
             .tree
             .workspaces
@@ -1790,14 +1790,14 @@ fn write_windows(
     workspace.strips.extend(windows.iter().cloned());
     let person = hex::encode(member.user_public_key);
     let mine = |id: u64| tilo_desktop_model::peer_salt_of(id) == salt;
-    tilo_desktop_model::shared_record::device::write(
+    tilo_desktop_model::shared_resource::device::write(
         doc,
         identity,
         &workspace,
-        &tilo_desktop_model::shared_record::device::Writer {
+        &tilo_desktop_model::shared_resource::device::Writer {
             person: Some(&person),
             mine: &mine,
-            records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
+            records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
         },
     )
     .unwrap();
@@ -1805,7 +1805,7 @@ fn write_windows(
 
 /// The window titles `doc`'s layout holds.
 fn titles_in(doc: &automerge::AutoCommit) -> Vec<String> {
-    tilo_desktop_model::shared_record::read(doc, None)
+    tilo_desktop_model::shared_resource::read(doc, None)
         .map(|desktop| {
             desktop
                 .tree
@@ -2106,7 +2106,7 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
         peer: tilo_peer_state::peer_handle(member_key.verifying_key().as_bytes()),
         app_id: app.into(),
         cluster_id: workspace.clone(),
-        record_id: record.into(),
+        document_id: record.into(),
         envelope: Box::new(envelope),
         own: None,
     })
@@ -2214,7 +2214,7 @@ async fn windows_closed(
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-    tilo_desktop_model::shared_record::device::withdraw(&mut doc, &|id| {
+    tilo_desktop_model::shared_resource::device::withdraw(&mut doc, &|id| {
         tilo_desktop_model::peer_salt_of(id) == salt
     })
     .unwrap();

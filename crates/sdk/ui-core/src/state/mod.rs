@@ -631,7 +631,7 @@ mod tests {
             doc.commit();
             let mut frontier = DocumentFrontier::at_document(&mut doc);
             let mut own = WritingActors::default();
-            let authored = crate::record::author_writer(&writer, "alice");
+            let authored = crate::resource::author_writer(&writer, "alice");
             own.note(authored.clone());
             doc.set_actor(authored.clone());
             doc.put(ROOT, "named", "alice").unwrap();

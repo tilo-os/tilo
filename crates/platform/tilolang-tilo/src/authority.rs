@@ -346,7 +346,7 @@ impl Authority for TiloAuthority {
         }
         let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
         if let Some((record, person)) = &own_record {
-            cx = cx.with_own_record(record, person);
+            cx = cx.with_own_resource(record, person);
         }
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }

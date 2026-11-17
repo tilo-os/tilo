@@ -25,11 +25,11 @@ use tilo_actions::remote::{ActorPlace, Caller, ExecutionLease, RemoteActionTarge
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_live::presence::{Board, Device};
 use tilo_relay_protocol::host_voice::HostWords;
-use tilo_relay_protocol::live::LiveRecord;
+use tilo_relay_protocol::live::LiveResource;
 use tilo_session_client::presence::now_ms;
 use tilo_session_client::{Cmd, Link, Outbox, narration};
 
-use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
+use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, resource_of as route_of};
 use tilo_relay_protocol::WorkspaceId;
 
 /// How soon a run leaves once the session that is the run ended.
@@ -60,7 +60,7 @@ struct Voice {
     /// What it is doing now: the action it takes.
     activity: Option<String>,
     /// The record it works in, and what its last action left selected there.
-    focus: Option<LiveRecord>,
+    focus: Option<LiveResource>,
     selection: Option<ShellSelection>,
     /// The sequence of its narration on the live plane.
     narrated: u64,
@@ -275,8 +275,8 @@ impl Sessions {
 }
 
 /// The record `provider` names in `cluster`, as a run's presence names it.
-fn live(provider: &str, cluster: &str) -> Option<LiveRecord> {
-    crate::member::actions::record_of(provider, cluster).map(|route| LiveRecord {
+fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
+    crate::member::actions::resource_of(provider, cluster).map(|route| LiveResource {
         app: route.app_id,
         record: route.record,
     })

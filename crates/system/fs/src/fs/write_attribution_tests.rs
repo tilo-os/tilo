@@ -51,15 +51,15 @@ async fn session_leased_writes_carry_their_agent_in_history() {
     let folder = fs
         .create_empty_dir(crate::namespace::ROOT_INO, "Reports")
         .unwrap();
-    fs.record_version(folder, fs_protocol::FileProvenance::Create, None);
+    fs.document_version(folder, fs_protocol::FileProvenance::Create, None);
     let report = fs.create_empty_file(folder, "q3.txt").unwrap();
-    fs.record_version(report, fs_protocol::FileProvenance::Create, None);
+    fs.document_version(report, fs_protocol::FileProvenance::Create, None);
     fs.commit_content(report, b"written for Ada").unwrap();
     fs.rename_named(folder, "q3.txt", folder, "q4.txt").unwrap();
     let notes = fs
         .create_empty_file(crate::namespace::ROOT_INO, "notes.txt")
         .unwrap();
-    fs.record_version(notes, fs_protocol::FileProvenance::Create, None);
+    fs.document_version(notes, fs_protocol::FileProvenance::Create, None);
 
     let page = |ino| match fs
         .read_file_history(ino, FileHistoryReadQueryV1::Page { cursor: None })

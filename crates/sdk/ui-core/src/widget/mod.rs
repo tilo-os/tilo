@@ -2329,7 +2329,7 @@ pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
-    AppKind, TileContent, TileHost, hold_windows, record_unavailable_title, release_windows,
+    AppKind, TileContent, TileHost, hold_windows, release_windows, resource_unavailable_title,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;

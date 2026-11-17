@@ -18,7 +18,7 @@ use crate::apps::Seed;
 use crate::planner::{PlanContext, observation_within, readable};
 use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
-use crate::workspace_records::Reading;
+use crate::workspace_documents::Reading;
 
 impl AgentMember {
     /// The workspace's records the agent has not opened, those people have open
@@ -76,7 +76,7 @@ impl AgentMember {
         let mut open: Vec<(DocumentRoute, Vec<ActionDescriptor>)> = self
             .apps
             .iter()
-            .map(|(route, app)| (route.clone(), super::record_api::offered(route, app)))
+            .map(|(route, app)| (route.clone(), super::document_api::offered(route, app)))
             .collect();
         // The records the task names, by title or by app, are what it is
         // about, and only theirs are offered: a record open from an earlier
@@ -497,8 +497,8 @@ impl AgentMember {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String> {
-        if super::record_api::reads(route, address) {
-            return self.read_record(route);
+        if super::document_api::reads(route, address) {
+            return self.read_resource(route);
         }
         let app = self
             .apps
@@ -526,12 +526,12 @@ impl AgentMember {
 
 impl AgentMember {
     /// The open record `route` read through the record API, with what its app keeps beside it.
-    pub(super) fn read_record(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
+    pub(super) fn read_resource(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
         let replica = self
             .apps
             .get(route)
             .ok_or_else(|| "that document is not open".to_string())?;
-        super::record_api::read(
+        super::document_api::read(
             route,
             replica,
             crate::control::agent_id(&self.identity.delegation),

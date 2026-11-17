@@ -246,9 +246,9 @@ impl SessionFabric {
             // keeps — records — belongs to their own planes; this session routes none of it and
             // drops it rather than half-handling it.
             PersonalFabricPayload::Document { .. }
-            | PersonalFabricPayload::RecordContentWant { .. }
-            | PersonalFabricPayload::RecordContentPiece { .. }
-            | PersonalFabricPayload::RecordContentLacks { .. } => {}
+            | PersonalFabricPayload::DocumentContentWant { .. }
+            | PersonalFabricPayload::DocumentContentPiece { .. }
+            | PersonalFabricPayload::DocumentContentLacks { .. } => {}
         }
     }
 

@@ -8,7 +8,7 @@ struct OriginalCaller {
     expiry: u64,
 }
 
-type Fixture = crate::history_mode::owner::RecordOwnerFixture;
+type Fixture = crate::history_mode::owner::ResourceOwnerFixture;
 
 fn fixture(id: u64) -> Fixture {
     Fixture::in_workspace(id, "77777777-7777-4777-8777-777777777777")

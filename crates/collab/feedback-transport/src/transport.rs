@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use ui::permissions::{Acting, ActionKind, Answer, PermissionContext, Standing, TreePath};
-use ui::record::{DocumentId, RecordStore};
+use ui::resource::{DocumentId, ResourceStore};
 
 use tilo_feedback::{
     Destination, DurableStore, Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded,
@@ -298,7 +298,7 @@ pub trait ReceiptSigner {
 /// Projection is never a durability witness; `CanonicalDestination` checks
 /// current owner status around it and the signing service.
 pub struct CanonicalRecord {
-    pub records: RecordStore,
+    pub records: ResourceStore,
     pub record: DocumentId,
     pub project: ReportProjection,
     /// The owner's durable content store, where the workspace keeps what its
@@ -629,13 +629,13 @@ impl CanonicalReceiptSource for CanonicalRecord {
             .records
             .save_status(&self.record)
             .map_err(|_| Error::NotDurable)?
-            != ui::record::RecordSaveStatus::Saved
+            != ui::resource::ResourceSaveStatus::Saved
         {
             return Err(Error::NotDurable);
         }
         self.records
             .read(&self.record, |doc| {
-                let scope = ui::record::workspace_scope(doc);
+                let scope = ui::resource::workspace_scope(doc);
                 if scope
                     .as_deref()
                     .is_some_and(|scope| scope != submission.destination.workspace)

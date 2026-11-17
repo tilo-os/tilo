@@ -115,7 +115,7 @@ fn durable_fixture(
         host: fixture.state.invocation_host().unwrap(),
         peer_id: 71,
         app_id: fixture.route.app_id.clone(),
-        record_id: fixture.route.record_id.clone(),
+        document_id: fixture.route.document_id.clone(),
         resource: "workspace:atlas".into(),
         action: "open".into(),
         argument: None,
@@ -702,7 +702,7 @@ tilo_test_env::scenario! {
         );
         let mut bad = request.clone();
         bad.invocation = tilo_actions::InvocationId::new();
-        bad.record_id = "different-record".into();
+        bad.document_id = "different-record".into();
         assert!(
             fixture
                 .state
@@ -913,7 +913,7 @@ async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly(
                 peer_id: fixture.peer_id,
                 connection_id: fixture.peer_id,
                 verified_identity: caller.admitted.clone(),
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
@@ -963,7 +963,7 @@ async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_
             state: fixture.state.clone(), directories: fixture.directories.clone(),
             channel_id: fixture.route.channel_key(), peer_id: 999, connection_id: 999,
             verified_identity: caller.admitted.clone(),
-            record_kind: None,
+            resource_type: None,
             route_access: RouteAccess::Own,
             lease: None, _hold: None,
         });

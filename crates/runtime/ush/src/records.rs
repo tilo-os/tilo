@@ -200,7 +200,7 @@ impl Records {
         };
         self.confined(&[], &env.grants)?;
         let mut doc = store.new_document();
-        env.write_record(&mut doc)
+        env.write_resource(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
         doc.commit();
         store
@@ -265,7 +265,7 @@ impl Records {
         environment.files = tilo_environment::Environment::default().files;
         into.confined(&[], &environment.grants)?;
         environment
-            .write_record(&mut doc)
+            .write_resource(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
         doc.commit();
         target
@@ -667,7 +667,7 @@ mod tests {
                 .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
             let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
             let mut doc = doc_store.new_document();
-            old.write_record(&mut doc).unwrap();
+            old.write_resource(&mut doc).unwrap();
             doc.commit();
             doc_store.append(&mut doc).unwrap();
             drop(doc_store);

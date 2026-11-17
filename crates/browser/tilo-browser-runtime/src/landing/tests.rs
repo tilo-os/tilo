@@ -18,7 +18,7 @@ use durable_store::{DurableStore, MemoryStore, StorageKey};
 use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
-use ui::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordOwners};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners};
 
 use super::{Landed, answered, keep};
 
@@ -36,7 +36,7 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
     let definition = settings::definition();
     let app = definition.app_id();
     let memory = Rc::new(MemoryStore::queued());
-    let mut owners = RecordOwners::with_store(Rc::clone(&memory) as Rc<dyn DurableStore>);
+    let mut owners = ResourceOwners::with_store(Rc::clone(&memory) as Rc<dyn DurableStore>);
     // The page's store of Settings' records, which its workspace's host sends
     // only once a window asks for one.
     let stores = Rc::new(RefCell::new(Vec::new()));
@@ -47,13 +47,13 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
     // the host is asked for it and the window waits.
     let record = DocumentCheckout::new(
         DocumentId::workspace_default(),
-        definition.record_kind.clone(),
+        definition.resource_type.clone(),
     );
     assert!(matches!(
-        store.try_open_record(&record),
-        Err(RecordOpenError::Arriving)
+        store.try_open_resource(&record),
+        Err(ResourceOpenError::Arriving)
     ));
-    let wire = tilo_desktop_surface::host::records::wire_record(&record.id).to_owned();
+    let wire = tilo_desktop_surface::host::records::wire_document(&record.id).to_owned();
 
     // The host sends what it holds of it: a document with no change in it.
     let empty = AutoCommit::new().save();
@@ -67,21 +67,21 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
             &stores.borrow(),
             app,
             &wire,
-            ui::record::WorkspaceAnswer::HoldsNone
+            ui::resource::WorkspaceAnswer::HoldsNone
         ),
         "the empty landing answers the store that waited for it"
     );
     assert!(
         matches!(
-            store.try_open_record(&record),
-            Err(RecordOpenError::MissingRecord)
+            store.try_open_resource(&record),
+            Err(ResourceOpenError::MissingResource)
         ),
         "the window waits no longer: the record is new"
     );
 
     // The window builds Settings on it, as a new record, and opens the pane
     // the search result or the link named.
-    let context = HostContext::prepare_new_record(
+    let context = HostContext::prepare_new_resource(
         definition,
         HostContextInputs {
             records: store,

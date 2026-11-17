@@ -439,7 +439,7 @@ struct Here {
 }
 
 struct RunHistory {
-    record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+    record: ui::framework::PersonResource<crate::history::CommandHistory>,
     session: String,
     me: ui::tilo_resource::MemberId,
 }
@@ -2059,7 +2059,7 @@ impl TerminalWidget {
 
     pub(crate) fn remember_in(
         &mut self,
-        record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+        record: ui::framework::PersonResource<crate::history::CommandHistory>,
         session: String,
         me: ui::tilo_resource::MemberId,
     ) {

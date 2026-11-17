@@ -18,12 +18,12 @@ use std::sync::Arc;
 use chat::summons::{person_of, unanswered};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::Turn;
-use tilo_app::framework::WorkspaceRecord;
+use tilo_app::framework::WorkspaceResource;
 use tilo_broker_core::services::AgentTurn;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, MemberId, PermissionContext};
-use ui::record::DocumentId;
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::DocumentId;
+use ui::resource::workspace::WorkspaceResources;
 
 /// The app that keeps the conversations: its own record of a workspace.
 use ui::apps::CHAT as CHAT_OWNER;
@@ -61,10 +61,10 @@ struct Opened {
     /// The grants they were opened with: a workspace whose grants changed has them opened again, so
     /// its decisions follow.
     policy: WorkspacePolicy,
-    records: WorkspaceRecords,
-    chat: Option<WorkspaceRecord<chat::Chat>>,
+    records: WorkspaceResources,
+    chat: Option<WorkspaceResource<chat::Chat>>,
     /// The head of the messages' chain, and the part it holds here.
-    part: Option<(u64, WorkspaceRecord<chat::parts::ChatPart>)>,
+    part: Option<(u64, WorkspaceResource<chat::parts::ChatPart>)>,
 }
 
 impl Conversations {
@@ -114,12 +114,12 @@ impl Conversations {
     /// Chat's.
     fn workspace_agents(
         opened: &Opened,
-    ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
+    ) -> Option<WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
         let id = collab_types::workspace_document_id(AGENTS_KIND);
         let held = opened
             .records
-            .holds_record(AGENTS_OWNER, &id, AGENTS_KIND)
+            .holds_resource(AGENTS_OWNER, &id, AGENTS_KIND)
             .unwrap_or(false);
         if !held {
             return None;
@@ -130,7 +130,7 @@ impl Conversations {
         );
         let permissions = PermissionContext::from_standing(standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
+        WorkspaceResource::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
             AGENTS_OWNER,
             CHAT_APP,
@@ -299,8 +299,8 @@ impl Conversations {
         workspace: &WorkspaceFacts,
         person: &str,
     ) -> Option<(
-        WorkspaceRecord<chat::Chat>,
-        WorkspaceRecord<chat::parts::ChatPart>,
+        WorkspaceResource<chat::Chat>,
+        WorkspaceResource<chat::parts::ChatPart>,
     )> {
         let mut open = self.open.borrow_mut();
         let id = workspace.workspace.clone();
@@ -327,12 +327,12 @@ impl Conversations {
         if opened.chat.is_none() {
             let held = opened
                 .records
-                .holds_record(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
+                .holds_resource(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
                 .unwrap_or(false);
             if !held {
                 return None;
             }
-            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
+            opened.chat = WorkspaceResource::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
                 CHAT_APP,
@@ -349,7 +349,7 @@ impl Conversations {
             .into_iter()
             .max()?;
         if opened.part.as_ref().map(|(held, _)| *held) != Some(head) {
-            let part = WorkspaceRecord::<chat::parts::ChatPart>::open_at(
+            let part = WorkspaceResource::<chat::parts::ChatPart>::open_at(
                 &opened.records,
                 CHAT_OWNER,
                 chat::parts::part(head).as_str(),

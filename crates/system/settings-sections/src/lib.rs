@@ -2,7 +2,7 @@
 //! appearance, accessibility, input, power and the rest. Each is a section
 //! of the settings document and a record published as `settings:<kind>`
 //! with its field edits and verbs. The session keeps them
-//! ([`ui::framework::SettingsRecords`]), so the palette, agents and scripts
+//! ([`ui::framework::SettingsResources`]), so the palette, agents and scripts
 //! change them whether or not Settings is open; Settings' window is a view
 //! of them.
 

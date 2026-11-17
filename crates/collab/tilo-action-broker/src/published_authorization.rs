@@ -1,4 +1,4 @@
-//! The route record a published operation acts on: [`canonical_record`] is the one spelling of a
+//! The route record a published operation acts on: [`canonical_document`] is the one spelling of a
 //! live one, beside the admission `BrokerActor::admit_published_in` decides.
 
 #[cfg(test)]

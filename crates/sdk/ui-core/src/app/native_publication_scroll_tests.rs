@@ -211,7 +211,7 @@ fn scroll_probe_factory(
     _: crate::application::RestoreInput,
 ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|_| Ok(()))
+        .initialize_new_resource(|_| Ok(()))
         .map_err(crate::launch::LaunchError::Record)?;
     let root =
         SCROLL_FACTORY_ROOT.with_borrow_mut(|root| root.take().expect("prepared scroll root"));
@@ -263,7 +263,7 @@ fn bound_scroll_app(
     // the durable record a settled window shows.
     binding
         .records
-        .try_flush_record(&binding.checkout.id)
+        .try_flush_resource(&binding.checkout.id)
         .unwrap();
     binding
         .records
@@ -271,7 +271,7 @@ fn bound_scroll_app(
         .unwrap();
     assert_eq!(
         binding.records.save_status(&binding.checkout.id).unwrap(),
-        crate::record::RecordSaveStatus::Saved,
+        crate::resource::ResourceSaveStatus::Saved,
         "the bound fixture starts from a durable record"
     );
     let route = binding
@@ -447,8 +447,8 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .expect("a bound component")
             .component;
         assert_eq!(
-            component.sampled_record_save(),
-            Some(&crate::record::RecordSaveStatus::Saved)
+            component.sampled_resource_save(),
+            Some(&crate::resource::ResourceSaveStatus::Saved)
         );
         let after = binding
             .read_document(&fixture.app.state.doc, |doc, _| {

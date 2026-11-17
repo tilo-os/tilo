@@ -45,7 +45,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -170,20 +170,20 @@ async fn history(
     let mut out = String::from("retained:");
     for retained in host
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace_id)
         .await
         .unwrap_or_default()
     {
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
-            record_id,
+            document_id,
             envelope,
             ..
         }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body)
         else {
             continue;
         };
-        if record_id != route.record {
+        if document_id != route.record {
             continue;
         }
         let covers = collab_types::SealedCompaction::parse(&envelope)
@@ -208,7 +208,7 @@ async fn history(
         .relay
         .workspaces()
         .unwrap()
-        .record_history(workspace, &route.app_id, &route.record)
+        .document_history(workspace, &route.app_id, &route.record)
         .await
     {
         for write in held.writes {
@@ -233,20 +233,20 @@ async fn covered_twice(
     let mut floors = std::collections::HashMap::<[u8; 32], u64>::new();
     for retained in host
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace_id)
         .await
         .unwrap_or_default()
     {
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
-            record_id,
+            document_id,
             envelope,
             ..
         }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body)
         else {
             continue;
         };
-        if record_id != route.record {
+        if document_id != route.record {
             continue;
         }
         match collab_types::SealedCompaction::parse(&envelope) {
@@ -271,7 +271,7 @@ async fn unread(host: &TestHost, workspace: &str) -> Vec<((String, String), Stri
     host.relay
         .workspaces()
         .unwrap()
-        .whole_records(workspace, None)
+        .whole_documents(workspace, None)
         .await
         .unwrap()
         .unread
@@ -299,7 +299,7 @@ async fn reads_whole(
         let read =
             page.engine()
                 .record_update(&route.cluster_id, &route.app_id, &route.record, None);
-        if let Ok(RecordReading::Captured { bytes, .. }) = &read {
+        if let Ok(ResourceReading::Captured { bytes, .. }) = &read {
             let doc = AutoCommit::load(bytes).unwrap();
             let has: BTreeSet<String> = doc.keys(automerge::ROOT).collect();
             if keys.is_subset(&has) {
@@ -325,7 +325,7 @@ async fn reads_whole(
                 Instant::now() < deadline,
                 "{what}: the chat's {:?} never read whole: {:?}",
                 route.record,
-                read.map(|read| matches!(read, RecordReading::Pending))
+                read.map(|read| matches!(read, ResourceReading::Pending))
             );
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -363,7 +363,7 @@ async fn round(seed: u64) {
         record: String::new(),
     };
     let part = DocumentRoute {
-        record: neighbour_wire::record_part(CHAT_CHAIN, 0),
+        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
         ..chat.clone()
     };
     let page_host = |host: &TestHost| {
@@ -483,7 +483,7 @@ async fn round(seed: u64) {
             member.page.send(Cmd::OpenRoute(route.clone())).unwrap();
             member
                 .page
-                .send(Cmd::OpenRecordAt(lounge.workspace_id, route.clone()))
+                .send(Cmd::OpenDocumentAt(lounge.workspace_id, route.clone()))
                 .unwrap();
         }
     }
@@ -531,7 +531,7 @@ async fn round(seed: u64) {
     for route in [&chat, &part] {
         newcomer.send(Cmd::OpenRoute(route.clone())).unwrap();
         newcomer
-            .send(Cmd::OpenRecordAt(lounge.workspace_id, route.clone()))
+            .send(Cmd::OpenDocumentAt(lounge.workspace_id, route.clone()))
             .unwrap();
     }
     reads_whole(

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedRecord, resource};
+use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedResource, resource};
 
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
@@ -267,7 +267,7 @@ impl PersonAccounts {
     }
 }
 
-impl SharedRecord for PersonAccounts {
+impl SharedResource for PersonAccounts {
     const OWNER: &'static str = ACCOUNTS_OWNER;
     const EDITORS: &'static [&'static str] = ACCOUNTS_EDITORS;
 }

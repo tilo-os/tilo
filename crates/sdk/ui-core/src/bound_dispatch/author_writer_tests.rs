@@ -1,6 +1,6 @@
 use super::*;
 use crate::portable_storage::PortableStorage;
-use crate::record::{DocumentId, RecordOwners, ResourceType, author_writer};
+use crate::resource::{DocumentId, ResourceOwners, ResourceType, author_writer};
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 
@@ -12,11 +12,11 @@ tilo_test_env::scenario! {
     phase publication_retains_original_typed_identity_not_a_supplied_alias;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = RecordOwners::portable(cache)
+        let records = ResourceOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) = mount(&records, &checkout, "You", 1, true);
         let publication = BoundPublication::default();
         let mut resource = tilo_actions::ResourceSpec::new("app:so.tilo.chat", "store.app", "Chat");
@@ -72,11 +72,11 @@ tilo_test_env::scenario! {
         use tilo_actions::ActionInvoker;
 
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = RecordOwners::portable(cache)
+        let records = ResourceOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         binding.author = MemberId::person("agent");
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
@@ -85,7 +85,7 @@ tilo_test_env::scenario! {
         assert_eq!(executing_host_person(), None);
         assert!(!host_person_invocation_permitted());
         binding
-            .with_record_frame(&mut outer, false, |doc, _| {
+            .with_resource_frame(&mut outer, false, |doc, _| {
                 assert_eq!(executing_host_person(), Some(MemberId::person("person")));
                 assert!(host_person_invocation_permitted());
                 {
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
                 let mut nested = binding.clone();
                 nested.host_person = MemberId::person("other-person");
                 nested
-                    .with_record_frame(doc, false, |_, _| {
+                    .with_resource_frame(doc, false, |_, _| {
                         assert_eq!(executing_host_person(), Some(MemberId::person("other-person")));
                     })
                     .unwrap();
@@ -110,7 +110,7 @@ tilo_test_env::scenario! {
         assert!(!host_person_invocation_permitted());
 
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = binding.with_record_frame(&mut outer, false, |_, _| {
+            let _ = binding.with_resource_frame(&mut outer, false, |_, _| {
                 assert_eq!(executing_host_person(), Some(MemberId::person("person")));
                 panic!("callback unwound");
             });
@@ -127,25 +127,25 @@ tilo_test_env::scenario! {
         use tilo_resource::ActionCx;
 
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = RecordOwners::portable(cache)
+        let records = ResourceOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
             Some(ActionInvoker::person("untrusted-label"));
         let mut outer = AutoCommit::new();
         assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
         binding
-            .with_record_frame(&mut outer, false, |doc, _| {
+            .with_resource_frame(&mut outer, false, |doc, _| {
                 assert_eq!(
                     ActionCx::for_apply(doc, b"preview", 0).author(),
                     Some(&MemberId::person("person"))
                 );
                 let _invoker = InvokerScope::enter(ActionInvoker::person("guest"));
                 binding
-                    .with_record_frame(doc, false, |doc, _| {
+                    .with_resource_frame(doc, false, |doc, _| {
                         assert_eq!(
                             ActionCx::for_apply(doc, b"preview", 0).author(),
                             Some(&MemberId::person("guest"))
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = binding.with_record_frame(&mut outer, false, |doc, _| {
+            let _ = binding.with_resource_frame(&mut outer, false, |doc, _| {
                 assert_eq!(
                     ActionCx::for_apply(doc, b"preview", 0).author(),
                     Some(&MemberId::person("person"))
@@ -178,10 +178,10 @@ tilo_test_env::scenario! {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         let writer = {
-            let records = RecordOwners::portable(cache.clone())
+            let records = ResourceOwners::portable(cache.clone())
                 .open(APP, "workspace")
                 .unwrap();
-            records.create_record(&checkout).unwrap();
+            records.create_resource(&checkout).unwrap();
             let writer = records
                 .read(&checkout.id, |doc| doc.get_actor().clone())
                 .unwrap();
@@ -240,10 +240,10 @@ tilo_test_env::scenario! {
             writer
         };
 
-        let records = RecordOwners::portable(cache)
+        let records = ResourceOwners::portable(cache)
             .open(APP, "workspace")
             .unwrap();
-        records.open_existing_record_checked(&checkout).unwrap();
+        records.open_existing_resource_checked(&checkout).unwrap();
         let reopened_writer = records
             .read(&checkout.id, |doc| doc.get_actor().clone())
             .unwrap();
@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
 
 /// A mount of `checkout` for `author`, as `HostContext::callback_binding` makes one.
 pub(super) fn mount(
-    records: &RecordStore,
+    records: &ResourceStore,
     checkout: &DocumentCheckout,
     author: &str,
     instance: u64,
@@ -298,7 +298,7 @@ pub(super) fn mount(
 }
 
 fn writers_of(
-    records: &RecordStore,
+    records: &ResourceStore,
     id: &DocumentId,
     write: impl FnOnce(),
 ) -> Vec<automerge::ActorId> {

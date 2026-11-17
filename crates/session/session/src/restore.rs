@@ -491,7 +491,7 @@ mod tests {
     /// written beside it, is asked for as before.
     #[test]
     fn a_window_bound_to_the_device_that_opened_it_is_not_asked_for_on_another() {
-        use tilo_desktop_model::shared_record::device;
+        use tilo_desktop_model::shared_resource::device;
 
         const NOTES: u64 = 4001;
         const BROWSER: u64 = 4002;

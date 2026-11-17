@@ -353,7 +353,7 @@ pub(super) fn plane_of(envelope: &Envelope) -> WorkspaceOperation {
 
 /// The channel of the record `envelope` changes, or `None` for a frame that
 /// belongs to no record (the workspace's own document, its governance).
-pub(super) fn record_of(envelope: &Envelope) -> Option<[u8; 32]> {
+pub(super) fn resource_of(envelope: &Envelope) -> Option<[u8; 32]> {
     let Envelope::Delta { delta, .. } = envelope else {
         return None;
     };
@@ -445,7 +445,7 @@ pub(super) async fn enqueue_state_inner(
         stage_fresh_checkpoint(&store, &envelope).await
     };
     // The person whose own record the delta changes, retained or not.
-    let record_owner = store.frame_owner(delta);
+    let resource_owner = store.frame_owner(delta);
     drop(store);
     trace_native_publication("persistence_admission_wait", &envelope, None);
     let admission_trace = StateAdmissionTrace::new(&envelope);
@@ -456,8 +456,8 @@ pub(super) async fn enqueue_state_inner(
         source.clone(),
         author,
         delta_len,
-        record_of(&envelope),
-        record_owner,
+        resource_of(&envelope),
+        resource_owner,
     );
     let mut turn = StateTurn {
         envelope: Some(envelope),

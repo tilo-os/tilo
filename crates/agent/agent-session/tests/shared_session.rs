@@ -276,7 +276,7 @@ async fn receive_until(
             "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}\nagent channels: {}",
             body(page),
             agent.control().info().tasks,
-            agent.known_records(),
+            agent.known_resources(),
             agent.app(route).map(body),
             agent.peer().status().key_state,
         );
@@ -414,7 +414,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: WORKSPACE.into(),
-        record: page.wire_record().to_owned(),
+        record: page.wire_document().to_owned(),
     };
     browser
         .write(route.clone(), &page.take_mutation().unwrap().unwrap())
@@ -844,7 +844,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // Every edit the host carried, the page's and the agent's, is sealed.
     let retained = host
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace())
         .await
         .unwrap();

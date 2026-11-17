@@ -32,24 +32,24 @@ pub const SHARE_LINK_ACTION: &str = "share-link";
 /// device that holds it whoever has it open: `record:<app id>:<record id>`
 /// (a host serving its workspaces' records answers under these). Such a
 /// provider is the app's record, live, as a window of the app is.
-pub const RECORD_PROVIDER: &str = "record";
+pub const RESOURCE_PROVIDER: &str = "record";
 
-/// Whether `provider` names one record of a workspace ([`RECORD_PROVIDER`]).
+/// Whether `provider` names one record of a workspace ([`RESOURCE_PROVIDER`]).
 #[must_use]
-pub fn is_record_provider(provider: &str) -> bool {
+pub fn is_resource_provider(provider: &str) -> bool {
     provider
-        .strip_prefix(RECORD_PROVIDER)
+        .strip_prefix(RESOURCE_PROVIDER)
         .is_some_and(|rest| rest.starts_with(':'))
 }
 
 /// The app and record ids `provider` names, when it names one record of a
-/// workspace ([`RECORD_PROVIDER`]): `record:<app id>:<record id>`. App ids
+/// workspace ([`RESOURCE_PROVIDER`]): `record:<app id>:<record id>`. App ids
 /// hold no colon; a record id may (`uuid:…`), and an empty one is the app's
 /// own first record.
 #[must_use]
-pub fn record_parts(provider: &str) -> Option<(&str, &str)> {
+pub fn resource_parts(provider: &str) -> Option<(&str, &str)> {
     provider
-        .strip_prefix(RECORD_PROVIDER)?
+        .strip_prefix(RESOURCE_PROVIDER)?
         .strip_prefix(':')?
         .split_once(':')
         .filter(|(app, _)| !app.is_empty())
@@ -70,18 +70,18 @@ mod tests {
     #[test]
     fn a_record_provider_names_its_app_and_record() {
         assert_eq!(
-            record_parts("record:so.tilo.notes:uuid:7"),
+            resource_parts("record:so.tilo.notes:uuid:7"),
             Some(("so.tilo.notes", "uuid:7"))
         );
         assert_eq!(
-            record_parts("record:so.tilo.chat:"),
+            resource_parts("record:so.tilo.chat:"),
             Some(("so.tilo.chat", ""))
         );
-        assert_eq!(record_parts("record:so.tilo.chat"), None);
-        assert_eq!(record_parts("record::main"), None);
-        assert_eq!(record_parts("workspace:6b3f9a10"), None);
-        assert_eq!(record_parts("4711"), None);
-        assert!(!is_record_provider("4711"));
-        assert!(is_record_provider("record:so.tilo.chat:"));
+        assert_eq!(resource_parts("record:so.tilo.chat"), None);
+        assert_eq!(resource_parts("record::main"), None);
+        assert_eq!(resource_parts("workspace:6b3f9a10"), None);
+        assert_eq!(resource_parts("4711"), None);
+        assert!(!is_resource_provider("4711"));
+        assert!(is_resource_provider("record:so.tilo.chat:"));
     }
 }

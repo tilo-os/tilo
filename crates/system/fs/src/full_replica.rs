@@ -243,7 +243,7 @@ pub async fn hydrate_full_workspace(
     let mut status = FullReplicaStatus::syncing();
     let root_scan = namespace
         .lock_recover()
-        .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN);
+        .live_document_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN);
     let roots = match root_scan {
         Ok(roots) => roots,
         Err(error) => return status.failed(&error),
@@ -350,7 +350,7 @@ pub async fn prune_obsolete_workspace_content(
     let (roots, generation) = {
         let mut namespace = namespace.lock_recover();
         let roots =
-            namespace.live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
+            namespace.live_document_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
         (roots, namespace.heads())
     };
     let mut live = HashSet::new();

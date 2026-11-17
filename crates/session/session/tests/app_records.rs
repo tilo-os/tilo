@@ -111,7 +111,7 @@ fn tasks_record(
     holds: impl Fn(&[u8]) -> bool,
 ) -> Vec<u8> {
     wait_for(session, what, |session| {
-        let bytes = session.read_record(workspace, TASKS, "").ok().flatten()?;
+        let bytes = session.read_resource(workspace, TASKS, "").ok().flatten()?;
         holds(&bytes).then_some(bytes)
     })
 }

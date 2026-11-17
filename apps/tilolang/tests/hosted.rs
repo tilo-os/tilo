@@ -765,7 +765,7 @@ impl Session {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: Some(spec.person.clone()),
         }));
         // What arrives while the route joins, the member list among it, the host takes once the

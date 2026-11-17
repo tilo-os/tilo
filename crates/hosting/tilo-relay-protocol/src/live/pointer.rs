@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::LiveRecord;
+use super::LiveResource;
 
 /// What a pointer is over, and where within it, in logical pixels.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub enum LivePointer {
     /// Over the window showing `record`, `at` from the top-left corner of
     /// its content.
     Window {
-        record: LiveRecord,
+        record: LiveResource,
         /// From the window content's top-left corner.
         at: [f32; 2],
     },
@@ -35,7 +35,7 @@ pub enum LivePointer {
     /// by `at`. Right of a window, `edge` is `[1, y]` and `at` `[dx, 0]`:
     /// a narrower window elsewhere keeps the pointer as far right of it.
     Beside {
-        record: LiveRecord,
+        record: LiveResource,
         /// The window's point nearest to the pointer, as fractions of its
         /// content's size.
         edge: [f32; 2],
@@ -107,7 +107,7 @@ pub struct ShownStrip {
 pub struct PointerLayout {
     /// Each shown window's content area, `[x0, y0, x1, y1]`, by the record
     /// it shows, topmost first.
-    pub windows: Vec<(LiveRecord, [f32; 4])>,
+    pub windows: Vec<(LiveResource, [f32; 4])>,
     pub strip: Option<ShownStrip>,
 }
 
@@ -210,15 +210,15 @@ impl PointerLayout {
 mod tests {
     use super::*;
 
-    fn notes() -> LiveRecord {
-        LiveRecord {
+    fn notes() -> LiveResource {
+        LiveResource {
             app: "so.tilo.notes".into(),
             record: "welcome".into(),
         }
     }
 
-    fn chat() -> LiveRecord {
-        LiveRecord {
+    fn chat() -> LiveResource {
+        LiveResource {
             app: "so.tilo.chat".into(),
             record: String::new(),
         }
@@ -318,7 +318,7 @@ mod tests {
 
         phase what_a_viewer_does_not_show_is_not_placed;
         {
-            let sheets = LiveRecord {
+            let sheets = LiveResource {
                 app: "so.tilo.sheets".into(),
                 record: String::new(),
             };

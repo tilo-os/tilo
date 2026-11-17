@@ -19,12 +19,12 @@
 //! heads, [`Holding`]) is answered with only the changes since, from the
 //! same document a whole read hands out: the committed view's own, or a
 //! sealed record's history opened onto what the reader kept of it
-//! ([`KeptRecord`]), so a read opens only the writes sealed since the last.
+//! ([`KeptDocument`]), so a read opens only the writes sealed since the last.
 //! Whatever only a whole read can decide (a base the document does not
 //! hold, changes over the limit) is answered whole.
 use crate::PeerDocumentReadError;
 use crate::owner::NativeCommittedView;
-use crate::state::KeptRecord;
+use crate::state::KeptDocument;
 use automerge::Automerge;
 use web_time::SystemTime;
 
@@ -94,7 +94,7 @@ pub struct Holding<'a> {
 /// (`open`) onto what this reader opened of it before (`kept`).
 pub struct History<'a> {
     pub open: HistoryOpener<'a>,
-    pub kept: &'a mut KeptRecord,
+    pub kept: &'a mut KeptDocument,
 }
 
 fn sorted(heads: &[automerge::ChangeHash]) -> Vec<[u8; 32]> {
@@ -232,7 +232,7 @@ impl NativeCommittedView {
             self.peer.check_document_read(reader, app, record, now)?;
             return Ok(DocumentRead::CheckpointPending);
         }
-        let mut unkept = KeptRecord::default();
+        let mut unkept = KeptDocument::default();
         let (open, kept) = match history {
             Some(History { open, kept }) => (Some(open), kept),
             None => (None, &mut unkept),
@@ -266,7 +266,7 @@ impl NativeCommittedView {
                         now,
                         maximum,
                         None,
-                        &mut KeptRecord::default(),
+                        &mut KeptDocument::default(),
                     )
                     .map_err(|error| refusal(app, record, error))?,
                 maximum,

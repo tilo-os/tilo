@@ -1,7 +1,7 @@
 fn harness() -> (
     ui::headless::FrameHarness,
-    ui::record::RecordStore,
-    ui::record::DocumentCheckout,
+    ui::resource::ResourceStore,
+    ui::resource::DocumentCheckout,
 ) {
     use std::rc::Rc;
     use ui::application::{
@@ -9,7 +9,7 @@ fn harness() -> (
     };
     let cache = ui::portable_storage::PortableStorage::new("writer-test", "device").unwrap();
     let definition = word_processor::definition();
-    let records = ui::record::RecordOwners::portable(cache.clone())
+    let records = ui::resource::ResourceOwners::portable(cache.clone())
         .open(definition.app_id(), "w1")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "w1").unwrap());

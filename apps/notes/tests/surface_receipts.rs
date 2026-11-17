@@ -6,7 +6,7 @@
 //! a note's body.
 
 use collab_types::claim::{ChangeClaim, ClaimedAction};
-use collab_types::receipt::{Receipt, Record, check_claims};
+use collab_types::receipt::{Receipt, WrittenDocument, check_claims};
 use collab_types::surface::{KindSurface, SurfaceFile};
 use notes::NotesShell;
 use serde_json::{Value, json};
@@ -53,10 +53,10 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
         .resource(Some(&kind))
         .unwrap_or_else(|| panic!("the committed surface does not describe `{kind}`"))
         .clone();
-    let record = Record {
+    let record = WrittenDocument {
         workspace: "workspace",
         app: &app_id,
-        record: "record",
+        document: "record",
     };
     let receipt = check_claims(
         std::slice::from_ref(&claim),
@@ -143,10 +143,10 @@ fn receipts_since(
                     Err(format!("the surface does not describe `{kind}`")),
                 );
             };
-            let record = Record {
+            let record = WrittenDocument {
                 workspace: "workspace",
                 app: "so.tilo.notes",
-                record: "record",
+                document: "record",
             };
             let receipt = check_claims(
                 std::slice::from_ref(&claim),

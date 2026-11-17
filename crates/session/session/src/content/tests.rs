@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::record_content::{ContentSources, ContentState};
+use tilo_action_broker::document_content::{ContentSources, ContentState};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
@@ -97,8 +97,8 @@ impl Device {
                     assert!(
                         matches!(
                             msg,
-                            NeighbourMsg::RecordContentPiece { .. }
-                                | NeighbourMsg::RecordContentLacks { .. }
+                            NeighbourMsg::DocumentContentPiece { .. }
+                                | NeighbourMsg::DocumentContentLacks { .. }
                         ),
                         "only an answer travels to the device that asked: {msg:?}"
                     );

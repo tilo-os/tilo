@@ -157,7 +157,7 @@ pub enum PagePoll {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchCatalogStats {
     pub records: usize,
-    pub body_records: usize,
+    pub body_resources: usize,
     pub generation: u64,
 }
 
@@ -250,7 +250,7 @@ struct SearchCatalogInner {
     index: SearchIndex,
     entries: BTreeMap<u64, CatalogEntry>,
     ordinals: HashMap<Arc<str>, u64>,
-    body_records: usize,
+    body_resources: usize,
     generation: u64,
     next_browse_ordinal: u64,
 }
@@ -279,7 +279,7 @@ impl SearchCatalogInner {
         }
         if let Some(body) = &body {
             document = document.body(Arc::new(BodyIndex(Arc::clone(body.source()))));
-            self.body_records = self.body_records.saturating_add(1);
+            self.body_resources = self.body_resources.saturating_add(1);
         }
         self.index.upsert(document);
         self.ordinals.insert(resource_id, ordinal);
@@ -291,7 +291,7 @@ impl SearchCatalogInner {
         if let Some(entry) = self.entries.remove(&ordinal)
             && entry.body.is_some()
         {
-            self.body_records = self.body_records.saturating_sub(1);
+            self.body_resources = self.body_resources.saturating_sub(1);
         }
         self.index.remove(ordinal);
         Some(ordinal)
@@ -404,7 +404,7 @@ impl SearchCatalog {
             index: inner.index.detached(),
             entries: inner.entries.clone(),
             ordinals: inner.ordinals.clone(),
-            body_records: inner.body_records,
+            body_resources: inner.body_resources,
             generation: inner.generation,
             next_browse_ordinal: inner.next_browse_ordinal,
         };
@@ -420,7 +420,7 @@ impl SearchCatalog {
     /// [`SearchCatalogError::ResourceAddressMismatch`] for a record whose hit does not
     /// address its own resource, and [`SearchCatalogError::DuplicateResourceId`] when two
     /// records name the same resource.
-    pub fn replace_all_records(
+    pub fn replace_all_resources(
         &self,
         records: impl IntoIterator<Item = SearchRecord>,
     ) -> Result<(), SearchCatalogError> {
@@ -451,10 +451,10 @@ impl SearchCatalog {
     }
 
     /// Make `records`, in their order, the whole catalogue, as
-    /// [`Self::replace_all_records`] would, indexing only the records that are new,
-    /// changed or moved, and dropping those absent. As [`Self::replace_all_records`]; the
+    /// [`Self::replace_all_resources`] would, indexing only the records that are new,
+    /// changed or moved, and dropping those absent. As [`Self::replace_all_resources`]; the
     /// catalogue is then unchanged.
-    pub fn sync_records(
+    pub fn sync_resources(
         &self,
         records: impl IntoIterator<Item = SearchRecord>,
     ) -> Result<bool, SearchCatalogError> {
@@ -484,7 +484,7 @@ impl SearchCatalog {
     /// [`SearchCatalogError::ResourceAddressMismatch`] for a hit that does not address
     /// the record's own resource, and the exhaustion errors when the catalogue's
     /// generation or browse identity runs out.
-    pub fn upsert_record(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
+    pub fn upsert_resource(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
         validate(&record)?;
         let mut inner = self.inner.write_recover();
         let existing = inner.ordinals.get(record.resource_id.as_str()).copied();
@@ -529,7 +529,7 @@ impl SearchCatalog {
         let inner = self.inner.read_recover();
         let stats = SearchCatalogStats {
             records: inner.entries.len(),
-            body_records: inner.body_records,
+            body_resources: inner.body_resources,
             generation: inner.generation,
         };
         drop(inner);
@@ -795,7 +795,7 @@ impl OpenResourceSearch {
             }
         }
         let catalog = SearchCatalog::new("Open resources");
-        if let Err(error) = catalog.replace_all_records(listed.values().filter_map(|resource| {
+        if let Err(error) = catalog.replace_all_resources(listed.values().filter_map(|resource| {
             let action = resource
                 .open_action()
                 .or_else(|| resource.actions.first())?;
@@ -1123,7 +1123,7 @@ mod tests {
     use super::*;
     use crate::search::{FieldWeight, SearchBody, SearchBodySource};
 
-    fn text_record(
+    fn text_resource(
         resource_id: impl Into<String>,
         text: impl Into<String>,
         result: SearchResult,
@@ -1134,7 +1134,7 @@ mod tests {
     fn catalog_rows(count: usize) -> SearchCatalog {
         let catalog = SearchCatalog::new("Rows");
         catalog
-            .replace_all_records((0..count).map(|index| {
+            .replace_all_resources((0..count).map(|index| {
                 let id = format!("row:{index}");
                 // Odd rows hold every 4-gram of `abcde` but not the word itself, so they
                 // are candidates for it that fail verification.
@@ -1145,7 +1145,7 @@ mod tests {
                 };
                 let result = SearchResult::new("Rows", text, &id)
                     .with_action_address(ActionAddress::new(id.as_str(), "open"));
-                text_record(id, text, result)
+                text_resource(id, text, result)
             }))
             .unwrap();
         catalog
@@ -1463,7 +1463,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:munich",
                     "MÜNCHEN 夏",
                     catalog_hit("document:munich", "München"),
@@ -1484,7 +1484,7 @@ mod tests {
             for index in 0..32 {
                 let id = format!("document:{index:06}");
                 catalog
-                    .upsert_record(text_record(
+                    .upsert_resource(text_resource(
                         &id,
                         format!("document {query}"),
                         catalog_hit(&id, &id),
@@ -1517,7 +1517,7 @@ mod tests {
                     "row"
                 };
                 catalog
-                    .upsert_record(text_record(
+                    .upsert_resource(text_resource(
                         &id,
                         text,
                         catalog_hit(&id, format!("Document {index}")),
@@ -1541,7 +1541,7 @@ mod tests {
             for index in 0..1_000 {
                 let id = format!("document:a{index:04}");
                 catalog
-                    .upsert_record(text_record(
+                    .upsert_resource(text_resource(
                         &id,
                         "abc c d",
                         catalog_hit(&id, "False candidate"),
@@ -1549,7 +1549,7 @@ mod tests {
                     .unwrap();
             }
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:z-target",
                     "the exact abc d resource",
                     catalog_hit("document:z-target", "Target"),
@@ -1579,7 +1579,7 @@ mod tests {
                 let id = format!("document:{index:04}");
                 assert!(
                     catalog
-                        .upsert_record(text_record(
+                        .upsert_resource(text_resource(
                             &id,
                             "common",
                             catalog_hit(&id, format!("Document {index}"))
@@ -1602,7 +1602,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:a",
                     "old phrase",
                     catalog_hit("document:a", "A"),
@@ -1610,7 +1610,7 @@ mod tests {
                 .unwrap();
             let seeded = catalog.stats();
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:a",
                     "old phrase",
                     catalog_hit("document:a", "A"),
@@ -1623,7 +1623,7 @@ mod tests {
             );
             let provider = catalog.clone();
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:a",
                     "new phrase",
                     catalog_hit("document:a", "A"),
@@ -1641,7 +1641,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             assert_eq!(
-                catalog.upsert_record(text_record(
+                catalog.upsert_resource(text_resource(
                     "document:a",
                     "A",
                     SearchResult::new("Documents", "A", "legacy-open")
@@ -1649,7 +1649,7 @@ mod tests {
                 Err(SearchCatalogError::NonCanonicalResult)
             );
             assert_eq!(
-                catalog.upsert_record(text_record(
+                catalog.upsert_resource(text_resource(
                     "document:a",
                     "A",
                     catalog_hit("document:different", "A")
@@ -1662,7 +1662,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert_record(text_record(
+                .upsert_resource(text_resource(
                     "document:a",
                     "old phrase",
                     catalog_hit("document:a", "A"),
@@ -1671,7 +1671,7 @@ mod tests {
             catalog.inner.write_recover().generation = u64::MAX;
 
             assert_eq!(
-                catalog.upsert_record(text_record(
+                catalog.upsert_resource(text_resource(
                     "document:a",
                     "new phrase",
                     catalog_hit("document:a", "A")
@@ -1691,7 +1691,7 @@ mod tests {
             catalog.inner.write_recover().next_browse_ordinal = u64::MAX;
 
             assert_eq!(
-                catalog.upsert_record(text_record(
+                catalog.upsert_resource(text_resource(
                     "document:a",
                     "phrase",
                     catalog_hit("document:a", "A")
@@ -1730,7 +1730,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([
+                .replace_all_resources([
                     SearchRecord::new("document:a", catalog_hit("document:a", "Travel notes"))
                         .field("Travel notes", FieldWeight::TITLE)
                         .field("an atlas of old roads", FieldWeight::BODY),
@@ -1759,7 +1759,7 @@ mod tests {
             let catalog = SearchCatalog::new("Documents");
             for (id, text) in [("document:1", "xx atlas"), ("document:2", "atlas")] {
                 catalog
-                    .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                    .upsert_resource(text_resource(id, text, catalog_hit(id, text)))
                     .unwrap();
             }
             let ids: Vec<_> = catalog
@@ -1775,7 +1775,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([
+                .replace_all_resources([
                     record("document:a", "Crème brûlée"),
                     record("document:b", "Ｔｏｋｙｏ"),
                 ])
@@ -1792,7 +1792,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([
+                .replace_all_resources([
                     record("document:a", "東京都の地図"),
                     record("document:b", "大阪の地図"),
                 ])
@@ -1811,7 +1811,7 @@ mod tests {
                 ("document:2", "contains-needle-here"),
             ] {
                 catalog
-                    .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                    .upsert_resource(text_resource(id, text, catalog_hit(id, text)))
                     .unwrap();
             }
             let page = catalog.query_page("needle", None, 8, 8);
@@ -1826,7 +1826,7 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records((0..500).map(|index| {
+                .replace_all_resources((0..500).map(|index| {
                     let title = if index == 499 {
                         "alpha rare-token omega".to_string()
                     } else {
@@ -1872,7 +1872,7 @@ mod tests {
         }
     }
 
-    fn body_record(index: usize, paragraphs: Vec<String>) -> SearchRecord {
+    fn body_resource(index: usize, paragraphs: Vec<String>) -> SearchRecord {
         let id = format!("document:{index:05}");
         let body = SearchBody::new(Arc::new(Paragraphs {
             resource: id.clone(),
@@ -1890,8 +1890,8 @@ mod tests {
                 |corpus| {
                     let catalog = SearchCatalog::new("Documents");
                     catalog
-                        .replace_all_records(corpus.map(|row| {
-                            body_record(
+                        .replace_all_resources(corpus.map(|row| {
+                            body_resource(
                                 row.index,
                                 vec!["An ordinary opening paragraph.".to_string(), row.text],
                             )
@@ -1903,18 +1903,18 @@ mod tests {
             );
             assert_eq!(hit.title, "Paragraph 1", "the hit names the paragraph");
             let stats = catalog.stats();
-            assert_eq!(stats.body_records, 3_000);
+            assert_eq!(stats.body_resources, 3_000);
         }
 
         phase body_hits_follow_field_hits_and_skip_records_already_found;
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([
+                .replace_all_resources([
                     record("document:title", "Harbour lights").body(SearchBody::new(Arc::new(
                         "harbour lights again".to_string(),
                     ))),
-                    body_record(1, vec!["the harbour lights at dusk".to_string()]),
+                    body_resource(1, vec!["the harbour lights at dusk".to_string()]),
                 ])
                 .unwrap();
             let (hits, _) = drain(&catalog, "harbour lights", 1);
@@ -1928,7 +1928,7 @@ mod tests {
             prose.push_str("violet-tail");
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([body_record(0, vec![prose.clone()])])
+                .replace_all_resources([body_resource(0, vec![prose.clone()])])
                 .unwrap();
             let (hits, inspected) = drain(&catalog, "violet-tail", 4);
             assert_eq!(hits.len(), 1);
@@ -1939,8 +1939,8 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records(
-                    (0..40).map(|index| body_record(index, vec!["cat dog g ca".to_string()])),
+                .replace_all_resources(
+                    (0..40).map(|index| body_resource(index, vec!["cat dog g ca".to_string()])),
                 )
                 .unwrap();
             let (hits, inspected) = drain(&catalog, "dog cat", 7);
@@ -1953,15 +1953,15 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records(
-                    (0..8).map(|index| body_record(index, vec!["shared words".to_string()])),
+                .replace_all_resources(
+                    (0..8).map(|index| body_resource(index, vec!["shared words".to_string()])),
                 )
                 .unwrap();
             let first = catalog.query_page("shared", None, 2, 2);
             let cursor = first.next.expect("more bodies to verify");
             assert!(catalog.cursor_is_current(&cursor));
             catalog
-                .upsert_record(record("document:new", "Other"))
+                .upsert_resource(record("document:new", "Other"))
                 .unwrap();
             assert!(!catalog.cursor_is_current(&cursor));
             let (hits, _) = drain(&catalog, "shared", 3);
@@ -1973,11 +1973,11 @@ mod tests {
             let body = SearchBody::new(Arc::new("the long unchanged chapter".to_string()));
             let first = SearchCatalog::new("Documents");
             first
-                .replace_all_records([record("document:a", "A").body(body.clone())])
+                .replace_all_resources([record("document:a", "A").body(body.clone())])
                 .unwrap();
             let rebuilt = SearchCatalog::new("Documents");
             rebuilt
-                .replace_all_records([
+                .replace_all_resources([
                     record("document:a", "A").body(body.clone()),
                     record("document:b", "B"),
                 ])
@@ -1997,7 +1997,7 @@ mod tests {
             assert_eq!(drain(&rebuilt, "unchanged", 8).0.len(), 1);
             let generation = rebuilt.stats().generation;
             rebuilt
-                .upsert_record(record("document:a", "A").body(body))
+                .upsert_resource(record("document:a", "A").body(body))
                 .unwrap();
             assert_eq!(rebuilt.stats().generation, generation);
         }
@@ -2010,12 +2010,12 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Actions");
             catalog
-                .replace_all_records([record("document:a", "Open")])
+                .replace_all_resources([record("document:a", "Open")])
                 .unwrap();
             let session = catalog.detached();
             let address = ActionAddress::new("document:a", "share");
             session
-                .upsert_record(
+                .upsert_resource(
                     SearchRecord::new(
                         address.encode(),
                         SearchResult::for_action("Actions", "Share", address.clone()),
@@ -2033,9 +2033,9 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             let snapshot = |changed: Option<usize>| {
-                (0..1_000).map(move |id| sync_record(id, usize::from(changed == Some(id))))
+                (0..1_000).map(move |id| sync_resource(id, usize::from(changed == Some(id))))
             };
-            catalog.replace_all_records(snapshot(None)).unwrap();
+            catalog.replace_all_resources(snapshot(None)).unwrap();
             let generation = catalog.stats().generation;
             let touched =
                 |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
@@ -2049,7 +2049,7 @@ mod tests {
             assert_eq!(catalog.stats().generation, generation + 1);
             let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
             records.pop();
-            records.insert(0, sync_record(5_000, 0));
+            records.insert(0, sync_resource(5_000, 0));
             assert_eq!(touched(records), 2);
             let first = catalog.query_page("", None, 1, 1);
             assert_eq!(
@@ -2063,11 +2063,11 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .replace_all_records([record("document:a", "A"), record("document:b", "B")])
+                .replace_all_resources([record("document:a", "A"), record("document:b", "B")])
                 .unwrap();
             let before = catalog.stats();
             assert_eq!(
-                catalog.sync_records([record("document:a", "A"), record("document:a", "again")]),
+                catalog.sync_resources([record("document:a", "A"), record("document:a", "again")]),
                 Err(SearchCatalogError::DuplicateResourceId)
             );
             assert_eq!(catalog.stats(), before);
@@ -2090,7 +2090,7 @@ mod tests {
 
     const SYNC_WORDS: [&str; 6] = ["harbour", "atlas", "granite", "lagoon", "fjord", "kestrel"];
 
-    fn sync_record(id: usize, version: usize) -> SearchRecord {
+    fn sync_resource(id: usize, version: usize) -> SearchRecord {
         let title = format!(
             "{} {} {id}",
             SYNC_WORDS[id % SYNC_WORDS.len()],
@@ -2115,10 +2115,10 @@ mod tests {
         let mut snapshot: Vec<(usize, usize)> = (0..200).map(|id| (id, 0)).collect();
         let catalog = SearchCatalog::new("Documents");
         catalog
-            .replace_all_records(
+            .replace_all_resources(
                 snapshot
                     .iter()
-                    .map(|&(id, version)| sync_record(id, version)),
+                    .map(|&(id, version)| sync_resource(id, version)),
             )
             .unwrap();
         let mut next_id = 200;
@@ -2149,17 +2149,17 @@ mod tests {
                 _ => {}
             }
             catalog
-                .sync_records(
+                .sync_resources(
                     snapshot
                         .iter()
-                        .map(|&(id, version)| sync_record(id, version)),
+                        .map(|&(id, version)| sync_resource(id, version)),
                 )
                 .unwrap();
             let bulk = SearchCatalog::new("Documents");
-            bulk.replace_all_records(
+            bulk.replace_all_resources(
                 snapshot
                     .iter()
-                    .map(|&(id, version)| sync_record(id, version)),
+                    .map(|&(id, version)| sync_resource(id, version)),
             )
             .unwrap();
             assert_eq!(catalog.stats().records, snapshot.len());

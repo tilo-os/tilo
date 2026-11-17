@@ -48,12 +48,12 @@ pub trait ReceiptSurface {
     }
 }
 
-/// The record a document op writes, as the tree names it.
+/// The document an op writes, as the tree names it.
 #[derive(Clone, Copy, Debug)]
-pub struct Record<'a> {
+pub struct WrittenDocument<'a> {
     pub workspace: &'a str,
     pub app: &'a str,
-    pub record: &'a str,
+    pub document: &'a str,
 }
 
 /// What a receiver may do with an op whose claims it checked.
@@ -84,7 +84,7 @@ pub enum ReceiptRefusal {
     #[error("the claims do not name exactly the op's changes")]
     Unclaimed,
     /// The claimed action is not one the record's app publishes.
-    #[error("the record's app publishes no {0}")]
+    #[error("the document's app publishes no {0}")]
     NotPublished(String),
     /// The author is not granted the claimed action on the record.
     #[error("the author is not granted {kind:?} on {node}")]
@@ -94,7 +94,7 @@ pub enum ReceiptRefusal {
     OutsideFootprint { action: String, unit: String },
     /// The op names another app surface than the one its record's identity
     /// names, and is not the change that names a new one.
-    #[error("the op names another app surface than its record's")]
+    #[error("the op names another app surface than its document's")]
     OtherSurface,
     /// A change names no action.
     #[error("a change names no action: {0}")]
@@ -107,15 +107,15 @@ pub enum ReceiptRefusal {
 /// The node of the published tree `action` acts on in `record`.
 #[must_use]
 pub fn claim_node(
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     surface: &dyn ReceiptSurface,
     action: &ClaimedAction,
 ) -> TreePath {
     let kind = surface.kind();
-    let resource = TreePath::workspace(record.workspace)
-        .app(record.app)
+    let resource = TreePath::workspace(document.workspace)
+        .app(document.app)
         .kind(kind)
-        .resource(record.record);
+        .resource(document.document);
     match action {
         ClaimedAction::Verb { action, item } => {
             let node = match item {
@@ -178,14 +178,14 @@ fn edit_node(resource: TreePath, path: &[PathStep]) -> TreePath {
 
 /// The kind of `action` as the app publishes it, or why it is not published.
 fn published_kind(
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     surface: &dyn ReceiptSurface,
     action: &ClaimedAction,
 ) -> Result<ActionKind, ReceiptRefusal> {
     match action {
         ClaimedAction::Verb { action, .. } => {
             // A continuation names its verb alone: the record's app and kind.
-            if (!action.app.is_empty() && action.app != record.app)
+            if (!action.app.is_empty() && action.app != document.app)
                 || (!action.kind.is_empty() && action.kind != surface.kind())
             {
                 return Err(ReceiptRefusal::NotPublished(format!("{action}")));
@@ -212,7 +212,7 @@ fn published_kind(
 
 fn unit_label(unit: &[PathStep]) -> String {
     if unit.is_empty() {
-        return "(record)".into();
+        return "(document)".into();
     }
     unit.iter()
         .map(|step| match step {
@@ -248,7 +248,7 @@ fn label(action: &ClaimedAction) -> String {
 /// The first [`ReceiptRefusal`] of any change.
 pub fn check_claims(
     claims: &[ChangeClaim],
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     changes: Option<&[[u8; 32]]>,
     written: Option<WrittenUnits<'_>>,
     surface: Option<&dyn ReceiptSurface>,
@@ -297,12 +297,12 @@ pub fn check_claims(
             footprint.extend(outboxes.iter().cloned());
         }
         for member in claim.action.members() {
-            let kind = match published_kind(record, surface, member)? {
+            let kind = match published_kind(document, surface, member)? {
                 _ if queues => ActionKind::Outside,
                 ActionKind::Outside if queued_nothing => ActionKind::Undoable,
                 kind => kind,
             };
-            let node = claim_node(record, surface, member);
+            let node = claim_node(document, surface, member);
             if !allows(&node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
                     node: node.to_string(),
@@ -342,7 +342,7 @@ pub trait SurfaceSource: Send + Sync {
     /// is not here: the op is held until it is.
     fn surface(
         &self,
-        record: &Record<'_>,
+        document: &WrittenDocument<'_>,
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
     ) -> Option<std::sync::Arc<dyn ReceiptSurface>>;
@@ -398,7 +398,7 @@ impl Surfaces {
     #[must_use]
     pub fn with_footprints(
         &self,
-        record: &Record<'_>,
+        document: &WrittenDocument<'_>,
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
         claims: Vec<ChangeClaim>,
@@ -409,7 +409,7 @@ impl Surfaces {
         // Each claim by the resource it is decided against ([`by_kind`]), in its place.
         let mut claims = claims;
         for (group_kind, group) in by_kind(kind, claims.clone()) {
-            let Some(surface) = source.surface(record, group_kind.as_deref(), named) else {
+            let Some(surface) = source.surface(document, group_kind.as_deref(), named) else {
                 continue;
             };
             for member in group {
@@ -430,7 +430,7 @@ impl std::fmt::Debug for Surfaces {
         f.write_str(if self.enforced() {
             "Surfaces(enforced)"
         } else {
-            "Surfaces(record only)"
+            "Surfaces(document only)"
         })
     }
 }
@@ -438,10 +438,10 @@ impl std::fmt::Debug for Surfaces {
 /// The node of a record, `workspace › app › record`, as a change is decided
 /// without its app's surface.
 #[must_use]
-pub fn record_node(record: &Record<'_>) -> TreePath {
-    TreePath::workspace(record.workspace)
-        .app(record.app)
-        .resource(record.record)
+pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
+    TreePath::workspace(document.workspace)
+        .app(document.app)
+        .resource(document.document)
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record
@@ -454,13 +454,13 @@ pub fn record_node(record: &Record<'_>) -> TreePath {
 /// The first [`ReceiptRefusal`].
 pub fn decide_op(
     op: &crate::op::SignedOp,
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     kind: Option<&str>,
     held: Option<automerge::AutoCommit>,
     surfaces: &Surfaces,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
 ) -> Result<Receipt, ReceiptRefusal> {
-    decide_op_pinned(op, record, kind, held, None, surfaces, allows)
+    decide_op_pinned(op, document, kind, held, None, surfaces, allows)
 }
 
 /// Refuse changes whose invoker shows an appearance unless they come from
@@ -512,7 +512,7 @@ pub fn check_appearances(
 /// The first [`ReceiptRefusal`].
 pub fn decide_op_pinned(
     op: &crate::op::SignedOp,
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     kind: Option<&str>,
     held: Option<automerge::AutoCommit>,
     pinned: Option<[u8; 32]>,
@@ -521,7 +521,7 @@ pub fn decide_op_pinned(
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let governed = |action: &str| {
-        let node = roles::governance_action(record.workspace, action);
+        let node = roles::governance_action(document.workspace, action);
         if allows(&node, roles::GOVERNANCE_KIND) {
             Ok(Receipt::Admit)
         } else {
@@ -532,7 +532,7 @@ pub fn decide_op_pinned(
         }
     };
     match op.kind {
-        crate::role::OpKind::Compaction => admittable_compaction(op, record, allows, &governed),
+        crate::role::OpKind::Compaction => admittable_compaction(op, document, allows, &governed),
         crate::role::OpKind::Redaction => governed(roles::governance::REDACT),
         crate::role::OpKind::Change => {
             // An op of an app that publishes no surface (and of a record that
@@ -543,7 +543,7 @@ pub fn decide_op_pinned(
                 .as_ref()
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
-                let node = record_node(record);
+                let node = written_node(document);
                 return if allows(&node, ActionKind::Undoable) {
                     Ok(Receipt::Admit)
                 } else {
@@ -554,11 +554,11 @@ pub fn decide_op_pinned(
                 };
             };
             let surface_for =
-                |kind: Option<&str>| source.surface(record, kind, op.surface.as_ref());
+                |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
             let Some(changes) = cleartext_changes(op)? else {
                 // A sealed op: the relay decides the claims its envelope
                 // carries; devices check the changes once they open them.
-                return check_claims_by_kind(&op.claims, record, kind, &surface_for, allows);
+                return check_claims_by_kind(&op.claims, document, kind, &surface_for, allows);
             };
             // A cleartext change names its action in itself, under the op's
             // signature: the envelope carries no second copy.
@@ -615,7 +615,7 @@ pub fn decide_op_pinned(
                 };
                 let read: Option<WrittenUnits<'_>> =
                     written.is_some().then_some(&read as WrittenUnits<'_>);
-                check_claims(&claims, record, None, read, Some(&*surface), allows)?;
+                check_claims(&claims, document, None, read, Some(&*surface), allows)?;
             }
             Ok(Receipt::Admit)
         }
@@ -636,7 +636,7 @@ pub type SurfaceFor<'a> = dyn Fn(Option<&str>) -> Option<std::sync::Arc<dyn Rece
 /// The first [`ReceiptRefusal`] of any claim.
 pub fn check_claims_by_kind(
     claims: &[ChangeClaim],
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     kind: Option<&str>,
     surface_for: &SurfaceFor<'_>,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
@@ -646,7 +646,7 @@ pub fn check_claims_by_kind(
         let Some(surface) = surface_for(group_kind.as_deref()) else {
             return Ok(Receipt::Hold);
         };
-        check_claims(&claims, record, None, None, Some(&*surface), allows)?;
+        check_claims(&claims, document, None, None, Some(&*surface), allows)?;
     }
     Ok(Receipt::Admit)
 }
@@ -708,11 +708,11 @@ fn by_kind(
 /// `governed` decides.
 fn admittable_compaction(
     op: &crate::op::SignedOp,
-    record: &Record<'_>,
+    document: &WrittenDocument<'_>,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
     governed: &dyn Fn(&str) -> Result<Receipt, ReceiptRefusal>,
 ) -> Result<Receipt, ReceiptRefusal> {
-    if op.encryption.is_some() && allows(&record_node(record), ActionKind::Undoable) {
+    if op.encryption.is_some() && allows(&written_node(document), ActionKind::Undoable) {
         Ok(Receipt::Admit)
     } else {
         governed(tilo_action_policy::roles::governance::COMPACT)

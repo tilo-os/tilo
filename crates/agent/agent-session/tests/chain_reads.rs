@@ -28,7 +28,7 @@ use tilo_agent_session::{ConfinedReplica, Replica, ReplicaActor, Seed};
 
 /// The address the chat publishes its messages under.
 fn messages() -> String {
-    ui::record::chain_resource_id(&chat::parts::chain())
+    ui::resource::chain_resource_id(&chat::parts::chain())
 }
 
 /// A chat a page founded: its record, with the channel the posts go in.
@@ -62,7 +62,7 @@ fn held(page: &mut Replica) -> ConfinedReplica {
         &MemberId::person("host"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![changes],
         },
     )

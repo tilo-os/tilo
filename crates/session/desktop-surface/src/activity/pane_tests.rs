@@ -18,7 +18,7 @@ mod tests {
     use super::*;
     use crate::activity::testing::{TestTree as WorkspaceTree, next_id};
     use tilo_desktop_model::WorkspaceId;
-    use ui::{record::RecordStore, widget::HistoryAuthor};
+    use ui::{resource::ResourceStore, widget::HistoryAuthor};
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
@@ -633,7 +633,7 @@ mod tests {
                 ],
             );
             assert_eq!(pane.feed_coverage.referenced_records, 3);
-            assert_eq!(pane.feed_coverage.indexed_records, 2);
+            assert_eq!(pane.feed_coverage.indexed_resources, 2);
             assert!(
                 !pane.feed_coverage.is_complete(),
                 "a record it could not read leaves the history incomplete"
@@ -652,22 +652,22 @@ mod tests {
 
     fn agent_task_fixture() -> (
         WorkspaceTree,
-        RecordStore,
+        ResourceStore,
         WorkspaceActivityPane,
         DocumentId,
     ) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
-        let records = RecordStore::in_memory();
+        let records = ResourceStore::in_memory();
         let record = DocumentId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document"));
-        assert!(records.open_record(&checkout));
+        assert!(records.open_resource(&checkout));
         let agent = ActorId::from(b"writing-agent".as_slice());
         let issuer = ActorId::from(b"ada-identity".as_slice());
         let agent_hex = agent.to_hex_string();
         let issuer_hex = issuer.to_hex_string();
         records.with(&record, |doc| {
-            ui::record::init(doc, &record, &checkout.kind, &workspace.to_string());
+            ui::resource::init(doc, &record, &checkout.kind, &workspace.to_string());
             doc.set_actor(agent);
             for (time, field, value, action) in [
                 (20, "intro", "A concrete opening", "Rewrite opening"),
@@ -793,7 +793,7 @@ mod tests {
     /// The same record, admitted the way the session admits it: as an app record read from a detached
     /// document rather than a mounted store.
     fn detached_records(
-        records: &RecordStore,
+        records: &ResourceStore,
         record: &DocumentId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         vec![crate::activity::DetachedRecordHistory {
@@ -1187,15 +1187,15 @@ mod tests {
     #[test]
     fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_workspace();
-        let records = RecordStore::in_memory();
+        let records = ResourceStore::in_memory();
         let identity = tree.active_workspace().expect("workspace").id();
         let identity_text = identity.to_string();
         for n in 0..12 {
             let id = DocumentId::for_file(format!("result-{n}.note"));
             let kind = ui::ResourceType::new("note");
-            assert!(records.open_record(&ui::DocumentCheckout::new(id.clone(), kind.clone())));
+            assert!(records.open_resource(&ui::DocumentCheckout::new(id.clone(), kind.clone())));
             records.with(&id, |doc| {
-                ui::record::init(doc, &id, &kind, &identity_text);
+                ui::resource::init(doc, &id, &kind, &identity_text);
                 doc.commit();
                 doc.set_actor(ActorId::from(b"ada-device".as_slice()));
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
@@ -1257,7 +1257,7 @@ mod tests {
     /// with the workspace changed meanwhile or not.
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let records = RecordStore::in_memory();
+        let records = ResourceStore::in_memory();
         let home = tree.desktop.active;
         let departed_at = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(10_000))
@@ -1836,7 +1836,7 @@ mod tests {
             let wrote = pane.apply_name(
                 &mut tree,
                 &GroupNameRequest {
-                    record_id: None,
+                    document_id: None,
                     start,
                     end,
                     label: "Set up the workspace".to_string(),
@@ -1871,7 +1871,7 @@ mod tests {
             pane.apply_name(
                 &mut tree,
                 &GroupNameRequest {
-                    record_id: None,
+                    document_id: None,
                     start,
                     end,
                     label: "Temporary".to_string(),
@@ -1885,7 +1885,7 @@ mod tests {
             assert!(pane.apply_name(
                 &mut tree,
                 &GroupNameRequest {
-                    record_id: Some(record),
+                    document_id: Some(record),
                     start,
                     end,
                     label: String::new(),
@@ -1919,7 +1919,7 @@ mod tests {
             pane.apply_name(
                 &mut tree,
                 &GroupNameRequest {
-                    record_id: None,
+                    document_id: None,
                     start,
                     end,
                     label: "My pass".to_string(),
@@ -2005,7 +2005,7 @@ mod tests {
             assert!(pane.apply_name(
                 &mut tree,
                 &GroupNameRequest {
-                    record_id: None,
+                    document_id: None,
                     start: entries[1].id,
                     end: entries[3].id,
                     label: "Investigate".to_string(),
@@ -2282,7 +2282,7 @@ mod tests {
         pane.apply_name(
             &mut tree,
             &GroupNameRequest {
-                record_id: None,
+                document_id: None,
                 start: entries[1].id,
                 end: entries[2].id,
                 label: "A version".to_string(),
@@ -2387,7 +2387,7 @@ mod tests {
         assert!(pane.apply_name(
             &mut tree,
             &GroupNameRequest {
-                record_id: None,
+                document_id: None,
                 start: entries[0].id,
                 end: entries[1].id,
                 label: "Write Q3 financial report".into(),
@@ -2396,7 +2396,7 @@ mod tests {
         assert!(pane.apply_name(
             &mut tree,
             &GroupNameRequest {
-                record_id: None,
+                document_id: None,
                 start: entries[2].id,
                 end: entries[3].id,
                 label: "Work on onboarding Sarah".into(),
@@ -2669,7 +2669,7 @@ mod tasks_link_tests {
     use super::*;
     use crate::activity::TaskRunDocument;
     use crate::activity::testing::TestTree as WorkspaceTree;
-    use ui::record::RecordStore;
+    use ui::resource::ResourceStore;
     #[derive(Default)]
     pub(super) struct UndoHost {
         pub(super) undos: RefCell<Vec<TaskRunUndo>>,
@@ -2727,7 +2727,7 @@ mod tasks_link_tests {
         .unwrap();
         assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
-        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
         assert!(pane.undo_task_run("task:1"));
         let undo = host.undos.borrow().last().cloned().unwrap();
@@ -2793,7 +2793,7 @@ mod tasks_link_tests {
         .unwrap();
         assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
-        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
         assert!(pane.undo_task_record(
             "task:1",
@@ -2849,13 +2849,13 @@ mod tasks_link_tests {
             "tasks.tracker/issues/release"
         ));
         doc.commit();
-        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
         let query = |task: &str| {
-            serde_json::to_value(wire::RecordQuery {
+            serde_json::to_value(wire::ResourceQuery {
                 task: Some(task.into()),
                 app_id: "so.tilo.lang.board".into(),
-                ..wire::RecordQuery::default()
+                ..wire::ResourceQuery::default()
             })
             .unwrap()
             .as_object()
@@ -2919,7 +2919,7 @@ mod tasks_link_tests {
         .unwrap();
         assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
-        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
         assert!(pane.undo_task_run("task:1"));
         // The host reached only the notes document.
@@ -2966,7 +2966,7 @@ mod tasks_link_tests {
         .unwrap();
         assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
-        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
 
         assert!(pane.undo_task_run("task:1"));
         let why = "open the documents this task changed to undo it";

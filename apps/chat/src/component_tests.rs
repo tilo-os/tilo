@@ -440,8 +440,8 @@ fn semantic_component_harness(
     profile: &str,
 ) -> (
     ui::headless::FrameHarness,
-    ui::record::RecordStore,
-    ui::record::DocumentCheckout,
+    ui::resource::ResourceStore,
+    ui::resource::DocumentCheckout,
 ) {
     let cache = ui::portable_storage::PortableStorage::new(profile, "device").unwrap();
     component_mount(&cache, "author", 1)
@@ -455,8 +455,8 @@ fn component_mount(
     instance: u64,
 ) -> (
     ui::headless::FrameHarness,
-    ui::record::RecordStore,
-    ui::record::DocumentCheckout,
+    ui::resource::ResourceStore,
+    ui::resource::DocumentCheckout,
 ) {
     component_mount_in_workspace(cache, author, instance, "workspace")
 }
@@ -468,8 +468,8 @@ fn component_mount_in_workspace(
     workspace: &str,
 ) -> (
     ui::headless::FrameHarness,
-    ui::record::RecordStore,
-    ui::record::DocumentCheckout,
+    ui::resource::ResourceStore,
+    ui::resource::DocumentCheckout,
 ) {
     component_mount_as(
         cache,
@@ -491,8 +491,8 @@ fn component_mount_as(
     workspace: &str,
 ) -> (
     ui::headless::FrameHarness,
-    ui::record::RecordStore,
-    ui::record::DocumentCheckout,
+    ui::resource::ResourceStore,
+    ui::resource::DocumentCheckout,
 ) {
     let (component, records) = component_as(cache, author, permissions, instance, workspace);
     let checkout = component.record().clone();
@@ -509,20 +509,20 @@ fn component_as(
     permissions: ui::permissions::PermissionContext,
     instance: u64,
     workspace: &str,
-) -> (ui::application::AppComponent, ui::record::RecordStore) {
+) -> (ui::application::AppComponent, ui::resource::ResourceStore) {
     use std::rc::Rc;
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
-    let records = ui::record::RecordOwners::portable(cache.clone())
+    let records = ui::resource::ResourceOwners::portable(cache.clone())
         .open(definition.app_id(), workspace)
         .unwrap();
     let views =
         Rc::new(ui::application_view::InstanceViewStore::portable(cache, workspace).unwrap());
     let permissions = ui::permissions::SharedPermissions::new(permissions);
-    let primary = ui::record::DocumentCheckout::package_primary(definition.record_kind.clone());
-    let target = if records.try_open_record(&primary).is_ok() {
+    let primary = ui::resource::DocumentCheckout::package_primary(definition.resource_type.clone());
+    let target = if records.try_open_resource(&primary).is_ok() {
         LaunchTarget::Record {
             checkout: primary,
             reveal: None,
@@ -1012,7 +1012,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     assert_ne!(reply, question);
     // The agent's work is recorded on its reply.
     let said_text = "On Scheria, on the shore of the Phaeacians.";
-    let work = |records: &ui::record::RecordStore| {
+    let work = |records: &ui::resource::ResourceStore| {
         let said = crate::testing::messages_in(records, "c_chat");
         let reply = said
             .iter()
@@ -1663,18 +1663,18 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
     use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
     use std::rc::Rc;
     use ui::application::LaunchTarget;
-    use ui::record::{DocumentCheckout, RecordOpenError, RecordOwners};
+    use ui::resource::{DocumentCheckout, ResourceOpenError, ResourceOwners};
 
     let definition = crate::definition();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
-    let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
+    let primary = DocumentCheckout::package_primary(definition.resource_type.clone());
     // The workspace's chat, as a member's device started it.
-    let elsewhere = RecordOwners::with_store(Rc::new(MemoryStore::queued()))
+    let elsewhere = ResourceOwners::with_store(Rc::new(MemoryStore::queued()))
         .open(definition.app_id(), workspace)
         .unwrap();
     let identity = LocalIdentity::demo();
     elsewhere
-        .reserve_record(&primary)
+        .reserve_resource(&primary)
         .unwrap()
         .initialize(|doc| {
             crate::testing::starter(doc, identity.id.id(), &identity.name, &identity.initials);
@@ -1684,15 +1684,16 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
     let (theirs, heads) = elsewhere.replication_snapshot(&primary.id).unwrap();
 
     let memory = Rc::new(MemoryStore::queued());
-    let page = RecordOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>)
-        .open(definition.app_id(), workspace)
-        .unwrap();
+    let page =
+        ResourceOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>)
+            .open(definition.app_id(), workspace)
+            .unwrap();
     page.ask_workspace_for_missing();
     for _ in 0..2 {
         assert!(
             matches!(
                 definition.unsaved_target(&page),
-                Err(RecordOpenError::Arriving)
+                Err(ResourceOpenError::Arriving)
             ),
             "a chat not here yet is on its way, not a new one"
         );

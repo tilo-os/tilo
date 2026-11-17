@@ -312,7 +312,7 @@ impl Task {
         });
         let reads = RecordReads::new(
             &apps.bundles,
-            request.records_under.clone(),
+            request.documents_under.clone(),
             request.person.as_deref(),
             Rc::clone(&line) as Rc<dyn RecordSource>,
         );

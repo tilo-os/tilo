@@ -35,7 +35,7 @@ impl ResourceApp for NotesShell {
     /// A workspace is the unit of collaboration, so its members share the
     /// notebook too. Notes from before this keep their per-window records;
     /// the workspace's notebook adopts them when it is created ([`Self::seed`]).
-    const WORKSPACE_RECORD: bool = true;
+    const WORKSPACE_RESOURCE: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         let author = cx
@@ -69,7 +69,7 @@ impl ResourceApp for NotesShell {
     }
 
     /// Pages a migration brought from Outline join the notebook when it opens.
-    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+    fn import_resource(context: &ui::application::HostContext) -> Result<(), String> {
         crate::import_inbox::import(context)
     }
 
@@ -117,7 +117,7 @@ impl ResourceApp for NotesShell {
     /// record order ([`crate::adopt`]). Those records are left as they were.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Notebook>> {
         crate::adopt::adoption(
-            &cx.window_records(),
+            &cx.window_resources(),
             cx.host().and_then(ui::application::HostContext::content),
         )
     }

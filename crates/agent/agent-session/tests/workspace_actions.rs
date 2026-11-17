@@ -119,8 +119,8 @@ mod notes_files;
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
 #[cfg(test)]
-#[path = "workspace_actions/public_records.rs"]
-mod public_records;
+#[path = "workspace_actions/public_documents.rs"]
+mod public_documents;
 #[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
@@ -244,7 +244,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         &serde_json::json!({"channel": channel.id, "attached": attached, "text": "Discuss this resource"}),
     );
     let shared = source
-        .read_record(&part, chat::messages::read_part)
+        .read_resource(&part, chat::messages::read_part)
         .unwrap()
         .messages
         .iter()
@@ -260,7 +260,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_record().into(),
+        record: source.wire_document().into(),
     };
     browser
         .peer
@@ -268,7 +268,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .unwrap();
     // The message's own record is the part, published on its own route.
     let route = resource_support::part_route(&workspace.workspace, &part);
-    for (changed, mutation) in source.take_record_mutations().unwrap() {
+    for (changed, mutation) in source.take_document_mutations().unwrap() {
         assert_eq!(changed, part);
         browser.peer.write(route.clone(), &mutation).unwrap();
     }
@@ -279,7 +279,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         ui::permissions::Role::Owner,
     );
     let source_views = source
-        .read_record(&part, |doc| {
+        .read_resource(&part, |doc| {
             crate::common::catalogue().resource_views(
                 "so.tilo.chat",
                 doc,
@@ -450,7 +450,9 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     // The production catalogue worker must discard already-read metadata when
     // the authority changes before delivery, even though the source was valid.
-    let bytes = source.read_record(&part, |doc| doc.clone().save()).unwrap();
+    let bytes = source
+        .read_resource(&part, |doc| doc.clone().save())
+        .unwrap();
     let caller = tilo_actions::remote::Caller::authenticated(
         browser_device.cert.user_public_key,
         browser_device.cert.device_public_key,
@@ -526,7 +528,7 @@ struct DeliveryReadFixture {
     locator_reads: std::sync::atomic::AtomicUsize,
 }
 
-impl tilo_agent_session::workspace_actions::WorkspaceRecordsLink for DeliveryReadFixture {
+impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryReadFixture {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
@@ -660,7 +662,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
-            record: page.wire_record().to_owned(),
+            record: page.wire_document().to_owned(),
         };
         let mutation = page.take_mutation().unwrap().unwrap();
         before_publish(&route);
@@ -687,7 +689,7 @@ impl Page {
             &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: route_record(&route.record),
+                record: route_document(&route.record),
                 changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),
             },
         )
@@ -696,11 +698,11 @@ impl Page {
 }
 
 /// The record a route names.
-pub fn route_record(record: &str) -> ui::record::DocumentId {
+pub fn route_document(record: &str) -> ui::resource::DocumentId {
     if record.is_empty() {
-        ui::record::DocumentId::package_primary()
+        ui::resource::DocumentId::package_primary()
     } else {
-        ui::record::DocumentId::parse(record).unwrap()
+        ui::resource::DocumentId::parse(record).unwrap()
     }
 }
 
@@ -858,7 +860,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     }
     let retained = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(crate::support::workspace())
         .await
         .unwrap();
@@ -1074,7 +1076,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     let retained = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(crate::support::workspace())
         .await
         .unwrap();

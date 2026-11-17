@@ -1,6 +1,6 @@
 use super::*;
 use crate::Theme;
-use crate::record::{DocumentCheckout, DocumentId, ResourceType};
+use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
 use crate::widget::TaffyTreeExt;
@@ -31,7 +31,7 @@ impl ViewRoot {
 
 impl Widget for ViewRoot {
     crate::provides!(
-        dyn crate::record::capability::RecordScoped,
+        dyn crate::resource::capability::ResourceScoped,
         dyn crate::view::capability::ViewState
     );
 
@@ -64,7 +64,7 @@ impl crate::view::capability::ViewState for ViewRoot {
     }
 }
 
-impl crate::record::capability::RecordScoped for ViewRoot {
+impl crate::resource::capability::ResourceScoped for ViewRoot {
     fn record_intent(&self) -> Option<DocumentCheckout> {
         let r = self.resource.as_ref()?;
         DocumentId::parse(r).map(|id| DocumentCheckout::new(id, ResourceType::new("document")))
@@ -350,13 +350,13 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
     // sink) and the frame the receiver applies.
     {
         #[cfg(windows)]
-        let file_record = r"file:C:\report.md";
+        let file_resource = r"file:C:\report.md";
         #[cfg(not(windows))]
-        let file_record = "file:/report.md";
+        let file_resource = "file:/report.md";
         let mut sender = app_with_root(ViewRoot {
             scroll: vec![10.0, 20.0],
             mode: Some("grid".into()),
-            resource: Some(file_record.into()),
+            resource: Some(file_resource.into()),
             rect: KurboRect::ZERO,
         });
         sender.layout.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
@@ -379,7 +379,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         assert_eq!(sent.scroll, vec![10.0, 20.0], "scroll rode the frame");
         assert_eq!(
             sent.open_resource.as_deref(),
-            Some(file_record),
+            Some(file_resource),
             "the open resource rode the frame"
         );
         assert_eq!(

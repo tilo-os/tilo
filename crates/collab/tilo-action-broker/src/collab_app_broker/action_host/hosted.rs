@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, Completer, InvocationReceipt, InvokeRequest,
-    MAX_REMOTE_WAIT, Pending, RECORD_PROVIDER, ReceiptStatus, pending, settle_with,
+    MAX_REMOTE_WAIT, Pending, RESOURCE_PROVIDER, ReceiptStatus, pending, settle_with,
 };
 
 use super::super::published_invocation::InvocationCaller;
@@ -50,7 +50,7 @@ impl AppBrokerState {
         action: &PublishedAction,
         request: &InvokeRequest,
     ) -> Option<Forward> {
-        if route.record_id.is_empty()
+        if route.document_id.is_empty()
             || action.operation_kind == tilo_actions::OperationKind::View
             || action.contract.runs_on_invokers_device()
             || !is_person_here(caller, origin)
@@ -63,7 +63,8 @@ impl AppBrokerState {
             .as_ref()?
             .host_actions(&route.cluster_id)?;
         let mut request = request.clone();
-        request.target.provider = format!("{RECORD_PROVIDER}:{}:{}", route.app_id, route.record_id);
+        request.target.provider =
+            format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document_id);
         request.target.address = tilo_actions::ActionAddress::new(&action.resource, &action.action);
         // A revision names the action as this device's app published it; the
         // host decides on its own copy of the record.
@@ -113,7 +114,7 @@ impl AppBrokerState {
             return None;
         };
         let action = published_directory_action(row).ok()?;
-        let route = CrdtRoute::record(&root.app_id, &root.cluster_id, &root.record_id);
+        let route = CrdtRoute::record(&root.app_id, &root.cluster_id, &root.document_id);
         self.hosted_forward(caller, origin, &route, &action, request)
     }
 

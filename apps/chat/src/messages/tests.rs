@@ -264,10 +264,10 @@ struct TwoDevices {
     workspace: String,
     poster: Chain<ChatPart>,
     guest: Chain<ChatPart>,
-    guest_store: ui::record::RecordStore,
+    guest_store: ui::resource::ResourceStore,
     guest_backend: Rc<durable_store::MemoryStore>,
     /// The record the guest's window shows beside the chain.
-    shown: ui::record::DocumentId,
+    shown: ui::resource::DocumentId,
 }
 
 impl TwoDevices {
@@ -285,7 +285,7 @@ impl TwoDevices {
         let workspace = uuid::Uuid::new_v4().to_string();
         let chat = Rc::new(crate::demo::demo(crate::model::ME));
         let device = |backend: &Rc<durable_store::MemoryStore>| {
-            ui::record::RecordOwners::with_store(
+            ui::resource::ResourceOwners::with_store(
                 Rc::clone(backend) as Rc<dyn durable_store::DurableStore>
             )
             .open("so.tilo.chat", &workspace)
@@ -315,12 +315,15 @@ impl TwoDevices {
         )
         .unwrap();
         assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
-        let shown = ui::record::DocumentCheckout::new(
-            ui::record::DocumentId::derived("shown", &ui::record::DocumentId::workspace_default()),
-            ui::record::ResourceType::new("test.shown"),
+        let shown = ui::resource::DocumentCheckout::new(
+            ui::resource::DocumentId::derived(
+                "shown",
+                &ui::resource::DocumentId::workspace_default(),
+            ),
+            ui::resource::ResourceType::new("test.shown"),
         );
         guest_store
-            .reserve_record(&shown)
+            .reserve_resource(&shown)
             .unwrap()
             .initialize(|_| Ok(()))
             .unwrap();
@@ -382,7 +385,7 @@ tilo_test_env::scenario! {
     // The first post of a workspace starts part 0 on the poster's device. It reaches
     // a guest whose window already holds the chain by being kept in the
     // guest's store, which whatever kept it tells the store
-    // ([`ui::record::RecordStore::note_kept`]). Nothing looks on a clock: until
+    // ([`ui::resource::ResourceStore::note_kept`]). Nothing looks on a clock: until
     // told, the window opens nothing, however long it waits.
     {
         let devices = TwoDevices::new();
@@ -400,7 +403,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_store_told_of_a_kept_part_has_the_window_look_at_once;
-    // A store told that a record arrived ([`ui::record::RecordStore::note_kept`],
+    // A store told that a record arrived ([`ui::resource::ResourceStore::note_kept`],
     // as the browser's workspace replication tells it) has the window look at its
     // next settle, not a moment later.
     {
@@ -551,12 +554,12 @@ tilo_test_env::scenario! {
         };
         let ours = timeline(&ada);
         assert_eq!(timeline(&bob), ours, "both devices read one order");
-        let in_record: Vec<String> = read_part(&ada)
+        let in_resource: Vec<String> = read_part(&ada)
             .messages
             .ids()
             .map(ToString::to_string)
             .collect();
-        assert_eq!(ours, in_record, "in the order the records hold them");
+        assert_eq!(ours, in_resource, "in the order the records hold them");
         let unique: std::collections::BTreeSet<&String> = ours.iter().collect();
         assert_eq!(unique.len(), ours.len(), "each message once: {ours:?}");
         let texts: std::collections::BTreeSet<String> = chat

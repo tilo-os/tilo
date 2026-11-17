@@ -59,7 +59,7 @@ pub mod vision;
 mod web_apps;
 pub mod worker;
 pub mod workspace_actions;
-mod workspace_records;
+mod workspace_documents;
 
 pub use apps::{
     AppCatalogue, AppError, PlacedApp, PlacedArgument, Replica, ReplicaActor, Seed, component_apps,
@@ -69,7 +69,7 @@ pub use control::{
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot, Witness,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
-pub use member::actions::{RECORD_PROVIDER, record_provider};
+pub use member::actions::{RESOURCE_PROVIDER, record_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{
     ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, NoPlanReads,
@@ -81,7 +81,7 @@ pub use planner::{
 };
 pub use worker::ConfinedReplica;
 pub use workspace_actions::{
-    FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceRecordsLink,
+    FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceDocumentsLink,
 };
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers

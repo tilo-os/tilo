@@ -1503,7 +1503,7 @@ impl BooksApp {
     /// handled event so the next `draw` is always consistent.
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
         if self.record_stale.replace(false) {
-            self.read_record(doc);
+            self.read_resource(doc);
         } else {
             self.refresh_from_record();
         }
@@ -1512,7 +1512,7 @@ impl BooksApp {
     /// Read the library from `doc` and refresh the render caches from it.
     /// Which books are on the shelf follows the library when the framework
     /// presents it ([`Self::adopt_resource_state`]).
-    pub(crate) fn read_record(&mut self, doc: &AutoCommit) {
+    pub(crate) fn read_resource(&mut self, doc: &AutoCommit) {
         if let Ok(record) = <Ebook as ui::tilo_resource::Resource>::read(doc) {
             self.record = Rc::new(record);
         }

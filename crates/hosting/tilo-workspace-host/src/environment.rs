@@ -69,7 +69,7 @@ use tilo_relay_protocol::WorkspaceId;
 /// the workspace a record belongs to is the scope's
 /// [`workspace`](Self::workspace).
 #[must_use]
-pub fn record_channel(app: &str, record: &str) -> [u8; 32] {
+pub fn document_channel(app: &str, record: &str) -> [u8; 32] {
     neighbour_wire::app_document_channel(app, record)
 }
 
@@ -79,17 +79,17 @@ pub fn record_channel(app: &str, record: &str) -> [u8; 32] {
 pub struct EnvironmentScope {
     /// The workspace it was placed in, by this relay's workspace id.
     pub workspace: WorkspaceId,
-    /// The channel of its Browser record ([`record_channel`]).
+    /// The channel of its Browser record ([`document_channel`]).
     pub channel: [u8; 32],
 }
 
 impl EnvironmentScope {
     /// The scope of an environment placed in `workspace` for `record` of `app`.
     #[must_use]
-    pub fn for_record(workspace: WorkspaceId, app: &str, record: &str) -> Self {
+    pub fn for_resource(workspace: WorkspaceId, app: &str, record: &str) -> Self {
         Self {
             workspace,
-            channel: record_channel(app, record),
+            channel: document_channel(app, record),
         }
     }
 
@@ -603,7 +603,7 @@ mod tests {
     }
 
     fn scope() -> EnvironmentScope {
-        EnvironmentScope::for_record(workspace(), "so.tilo.browser", "record-1")
+        EnvironmentScope::for_resource(workspace(), "so.tilo.browser", "record-1")
     }
 
     fn soon() -> u64 {
@@ -618,7 +618,7 @@ mod tests {
         );
         assert_ne!(
             scope().channel,
-            EnvironmentScope::for_record(workspace(), "so.tilo.browser", "record-2").channel,
+            EnvironmentScope::for_resource(workspace(), "so.tilo.browser", "record-2").channel,
             "another record is another channel"
         );
     }
@@ -660,11 +660,11 @@ mod tests {
         assert!(scope.reaches(Some(scope.channel)), "its own record");
         assert!(scope.reaches(None), "the workspace's own document");
         assert!(
-            !scope.reaches(Some(record_channel("so.tilo.notes", "notes-1"))),
+            !scope.reaches(Some(document_channel("so.tilo.notes", "notes-1"))),
             "a customer's document"
         );
         assert!(
-            !scope.reaches(Some(record_channel("so.tilo.chat", "chat-1"))),
+            !scope.reaches(Some(document_channel("so.tilo.chat", "chat-1"))),
             "a customer's chat"
         );
     }

@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_ui::portable_storage::{PortableStorage, StorageKey};
-use tilo_ui::record::{DocumentCheckout, DocumentId, RecordOwners, ResourceType};
+use tilo_ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
 
 tilo_test_env::scenario! {
     fn a_package_primary_record_is_shared_admitted_and_partitioned;
@@ -9,20 +9,20 @@ tilo_test_env::scenario! {
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
-        let a = RecordOwners::portable(cache.clone())
+        let a = ResourceOwners::portable(cache.clone())
             .open("so.tilo.chat", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             .unwrap();
-        let b = RecordOwners::portable(cache.clone())
+        let b = ResourceOwners::portable(cache.clone())
             .open("so.tilo.chat", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             .unwrap();
-        a.reserve_record(&checkout)
+        a.reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 doc.put(ROOT, "message", "one").unwrap();
                 Ok(())
             })
             .unwrap();
-        b.try_open_record(&checkout).unwrap();
+        b.try_open_resource(&checkout).unwrap();
         assert_eq!(a.route(&checkout).unwrap().record, None);
         b.with(&checkout.id, |doc| {
             doc.put(ROOT, "message", "two").unwrap();
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
             heads
         );
         assert!(
-            a.read(&checkout.id, tilo_ui::record::identity)
+            a.read(&checkout.id, tilo_ui::resource::identity)
                 .unwrap()
                 .is_none()
         );
@@ -78,11 +78,11 @@ tilo_test_env::scenario! {
         let actor = doc.get_actor().clone();
         let bytes = doc.save();
         drop(owner);
-        let store = RecordOwners::new(root.path().into())
+        let store = ResourceOwners::new(root.path().into())
             .open(package, workspace_id)
             .unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
-        store.try_open_record(&checkout).unwrap();
+        store.try_open_resource(&checkout).unwrap();
         let original = AutoCommit::load(&bytes).unwrap();
         assert_eq!(
             store.read(&checkout.id, |d| d.get_actor().clone()).unwrap(),
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
         assert!(DocumentId::parse(checkout.id.as_str()).is_none());
         let mut doc = AutoCommit::new();
-        tilo_ui::record::init_scoped(
+        tilo_ui::resource::init_scoped(
             &mut doc,
             &DocumentId::for_tab(7),
             &checkout.kind,
@@ -123,12 +123,12 @@ tilo_test_env::scenario! {
                 Some(doc.get_actor().to_bytes().to_vec()),
             )
             .unwrap();
-        let store = RecordOwners::portable(cache)
+        let store = ResourceOwners::portable(cache)
             .open("so.tilo.chat", "workspace")
             .unwrap();
         assert!(matches!(
-            store.try_open_record(&checkout),
-            Err(tilo_ui::record::RecordOpenError::IdentityMismatch)
+            store.try_open_resource(&checkout),
+            Err(tilo_ui::resource::ResourceOpenError::IdentityMismatch)
         ));
     }
 
@@ -136,9 +136,9 @@ tilo_test_env::scenario! {
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
-        let mut owners = RecordOwners::portable(cache);
+        let mut owners = ResourceOwners::portable(cache);
         let a = owners.open("so.tilo.chat", "workspace-a").unwrap();
-        a.reserve_record(&checkout)
+        a.reserve_resource(&checkout)
             .unwrap()
             .initialize(|_| Ok(()))
             .unwrap();
@@ -146,18 +146,18 @@ tilo_test_env::scenario! {
             owners
                 .open("so.tilo.chat", "workspace-b")
                 .unwrap()
-                .try_open_record(&checkout)
+                .try_open_resource(&checkout)
                 .is_err()
         );
         assert!(
             owners
                 .open("so.tilo.other", "workspace-a")
                 .unwrap()
-                .try_open_record(&checkout)
+                .try_open_resource(&checkout)
                 .is_err()
         );
         assert!(
-            a.try_open_record(&DocumentCheckout::package_primary(ResourceType::new(
+            a.try_open_resource(&DocumentCheckout::package_primary(ResourceType::new(
                 "wrong.kind"
             )))
             .is_err()

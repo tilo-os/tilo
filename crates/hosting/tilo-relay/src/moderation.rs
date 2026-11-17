@@ -18,7 +18,7 @@ use tilo_actions::entry::Did;
 use tilo_agent_session::Replica;
 use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
 use tilo_resource::Resource;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 
 /// The history group kind a run's steps are recorded under, which the
 /// record's `undo { run }` takes back as one.
@@ -78,7 +78,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     }
 
     fn record(&self) -> String {
-        self.replica.record_id().to_string()
+        self.replica.document_id().to_string()
     }
 
     /// The address of `action` the replica offers: on the record itself,
@@ -90,7 +90,8 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
             .into_iter()
             .find(|offered| {
                 offered.address.action == action
-                    && ui::record::chain_of_resource_id(&offered.address.resource).as_ref() == chain
+                    && ui::resource::chain_of_resource_id(&offered.address.resource).as_ref()
+                        == chain
             })
             .map(|offered| offered.address)
             .ok_or_else(|| format!("the record offers the moderation agent no {action}"))
@@ -114,7 +115,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     /// The verbs the chain `chain` publishes as destructive, on itself and
     /// on its items.
     fn destructive_in_chain(&self, chain: &DocumentId) -> Vec<String> {
-        let id = ui::record::chain_resource_id(chain);
+        let id = ui::resource::chain_resource_id(chain);
         let resources = self.replica.resources();
         // Published beside the app's resource, among its children; its
         // items carry the verbs on one message.
@@ -172,7 +173,7 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
             .unwrap_or_default();
         // What they wrote is kept in the parts of the chain the record's
         // app keeps beside it (a chat's messages): each part's history.
-        for part in self.replica.records_beside() {
+        for part in self.replica.resources_beside() {
             let Some((chain, _)) = part.chain_part() else {
                 continue;
             };
@@ -180,7 +181,7 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
             let record = part.as_str().to_owned();
             activity.extend(
                 self.replica
-                    .read_record(&part, |doc| {
+                    .read_resource(&part, |doc| {
                         let versions = tilo_resource::history::committed_versions(doc);
                         activity_of(
                             &Source {

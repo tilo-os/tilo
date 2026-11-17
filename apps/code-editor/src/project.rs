@@ -969,12 +969,12 @@ impl Model for Source {
         };
         let shared = match (slot.current(doc)?, slot) {
             (None, Slot::Key(parent, key)) if self.shared => {
-                ui::record::bootstrap::object(doc, parent, key, ObjType::Text)
+                ui::resource::bootstrap::object(doc, parent, key, ObjType::Text)
             }
             _ => None,
         };
         if let Some(object) = &shared
-            && ui::record::bootstrap::seed_text(doc, object, text).is_some()
+            && ui::resource::bootstrap::seed_text(doc, object, text).is_some()
         {
             return Ok(());
         }

@@ -6,9 +6,9 @@ use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_session, handle_commit,
     handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
-    handle_host_said, handle_live_join, handle_open_record, handle_presence, handle_remote_action,
-    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
-    route_record_content,
+    handle_host_said, handle_live_join, handle_open_document, handle_presence,
+    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
+    handle_workspaces, route_document_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, answered_as_replay, finish_replay_write};
@@ -95,7 +95,7 @@ pub(super) async fn handle_envelope(
         env @ Envelope::RetiredPresence { .. } => {
             handle_presence(peer, session, subscribed, env).await
         }
-        env @ Envelope::RecordContentWant { .. } => {
+        env @ Envelope::DocumentContentWant { .. } => {
             handle_content_want(peer, session, subscribed, env).await
         }
         Envelope::PeerRelayHello { hosted_workspaces } => {
@@ -124,8 +124,8 @@ pub(super) async fn handle_envelope(
             frame,
         )
         .await),
-        env @ Envelope::RecordContent { .. } => {
-            route_record_content(peer, session, subscribed, env).await;
+        env @ Envelope::DocumentContent { .. } => {
+            route_document_content(peer, session, subscribed, env).await;
             Ok(None)
         }
         env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
@@ -138,8 +138,8 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceLeave { .. }
         | Envelope::VoiceShow { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
-        env @ Envelope::OpenRecord { .. } => {
-            handle_open_record(peer, session, subscribed, env, answer).await
+        env @ Envelope::OpenDocument { .. } => {
+            handle_open_document(peer, session, subscribed, env, answer).await
         }
         Envelope::RetiredLiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
@@ -173,7 +173,7 @@ pub(super) async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
-        | Envelope::RecordContentRefused { .. }
+        | Envelope::DocumentContentRefused { .. }
         | Envelope::LiveLeave { .. }
         | Envelope::RetiredLive { .. }
         | Envelope::RetiredLiveMember { .. }
@@ -182,7 +182,7 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceGranted { .. }
         | Envelope::VoiceRefused { .. }
         | Envelope::VoiceCallList { .. }
-        | Envelope::RecordOpened { .. }
+        | Envelope::DocumentOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
         | Envelope::AgentSessionAnswer { .. }

@@ -377,7 +377,7 @@ pub struct Hosted {
     pub content: Option<std::sync::Arc<AppContentIndex>>,
     /// The records' content in that index, read from the records themselves:
     /// what search finds of an app that never opened them here.
-    pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
+    pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
@@ -407,7 +407,7 @@ pub struct Hosted {
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
-    pub record_content: Option<std::sync::Arc<crate::content::Plane>>,
+    pub document_content: Option<std::sync::Arc<crate::content::Plane>>,
     /// Where an app's offloadable action runs: the round this session asks
     /// the workspace's other devices, when it holds a workspace to ask them
     /// in.
@@ -543,10 +543,10 @@ pub fn serve(
 /// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
+    records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
     let records = records.map(|records| {
-        records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
+        records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
     });
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
@@ -1091,7 +1091,7 @@ fn seams(
         own_device,
         engine,
         endpoint: _,
-        record_content,
+        document_content,
         action_offload,
         journal_root,
         lists,
@@ -1199,7 +1199,7 @@ fn seams(
         // A record's own origin is its app's collaboration plane route, and a
         // task's change reaches it as the app's action; the session applies
         // no record change of its own for the links to ask.
-        record_changes: Seam::unserved(
+        resource_changes: Seam::unserved(
             "an agent's change to a record goes through the record's own app, not through \
              a record origin this session keeps",
         ),
@@ -1238,13 +1238,13 @@ fn seams(
         })),
         // The records' content in that index, read from the records
         // themselves: a change to a workspace's record is indexed here.
-        record_index_changes: Seam::when(records.map(|records| {
-            records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
+        document_index_changes: Seam::when(records.map(|records| {
+            records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         })),
         // Content a record references is kept on this device beside the
         // workspace's records, and asked of the workspace's other devices.
         content_store: Seam::when(
-            record_content
+            document_content
                 .as_ref()
                 .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
         ),
@@ -1311,7 +1311,7 @@ fn seams(
             )) as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceGrants>
         })),
         launchable_catalogue: Seam::when(launchable_catalogue),
-        record_content: Seam::when(record_content.map(|content| content.route())),
+        document_content: Seam::when(document_content.map(|content| content.route())),
         // This session's channel keys, when it holds workspaces: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
@@ -1731,7 +1731,7 @@ mod tests {
             own_device: None,
             nearby: None,
             engine: None,
-            record_content: None,
+            document_content: None,
             action_offload: None,
             journal_root: None,
             lists,
@@ -1830,14 +1830,14 @@ mod tests {
                 std::sync::Arc::new(Launches::default()),
                 None,
                 Hosted {
-                    record_content: Some(kept),
+                    document_content: Some(kept),
                     ..hosted(None)
                 },
                 None,
                 None,
             );
             assert!(
-                with.record_content.is_some(),
+                with.document_content.is_some(),
                 "the broker asks the workspace through this session's plane"
             );
             assert!(
@@ -1847,7 +1847,7 @@ mod tests {
 
             let without = services(None);
             assert!(
-                without.record_content.is_none() && without.content_store.is_none(),
+                without.document_content.is_none() && without.content_store.is_none(),
                 "a session that keeps content hands the broker no content plane"
             );
         }

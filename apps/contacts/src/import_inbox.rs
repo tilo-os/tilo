@@ -49,7 +49,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         return Ok(());
     }
     let held = context
-        .read_record(<Contacts as ui::tilo_resource::Resource>::read)
+        .read_resource(<Contacts as ui::tilo_resource::Resource>::read)
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
     let mut seen = std::collections::BTreeSet::new();
@@ -61,7 +61,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     }
     let author = context.author().clone();
     context
-        .migrate_record(move |doc| apply(doc, cards, author).map(|()| true))
+        .migrate_resource(move |doc| apply(doc, cards, author).map(|()| true))
         .map(drop)
 }
 

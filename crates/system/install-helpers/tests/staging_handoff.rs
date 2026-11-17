@@ -930,10 +930,10 @@ tilo_test_env::scenario! {
             result.stdout,
             "recorded staging reclaim for the installed system\n"
         );
-        let record_path = var.join("lib/tilo/staging-reclaim.json");
-        let written: Value = serde_json::from_str(&fs::read_to_string(&record_path).unwrap()).unwrap();
+        let resource_path = var.join("lib/tilo/staging-reclaim.json");
+        let written: Value = serde_json::from_str(&fs::read_to_string(&resource_path).unwrap()).unwrap();
         let mode =
-            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&record_path).unwrap().permissions());
+            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&resource_path).unwrap().permissions());
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(written["disk_guid"], DISK_GUID);
         assert_eq!(written["staging_esp"]["partuuid"], ESP_UUID);

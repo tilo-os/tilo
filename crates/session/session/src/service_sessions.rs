@@ -84,7 +84,7 @@ impl ServiceSessions {
             let node = collab_types::validator::document_node(
                 &route.cluster_id,
                 &route.app_id,
-                &route.record_id,
+                &route.document_id,
             );
             if !member.allows(&node, tilo_action_policy::ActionKind::Read, now) {
                 return Err("This person can no longer read the app".into());

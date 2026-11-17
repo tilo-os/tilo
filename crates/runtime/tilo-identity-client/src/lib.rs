@@ -165,7 +165,7 @@ pub mod wire {
         CollaborationOp {
             workspace_id: String,
             app_id: String,
-            record_id: String,
+            document_id: String,
             unsigned_op: Vec<u8>,
         },
         /// The content keys of one document route of the bound workspace and app, once
@@ -175,7 +175,7 @@ pub mod wire {
         GroupKeys {
             workspace_id: String,
             app_id: String,
-            record_id: String,
+            document_id: String,
             known_generation: u64,
         },
     }

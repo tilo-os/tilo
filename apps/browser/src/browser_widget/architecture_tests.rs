@@ -1299,10 +1299,10 @@ fn library_controls_are_bound_canonical_actions_with_stable_addresses() {
         let mut widget = BrowserWidget::new_headless();
         widget
             .history
-            .record_at("https://first.example", "First", 1);
+            .document_at("https://first.example", "First", 1);
         widget
             .history
-            .record_at("https://second.example", "Second", 2);
+            .document_at("https://second.example", "Second", 2);
         widget.show_library = true;
         compose(&mut widget);
         let bindings = ui::widget::controls::control_action_bindings(&widget);

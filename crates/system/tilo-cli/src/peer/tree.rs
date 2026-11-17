@@ -5,7 +5,7 @@
 //! ([`fs_protocol::tree`]), whose nodes name each file's content by hash; the
 //! bytes travel beside it as the record's content
 //! ([`super::content`]). Tilo OS publishes the tree from its filesystem daemon
-//! on the desktop session ([`tilo_fs::tree_record`]); here the session is this
+//! on the desktop session ([`tilo_fs::tree_document`]); here the session is this
 //! device's own session with the workspace's host, the one a browser tab
 //! keeps, and the tree goes over it the way a tab's records do: opened by its
 //! route, written with [`Outbox::write`], and read back from the session's
@@ -24,7 +24,7 @@ use collab_types::DocumentMutation;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
 use super::content::SessionContent;
@@ -81,7 +81,7 @@ pub(crate) fn route(workspace: WorkspaceId) -> DocumentRoute {
     DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
-        record: collab_types::person_record_id(fs_protocol::tree::TREE_KIND),
+        record: collab_types::person_document_id(fs_protocol::tree::TREE_KIND),
     }
 }
 
@@ -241,9 +241,9 @@ impl Sync {
             matches!(
                 event,
                 Event::Landed { .. }
-                    | Event::RecordOpened { .. }
+                    | Event::DocumentOpened { .. }
                     | Event::Refused { .. }
-                    | Event::RecordContent { .. }
+                    | Event::DocumentContent { .. }
                     | Event::HostReady { .. }
             )
         });
@@ -277,10 +277,10 @@ impl Sync {
     fn open(&self) {
         let _ = self
             .link
-            .send(Cmd::OpenRecordAt(self.workspace, self.route.clone()));
+            .send(Cmd::OpenDocumentAt(self.workspace, self.route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(self.route.clone()));
         // And on the workspace's plane, whose host answers what it holds.
-        let _ = self.link.engine().open_record(
+        let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
             &self.route.app_id,
             &self.route.record,
@@ -293,12 +293,12 @@ impl Sync {
             Event::Refused { route, refusal, .. } if route == self.route => {
                 tracing::warn!(%refusal, workspace = %self.workspace, "the workspace refused a change to its files");
             }
-            Event::RecordContent { ws, frame, .. } if ws == self.workspace => {
+            Event::DocumentContent { ws, frame, .. } if ws == self.workspace => {
                 self.content.piece(&frame);
             }
             // The host sent all it holds of the tree, none when the workspace has none yet:
             // this device's first change founds it.
-            Event::RecordOpened {
+            Event::DocumentOpened {
                 route: Some(route), ..
             } if route == self.route => {
                 self.standing.lock_recover().opened = true;
@@ -341,13 +341,13 @@ impl Sync {
             self.merged.as_deref(),
         );
         let (mutation, heads) = match reading {
-            Ok(RecordReading::Captured { heads, bytes, .. }) => {
+            Ok(ResourceReading::Captured { heads, bytes, .. }) => {
                 (DocumentMutation::Snapshot(bytes), heads)
             }
-            Ok(RecordReading::Changes { heads, bytes, .. }) => {
+            Ok(ResourceReading::Changes { heads, bytes, .. }) => {
                 (DocumentMutation::Incremental(bytes), heads)
             }
-            Ok(RecordReading::Unchanged(_)) => {
+            Ok(ResourceReading::Unchanged(_)) => {
                 self.unread = None;
                 return;
             }
@@ -359,7 +359,7 @@ impl Sync {
                 self.note_answered(&workspace);
                 return;
             }
-            Ok(RecordReading::Pending) => {
+            Ok(ResourceReading::Pending) => {
                 self.note_answered(&workspace);
                 return;
             }
@@ -418,7 +418,7 @@ impl Sync {
         let answer =
             self.link
                 .engine()
-                .record_answer(workspace, &self.route.app_id, &self.route.record);
+                .resource_answer(workspace, &self.route.app_id, &self.route.record);
         if holds_none(answer) {
             self.standing.lock_recover().opened = true;
         }
@@ -558,8 +558,8 @@ impl Sync {
 
 /// Whether the host's `answer` about the tree (`None` while it owes one) says the workspace has
 /// none of it.
-fn holds_none(answer: Option<tilo_relay_protocol::RecordAnswer>) -> bool {
-    answer == Some(tilo_relay_protocol::RecordAnswer::Sent { frames: 0 })
+fn holds_none(answer: Option<tilo_relay_protocol::DocumentAnswer>) -> bool {
+    answer == Some(tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 })
 }
 
 /// What a namespace has to send after `sent`.
@@ -637,11 +637,11 @@ mod tests {
         // It sent frames of the tree: the workspace holds one, though it may not read here
         // yet (a write still on its way), and a tree founded now would go out whole beside it.
         assert!(!super::holds_none(Some(
-            tilo_relay_protocol::RecordAnswer::Sent { frames: 3 }
+            tilo_relay_protocol::DocumentAnswer::Sent { frames: 3 }
         )));
         // It sent none: the workspace has no tree, and this device's first change founds it.
         assert!(super::holds_none(Some(
-            tilo_relay_protocol::RecordAnswer::Sent { frames: 0 }
+            tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 }
         )));
     }
 
@@ -677,7 +677,7 @@ mod tests {
             record.get_missing_deps(&[]).is_empty(),
             "every change the record took builds on changes it holds"
         );
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         assert!(
             tree.nodes
                 .values()
@@ -736,7 +736,7 @@ mod tests {
             record.get_missing_deps(&[]).is_empty(),
             "each write builds on the last"
         );
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         let files = tree
             .nodes
             .values()
@@ -771,7 +771,7 @@ mod tests {
         // What the host keeps: both writes, every change built on one it holds.
         let mut record = automerge::AutoCommit::load(&[first, next].concat()).unwrap();
         assert!(record.get_missing_deps(&[]).is_empty());
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         for name in [&b"contract.txt"[..], b"handbook.md"] {
             assert!(
                 tree.nodes.values().any(|node| node.name.as_bytes() == name),

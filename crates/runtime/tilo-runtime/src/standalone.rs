@@ -374,7 +374,7 @@ fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
 ) -> io::Result<HostServices> {
-    let record_content = joined::record_content(parts.joined, &parts.root.join(BLOB_SOCKET));
+    let document_content = joined::document_content(parts.joined, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
     // other devices of the invoking workspace answer an offer round over the
     // endpoint this profile syncs on, and the content an offloaded run reads
@@ -383,7 +383,7 @@ fn broker_services(
         .joined
         .offer_plane()
         .and_then(|(plane, endpoint, runtime)| {
-            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&record_content))
+            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&document_content))
         });
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
@@ -402,7 +402,7 @@ fn broker_services(
         })),
         legacy_workspace: Some(Arc::clone(parts.workspace) as Arc<dyn LegacyWorkspaceProjection>),
         workspace_governance: Some(media_import::service(parts.workspace, parts.media)?),
-        record_content: Some(record_content),
+        document_content: Some(document_content),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
@@ -1514,12 +1514,12 @@ struct AttachedSurfaces {
     dev: bool,
 }
 
-impl tilo_identity_host::broker::PersonRecordKinds for AttachedSurfaces {
-    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
-        ui::app_surface::person_record_kinds(app_id)
+impl tilo_identity_host::broker::PersonResourceTypes for AttachedSurfaces {
+    fn person_resource_types(&self, app_id: &str) -> Vec<String> {
+        ui::app_surface::person_resource_types(app_id)
     }
 
-    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+    fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
         ui::app_surface::reads_app(reader, owner)
     }
 

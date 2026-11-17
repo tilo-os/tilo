@@ -381,8 +381,8 @@ pub struct ChatApp {
     /// workspace.
     pub(crate) workspace_agent_colours: HashMap<Id, u8>,
     /// The agent identity record, followed every frame (see `follow_agents`).
-    agents_record:
-        Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
+    agents_document:
+        Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -497,7 +497,7 @@ pub struct ChatApp {
     pub(crate) content: ContentStore,
     /// The attachments' bytes as reads ([`ui::arriving`]): here, on their
     /// way from the workspace, or with no device that has them.
-    pub(crate) content_reads: ui::collaboration::record_content::ContentReads,
+    pub(crate) content_reads: ui::collaboration::document_content::ContentReads,
     /// When the next attachment on its way steps its placeholder on, as the
     /// last frame painted them.
     pub(crate) arriving_wake: std::cell::Cell<Option<ui::time::Instant>>,
@@ -537,7 +537,7 @@ pub struct ChatApp {
     announce: Option<crate::identity::LocalIdentity>,
     /// The person's own drafts record, so the sidebar can say where the
     /// unsent words are.
-    pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
+    pub(crate) drafts_record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -771,7 +771,7 @@ impl ChatApp {
             workspace_colors: HashMap::new(),
             workspace_agent_names: HashMap::new(),
             workspace_agent_colours: HashMap::new(),
-            agents_record: None,
+            agents_document: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -813,7 +813,7 @@ impl ChatApp {
             #[cfg(test)]
             dispatched_parts: std::cell::RefCell::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
-            content_reads: ui::collaboration::record_content::ContentReads::new(content.clone()),
+            content_reads: ui::collaboration::document_content::ContentReads::new(content.clone()),
             arriving_wake: std::cell::Cell::new(None),
             call_tick: std::cell::Cell::new(None),
             content,
@@ -1153,7 +1153,7 @@ impl ChatApp {
     #[must_use]
     pub(crate) fn with_drafts(
         mut self,
-        record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
+        record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
     ) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());

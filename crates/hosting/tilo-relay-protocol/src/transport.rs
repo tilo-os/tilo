@@ -182,11 +182,11 @@ pub enum Envelope {
         /// relay is about to flush.
         pending_deltas: u32,
         /// The workspace sends this peer its records only when it opens
-        /// them ([`Self::OpenRecord`]), as a public workspace does: the
+        /// them ([`Self::OpenDocument`]), as a public workspace does: the
         /// replay carried its governance and shared desktop, and a record
         /// the peer holds from before, or does not hold at all, is asked
         /// for when it is opened, never taken as complete or as new.
-        records_when_opened: bool,
+        documents_when_opened: bool,
     },
 
     /// The relay's response to a subscribe that failed — e.g.
@@ -497,7 +497,7 @@ pub enum Envelope {
     /// control message (a viewer's ask, its input, a keyframe request) takes
     /// the same route to a device no direct connection reaches, such as a
     /// hosted environment's.
-    RecordContent {
+    DocumentContent {
         /// Workspace id both devices are subscribed to.
         workspace_id: WorkspaceId,
         /// The addressed device.
@@ -505,17 +505,17 @@ pub enum Envelope {
         /// The sending device, stamped by the relay from the authenticated
         /// connection. Whatever a sender puts here is overwritten.
         from_device_public_key: [u8; 32],
-        /// Opaque piece, at most [`MAX_RECORD_CONTENT_FRAME_BYTES`].
+        /// Opaque piece, at most [`MAX_DOCUMENT_CONTENT_FRAME_BYTES`].
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
 
     /// Open an on-demand record of a subscribed workspace: a record a joining
-    /// device is not replayed (`neighbour_wire::record_sync`). The relay
+    /// device is not replayed (`neighbour_wire::document_sync`). The relay
     /// sends what it retains of the record as [`Envelope::Delta`]s, under
-    /// the same admission as a replay, then [`Envelope::RecordOpened`];
+    /// the same admission as a replay, then [`Envelope::DocumentOpened`];
     /// from then on the record's live changes reach the device too.
-    OpenRecord {
+    OpenDocument {
         /// Workspace id, subscribed.
         workspace_id: WorkspaceId,
         /// The record's retained channel
@@ -523,17 +523,17 @@ pub enum Envelope {
         channel: [u8; 32],
         /// The member's own record the channel carries, when the device knows
         /// it is one: the relay answers another person's
-        /// [`RecordAnswer::NotYours`] even before anything of it was written.
+        /// [`DocumentAnswer::NotYours`] even before anything of it was written.
         own: Option<OwnedChannel>,
     },
 
     /// The relay's answer to an opened record: everything it retains of it
     /// was sent, or it is not this device's to open.
-    RecordOpened {
+    DocumentOpened {
         workspace_id: WorkspaceId,
         /// The record's retained channel.
         channel: [u8; 32],
-        answer: RecordAnswer,
+        answer: DocumentAnswer,
     },
 
     /// What `participation` shows besides its voice from now on (its
@@ -575,10 +575,10 @@ pub enum Envelope {
     /// A member asks the workspace for content one of its records
     /// references. The host fans it out to the workspace's other members and
     /// answers with what it keeps itself; each member answers to the asking
-    /// device alone ([`Self::RecordContent`]). `frame` is the
-    /// `NeighbourMsg::RecordContentWant` that says what is wanted, and
+    /// device alone ([`Self::DocumentContent`]). `frame` is the
+    /// `NeighbourMsg::DocumentContentWant` that says what is wanted, and
     /// `from_device_public_key` is the host's stamp of who asked.
-    RecordContentWant {
+    DocumentContentWant {
         workspace_id: WorkspaceId,
         from_device_public_key: [u8; 32],
         #[serde(with = "serde_bytes")]
@@ -687,11 +687,11 @@ pub enum Envelope {
     KeyFollower,
 
     /// The host did not pass on a piece of record content this device sent
-    /// ([`Envelope::RecordContent`]): its person's content budget is spent.
+    /// ([`Envelope::DocumentContent`]): its person's content budget is spent.
     /// `refusal` says when the budget holds the piece again
     /// ([`crate::refusal::Refusal::TooMuchContent`]); the device's person is
     /// told ([`crate::refusal::Refusal::plain`]). Said at most once a minute.
-    RecordContentRefused {
+    DocumentContentRefused {
         workspace_id: WorkspaceId,
         refusal: crate::refusal::Refusal,
     },
@@ -708,22 +708,22 @@ pub enum Envelope {
     },
 }
 
-/// A member's own record a device opens ([`Envelope::OpenRecord`]): the app
+/// A member's own record a device opens ([`Envelope::OpenDocument`]): the app
 /// whose record it is and its kind and person. The relay takes it only when
 /// it names the channel opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedChannel {
     pub app_id: String,
-    pub record: collab_types::OwnRecord,
+    pub record: collab_types::OwnResource,
 }
 
 impl OwnedChannel {
     /// `app`'s `record` as the person `owner`'s own, of a kind its manifest
-    /// declares each member's own ([`collab_types::OwnRecord::recognise`]);
+    /// declares each member's own ([`collab_types::OwnResource::recognise`]);
     /// `None` for any other record.
     #[must_use]
     pub fn recognise(app: &str, record: &str, owner: [u8; 32]) -> Option<Self> {
-        collab_types::OwnRecord::recognise(app, record, owner).map(|record| Self {
+        collab_types::OwnResource::recognise(app, record, owner).map(|record| Self {
             app_id: app.to_owned(),
             record,
         })
@@ -732,13 +732,13 @@ impl OwnedChannel {
     /// Whether this is the record `channel` carries.
     #[must_use]
     pub fn names(&self, channel: &[u8; 32]) -> bool {
-        neighbour_wire::app_document_channel(&self.app_id, &self.record.record_id()) == *channel
+        neighbour_wire::app_document_channel(&self.app_id, &self.record.document_id()) == *channel
     }
 }
 
-/// What the relay answered of a record a device opened ([`Envelope::OpenRecord`]).
+/// What the relay answered of a record a device opened ([`Envelope::OpenDocument`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecordAnswer {
+pub enum DocumentAnswer {
     /// Everything it retains of the record went before this answer, this many
     /// frames: none says the workspace holds none of it.
     Sent { frames: u32 },
@@ -786,15 +786,15 @@ impl Envelope {
             Self::VoiceLeave { .. } => "VoiceLeave",
             Self::VoiceCalls { .. } => "VoiceCalls",
             Self::VoiceCallList { .. } => "VoiceCallList",
-            Self::RecordContent { .. } => "RecordContent",
-            Self::OpenRecord { .. } => "OpenRecord",
-            Self::RecordOpened { .. } => "RecordOpened",
+            Self::DocumentContent { .. } => "DocumentContent",
+            Self::OpenDocument { .. } => "OpenDocument",
+            Self::DocumentOpened { .. } => "DocumentOpened",
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
             // The kind names a key in the web envelope JSON, so it keeps the
             // spelling it was first written under.
             Self::WorkspaceBootstrap { .. } => "WorkspaceBootstrap",
-            Self::RecordContentWant { .. } => "RecordContentWant",
+            Self::DocumentContentWant { .. } => "DocumentContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",
             Self::RetiredHereRequest { .. } => "HereRequest",
@@ -806,7 +806,7 @@ impl Envelope {
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
-            Self::RecordContentRefused { .. } => "RecordContentRefused",
+            Self::DocumentContentRefused { .. } => "DocumentContentRefused",
             Self::PersonalList { .. } => "PersonalList",
         }
     }
@@ -829,7 +829,7 @@ impl Envelope {
             | Self::SyncResponse { workspace_id, .. }
             | Self::RemoteAction { workspace_id, .. }
             | Self::RemoteActionUndeliverable { workspace_id, .. }
-            | Self::RecordContent { workspace_id, .. }
+            | Self::DocumentContent { workspace_id, .. }
             | Self::Commit { workspace_id, .. }
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
@@ -851,12 +851,12 @@ impl Envelope {
             | Self::VoiceCalls { workspace_id }
             | Self::VoiceCallList { workspace_id, .. }
             | Self::VoiceShow { workspace_id, .. }
-            | Self::OpenRecord { workspace_id, .. }
-            | Self::RecordOpened { workspace_id, .. }
+            | Self::OpenDocument { workspace_id, .. }
+            | Self::DocumentOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
-            | Self::RecordContentWant { workspace_id, .. }
+            | Self::DocumentContentWant { workspace_id, .. }
             | Self::HostSaid { workspace_id, .. }
-            | Self::RecordContentRefused { workspace_id, .. } => Some(*workspace_id),
+            | Self::DocumentContentRefused { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
             | Self::PeerRelayHello { .. }
@@ -879,8 +879,8 @@ impl Envelope {
 /// Bound, in characters, of the agent name an [`Envelope::AgentSession`] carries.
 pub const MAX_AGENT_LABEL_CHARS: usize = 32;
 
-/// Largest [`Envelope::RecordContent`] frame a relay routes.
-pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
+/// Largest [`Envelope::DocumentContent`] frame a relay routes.
+pub const MAX_DOCUMENT_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
 /// relay refuses other versions as undeliverable instead of forwarding
@@ -931,7 +931,7 @@ mod tests {
                     Envelope::Ready {
                         workspace_id: WorkspaceId::from_u128(7),
                         pending_deltas: 2,
-                        records_when_opened: true,
+                        documents_when_opened: true,
                     },
                     [vec![4], id(7), vec![2, 1]].concat(),
                 ),

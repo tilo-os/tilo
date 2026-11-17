@@ -186,7 +186,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
                 )
             };
             if let Ok(Some(taken)) = taken {
-                let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| {
+                let drained = binding.with_resource_frame(&mut state.doc, false, |doc, _| {
                     binding.drain_taken_actions(taken, doc)
                 });
                 bound_changed |= matches!(drained, Ok(Ok(true)));

@@ -666,7 +666,7 @@ impl App {
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
-        self.pump_record_content();
+        self.pump_document_content();
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
         any |= self.observe_collaboration_state();
@@ -830,18 +830,18 @@ impl App {
 
     /// The lanes `route`'s record has its content on in this process: the
     /// record's own, and each window's showing it
-    /// ([`ContentLane::on_route`](crate::collaboration::record_content::ContentLane::on_route)).
+    /// ([`ContentLane::on_route`](crate::collaboration::document_content::ContentLane::on_route)).
     fn lanes_on_route(
         route: &crate::collaboration::RouteSpec,
-    ) -> Vec<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
-        crate::collaboration::record_content::ContentLane::on_route(route)
+    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLane>> {
+        crate::collaboration::document_content::ContentLane::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
-    /// other readers. See [`crate::collaboration::record_content`].
-    fn pump_record_content(&mut self) {
-        use crate::collaboration::record_content::ContentLane;
+    /// other readers. See [`crate::collaboration::document_content`].
+    fn pump_document_content(&mut self) {
+        use crate::collaboration::document_content::ContentLane;
         if !self.collaboration.manager.is_connected() {
             return;
         }
@@ -879,7 +879,7 @@ impl App {
     fn send_lane_requests(
         &mut self,
         route: Option<&crate::collaboration::RouteSpec>,
-        lane: &crate::collaboration::record_content::ContentLane,
+        lane: &crate::collaboration::document_content::ContentLane,
     ) {
         let mut send = |request: CollabRequest| match route {
             Some(route) => self
@@ -935,8 +935,8 @@ impl App {
             CollabEvent::HistoryAgents { cluster_id, agents } => {
                 crate::history_source::set_workspace_agents(&cluster_id, agents);
             }
-            CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
-            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
+            CollabEvent::ResourcesArrived { records } => self.resources_arrived(&records),
+            CollabEvent::ResourceUnavailable { route } => self.resource_unavailable(&route),
             CollabEvent::FollowChanged { peer_id } => match peer_id.clone() {
                 Some(peer) => self.follow(peer),
                 None => self.unfollow(),
@@ -944,7 +944,7 @@ impl App {
             CollabEvent::DocumentSnapshotRequested { route } => {
                 self.respond_document_snapshot(&route);
             }
-            CollabEvent::RecordContent { route, hash, bytes } => {
+            CollabEvent::DocumentContent { route, hash, bytes } => {
                 // The record's content reaches every lane carrying it, the
                 // windows' own included: a window's store reads the lane it
                 // keeps, never the record's.
@@ -952,7 +952,7 @@ impl App {
                     lane.arrive(hash.clone(), bytes.clone());
                 }
             }
-            CollabEvent::RecordContentState { route, hash, state } => {
+            CollabEvent::DocumentContentState { route, hash, state } => {
                 for lane in Self::lanes_on_route(&route) {
                     lane.stands(hash.clone(), state);
                 }
@@ -1092,7 +1092,7 @@ impl App {
     }
 
     /// Answer a request for the whole document on `route`: a record kept
-    /// beside the shown one ([`Widget::record_owners`](crate::widget::Widget::record_owners))
+    /// beside the shown one ([`Widget::resource_owners`](crate::widget::Widget::resource_owners))
     /// is published whole on its own route with the next publication; any
     /// other request is the primary document's.
     fn respond_document_snapshot(&mut self, route: &crate::collaboration::RouteSpec) {

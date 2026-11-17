@@ -10,7 +10,7 @@ use std::rc::{Rc, Weak};
 use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 
-use super::record::{Held, RecordApi};
+use super::record::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
@@ -106,7 +106,7 @@ where
         storage: super::record::sealed::Storage<'_>,
     ) -> Option<super::record::sealed::Api> {
         Some(super::record::sealed::Api(
-            storage.0.section(&self.settings) as Rc<dyn RecordApi>,
+            storage.0.section(&self.settings) as Rc<dyn ResourceApi>,
         ))
     }
 }
@@ -126,14 +126,14 @@ pub(crate) struct ViewStorage {
     /// Those a view part edits through its type, by type.
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
     /// Those sections, as the API reaches them.
-    section_apis: RefCell<Vec<Rc<dyn RecordApi>>>,
+    section_apis: RefCell<Vec<Rc<dyn ResourceApi>>>,
     /// The records another provider keeps, by id, with that provider
     /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
     /// bind to them, the window neither publishes nor runs their actions.
     kept_by: RefCell<HashMap<String, &'static str>>,
     /// The store of the app's records in the workspace, for the records it
     /// keeps beside its own: not in a view of a past version.
-    records: Option<super::chain::WorkspaceRecords>,
+    records: Option<super::chain::WorkspaceResources>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
     /// The records every app of the workspace opens, when the host keeps them:
@@ -147,19 +147,19 @@ pub(crate) struct ViewStorage {
 /// records and this device's id. Neither reaches a view of a past version.
 #[derive(Default)]
 pub(crate) struct Hosted {
-    pub(crate) person: Option<ui_core::record::person::PersonRecords>,
+    pub(crate) person: Option<ui_core::resource::person::PersonResources>,
     pub(crate) device: Option<String>,
     /// The store of the app's records in the workspace, who edits there and
     /// what they may do.
     pub(crate) records: Option<(
-        ui_core::record::RecordStore,
+        ui_core::resource::ResourceStore,
         tilo_resource::MemberId,
         ui_core::permissions::LivePermissions,
     )>,
     /// The records every app of the workspace opens, and the window's wake
     /// scope, against which the workspace's emoji are registered.
     pub(crate) workspace: Option<(
-        ui_core::record::workspace::WorkspaceRecords,
+        ui_core::resource::workspace::WorkspaceResources,
         ui_core::wake::WakeHandle,
     )>,
 }
@@ -168,7 +168,7 @@ pub(crate) struct Hosted {
 pub(crate) struct Attached {
     person: Option<super::person::PersonState>,
     device: Option<String>,
-    records: Option<super::chain::WorkspaceRecords>,
+    records: Option<super::chain::WorkspaceResources>,
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
     emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
@@ -209,15 +209,15 @@ impl Hosted {
                 super::person::PersonState::new(records, own, app_id, app_title)
             }),
             device: self.device,
-            records: self
-                .records
-                .map(|(store, me, permissions)| super::chain::WorkspaceRecords {
+            records: self.records.map(|(store, me, permissions)| {
+                super::chain::WorkspaceResources {
                     store,
                     me,
                     permissions: Some(permissions),
                     app_id,
                     app_title,
-                }),
+                }
+            }),
         }
     }
 }
@@ -247,7 +247,7 @@ impl ViewStorage {
         &self,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
-        super::controls::opened_record::<P>();
+        super::controls::opened_resource::<P>();
         self.chains.open::<P>(self.records.as_ref(), base)
     }
 
@@ -256,10 +256,10 @@ impl ViewStorage {
     /// first use, its actions reading that record from `base_state`.
     pub(crate) fn chain_beside<P: super::Chained>(
         &self,
-        base: &ui_core::record::DocumentId,
+        base: &ui_core::resource::DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
-        super::controls::opened_record::<P>();
+        super::controls::opened_resource::<P>();
         self.chains
             .open_beside::<P>(self.records.as_ref(), base, base_state)
     }
@@ -267,11 +267,11 @@ impl ViewStorage {
     /// The children of `C` the parent lists, held on first use, the parent
     /// read from `parent`. `None` where the window keeps no records in a
     /// workspace (a view of a past version).
-    pub(crate) fn children<C: super::children::ChildRecord>(
+    pub(crate) fn children<C: super::children::ChildResource>(
         &self,
         parent: impl Fn() -> Rc<<C::Parent as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::children::ChildrenState<C>>> {
-        super::controls::opened_record::<C>();
+        super::controls::opened_resource::<C>();
         self.chains
             .open_children::<C>(self.records.as_ref(), parent)
     }
@@ -311,7 +311,7 @@ impl ViewStorage {
 
     /// The store of the app's records in the workspace; `None` in a view of
     /// a past version.
-    pub(crate) fn workspace_store(&self) -> Option<&ui_core::record::RecordStore> {
+    pub(crate) fn workspace_store(&self) -> Option<&ui_core::resource::ResourceStore> {
         self.records.as_ref().map(|records| &records.store)
     }
 
@@ -323,14 +323,14 @@ impl ViewStorage {
     /// The person's record of `P`, opened on first use.
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
-    ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened_record::<P>();
+    ) -> Option<super::person::PersonResource<P>> {
+        super::controls::opened_resource::<P>();
         self.person.as_ref()?.open::<P>()
     }
 
     /// Open the record `P` every app of the workspace opens that this app
     /// keeps.
-    pub(crate) fn workspace_record<P: tilo_resource::Resource>(&self) {
+    pub(crate) fn workspace_resource<P: tilo_resource::Resource>(&self) {
         if let Some(workspace) = &self.workspace {
             let _ = workspace.open::<P>(workspace.app_id());
         }
@@ -341,32 +341,32 @@ impl ViewStorage {
     pub(crate) fn shared_workspace<P: tilo_resource::Resource>(
         &self,
         owner: &'static str,
-    ) -> Option<super::workspace::WorkspaceRecord<P>> {
+    ) -> Option<super::workspace::WorkspaceResource<P>> {
         self.workspace.as_ref()?.open::<P>(owner)
     }
 
     /// The record `id` that `owner` keeps, opened on first use.
-    pub(crate) fn shared_record<P: tilo_resource::Resource>(
+    pub(crate) fn shared_resource<P: tilo_resource::Resource>(
         &self,
         owner: &'static str,
         id: &str,
-    ) -> Option<super::workspace::WorkspaceRecord<P>> {
+    ) -> Option<super::workspace::WorkspaceResource<P>> {
         self.workspace.as_ref()?.open_at::<P>(owner, id)
     }
 
     /// The shared record of the person's `P`.
-    pub(crate) fn shared_person<P: tilo_resource::SharedRecord>(
+    pub(crate) fn shared_person<P: tilo_resource::SharedResource>(
         &self,
-    ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened_record::<P>();
+    ) -> Option<super::person::PersonResource<P>> {
+        super::controls::opened_resource::<P>();
         self.person.as_ref()?.open_shared::<P>()
     }
 
     /// The records other than the app's own the views opened — the
     /// person's records, settings sections — as published resources.
-    /// What [`Self::record_resources`] publishes depends on: each record's
+    /// What [`Self::resource_resources`] publishes depends on: each record's
     /// id and revision, in publication order.
-    pub(crate) fn records_key(&self) -> Vec<(String, u64)> {
+    pub(crate) fn resources_key(&self) -> Vec<(String, u64)> {
         let mut apis = self
             .person
             .as_ref()
@@ -381,7 +381,7 @@ impl ViewStorage {
 
     /// The person's records a view asked for and could not open, as they
     /// are published: their declared actions, unavailable for why.
-    pub(crate) fn unavailable_records(&self) -> Vec<tilo_actions::ResourceSpec> {
+    pub(crate) fn unavailable_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.person
             .as_ref()
             .map(super::person::PersonState::unavailable)
@@ -404,7 +404,7 @@ impl ViewStorage {
         })
     }
 
-    pub(crate) fn record_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+    pub(crate) fn resource_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self
             .person
             .as_ref()
@@ -436,7 +436,7 @@ impl ViewStorage {
 
     /// Answer one published action of those records, invoked by someone
     /// the window knows as `me`.
-    pub(crate) fn record_action(
+    pub(crate) fn resource_action(
         &self,
         me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
@@ -450,8 +450,8 @@ impl ViewStorage {
     }
 
     /// Answer a `read` of one of those records, named `record`
-    /// ([`tilo_resource::read::record_spec`]).
-    pub(crate) fn record_read(
+    /// ([`tilo_resource::read::resource_spec`]).
+    pub(crate) fn resource_read(
         &self,
         record: &str,
         payload: &[u8],
@@ -469,7 +469,7 @@ impl ViewStorage {
 
     /// The person's records and settings sections the window answers for:
     /// another provider runs what it keeps; the window never does.
-    fn answering_apis(&self) -> Vec<Rc<dyn RecordApi>> {
+    fn answering_apis(&self) -> Vec<Rc<dyn ResourceApi>> {
         let mut apis = self
             .person
             .as_ref()
@@ -504,7 +504,7 @@ impl ViewStorage {
             let api = Rc::new(SectionApi::new(kind, None, Vec::new()));
             self.section_apis
                 .borrow_mut()
-                .push(Rc::clone(&api) as Rc<dyn RecordApi>);
+                .push(Rc::clone(&api) as Rc<dyn ResourceApi>);
             api
         };
         self.sections.borrow_mut().insert(name, Rc::clone(&api));

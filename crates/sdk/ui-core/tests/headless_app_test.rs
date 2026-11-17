@@ -89,7 +89,7 @@ fn an_app_publishes_the_resources_a_caller_addresses_it_by() {
 fn an_action_runs_and_the_app_is_what_answers_for_it() {
     {
         let (host, mut app) = mounted_probe();
-        let checkout = app.frame().component_record().cloned();
+        let checkout = app.frame().component_resource().cloned();
         let address = ActionAddress::new("probe:shared", "edit");
         let answer = app.call(&address, serde_json::Map::new()).unwrap();
         assert!(
@@ -142,7 +142,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
         let (host, mut app) = mounted_probe();
         let checkout = app
             .frame()
-            .component_record()
+            .component_resource()
             .cloned()
             .expect("the mounted app keeps the record it was launched on");
         let outcome = app.drive(&[invokes("view")]);
@@ -164,7 +164,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
         let (host, mut app) = mounted_probe();
         let checkout = app
             .frame()
-            .component_record()
+            .component_resource()
             .cloned()
             .expect("the mounted app keeps the record it was launched on");
         let outcome = app.drive(&[invokes("view"), invokes("edit")]);

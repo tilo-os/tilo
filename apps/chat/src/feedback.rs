@@ -164,9 +164,9 @@ pub fn durable_receipt(
     doc: &Doc,
     id: &str,
     actual_destination: &Destination,
-    save_status: &ui::record::RecordSaveStatus,
+    save_status: &ui::resource::ResourceSaveStatus,
 ) -> Result<Receipt, ActionError> {
-    if *save_status != ui::record::RecordSaveStatus::Saved {
+    if *save_status != ui::resource::ResourceSaveStatus::Saved {
         return Err(refused("feedback is awaiting durable destination storage"));
     }
     receipt_content(doc, id, actual_destination)
@@ -197,7 +197,7 @@ fn receipt_content(
 }
 
 /// Pure canonical report projection for the system's feedback receipt service.
-/// The owner service must check its exact `RecordStore`'s current durability;
+/// The owner service must check its exact `ResourceStore`'s current durability;
 /// this projection itself grants neither delivery confirmation nor authorship.
 pub fn canonical_feedback_projection(
     doc: &Doc,
@@ -222,8 +222,8 @@ pub fn canonical_feedback_projection(
 /// Hosts retain the admitted workspace/provider identity; neither the report nor an
 /// external URL selects this store or record.
 pub fn receipt_from_record(
-    store: &ui::record::RecordStore,
-    record: &ui::record::DocumentId,
+    store: &ui::resource::ResourceStore,
+    record: &ui::resource::DocumentId,
     id: &str,
     actual_destination: &Destination,
 ) -> Result<Receipt, ActionError> {
@@ -238,7 +238,7 @@ pub fn receipt_from_record(
     }
     store
         .read(record, |doc| {
-            let scope = ui::record::workspace_scope(doc);
+            let scope = ui::resource::workspace_scope(doc);
             if scope
                 .as_deref()
                 .is_some_and(|workspace| workspace != actual_destination.workspace)
@@ -254,7 +254,6 @@ pub fn receipt_from_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::MemberId;
     use crate::record::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
@@ -262,6 +261,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
     use ui::feedback::{ReviewedFeedback, Submission};
     use ui::tilo_resource::Invoke;
+    use ui::tilo_resource::MemberId;
 
     /// What `channel` of the chat in `doc` shows: the reports filed in it
     /// among its messages.
@@ -616,16 +616,16 @@ mod tests {
 
         phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records;
         {
-            use ui::record::{DocumentCheckout, DocumentId, ResourceType, RecordOwners, RecordStore};
+            use ui::resource::{DocumentCheckout, DocumentId, ResourceType, ResourceOwners, ResourceStore};
             let (_, submission) = seeded();
             let temp = tempfile::tempdir().unwrap();
-            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let mut owners = ResourceOwners::new(temp.path().join("profile"));
             let store = owners
                 .open("so.tilo.chat", &submission.destination.workspace)
                 .unwrap();
             let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("chat.workspace"));
             store
-                .reserve_record(&checkout)
+                .reserve_resource(&checkout)
                 .unwrap()
                 .initialize(|doc| {
                     filed(doc, &submission);
@@ -672,10 +672,10 @@ mod tests {
                 )
                 .is_ok()
             );
-            let memory = RecordStore::new(
-                ui::record::RecordSet::in_memory().with_home(&submission.destination.workspace),
+            let memory = ResourceStore::new(
+                ui::resource::ResourceSet::in_memory().with_home(&submission.destination.workspace),
             );
-            memory.create_record(&checkout).unwrap();
+            memory.create_resource(&checkout).unwrap();
             memory
                 .with(&checkout.id, |doc| filed(doc, &submission))
                 .unwrap();
@@ -692,10 +692,10 @@ mod tests {
 
         phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp;
         {
-            use ui::record::{DocumentCheckout, ResourceType, RecordOwners};
+            use ui::resource::{DocumentCheckout, ResourceType, ResourceOwners};
             let (_, submission) = seeded();
             let temp = tempfile::tempdir().unwrap();
-            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let mut owners = ResourceOwners::new(temp.path().join("profile"));
             let store = owners
                 .open(
                     <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
@@ -704,7 +704,7 @@ mod tests {
                 .unwrap();
             let primary = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
             store
-                .reserve_record(&primary)
+                .reserve_resource(&primary)
                 .unwrap()
                 .initialize(|doc| {
                     filed(doc, &submission);
@@ -714,7 +714,7 @@ mod tests {
             store.try_flush().unwrap();
             assert!(
                 store
-                    .read(&primary.id, |doc| ui::record::workspace_scope(doc)
+                    .read(&primary.id, |doc| ui::resource::workspace_scope(doc)
                         .is_none())
                     .unwrap()
             );
@@ -744,13 +744,13 @@ mod tests {
 
         phase receipt_requires_saved_destination_and_canonical_attributed_message;
         {
-            use ui::record::RecordSaveStatus;
+            use ui::resource::ResourceSaveStatus;
             let (mut doc, submission) = seeded();
             apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
             for status in [
-                RecordSaveStatus::Saving,
-                RecordSaveStatus::MemoryOnly,
-                RecordSaveStatus::Failed("disk full".into()),
+                ResourceSaveStatus::Saving,
+                ResourceSaveStatus::MemoryOnly,
+                ResourceSaveStatus::Failed("disk full".into()),
             ] {
                 assert!(
                     durable_receipt(&doc, &submission.id, &submission.destination, &status).is_err()
@@ -760,7 +760,7 @@ mod tests {
                 &doc,
                 &submission.id,
                 &submission.destination,
-                &RecordSaveStatus::Saved,
+                &ResourceSaveStatus::Saved,
             )
             .unwrap();
             assert_eq!(receipt.digest, submission.digest().unwrap());
@@ -771,7 +771,7 @@ mod tests {
             let mut elsewhere = submission.destination.clone();
             elsewhere.workspace = "other-workspace".into();
             assert!(
-                durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
+                durable_receipt(&doc, &submission.id, &elsewhere, &ResourceSaveStatus::Saved).is_err()
             );
         }
     }

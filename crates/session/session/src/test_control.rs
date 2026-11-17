@@ -322,7 +322,7 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
-    RecordRead,
+    ResourceRead,
     Scroll,
     SearchRows,
     Snapshot,
@@ -358,7 +358,7 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
-        Self::RecordRead,
+        Self::ResourceRead,
         Self::Scroll,
         Self::SearchRows,
         Self::Snapshot,
@@ -394,7 +394,7 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
-            "record_read" => Self::RecordRead,
+            "resource_read" => Self::ResourceRead,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
@@ -432,7 +432,7 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
-            Self::RecordRead => "record_read",
+            Self::ResourceRead => "resource_read",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
@@ -461,7 +461,7 @@ impl Op {
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
-                | Self::RecordRead
+                | Self::ResourceRead
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -990,29 +990,29 @@ fn asked_here(
         Op::ActionsStatus => actions_status(request, &shared.actions, ctx),
         Op::ActionsCancel => actions_cancel(request, &shared.actions, ctx),
         Op::Watch => watch(request, writer, watching, ctx, shared),
-        Op::RecordRead => record_read(request, &shared.actions, ctx),
+        Op::ResourceRead => resource_read(request, &shared.actions, ctx),
         _ => return None,
     })
 }
 
-/// The answer to `record_read`: the records `records` of `app` in `workspace` (the one in front
+/// The answer to `resource_read`: the records `records` of `app` in `workspace` (the one in front
 /// when unnamed), read through the record shared as this person reads them, once they differ from
 /// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: as every reader of a
-/// record is answered ([`tilo_actions::remote::RecordReadings::readable`]). Each record is watched
+/// record is answered ([`tilo_actions::remote::ResourceReadings::readable`]). Each record is watched
 /// before it is read, so a reader holding a copy is woken by the next write to any of them.
-fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    use tilo_actions::remote::{RecordAddress, RecordAsk};
+fn resource_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
+    use tilo_actions::remote::{ResourceAddress, ResourceAsk};
     let Some(app) = request.get("app").and_then(Json::as_str) else {
-        return refusal("parse_error", "`record_read` takes `app` and `records`");
+        return refusal("parse_error", "`resource_read` takes `app` and `records`");
     };
-    let asks: Vec<RecordAsk> = request
+    let asks: Vec<ResourceAsk> = request
         .get("records")
         .and_then(Json::as_array)
         .into_iter()
         .flatten()
         .filter_map(Json::as_str)
-        .map(|record| RecordAsk {
-            address: RecordAddress {
+        .map(|record| ResourceAsk {
+            address: ResourceAddress {
                 app: app.to_owned(),
                 record: record.to_owned(),
             },
@@ -1030,14 +1030,14 @@ fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     );
     let after = request.get("after").and_then(Json::as_str);
     let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
-    let Some(reads) = actions.host.record_reads() else {
+    let Some(reads) = actions.host.resource_reads() else {
         return refusal(
             "unavailable",
-            tilo_actions::remote::RECORD_READS_UNAVAILABLE,
+            tilo_actions::remote::RESOURCE_READS_UNAVAILABLE,
         );
     };
     let caller = actions.caller(ctx).in_workspace(workspace);
-    match tilo_actions::remote::read_records(reads.as_ref(), &caller, &asks, after, deadline)
+    match tilo_actions::remote::read_resources(reads.as_ref(), &caller, &asks, after, deadline)
         .map_err(|error| action_refusal(&error))
         .and_then(|readings| {
             readings
@@ -2638,7 +2638,7 @@ mod tests {
                 Op::ProfileStart,
                 Op::ProfileStatus,
                 Op::ProfileStop,
-                Op::RecordRead,
+                Op::ResourceRead,
                 Op::StateDump,
                 Op::Watch,
                 Op::Windows,

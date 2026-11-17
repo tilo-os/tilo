@@ -1304,7 +1304,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         impl #impl_generics #name #type_generics #where_clause {
             /// The record as data: its fields' table and how to reach them.
             #[doc(hidden)]
-            pub const __RECORD: #table::RecordDesc = #table::RecordDesc {
+            pub const __RECORD: #table::ResourceDesc = #table::ResourceDesc {
                 fields: &[#(#descs),*],
                 field: Self::__field,
                 field_mut: Self::__field_mut,
@@ -1386,7 +1386,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
             const CHECKS: bool = #(#checks_const)||*;
             const OPS: bool = #(#ops_const)||*;
-            const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_record(&Self::__RECORD);
+            const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_resource(&Self::__RECORD);
             type Paths<__R> = #paths_name<__R, #(#generic_args),*>;
 
             fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {
@@ -1502,11 +1502,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
 
             #[inline(never)]
             fn value_schema() -> #krate::__private::serde_json::Value {
-                #krate::__private::record_value_schema(<Self as #krate::Model>::SHAPE)
+                #krate::__private::resource_value_schema(<Self as #krate::Model>::SHAPE)
             }
 
             fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
-                #krate::surface::record_type(
+                #krate::surface::resource_type(
                     types,
                     ::core::any::type_name::<Self>(),
                     #type_name,

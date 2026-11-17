@@ -1,7 +1,7 @@
 //! Telling the person when someone mentions them, wherever in the workspace.
 //!
 //! A mention is a run of a record's rich text marked with a member's id, whichever app wrote
-//! it ([`ui::mentions::in_record_for`]). Every record a change reaches is looked at as the change
+//! it ([`ui::mentions::in_resource_for`]). Every record a change reaches is looked at as the change
 //! arrives, and each new mention of the person here is one [`Notice`]. A mention is never told
 //! twice, is taken back when it is edited away, and one that was already there when this device
 //! started following the record is not news. What was told is kept in the session's store, so a
@@ -94,7 +94,7 @@ impl Held {
         let (record, kind) = place_record(look);
         let route = look.record.to_owned();
         let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
-        for mention in ui::mentions::in_record_for(look.doc, look.read) {
+        for mention in ui::mentions::in_resource_for(look.doc, look.read) {
             if !me.contains(&mention.person)
                 || mention.by.as_ref().is_some_and(|by| me.contains(by))
             {
@@ -354,8 +354,8 @@ impl Mentions {
                 .and_then(|chain| records.document(&changed.app, &changed.workspace, chain));
             // The kind the record names itself as, else the one its app keeps there.
             let named = match tree.as_ref() {
-                Some(tree) => record_kind(tree),
-                None => record_kind(&doc),
+                Some(tree) => resource_type(tree),
+                None => resource_type(&doc),
             };
             let kind = named
                 .or_else(|| self.known_kind(&changed.app, &changed.workspace))
@@ -562,7 +562,7 @@ fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, serde_json::
 /// the chain a part belongs to, else the record itself.
 fn place_record(look: &Look<'_>) -> (String, String) {
     let kind_of = |doc: Option<&AutoCommit>| {
-        doc.and_then(record_kind)
+        doc.and_then(resource_type)
             .unwrap_or_else(|| look.kind.to_owned())
     };
     match ui::mentions::chain_of(look.record) {
@@ -572,8 +572,8 @@ fn place_record(look: &Look<'_>) -> (String, String) {
 }
 
 /// The kind of record `doc` names itself as, when it names one.
-fn record_kind(doc: &AutoCommit) -> Option<String> {
-    ui::record::identity(doc).map(|identity| identity.kind.as_str().to_owned())
+fn resource_type(doc: &AutoCommit) -> Option<String> {
+    ui::resource::identity(doc).map(|identity| identity.kind.as_str().to_owned())
 }
 
 #[cfg(test)]

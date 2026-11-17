@@ -191,7 +191,7 @@ fn undo_targets(
         let exact: Vec<&CatalogueProvider> = of_app
             .iter()
             .copied()
-            .filter(|provider| !record.is_empty() && &provider.record_id == record)
+            .filter(|provider| !record.is_empty() && &provider.document_id == record)
             .collect();
         let mut serving: Vec<&CatalogueProvider> = if exact.is_empty() { of_app } else { exact };
         let outcome = || TaskRunDocument {
@@ -353,7 +353,7 @@ mod tests {
                         provider: PROVIDER.into(),
                         app_id: APP.into(),
                         workspace: WORKSPACE.into(),
-                        record_id: RECORD.into(),
+                        document_id: RECORD.into(),
                         browsable: false,
                     }];
                 }
@@ -362,7 +362,7 @@ mod tests {
                         provider: SESSION.into(),
                         app_id: SESSION.into(),
                         workspace: WORKSPACE.into(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         browsable: true,
                     });
                 }
@@ -552,7 +552,7 @@ mod tests {
             let (doc, body) = edited(TASK);
             let api = session_api(doc);
             // The activity names a session-kept record as the app's own record of the workspace.
-            let primary = ui::record::DocumentId::package_primary().as_str().to_owned();
+            let primary = ui::resource::DocumentId::package_primary().as_str().to_owned();
             let undone = undo_task_run(
                 &api,
                 &caller(),

@@ -181,7 +181,7 @@ pub struct MapsApp {
 
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
     offline_areas: Option<(
-        ui::framework::PersonRecord<crate::offline_areas::OfflineAreas>,
+        ui::framework::PersonResource<crate::offline_areas::OfflineAreas>,
         String,
     )>,
 

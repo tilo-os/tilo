@@ -59,7 +59,7 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
         TriggerSpec::DeviceConnected { device_class } => {
             format!("when a {} connects", quoted(device_class))
         }
-        TriggerSpec::RecordChanged {
+        TriggerSpec::ResourceChanged {
             kind,
             actions,
             fields,
@@ -306,7 +306,7 @@ fn quoted_change(rest: &str) -> Result<TriggerSpec, String> {
     let Some(after) = rest.strip_prefix("changes") else {
         return Err("write `when a KIND changes` or `when a CLASS connects`".to_owned());
     };
-    record_change(subject, after)
+    document_change(subject, after)
 }
 
 /// The lines that name their subject in quotation marks before saying what it
@@ -362,7 +362,7 @@ fn match_of(text: &str) -> Result<(String, Value, String), String> {
 }
 
 /// The rest of `when a KIND changes`.
-fn record_change(kind: String, rest: &str) -> Result<TriggerSpec, String> {
+fn document_change(kind: String, rest: &str) -> Result<TriggerSpec, String> {
     let (actions, rest) = quoted_or_list(rest.trim_start().strip_prefix("by "), " or ")?;
     let (fields, rest) = quoted_or_list(rest.trim_start().strip_prefix("in "), " or ")?;
     let by = match rest.trim() {
@@ -371,7 +371,7 @@ fn record_change(kind: String, rest: &str) -> Result<TriggerSpec, String> {
         "by anyone but a bot" => crate::shortcut::ActorFilter::NotBots,
         other => return Err(format!("`{other}` is not who made the change")),
     };
-    Ok(TriggerSpec::RecordChanged {
+    Ok(TriggerSpec::ResourceChanged {
         kind,
         actions,
         fields,

@@ -180,12 +180,12 @@ impl ResourceApp for SettingsShell {
     /// through its actions.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.kept_by(
-            tilo_actions::remote::settings_records::PROVIDER,
+            tilo_actions::remote::settings_resources::PROVIDER,
             settings_sections::declare,
         );
     }
 
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
             accounts::person::PersonAccounts,
         >()];
@@ -463,7 +463,7 @@ mod web_tests {
 }
 
 #[cfg(test)]
-mod own_record_tests {
+mod own_resource_tests {
     /// What Settings changes is the person's: a window naming no record opens
     /// their own record of the workspace, never the workspace's, so a reader
     /// of the workspace changes their own settings like anyone else.
@@ -472,11 +472,11 @@ mod own_record_tests {
         let definition = ui::framework::definition::<super::SettingsShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
         let own = definition
-            .member_record_of(&person)
+            .member_resource_of(&person)
             .expect("each member keeps their own Settings record");
         assert_eq!(
             own.id,
-            ui::record::DocumentId::of_member(person.id(), "settings.root").unwrap()
+            ui::resource::DocumentId::of_member(person.id(), "settings.root").unwrap()
         );
     }
 }

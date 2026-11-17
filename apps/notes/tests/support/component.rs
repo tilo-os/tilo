@@ -4,7 +4,7 @@ pub use canonical::NotebookFixture;
 use std::rc::Rc;
 use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
-use ui::record::DocumentCheckout;
+use ui::resource::DocumentCheckout;
 use ui::widget::Edits;
 
 pub fn existing(checkout: &DocumentCheckout) -> LaunchTarget {
@@ -94,15 +94,15 @@ pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
         text_renderer: renderer(),
     }
 }
-pub fn notebook(f: &NotebookFixture) -> ui::record::DocumentCheckout {
+pub fn notebook(f: &NotebookFixture) -> ui::resource::DocumentCheckout {
     f.write_notebook()
 }
 
 pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     assert!(
-        report.record_error.is_none(),
+        report.resource_error.is_none(),
         "record close: {:?}",
-        report.record_error
+        report.resource_error
     );
     assert!(
         report.view_error.is_none(),

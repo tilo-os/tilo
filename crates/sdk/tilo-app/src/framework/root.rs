@@ -17,7 +17,7 @@ use ui_core::application_view::{
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
-use ui_core::record::RecordSaveStatus;
+use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
@@ -57,7 +57,7 @@ pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
 use shared_tree::{
-    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren,
+    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, ResourceChildren, RowChildren,
     SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;
@@ -83,7 +83,7 @@ pub(crate) struct ResourceRoot {
     followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
     pub(crate) dispatch: DispatchCore,
-    saved: LocalState<RecordSaveStatus>,
+    saved: LocalState<ResourceSaveStatus>,
     /// The window's save status over the view: the record's durability and
     /// the app's own saves, silent unless a save stalls or fails.
     save: super::saves::SaveIndicator,
@@ -131,7 +131,7 @@ pub(crate) struct ResourceRoot {
     published_children: std::cell::RefCell<Option<PublishedChildren>>,
     /// The children with the records kept beside the resource, as the shared
     /// publication last carried them.
-    record_children: std::cell::RefCell<Option<RecordChildren>>,
+    resource_children: std::cell::RefCell<Option<ResourceChildren>>,
     /// The children with the surfaces' live rows merged in, as the shared
     /// publication last carried them.
     row_children: std::cell::RefCell<Option<RowChildren>>,
@@ -560,7 +560,7 @@ impl ResourceRoot {
             publication_tree: std::cell::RefCell::new(None),
             item_children: std::cell::RefCell::new(None),
             published_children: std::cell::RefCell::new(None),
-            record_children: std::cell::RefCell::new(None),
+            resource_children: std::cell::RefCell::new(None),
             row_children: std::cell::RefCell::new(None),
             binding_head: std::cell::RefCell::new(None),
             binding_base: std::cell::RefCell::new(None),
@@ -650,7 +650,7 @@ impl ResourceRoot {
         let state = self.typed.state();
         let readable = self.unreadable.is_none();
         self.reactions.sync(&super::reactions::ReactionsInput {
-            table: self.resource.record_table.filter(|_| readable),
+            table: self.resource.resource_table.filter(|_| readable),
             state: state.as_ref(),
             dispatch: &self.dispatch,
             people: &self.run.people,
@@ -1085,8 +1085,10 @@ impl ResourceRoot {
             // A record a view asked for and could not open is published
             // with its declared actions unavailable for why: nothing is
             // shown of it, so nothing but those is answered.
-            resource.children.extend(self.storage.record_resources());
-            resource.children.extend(self.storage.unavailable_records());
+            resource.children.extend(self.storage.resource_resources());
+            resource
+                .children
+                .extend(self.storage.unavailable_resources());
         }
         resource
     }
@@ -1127,7 +1129,7 @@ impl ResourceRoot {
             }
         }
         // A link to the record opens it in this app, views or not.
-        tilo_resource::share::offer_record(&mut resource);
+        tilo_resource::share::offer_resource(&mut resource);
         self.offer_open_link(resource)
     }
 
@@ -1173,7 +1175,7 @@ impl ResourceRoot {
 struct Parts {
     alive: Rc<()>,
     dispatch: DispatchCore,
-    saved: LocalState<RecordSaveStatus>,
+    saved: LocalState<ResourceSaveStatus>,
     saves: super::saves::Saves,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
@@ -1622,9 +1624,9 @@ impl RootModel for ResourceRoot {
         }
     }
 
-    fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+    fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self.storage.person_owners();
-        owners.extend(self.content.record_owners());
+        owners.extend(self.content.resource_owners());
         owners
     }
 
@@ -1696,7 +1698,7 @@ impl RootModel for ResourceRoot {
         );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
-        handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
+        handlers.insert(super::record::RESOURCE_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_READ_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
@@ -1791,12 +1793,12 @@ impl RootModel for ResourceRoot {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if let Some(output) = self.start_record_operation(op, doc)? {
+        if let Some(output) = self.start_resource_operation(op, doc)? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if (self.resource.readable || self.resource.record_table.is_some())
+        if (self.resource.readable || self.resource.resource_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
@@ -1886,7 +1888,7 @@ impl ResourceRoot {
     /// its history at a version, an operation on one of its records or its
     /// chain of parts, the person's own record history, and a read of a
     /// record kept beside its own.
-    fn start_record_operation(
+    fn start_resource_operation(
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &mut ui_core::widget::Edits<'_>,
@@ -1896,18 +1898,18 @@ impl ResourceRoot {
         };
         let output = if request.type_id == super::history::VIEW_TYPE {
             super::history::answer(doc, request.payload)?
-        } else if request.type_id == super::record::RECORD_ACTION_TYPE {
+        } else if request.type_id == super::record::RESOURCE_ACTION_TYPE {
             self.storage
-                .record_action(self.dispatch.me(), request.payload)?
+                .resource_action(self.dispatch.me(), request.payload)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
             self.storage
                 .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
             self.storage.person_history(request.payload)?
         } else if request.type_id == READ_TYPE
-            && let Some(record) = tilo_resource::read::record_of(request.payload)
+            && let Some(record) = tilo_resource::read::resource_of(request.payload)
         {
-            self.storage.record_read(&record, request.payload)?
+            self.storage.resource_read(&record, request.payload)?
         } else {
             return Ok(None);
         };
@@ -2244,7 +2246,7 @@ impl RootPublishes for ResourceRoot {
         if self.stages.opens() {
             offer_item_open(self.resource.opens_as_item, &mut resource);
         }
-        if let Some(table) = self.resource.record_table {
+        if let Some(table) = self.resource.resource_table {
             offer_item_reads(&mut resource, table, self.resource.kind);
         }
         let mut resources = vec![resource];
@@ -2564,10 +2566,10 @@ impl RootApp for ResourceRoot {
     }
 
     fn take_save_retry(&mut self) -> bool {
-        self.save.take_record_retry()
+        self.save.take_resource_retry()
     }
 
-    fn record_save_status(&mut self, status: RecordSaveStatus) {
+    fn resource_save_status(&mut self, status: ResourceSaveStatus) {
         self.save.record(&status, ui_core::time::now());
         // Sampled on every sync: only a new status is a change.
         self.saved.set_if_changed(status);
@@ -2576,7 +2578,7 @@ impl RootApp for ResourceRoot {
     // The workspace refused what this record sent, and the record withdrew it:
     // the view shows the stored state again, and the action reads as
     // refused, as one this device refused does.
-    fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
+    fn record_refused(&mut self, refusal: &ui_core::resource::ResourceRefusal) {
         self.dispatch.refuse_by_workspace(refusal);
         self.typed.represent();
     }

@@ -1,16 +1,17 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
 use super::{
-    Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak, identity_reads_record,
+    Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak,
+    identity_reads_document,
 };
 use crate::workspace_keys::KeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 
-/// What [`NativeDocumentReads::await_arriving_record`] waits on, awaited on
+/// What [`NativeDocumentReads::await_arriving_document`] waits on, awaited on
 /// the broker's local set.
-pub type AwaitingRecord = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+pub type AwaitingDocument = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 /// No public constructor. The route and original caller are retained from the
 /// admitted channel, together with live launcher/host-worker custody.
@@ -18,7 +19,7 @@ pub type AwaitingRecord = std::pin::Pin<Box<dyn std::future::Future<Output = ()>
 pub struct NativeDocumentReadContext {
     route: CrdtRoute,
     certificate: tilo_user_identity::DeviceCert,
-    record_kind: Option<String>,
+    resource_type: Option<String>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -33,7 +34,7 @@ mod changes_tests;
 mod service_session_tests;
 impl NativeDocumentReadContext {
     /// A read of `route` by an agent acting for the person whose device certificate is
-    /// `certificate` (`record_read`): no launcher custody, only `revalidate`,
+    /// `certificate` (`resource_read`): no launcher custody, only `revalidate`,
     /// which decides the agent's read of the record again. Only the broker can make one.
     pub(super) fn for_agent(
         route: CrdtRoute,
@@ -43,7 +44,7 @@ impl NativeDocumentReadContext {
         Self {
             route,
             certificate,
-            record_kind: None,
+            resource_type: None,
             revalidate,
         }
     }
@@ -56,7 +57,7 @@ impl NativeDocumentReadContext {
         Self {
             route,
             certificate,
-            record_kind: None,
+            resource_type: None,
             revalidate: Arc::new(|| Ok(())),
         }
     }
@@ -66,8 +67,8 @@ impl NativeDocumentReadContext {
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         &self.certificate
     }
-    pub fn record_kind(&self) -> Option<&str> {
-        self.record_kind.as_deref()
+    pub fn resource_type(&self) -> Option<&str> {
+        self.resource_type.as_deref()
     }
     /// Re-checks the admitted channel's live custody and admission.
     pub fn revalidate(&self) -> Result<(), String> {
@@ -93,7 +94,7 @@ pub enum NativeDocumentRead {
     /// and asks again.
     Pending,
     /// A record the workspace's hosts send a device only once it asks
-    /// (`neighbour_wire::record_sync`), which they said they have none of,
+    /// (`neighbour_wire::document_sync`), which they said they have none of,
     /// or no host of the workspace is connected to ask: answered as
     /// [`Reply::Absent`], no failure either, and a held `Await` wakes when
     /// that changes.
@@ -114,9 +115,9 @@ pub enum NativeDocumentRead {
         body: Box<dyn DocumentBytes>,
     },
 }
-/// Who answers an app's read of one record ([`NativeDocumentReads::record_read`]).
+/// Who answers an app's read of one record ([`NativeDocumentReads::resource_read`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecordRead {
+pub enum ResourceRead {
     /// The app's own channel: a workspace this owner keeps no records of, or a
     /// record a sealed workspace does not hold yet, which is new and which the
     /// app creates on its own sealed channel. Answered [`Reply::Legacy`].
@@ -147,39 +148,39 @@ pub trait NativeDocumentReads: Send + Sync {
     fn requires_workspace(&self, workspace: &str) -> bool;
     /// Whether `workspace` seals every record write under the record channel's
     /// keys: no write in it is taken unencrypted, from any app.
-    fn seals_records(&self, workspace: &str) -> bool {
+    fn seals_documents(&self, workspace: &str) -> bool {
         let _ = workspace;
         false
     }
     /// The member's own record `app`'s `record` in `workspace` is, as its writes
-    /// that reached this device name it ([`collab_types::OwnRecord`]); `None` for
+    /// that reached this device name it ([`collab_types::OwnResource`]); `None` for
     /// a record of the workspace's, or one this device holds nothing of.
-    fn own_record(
+    fn own_resource(
         &self,
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Option<collab_types::OwnRecord> {
+    ) -> Option<collab_types::OwnResource> {
         let _ = (workspace, app, record);
         None
     }
     /// Who answers an app's read of `app`'s `record` in `workspace`.
-    fn record_read(&self, workspace: &str, app: &str, record: &str) -> RecordRead {
+    fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
         let _ = (app, record);
         if self.requires_workspace(workspace) {
-            RecordRead::Committed
+            ResourceRead::Committed
         } else {
-            RecordRead::Own
+            ResourceRead::Own
         }
     }
     /// Whether this device holds anything of `app`'s `record` in `workspace`: what its owner commits
     /// or holds, or sealed writes of it. A record it holds nothing of is new to this device: the
     /// workspace has none yet, once the host said all it sends of it has come
-    /// ([`Self::await_arriving_record`]).
-    fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
-        self.record_read(workspace, app, record) != RecordRead::Own
+    /// ([`Self::await_arriving_document`]).
+    fn holds_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
+        self.resource_read(workspace, app, record) != ResourceRead::Own
     }
-    /// Before an Open this owner would answer [`RecordRead::Own`], as a
+    /// Before an Open this owner would answer [`ResourceRead::Own`], as a
     /// record that is new: the wait for what decides it, when the record may
     /// exist where this device has not seen it yet. A record this device
     /// holds nothing of may have been made on another device or before this
@@ -189,13 +190,16 @@ pub trait NativeDocumentReads: Send + Sync {
     /// have the app make a second copy of the workspace's record. The broker
     /// awaits it without blocking the channel, then decides. `None` when
     /// nothing is awaited.
-    fn await_arriving_record(&self, context: &NativeDocumentReadContext) -> Option<AwaitingRecord> {
+    fn await_arriving_document(
+        &self,
+        context: &NativeDocumentReadContext,
+    ) -> Option<AwaitingDocument> {
         let _ = context;
         None
     }
     /// What the workspace's hosts answered about the chain's head at `context`'s route
     /// ([`ChainHeadAnswer`]), which they were asked for
-    /// ([`Self::await_arriving_record`]) and which names the chain's newest part without holding a
+    /// ([`Self::await_arriving_document`]) and which names the chain's newest part without holding a
     /// document of its own. `None` when nothing here answers chain heads, which then reads as any
     /// record the app's own channel serves.
     fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
@@ -461,30 +465,30 @@ impl JoinedChannel {
         self.read_context(false)
     }
     /// Whether this channel's workspace seals every write
-    /// ([`NativeDocumentReads::seals_records`]).
-    pub(super) fn seals_records(&self) -> bool {
+    /// ([`NativeDocumentReads::seals_documents`]).
+    pub(super) fn seals_documents(&self) -> bool {
         let route = self.route();
         self.state
             .services
             .committed_documents
             .as_ref()
-            .is_some_and(|service| service.seals_records(&route.cluster_id))
+            .is_some_and(|service| service.seals_documents(&route.cluster_id))
     }
     /// Who answers this channel's read of its own record.
-    fn record_read(&self) -> RecordRead {
-        let route = self.record_route();
+    fn resource_read(&self) -> ResourceRead {
+        let route = self.resource_route();
         self.state
             .services
             .committed_documents
             .as_ref()
-            .map_or(RecordRead::Own, |service| {
-                service.record_read(&route.cluster_id, &route.app_id, &route.record_id)
+            .map_or(ResourceRead::Own, |service| {
+                service.resource_read(&route.cluster_id, &route.app_id, &route.document_id)
             })
     }
     /// The context this channel reads its own record with, as
-    /// [`Self::record_read`] decides.
-    fn own_record_context(&self) -> Result<NativeDocumentReadContext, String> {
-        self.read_context(self.record_read() == RecordRead::Sealed)
+    /// [`Self::resource_read`] decides.
+    fn own_document_context(&self) -> Result<NativeDocumentReadContext, String> {
+        self.read_context(self.resource_read() == ResourceRead::Sealed)
     }
     /// The read context under this channel's custody. A `sealed` read of the
     /// channel's own record needs no launcher custody when the app has
@@ -493,7 +497,7 @@ impl JoinedChannel {
     /// own sealed channel does. An agent never reads that way.
     fn read_context(&self, sealed: bool) -> Result<NativeDocumentReadContext, String> {
         // The record the channel carries: a renamed app reads the one of the id it had before.
-        let route = self.record_route();
+        let route = self.resource_route();
         let admitted = self.verified_identity.clone();
         let certificate = admitted
             .certificate
@@ -524,7 +528,7 @@ impl JoinedChannel {
                 // Another app's record is read with the person's own standing
                 // on it, as the join decided, and again at every read.
                 if read_only
-                    && !identity_reads_record(
+                    && !identity_reads_document(
                         state.membership.as_ref(),
                         &admitted,
                         &checked_route,
@@ -544,14 +548,14 @@ impl JoinedChannel {
         let context = NativeDocumentReadContext {
             route,
             certificate,
-            record_kind: self.record_kind.clone(),
+            resource_type: self.resource_type.clone(),
             revalidate,
         };
         context.revalidate()?;
         Ok(context)
     }
     pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
-        let route = self.record_route();
+        let route = self.resource_route();
         if !self
             .state
             .services
@@ -603,7 +607,7 @@ impl JoinedChannel {
                 .ok_or_else(|| "native launch has no private window-instance binding".into());
         }
         self.route()
-            .record_id
+            .document_id
             .strip_prefix("continuation:")
             .ok_or_else(|| "continuation requires a durable shell tab id".to_owned())?
             .parse::<u64>()
@@ -611,16 +615,16 @@ impl JoinedChannel {
     }
 
     /// For an Open this channel's record would answer as new
-    /// ([`RecordRead::Own`]): the wait before deciding, see
-    /// [`NativeDocumentReads::await_arriving_record`]. `None` for every other
+    /// ([`ResourceRead::Own`]): the wait before deciding, see
+    /// [`NativeDocumentReads::await_arriving_document`]. `None` for every other
     /// request, and when nothing is awaited.
-    pub(super) fn committed_arrival_wait(&self, request: &Request) -> Option<AwaitingRecord> {
-        if !matches!(request, Request::Open { .. }) || self.record_read() != RecordRead::Own {
+    pub(super) fn committed_arrival_wait(&self, request: &Request) -> Option<AwaitingDocument> {
+        if !matches!(request, Request::Open { .. }) || self.resource_read() != ResourceRead::Own {
             return None;
         }
         let service = self.state.services.committed_documents.clone()?;
         let context = self.document_read_context().ok()?;
-        service.await_arriving_record(&context)
+        service.await_arriving_document(&context)
     }
 
     /// The answer to an Open of a chain's head (`neighbour_wire::chain_head`), which
@@ -631,8 +635,8 @@ impl JoinedChannel {
     pub(super) fn chain_head_answered(&self, request: &Request) -> Option<Reply> {
         if !matches!(request, Request::Open { .. })
             || !matches!(
-                neighbour_wire::record_sync(&self.record_route().record_id),
-                neighbour_wire::RecordSync::ChainHead { .. }
+                neighbour_wire::document_sync(&self.resource_route().document_id),
+                neighbour_wire::DocumentSync::ChainHead { .. }
             )
         {
             return None;
@@ -649,7 +653,7 @@ impl JoinedChannel {
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         if matches!(request, Request::ConnectionSnapshot) {
             // The connection as its record names it: the channel's own route.
-            let route = self.record_route();
+            let route = self.resource_route();
             let current = self
                 .state
                 .revalidate_admission(&route, &self.verified_identity)
@@ -664,7 +668,7 @@ impl JoinedChannel {
                 agent: current.agent_id,
                 app_id: route.app_id,
                 workspace: route.cluster_id,
-                document: route.record_id,
+                document: route.document_id,
             };
             if !snapshot.valid() {
                 return Err("invalid authenticated connection snapshot".into());
@@ -673,7 +677,7 @@ impl JoinedChannel {
         }
         if matches!(request, Request::Writes) {
             return Ok(Reply::Writes {
-                sealed: self.seals_records(),
+                sealed: self.seals_documents(),
             });
         }
         // A chain's head is a name for whichever of the chain's parts is the newest,
@@ -684,7 +688,7 @@ impl JoinedChannel {
         {
             return Ok(answered);
         }
-        if self.record_read() == RecordRead::Own {
+        if self.resource_read() == ResourceRead::Own {
             return Ok(Reply::Legacy);
         }
         let mut slot = self.committed_read.borrow_mut();
@@ -729,7 +733,7 @@ impl JoinedChannel {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let opened = self.own_record_context().and_then(|context| {
+        let opened = self.own_document_context().and_then(|context| {
             let reading = Reading {
                 context,
                 service,
@@ -760,10 +764,10 @@ fn launch_holds(
     if !local.current() || local.workspace_id != route.cluster_id {
         return None;
     }
-    if local.keeps_records_of(&route.app_id) {
+    if local.keeps_documents_of(&route.app_id) {
         return Some(true);
     }
-    (read_only || collab_types::workspace_document(&route.app_id, &route.record_id).is_some())
+    (read_only || collab_types::workspace_document(&route.app_id, &route.document_id).is_some())
         .then_some(false)
 }
 
@@ -863,13 +867,13 @@ fn open_read(
 /// anything else, refusals included; otherwise the checked context.
 fn read_unchanged(
     service: &dyn NativeDocumentReads,
-    read: RecordRead,
+    read: ResourceRead,
     context: impl FnOnce() -> Result<NativeDocumentReadContext, String>,
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
     absent: bool,
 ) -> Option<NativeDocumentReadContext> {
-    if read == RecordRead::Own {
+    if read == ResourceRead::Own {
         return None;
     }
     let context = context().ok()?;
@@ -1049,7 +1053,7 @@ impl JoinedChannel {
             generation,
         };
         self.state
-            .follow_committed_writes(&self.record_route().channel_key(), &wake);
+            .follow_committed_writes(&self.resource_route().channel_key(), &wake);
         let watch = {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
@@ -1078,7 +1082,7 @@ impl JoinedChannel {
                 }
             }
         }
-        let keys = (self.record_read() == RecordRead::Sealed)
+        let keys = (self.resource_read() == ResourceRead::Sealed)
             .then(|| self.state.services.group_keys.clone())
             .flatten();
         // The context the last whole check passed with, and the announcement
@@ -1129,7 +1133,7 @@ impl JoinedChannel {
     /// revision this channel handed out, otherwise `Open`. A capture it
     /// starts is the reader's to read on.
     fn answer_wait(&self, known_revision: Option<[u8; 32]>) -> Result<Reply, String> {
-        if self.record_read() == RecordRead::Own {
+        if self.resource_read() == ResourceRead::Own {
             return Ok(Reply::Legacy);
         }
         let mut slot = self.committed_read.borrow_mut();
@@ -1165,8 +1169,8 @@ impl JoinedChannel {
         let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
             service.as_ref(),
-            self.record_read(),
-            || self.own_record_context(),
+            self.resource_read(),
+            || self.own_document_context(),
             &self.state.committed_read_budget,
             known_revision,
             absent,
@@ -1235,7 +1239,7 @@ impl JoinedChannel {
 impl super::AppBrokerState {
     /// A write another device made in `record` of `app` in `workspace` landed here: what a read
     /// holding that record open sees changed, and what nothing else announces.
-    pub fn wake_record_reads(&self, workspace: &str, app: &str, record: &str) {
+    pub fn wake_document_reads(&self, workspace: &str, app: &str, record: &str) {
         self.wake_committed_reads(&CrdtRoute::record(app, workspace, record));
     }
 
@@ -1266,11 +1270,11 @@ impl super::AppBrokerState {
     }
 
     /// Have the next write on `route` wake `wake`, a record reader's
-    /// ([`tilo_actions::remote::RecordReads::watch`]).
-    pub(super) fn follow_record_writes(
+    /// ([`tilo_actions::remote::ResourceReads::watch`]).
+    pub(super) fn follow_document_writes(
         &self,
         route: &CrdtRoute,
-        wake: &tilo_actions::remote::RecordWake,
+        wake: &tilo_actions::remote::ResourceWake,
     ) {
         self.follow_writes(&route.channel_key(), LandedWake::Once(wake.clone()));
     }
@@ -1287,7 +1291,7 @@ pub(super) enum LandedWake {
     /// A held committed read, for as long as it holds its wait.
     Held(Weak<tokio::sync::Notify>),
     /// A record reader, once.
-    Once(tilo_actions::remote::RecordWake),
+    Once(tilo_actions::remote::ResourceWake),
 }
 
 impl LandedWake {

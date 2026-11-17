@@ -5,7 +5,7 @@
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::record::DocumentId;
+use crate::resource::DocumentId;
 
 /// The mark a mention's run carries, valued with the member's id.
 pub const MARK: &str = "mention";
@@ -26,8 +26,8 @@ const STR_FIELD_FLAT: &str = "0";
 /// The key and value slot of an item of a stored collection (`tilo_resource::Collection`): `{ <id>: {
 /// k: <order>, v: <item> } }`.
 const ITEM_VALUE: &str = "v";
-/// The record's identity map (`crate::record`), never content.
-const RECORD_META: &str = "tilo:record";
+/// The record's identity map (`crate::resource`), never content.
+const RESOURCE_META: &str = "tilo:record";
 
 /// Deepest a mention is looked for, and most objects read in one record: the document is replicated
 /// input, not a request to walk it without end.
@@ -127,13 +127,13 @@ pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -
 /// Every mention in `doc`, in document order, each excerpt read for someone whose holdings nobody here
 /// can tell ([`reading_nothing`]).
 #[must_use]
-pub fn in_record(doc: &AutoCommit) -> Vec<Mention> {
-    in_record_for(doc, &reading_nothing)
+pub fn in_resource(doc: &AutoCommit) -> Vec<Mention> {
+    in_resource_for(doc, &reading_nothing)
 }
 
 /// Every mention in `doc`, in document order, each excerpt as `read` reads the references in it.
 #[must_use]
-pub fn in_record_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
+pub fn in_resource_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
     let mut walk = Walk {
         doc,
         found: Vec::new(),
@@ -171,7 +171,7 @@ impl Walk<'_> {
             ObjType::Map | ObjType::Table => {
                 self.stored_mark(obj, path, cx);
                 for key in self.doc.keys(obj).collect::<Vec<_>>() {
-                    if path.is_empty() && key == RECORD_META {
+                    if path.is_empty() && key == RESOURCE_META {
                         continue;
                     }
                     let Ok(Some((Value::Object(child_kind), child))) = self.doc.get(obj, &key)

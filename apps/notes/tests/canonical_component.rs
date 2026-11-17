@@ -143,7 +143,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
     eprintln!("phase delivered_record_status_updates_real_notes_status_without_touching_document");
     {
         use automerge::transaction::Transactable;
-        use ui::record::RecordSaveStatus;
+        use ui::resource::ResourceSaveStatus;
         let mut doc = AutoCommit::new();
         read::initialize(&mut doc);
         doc.commit();
@@ -151,16 +151,16 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         let mut app =
             notes::NotesApp::from_document(&doc, &ui::permissions::MemberId::person("same-author"))
                 .unwrap();
-        let saved = ui::LocalState::new(RecordSaveStatus::Saved);
+        let saved = ui::LocalState::new(ResourceSaveStatus::Saved);
         app.follow_save_status(saved.clone());
         for (status, label) in [
-            (RecordSaveStatus::MemoryOnly, "Not saved"),
-            (RecordSaveStatus::Saving, "Saving…"),
+            (ResourceSaveStatus::MemoryOnly, "Not saved"),
+            (ResourceSaveStatus::Saving, "Saving…"),
             (
-                RecordSaveStatus::Failed("disk failure".into()),
+                ResourceSaveStatus::Failed("disk failure".into()),
                 "Save failed",
             ),
-            (RecordSaveStatus::Saved, "Saved"),
+            (ResourceSaveStatus::Saved, "Saved"),
         ] {
             saved.set(status);
             app.sync(&doc, &ROOT);
