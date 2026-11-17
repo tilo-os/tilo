@@ -491,9 +491,17 @@ person was told of carries the name a push gives it (`Item.toldAs`), and the app
 is kept under that name, so a push for the same thing takes its place and nothing is shown
 twice; a push that comes while the app is in front shows nothing, and one that says a thing
 waits no more takes its notice away. A build without push does none of this: it asks for no
-address, hands over nothing and keeps no key. So far the extension hands a notice on as it
-came, so a push shows the one plain line the bundle's sentences give it (`TOLD_WAITS`), and a
-press on it opens the app, not yet the thing. A live activity that the app starts and keeps
+address, hands over nothing and keeps no key.
+
+The notice extension (`AssistantNotice`) is handed a push before the person sees it. Where the
+push carries a part sealed for this device and it opens with the key the app keeps, the notice
+says who told it, the server's words and the Important mark, under its kind's own category.
+Where a push carries no sealed part (a workspace whose words stay on its server), where it
+does not open, or where no key is kept, the notice is handed on as it came: the one plain line
+the bundle's sentences give it (`TOLD_WAITS`) stands. Not there: the buttons a thing offers
+are not put under a notice that came by push, because whether one may be pressed from under a
+notification is judged by what it would invoke, which no push carries; and a press on such a
+notice opens the app, not yet the thing itself. A live activity that the app starts and keeps
 current itself needs no capability.
 
 **Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and

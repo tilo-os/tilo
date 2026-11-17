@@ -47,6 +47,7 @@ let package = Package(
         // that is told while it is closed carries it (build.sh, TILO_APPLE_PUSH).
         .executableTarget(
             name: "AssistantNotice",
+            dependencies: ["AssistantClosed"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
         // The content of the window's drawing, for tests and pictures. No app links it.
