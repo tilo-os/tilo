@@ -30,6 +30,7 @@
   <key>NSSpeechRecognitionUsageDescription</key><string>__NAME__ turns what you dictate into words on this iPhone.</string>
   <!-- A reminder about to come, a brief before something begins, and work the person waits on. -->
   <key>NSSupportsLiveActivities</key><true/>
+  <key>TiloSite</key><string></string>
   <key>TiloTeam</key><string></string>
   <key>UIApplicationSceneManifest</key><dict>
     <key>UIApplicationSupportsMultipleScenes</key><false/>

@@ -430,6 +430,8 @@ build_assistant_mac() {
   cp "$bin/AssistantMac" "$contents/MacOS/$program"
   fill "$assistant/Mac-Info.plist" "$contents/Info.plist"
   stamp "$contents/Info.plist"
+  # The site whose page is the app's way to Tilo: the app is a device of its person there.
+  plist -c "Set :TiloSite $site" "$contents/Info.plist"
   cp -R "$assistant/en.lproj" "$contents/Resources/"
   faces "$contents/Resources/Fonts"
   for size in 16 32 128 256 512; do
@@ -483,6 +485,8 @@ assistant_part() { # directory, bundle id, Info.plist, entitlements, profile
   case "$team.$2" in $covers) ;; *) die "the profile covers $covers, not $2" ;; esac
   fill "$3" "$dir/Info.plist"
   stamp "$dir/Info.plist"
+  # The app names the site whose page is its way to Tilo. Its widget extension names none.
+  ! plist -c "Print :TiloSite" "$dir/Info.plist" > /dev/null 2>&1 || plist -c "Set :TiloSite $site" "$dir/Info.plist"
   plist -c "Add :DTPlatformName string iphoneos" -c "Add :DTPlatformVersion string $sdk" \
     -c "Add :DTSDKName string iphoneos$sdk" "$dir/Info.plist"
   cp -R "$assistant/en.lproj" "$dir/"
@@ -543,6 +547,7 @@ check_assistant_simulator() {
   cp "$bin/AssistantPhone" "$app/$program"
   fill "$assistant/Phone-Info.plist" "$app/Info.plist"
   stamp "$app/Info.plist"
+  plist -c "Set :TiloSite $site" "$app/Info.plist"
   plist -c "Set :CFBundleSupportedPlatforms:0 iPhoneSimulator" -c "Delete :CFBundleIcons" "$app/Info.plist"
   cp -R "$assistant/en.lproj" "$app/"
   faces "$app/Fonts"

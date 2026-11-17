@@ -79,11 +79,14 @@ extension TiloEngine {
     }
 
     /// Chat's own send, as the person: the words go to the recipient's conversation, which is
-    /// made when it is the first to them. Returns the new message's id.
+    /// made when it is the first to them. Returns the new message's id. On a device that just
+    /// got in it waits, for a few seconds at most, until Chat offers its send.
     @discardableResult
     public func chatSend(_ text: String, to recipient: ChatRecipient) async throws -> String {
-        let answer = try await invoke("send", on: "chat.workspace",
-                                      ["to": [recipient.json], "attached": [], "text": .string(text)])
+        let answer = try await whenPublished {
+            try await self.invoke("send", on: "chat.workspace",
+                                  ["to": [recipient.json], "attached": [], "text": .string(text)])
+        }
         guard let value = answer["output"]?["value"], value["accepted"]?.bool == true,
               let message = value["message"]?.string
         else { throw Problem.refused(code: "not-sent", reason: "Chat did not take the message") }

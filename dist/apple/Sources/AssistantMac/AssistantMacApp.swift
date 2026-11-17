@@ -22,7 +22,8 @@ struct AssistantMacApp: App {
 
     var body: some Scene {
         Window(AssistantWords.appName, id: "main") {
-            AssistantRoot(model: model) { MacWindow() }
+            AssistantRoot(model: model, engine: Source.engine) { MacWindow() }
+                .environment(\.liveThingView, { thing in Source.live(thing) })
                 .frame(minWidth: 880, minHeight: 560)
                 .task(id: model.person?.id) {
                     guard model.person != nil, let teller else { return }
@@ -136,13 +137,17 @@ enum MenuBarMark {
     }()
 }
 /// Where the program begins: asked with `--check` it says what it can tell of itself and
-/// ends, with nothing on screen; otherwise it is the app.
+/// ends, with nothing on screen; asked with `--drive` it is the app with no window, for a
+/// check to drive (`AssistantDrive`); otherwise it is the app.
 @main
 enum Entry {
     @MainActor
     static func main() {
         if AssistantCheck.isAsked {
-            AssistantCheck.run(source: String(describing: type(of: Source.make())))
+            AssistantCheck.run(source: Source.name)
+        }
+        if AssistantDrive.isAsked {
+            AssistantDrive.run()
         }
         AssistantMacApp.main()
     }

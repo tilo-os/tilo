@@ -1,0 +1,272 @@
+#if os(macOS)
+import AppKit
+import AssistantCore
+import AssistantTilo
+import AssistantUI
+import Foundation
+import Observation
+import ShellCore
+import TiloLive
+import WebKit
+
+/// Tilo Assistant with no window, for a check to drive: the same source on Tilo and the same
+/// model the window's views read and call, and nothing on screen. It is never the app in front
+/// and has no icon in the Dock.
+///
+///   AssistantMac --drive --site ORIGIN --store UUID [--main-chat CONVERSATION] [--code-file FILE]
+///   AssistantMac --drive --store UUID --forget
+///
+/// It prints one JSON object a line: where the device stands, the session, each piece of the
+/// main chat as the model holds it, what the model says did not go through. Steps arrive on
+/// standard input, one JSON object a line:
+///   {"do": "pair", "file": "…"}                      a file that holds a pairing link
+///   {"do": "send", "text": "…"}                      as the message field sends
+///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
+///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
+///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
+/// It prints no link, no code and no secret, and ends when its standard input ends. With
+/// --forget it removes the store, and with it the device's key, and what it kept beside it.
+@MainActor
+final class AssistantDrive {
+    static var isAsked: Bool { CommandLine.arguments.contains("--drive") }
+
+    private let source: TiloSource
+    private let model: AssistantModel
+    private let codeFile: String?
+    private let began = Date()
+    private var said: [String: String] = [:]
+    private var pieces: [Item.ID: String] = [:]
+
+    private init(source: TiloSource, codeFile: String?) {
+        self.source = source
+        self.codeFile = codeFile
+        model = AssistantModel(source: source)
+    }
+
+    private static func argument(_ name: String) -> String? {
+        let all = CommandLine.arguments
+        guard let at = all.firstIndex(of: name), all.indices.contains(at + 1) else { return nil }
+        return all[at + 1]
+    }
+
+    private static func stop(_ why: String) -> Never {
+        FileHandle.standardError.write(Data("AssistantMac --drive: \(why)\n".utf8))
+        exit(2)
+    }
+
+    private static func suite(_ store: UUID) -> String { "so.tilo.assistant.drive.\(store.uuidString.lowercased())" }
+
+    static func run() -> Never {
+        let app = NSApplication.shared
+        // Never the app in front, no icon in the Dock, no window.
+        app.setActivationPolicy(.prohibited)
+        guard let store = argument("--store").flatMap(UUID.init(uuidString:)) else { stop("--store is a UUID") }
+        if CommandLine.arguments.contains("--forget") {
+            Task { @MainActor in
+                // What the app kept beside the store, and the file the system kept it in.
+                UserDefaults.standard.removePersistentDomain(forName: suite(store))
+                UserDefaults.standard.synchronize()
+                if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+                    try? FileManager.default.removeItem(at: library.appendingPathComponent("Preferences/\(suite(store)).plist"))
+                }
+                do {
+                    try await WKWebsiteDataStore.remove(forIdentifier: store)
+                    say(["forgot": true])
+                } catch {
+                    say(["forgot": false, "why": .string(error.localizedDescription)])
+                }
+                exit(0)
+            }
+            app.run()
+            exit(0)
+        }
+        guard let site = argument("--site"), let settings = try? ShellSettings(site: site) else { stop("--site names a Tilo site") }
+        guard let defaults = UserDefaults(suiteName: suite(store)) else { stop("no place to keep what the app keeps") }
+        let chat = argument("--main-chat")
+        let source = TiloSource(settings: settings, store: store,
+                                mainChat: chat.map { .conversation(id: $0, name: $0) } ?? .assistant, defaults: defaults)
+        let drive = AssistantDrive(source: source, codeFile: argument("--code-file"))
+        drive.start()
+        // Steps arrive on a thread of their own. When whoever drives is gone, so is the program.
+        Thread.detachNewThread {
+            while let line = readLine() {
+                let step = line.trimmingCharacters(in: .whitespaces)
+                if step.isEmpty { continue }
+                Task { @MainActor in await drive.take(step) }
+            }
+            exit(0)
+        }
+        app.run()
+        exit(0)
+    }
+
+    private func start() {
+        model.start()
+        let engine = source.engine
+        Task { [weak self] in
+            for await standing in engine.standings() { self?.stood(standing) }
+        }
+        watch()
+    }
+
+    private func stood(_ standing: TiloEngine.Standing) {
+        let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
+        switch standing {
+        case .away: break
+        case .arriving(let step): AssistantDrive.say(["standing": "arriving", "step": .string(step), "s": seconds])
+        case .pairing(let code):
+            if let codeFile {
+                FileManager.default.createFile(atPath: codeFile, contents: Data(code.utf8), attributes: [.posixPermissions: 0o600])
+            }
+            AssistantDrive.say(["standing": "pairing", "s": seconds])
+        case .open(let route):
+            // The workspace by the start of its id: enough to tell two apart, and no address.
+            let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
+            AssistantDrive.say(["standing": "open", "workspace": .string(workspace), "s": seconds])
+        case .refused(let why): AssistantDrive.say(["standing": "refused", "why": .string(why), "s": seconds])
+        case .failed(let why): AssistantDrive.say(["standing": "failed", "why": .string(why), "s": seconds])
+        }
+    }
+
+    /// Say what the model holds whenever it changes, as the window's views are drawn again.
+    private func watch() {
+        withObservationTracking { report() } onChange: { [weak self] in
+            Task { @MainActor in self?.watch() }
+        }
+    }
+
+    private func once(_ name: String, _ value: JSON) {
+        let text = value.text
+        guard said[name] != text else { return }
+        said[name] = text
+        AssistantDrive.say([name: value])
+    }
+
+    private func report(everything: Bool = false) {
+        if everything {
+            said.removeAll()
+            pieces.removeAll()
+        }
+        switch model.session {
+        case nil: break
+        case .signedOut: once("session", ["is": "signedOut"])
+        case .pairing: once("session", ["is": "pairing"])
+        case .signedIn(let person):
+            once("session", ["is": "signedIn", "name": .string(person.name), "workspace": .string(person.workspace),
+                             "person": .string(String(person.id.value.prefix(6)))])
+        }
+        once("reach", .string(model.reach == .reachable ? "reachable" : "unreachable"))
+        let conversation = model.conversation(.main)
+        once("conversation", ["loaded": .bool(conversation.isLoaded), "pieces": .number(Double(conversation.items.count))])
+        for item in conversation.items {
+            let line = AssistantDrive.line(of: item)
+            guard pieces[item.id] != line.text else { continue }
+            let known = pieces[item.id] != nil
+            pieces[item.id] = line.text
+            AssistantDrive.say([known ? "changed" : "piece": line, "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+        }
+        if let problem = model.problem { once("problem", .string(problem)) } else { said["problem"] = nil }
+        once("beside", ["subAgents": .number(Double(model.subAgents.count)), "tasks": .number(Double(model.tasks.count)),
+                        "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
+                        "model": model.supervision.model.map(JSON.string) ?? .null,
+                        "logins": .number(Double(model.supervision.logins.count))])
+    }
+
+    private static func line(of item: Item) -> JSON {
+        var line: [String: JSON] = ["id": .string(item.id.value), "at": .number(item.at.timeIntervalSince1970)]
+        switch item.content {
+        case .message(let message):
+            line["kind"] = "message"
+            line["author"] = switch message.author {
+            case .person: "person"
+            case .assistant: "assistant"
+            case .mainAgent: "mainAgent"
+            }
+            line["text"] = .string(message.text)
+            line["live"] = .number(Double(message.live.count))
+        case .question(let question):
+            line["kind"] = "question"
+            line["text"] = .string(question.text)
+            line["choices"] = .array(question.choices.map { .string($0.id.value) })
+            line["answer"] = question.answer.map { .string($0.value) } ?? .null
+        case .secret(let request):
+            line["kind"] = "secret"
+            line["text"] = .string(request.text)
+            line["name"] = .string(request.name)
+            line["standing"] = switch request.standing {
+            case .waiting: "waiting"
+            case .kept: "kept"
+            case .declined: "declined"
+            }
+        case .report(let words):
+            line["kind"] = "report"
+            line["text"] = .string(words)
+        case .reminder(let words):
+            line["kind"] = "reminder"
+            line["text"] = .string(words)
+        case .brief(let brief):
+            line["kind"] = "brief"
+            line["text"] = .string(brief.text)
+        case .connection(let offer):
+            line["kind"] = "connection"
+            line["text"] = .string(offer.text)
+        case .event(let card):
+            line["kind"] = "event"
+            line["text"] = .string(card.text)
+        }
+        return .object(line)
+    }
+
+    private func take(_ text: String) async {
+        guard let step = JSON(text: text), let what = step["do"]?.string else {
+            AssistantDrive.say(["error": "a step is a JSON object with \"do\""])
+            return
+        }
+        let words = { (name: String) -> String? in
+            step[name]?.string.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        switch what {
+        case "pair":
+            guard let link = words("file") else { AssistantDrive.say(["error": "pair takes a file that holds a link"]); return }
+            model.pair(with: link)
+            AssistantDrive.say(["asked": "pair"])
+        case "send":
+            guard let typed = step["text"]?.string else { AssistantDrive.say(["error": "send takes text"]); return }
+            // As the message field does: the words stand in the draft, and Send takes them.
+            model.drafts[.main] = Draft(text: typed)
+            model.send(in: .main)
+            AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+        case "answer":
+            guard let question = step["question"]?.string, let choice = step["choice"]?.string else {
+                AssistantDrive.say(["error": "answer takes question and choice"])
+                return
+            }
+            model.answer(.init(question), with: .init(choice))
+            AssistantDrive.say(["asked": "answer"])
+        case "keep":
+            guard let request = step["request"]?.string, let typed = words("file") else {
+                AssistantDrive.say(["error": "keep takes request and a file that holds what was typed"])
+                return
+            }
+            let kept = await model.keep(Secret(typed), for: .init(request))
+            AssistantDrive.say(["kept": .bool(kept)])
+        case "models":
+            model.loadModels()
+            AssistantDrive.say(["asked": "models"])
+        case "state":
+            report(everything: true)
+        case "quit":
+            AssistantDrive.say(["end": true])
+            exit(0)
+        default:
+            AssistantDrive.say(["error": .string("no step \(what)")])
+        }
+    }
+
+    private static func say(_ line: JSON) {
+        print(line.text)
+        fflush(stdout)
+    }
+}
+#endif

@@ -21,6 +21,21 @@ public enum EngineAddress {
         return nil
     }
 
+    /// The workspace the page at `address` stands in, read from what follows its `#`.
+    public static func workspace(ofPage address: URL) -> String? {
+        guard let fragment = address.fragment(percentEncoded: true) else { return nil }
+        return workspace(of: String(fragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]))
+    }
+
+    /// Whether the page at `route` stands in another workspace than `asked` names. The person's
+    /// own (`/me`) is wherever the site opens it, and a workspace is the same under whichever
+    /// host's name it is written.
+    public static func isElsewhere(_ route: String, than asked: String?) -> Bool {
+        guard let asked, asked != "/me" else { return false }
+        guard let here = workspace(of: route) else { return true }
+        return here.split(separator: "/").last != asked.split(separator: "/").last
+    }
+
     /// The page that shows `app` alone in the workspace `route` names, on a record of its own
     /// where one is named.
     public static func page(of app: String, record: String? = nil, in route: String, of settings: ShellSettings) -> URL? {

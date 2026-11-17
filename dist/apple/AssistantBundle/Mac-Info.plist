@@ -25,5 +25,6 @@
   <key>NSMicrophoneUsageDescription</key><string>__NAME__ listens when you dictate a message.</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>__NAME__ turns what you dictate into words on this Mac.</string>
+  <key>TiloSite</key><string></string>
   <key>TiloTeam</key><string></string>
 </dict></plist>
