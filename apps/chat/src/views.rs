@@ -1359,6 +1359,7 @@ fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
     tilo_view::Actor {
         id: person.map_or(id, |person| &person.id).clone().into(),
         name: author_label(person, id),
+        hue: None,
     }
 }
 
@@ -1394,6 +1395,7 @@ mod tests {
             tilo_view::Actor {
                 id: MemberId::person(crate::model::ME).into(),
                 name: "Pat".to_owned(),
+                hue: None,
             },
             std::collections::BTreeMap::new(),
         )
@@ -1594,6 +1596,7 @@ mod tests {
                 Some(&Value::Actor(tilo_view::Actor {
                     id: MemberId::person(ME).into(),
                     name: "Quinn Davis".to_owned(),
+                    hue: None,
                 })),
                 "the avatar is drawn for the person by name, not by id"
             );

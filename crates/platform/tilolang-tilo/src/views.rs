@@ -80,6 +80,7 @@ impl RustViews for DeclaredViews {
             tilo_view::Actor {
                 id: person.clone(),
                 name: person.id().to_owned(),
+                hue: None,
             },
             BTreeMap::new(),
         );

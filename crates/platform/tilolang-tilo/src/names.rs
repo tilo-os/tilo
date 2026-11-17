@@ -81,11 +81,12 @@ impl NameHost for Unnamed {
     }
 }
 
-/// What the member list calls the members.
+/// What the member list calls the members, and the colour it paints each in.
 #[derive(Default, PartialEq, Eq)]
 struct Said {
     me: Option<String>,
     others: HashMap<MemberId, String>,
+    hues: HashMap<MemberId, u8>,
 }
 
 /// The names an instance shows people by: what its host heard the member list call them
@@ -107,15 +108,21 @@ impl Told {
         }
     }
 
-    /// The member list calls the person `me` and each of `others` by id now. Whether any name
-    /// changed.
-    pub fn tell(&self, me: String, others: Vec<(MemberId, String)>) -> bool {
+    /// The member list calls the person `me` and each of `others` by id now, and paints each
+    /// member of `hues` in its presence palette slot. Whether any of it changed.
+    pub fn tell(
+        &self,
+        me: String,
+        others: Vec<(MemberId, String)>,
+        hues: Vec<(MemberId, u8)>,
+    ) -> bool {
         let next = Said {
             me: Some(me).filter(|me| !me.trim().is_empty()),
             others: others
                 .into_iter()
                 .filter(|(_, name)| !name.trim().is_empty())
                 .collect(),
+            hues: hues.into_iter().collect(),
         };
         if *self.said.borrow() == next {
             return false;
@@ -142,6 +149,18 @@ impl NameHost for Told {
         }
         drop(said);
         self.otherwise.name(who)
+    }
+
+    /// The colour the member list paints `who` in, so a byline or a chip in a view wears the
+    /// colour of their face on the bar and their caret in every other app.
+    fn hue(&self, who: &Actor) -> Option<u8> {
+        let member = who.member_id()?;
+        self.said
+            .borrow()
+            .hues
+            .get(member)
+            .copied()
+            .or_else(|| self.otherwise.hue(who))
     }
 }
 
@@ -240,13 +259,44 @@ mod tests {
         );
         assert!(told.tell(
             "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())]
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
+            Vec::new(),
         ));
         assert!(!told.tell(
             "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())]
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
+            Vec::new(),
         ));
         assert_eq!(told.name(&person(id)), "Ada");
         assert_eq!(told.name(&person("ben-id")), "Ben");
+    }
+
+    /// A member wears in a view the colour the member list paints them in, which travels with
+    /// them to the window; one the list said nothing of is left to the window's rule.
+    #[test]
+    fn a_member_wears_the_colour_the_member_list_paints_them_in() {
+        let told = Told::new("ada-id", Rc::new(Unnamed));
+        assert_eq!(told.hue(&person("ben-id")), None, "nothing said yet");
+        assert!(told.tell(
+            "Ada".to_owned(),
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
+            vec![
+                (MemberId::person("ben-id"), 1),
+                (MemberId::agent("planner"), 9),
+                (MemberId::person("ada-id"), 4),
+            ],
+        ));
+        assert_eq!(told.hue(&person("ben-id")), Some(1));
+        assert_eq!(told.hue(&agent("planner")), Some(9));
+        assert_eq!(
+            told.hue(&person("ada-id")),
+            Some(4),
+            "the person at the window too"
+        );
+        assert_eq!(
+            told.hue(&app("so.tilo.lang.today")),
+            None,
+            "an app is no member"
+        );
     }
 }

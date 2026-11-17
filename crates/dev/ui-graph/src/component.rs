@@ -480,10 +480,13 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// Who acted, and what the workspace calls them.
+    /// Who acted, what the workspace calls them, and the presence palette slot it paints them
+    /// in (`None`: derived from `identity`).
     Actor {
         identity: tilo_action_policy::Actor,
         name: String,
+        #[serde(default)]
+        hue: Option<u8>,
     },
     /// A resource, by its id.
     Resource(String),

@@ -335,6 +335,7 @@ tilo_test_env::scenario! {
                     Value::Actor {
                         identity: tilo_actions::MemberId::person("ada").into(),
                         name: "Ada".into(),
+                        hue: None,
                     },
                 )
                 .prop("time", text("2026-06-30T08:42:00Z"))

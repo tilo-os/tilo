@@ -312,6 +312,7 @@ mod tests {
             Actor {
                 id: tilo_actions::MemberId::person("Pat").into(),
                 name: "Pat".to_owned(),
+                hue: None,
             },
             BTreeMap::new(),
         )

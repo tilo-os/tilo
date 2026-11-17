@@ -240,7 +240,7 @@ impl Staged {
             &me,
             Rc::new(tilolang_tilo::names::Unnamed),
         ));
-        names.tell("Ada".to_owned(), Vec::new());
+        names.tell("Ada".to_owned(), Vec::new(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),

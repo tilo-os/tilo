@@ -67,6 +67,13 @@ pub trait OutsideSink {
 pub trait NameHost {
     /// The name to show for `who`.
     fn name(&self, who: &crate::ids::Actor) -> String;
+
+    /// The colour the host paints `who` in, as a slot of its presence palette: `None` leaves it
+    /// to whatever draws the view.
+    fn hue(&self, who: &crate::ids::Actor) -> Option<u8> {
+        let _ = who;
+        None
+    }
 }
 
 /// How a value a change shows reads as text, where a sentence must carry it rather than a view

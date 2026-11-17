@@ -436,7 +436,19 @@ impl PropType for Person {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Actor { identity, name } => Ok(Self::new(identity.clone(), name.clone())),
+            // The colour the workspace paints them in travels with them; a sender that knows no
+            // members leaves it to the rule every surface derives it by.
+            Value::Actor {
+                identity,
+                name,
+                hue,
+            } => Ok(Self {
+                hue: hue.map_or_else(
+                    || crate::tokens::PresenceHue::of_actor(identity),
+                    |slot| crate::tokens::PresenceHue::from_slot(usize::from(slot)),
+                ),
+                ..Self::new(identity.clone(), name.clone())
+            }),
             other => Err(wrong(&Self::ty(), other)),
         }
     }
