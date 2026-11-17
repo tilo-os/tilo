@@ -1,5 +1,5 @@
 //! How fast a workspace takes what people and agents make in it, and whether
-//! that speed holds as the workspace fills: the relay host's own action and
+//! that speed holds as the workspace fills: the workspace server's own action and
 //! upload paths, driven through the API as an agent or `tilo` drives them.
 //!
 //! For each workspace size (`TILO_THROUGHPUT_SIZES`, items already there per
@@ -20,7 +20,7 @@
 //! JSON to `TILO_THROUGHPUT_OUT` when set.
 
 use super::api::ISSUER;
-use super::api_on_relay::{api_on_relay, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -308,22 +308,22 @@ async fn workspace(agent: &Agent<'_>, name: &str) -> (String, String) {
 /// `device` joining the workspace `id` beside the key's calls, as a
 /// person's other device does.
 async fn second_device(
-    on_relay: &super::api_on_relay::OnRelay,
+    on_server: &super::api_on_server::OnServer,
     device: &crate::support::Device,
     id: &str,
 ) -> crate::harness::page::Page {
     use crate::support::{admitted_to, ready, start_peer};
-    let workspace = tilo_relay_protocol::WorkspaceId::parse(id).unwrap();
+    let workspace = tilo_server_protocol::WorkspaceId::parse(id).unwrap();
     let peer = start_peer(
-        tilo_relay_client::Host::at(on_relay.hosted.relay.node_addr()),
+        tilo_server_client::Host::at(on_server.hosted.server.node_addr()),
         device.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         device.key.clone(),
     );
     let events = peer.events();
     ready(&[&peer]).await;
     let answer = peer
-        .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
+        .ask_workspaces(tilo_server_protocol::workspaces::WorkspacesRequest::Enter {
             workspace: id.into(),
         })
         .unwrap();
@@ -334,7 +334,27 @@ async fn second_device(
     peer.send(tilo_session_client::Cmd::Join(workspace))
         .unwrap();
     admitted_to(&peer, workspace).await;
-    crate::harness::page::Page::joined((peer, events), device, &on_relay.host, id)
+    // The workspace's file tree, as a computer that mounts the workspace's
+    // folder opens it: its own document and the first chunks it lists.
+    for chunk in 0..4 {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: fs_protocol::tree::FILES_APP.to_owned(),
+            cluster_id: id.to_owned(),
+            document: if chunk == 0 {
+                tilo_fs::tree_document::document_id()
+            } else {
+                fs_protocol::tree::chunk_document_id(chunk)
+            },
+        };
+        peer.send(tilo_session_client::Cmd::OpenDocumentAt(
+            workspace,
+            route.clone(),
+        ))
+        .unwrap();
+        peer.send(tilo_session_client::Cmd::OpenRoute(route))
+            .unwrap();
+    }
+    crate::harness::page::Page::joined((peer, events), device, &on_server.host, id)
 }
 
 /// How long after now a write of `app_id` by someone else reaches `page`.
@@ -373,13 +393,13 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
     }
     let singles = count("TILO_THROUGHPUT_SINGLES", 40);
     let bulk = count("TILO_THROUGHPUT_BULK", 1000);
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
     let agent = Agent {
         api: &api,
-        token: approved_key(&on_relay, &ada, &browser, "Bench").await,
+        token: approved_key(&on_server, &ada, &browser, "Bench").await,
     };
     let mut table: Vec<Row> = Vec::new();
 
@@ -389,7 +409,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             agent.act(&base, kind.app, "open", &json!({})).await;
         }
         channel(&agent, &base).await;
-        let page = second_device(&on_relay, &browser, &id).await;
+        let page = second_device(&on_server, &browser, &id).await;
 
         for kind in KINDS {
             let resource = resource_of(&agent, &base, kind.app, kind.listed_as, kind.action).await;
@@ -518,32 +538,54 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             .map(|index| (index as u32).wrapping_mul(2_654_435_761).to_le_bytes()[0])
             .collect();
         let began = Instant::now();
-        if large * 1024 * 1024 <= piece {
-            agent.upload(&base, &bytes).await;
+        let content = if large * 1024 * 1024 <= piece {
+            agent.upload(&base, &bytes).await
         } else {
             // In pieces, as `tilo put` sends a file larger than one request.
             let size = large * 1024 * 1024;
             let (status, opened) = agent
                 .send(
                     hyper::Method::POST,
-                    &format!("{base}/uploads/bench"),
+                    &format!("{base}/uploads/bench-large-upload"),
                     json!({ "size": size }).to_string().as_bytes(),
                     "application/json",
                 )
                 .await;
             assert!(status < 300, "{opened}");
+            let mut sent = Value::Null;
             for _ in 0..large.div_ceil(64) {
-                let (status, sent) = agent
+                let (status, answer) = agent
                     .send(
                         hyper::Method::PUT,
-                        &format!("{base}/uploads/bench"),
+                        &format!("{base}/uploads/bench-large-upload"),
                         &bytes,
                         "application/octet-stream",
                     )
                     .await;
-                assert!(status < 300, "{sent}");
+                assert!(status < 300, "{answer}");
+                sent = answer;
             }
-        }
+            let text = sent.to_string();
+            let at = text
+                .find("tilo.content:")
+                .unwrap_or_else(|| panic!("the last piece names the content: {text}"));
+            text[at..].split('"').next().unwrap_or_default().to_owned()
+        };
+        let uploaded = began.elapsed();
+        // Into the workspace's folder, as `tilo files put` places it.
+        let placing = Instant::now();
+        agent
+            .act(
+                &base,
+                "files",
+                "open",
+                &json!({"content": content, "name": "large.bin", "dir": "big"}),
+            )
+            .await;
+        eprintln!(
+            "upload of {large} MB: {uploaded:?}; placed in the folder in {:?}",
+            placing.elapsed()
+        );
         let took = began.elapsed();
         let rate = large as f64 / took.as_secs_f64();
         eprintln!("upload of {large} MB: {took:?}, {rate:.1} MB/s");
