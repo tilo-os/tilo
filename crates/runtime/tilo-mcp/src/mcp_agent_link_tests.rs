@@ -114,6 +114,12 @@ impl ActionHost for Tracker {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let rows = match query.provider.as_deref() {
             None => Vec::new(),
+            // An exact target is answered wherever it is published, as a host answers it.
+            Some(_) if query.target.is_some() => {
+                let mut rows = self.rows("");
+                rows.extend(self.rows(ITEM));
+                rows
+            }
             Some(_) => self.rows(query.parent_resource.as_deref().unwrap_or("")),
         };
         let mut page = CataloguePage::from_rows("1".into(), rows, &query);

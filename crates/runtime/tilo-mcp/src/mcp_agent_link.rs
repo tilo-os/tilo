@@ -225,11 +225,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         named: &[&str],
     ) -> Option<String> {
-        let (app, _) = tilo_actions::remote::resource_parts(provider)?;
-        let app = app.to_owned();
+        tilo_actions::remote::resource_parts(provider)?;
         self.show(provider, "").await;
         for resource in named {
-            if let Some(url) = self.own_link(&app, provider, resource).await {
+            if let Some(url) = self.own_link(provider, resource).await {
                 return Some(url);
             }
         }
@@ -242,26 +241,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// The link `resource` of the app `app_id` offers of its own on
-    /// `provider`: its `share-link`, present when it declares a view (an item
-    /// the app opens does, which the answer's `->` names). `None` when it
-    /// offers none, so the caller answers the record's link instead.
-    async fn own_link(&self, app_id: &str, provider: &str, resource: &str) -> Option<String> {
+    /// The link `resource` offers of its own on `provider`: its
+    /// `share-link`, present when it declares a view (an item the app opens
+    /// does, which the answer's `->` names), asked of the app by its address:
+    /// a note just made is found without listing the notebook it is in.
+    /// `None` when it offers none, so the caller answers the record's link
+    /// instead.
+    async fn own_link(&self, provider: &str, resource: &str) -> Option<String> {
         if resource.is_empty() {
             return None;
         }
-        let mut levels = Levels::new();
-        let found = self
-            .by_address(app_id, provider, resource, &mut levels)
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                target: Some(tilo_actions::ActionAddress::new(
+                    resource.to_owned(),
+                    SHARE_LINK_ACTION,
+                )),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
             .await
-            .ok()??;
-        let own = found
-            .actions
-            .iter()
-            .find(|action| action.address.action == SHARE_LINK_ACTION)?
+            .ok()?;
+        let own = page
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| {
+                action.address.resource == resource && action.address.action == SHARE_LINK_ACTION
+            })?
             .address
-            .resource
-            .clone();
+            .resource;
         match self.mint_link(provider, own, serde_json::Map::new()).await {
             Ok(url) => Some(url),
             Err(error) => {

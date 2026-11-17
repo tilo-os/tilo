@@ -107,6 +107,9 @@ mod invocations_read;
 #[path = "workspace_actions/joining.rs"]
 mod joining;
 #[cfg(test)]
+#[path = "workspace_actions/mcp_note_create.rs"]
+mod mcp_note_create;
+#[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
 #[cfg(test)]

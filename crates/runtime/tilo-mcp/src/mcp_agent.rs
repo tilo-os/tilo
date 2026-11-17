@@ -516,6 +516,47 @@ fn pick_action<'a>(
     })
 }
 
+/// The actions published on `nodes`, each with the path below the app that names the
+/// resource it is on, and on what each of the `held` containers holds.
+fn published_on(
+    nodes: &[Node],
+    held: &[(Node, Vec<Node>)],
+    levels: &Levels,
+) -> Vec<(String, ActionDescriptor)> {
+    let mut published = Vec::new();
+    for node in nodes {
+        let path = path_of(node, levels).unwrap_or_else(|| node.name(nodes));
+        for action in &node.actions {
+            published.push((path.clone(), action.clone()));
+        }
+        let Some((_, inside)) = held.iter().find(|(container, _)| container.id == node.id) else {
+            continue;
+        };
+        for child in inside {
+            let at = format!("{path}/{}", child.name(inside));
+            for action in &child.actions {
+                published.push((at.clone(), action.clone()));
+            }
+        }
+    }
+    published
+}
+
+/// The one action among `published` whose id is `name`, with its path; `None` when none is or
+/// several resources offer one.
+fn only_by_id<'a>(
+    name: &str,
+    published: &'a [(String, ActionDescriptor)],
+) -> Option<(&'a str, &'a ActionDescriptor)> {
+    let mut by_id = published
+        .iter()
+        .filter(|(_, action)| action_rank(name, action) == Some(0));
+    let (path, first) = by_id.next()?;
+    by_id
+        .all(|(_, other)| other.address == first.address)
+        .then_some((path.as_str(), first))
+}
+
 /// The names below an app that reach `node`, in the levels this call read
 /// (`Notebook/Todo`), or `None` when they do not reach it.
 fn path_of(node: &Node, levels: &Levels) -> Option<String> {
@@ -1662,13 +1703,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(_) if !list => Level::default(),
             Some(node) => self.level(&provider, &node.id, &mut levels).await?,
             None => {
-                let mut root = self.app_children(&provider, &mut levels).await?;
+                // What the app's containers hold (a notebook's notes) is read for a listing.
+                // An action named on the app is found on the app's own level first
+                // ([`Self::pick_action_in`]): `notes#create-page` is the notebook's, and
+                // reading every note to find it would grow with the notebook.
+                let mut root = if list {
+                    self.app_children(&provider, &mut levels).await?
+                } else {
+                    self.level(&provider, "", &mut levels).await?
+                };
                 // A host service (the desktop's layout, on `desktop:session`)
                 // publishes everything on its one resource: its actions are
-                // the service's own, `desktop#list-windows`.
+                // the service's own, `desktop#list-windows`. A record's one
+                // container (Tasks' tracker) holds what the app offers more.
                 if provider.parse::<u64>().is_err()
                     && root.own.is_empty()
                     && let [only] = root.children.as_slice()
+                    && !only.container
                 {
                     root.own = only.actions.clone();
                 }
@@ -2800,27 +2851,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut levels = resolved.levels.clone();
         let mut published: Vec<(String, ActionDescriptor)> = Vec::new();
         if resolved.node.is_none() {
-            let root = self.app_children(&resolved.provider, &mut levels).await?;
-            let siblings = &root.children;
-            for node in siblings {
-                let path = path_of(node, &levels).unwrap_or_else(|| node.name(siblings));
-                for action in &node.actions {
-                    published.push((path.clone(), action.clone()));
-                }
-                if !node.container {
-                    continue;
-                }
-                let inside = self
-                    .level(&resolved.provider, &node.id, &mut levels)
-                    .await?;
-                let held = &inside.children;
-                for child in held {
-                    let at = format!("{path}/{}", child.name(held));
-                    for action in &child.actions {
-                        published.push((at.clone(), action.clone()));
-                    }
-                }
+            // The app's own level first: an action one of its top resources
+            // offers by that id (`notes#create-page` is the notebook's) is
+            // found without reading what the containers hold, so finding it
+            // costs the same however many notes there are.
+            let top = self.level(&resolved.provider, "", &mut levels).await?;
+            if let Some((path, action)) =
+                only_by_id(name, &published_on(&top.children, &[], &levels))
+            {
+                return Ok((format!("{}/{path}", resolved.path), action.clone()));
             }
+            let root = self.app_children(&resolved.provider, &mut levels).await?;
+            // What a container publishes of its own, read with what it holds,
+            // is the app's as its root's own actions are.
+            if let Ok(action) = pick_action(name, &root.own, &resolved.path) {
+                return Ok((resolved.path.clone(), action.clone()));
+            }
+            // The containers at the app's top hold what is one level down;
+            // what they hold is listed beside them already, and what that
+            // holds in turn is a walk of the app.
+            let mut held = Vec::new();
+            for container in root
+                .children
+                .iter()
+                .filter(|node| node.container && node.parent.is_empty())
+            {
+                let inside = self
+                    .level(&resolved.provider, &container.id, &mut levels)
+                    .await?;
+                held.push((container.clone(), inside.children));
+            }
+            published = published_on(&root.children, &held, &levels);
         }
         let ranked: Vec<(u8, String, &ActionDescriptor)> = published
             .iter()
