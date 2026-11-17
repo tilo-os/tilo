@@ -922,6 +922,12 @@ impl Mount {
             .map(|d| d.shared.window_states(&d.handle))
             .unwrap_or_default()
             .into();
+        // The apps the desktop's windows show, each once: what the page fetches the modules of
+        // after its first frame, instead of every app the desktop offers.
+        value["openApps"] = desktop
+            .map(|d| crate::desktop::Shared::open_apps(&d.handle))
+            .unwrap_or_default()
+            .into();
     }
 
     /// What the open search stands on, as the shell shows it: the query the field holds and the rows

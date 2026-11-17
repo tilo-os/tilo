@@ -65,6 +65,16 @@ rustflags = [
 # fortify, stack-protector, stack-clash, CET, and non-executable-stack floor.
 # cc-rs combines generic and target-specific flags. Keep platform flags scoped
 # to their target, and avoid incompatible native LTO in distribution overrides.
+# Every browser has run WebAssembly's 128-bit SIMD since 2021 (Chrome 91,
+# Firefox 89, Safari 16.4), so the page may use it. It has to be asked for:
+# rustc's wasm32-unknown-unknown baseline leaves it off. `fearless_simd`
+# picks its level from the target features compiled in, and without simd128
+# every `vello_cpu` fine-raster kernel ran its scalar fallback in a page
+# that paints on the CPU.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+rustdocflags = ["-C", "target-feature=+simd128"]
+
 [env]
 # sccache (the CI runners' RUSTC_WRAPPER, which cc-rs reuses for C) must not
 # use its preprocessor direct mode: it dropped declarations from libspa-sys's

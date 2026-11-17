@@ -566,6 +566,25 @@ impl Shared {
         })
     }
 
+    /// The applications the desktop's windows show, each once, in the tree's
+    /// order: what the page may fetch ahead of a window opened on it later
+    /// (the page's `prefetchApplications`), rather than every app the
+    /// desktop offers.
+    pub(crate) fn open_apps(handle: &DesktopHandle) -> Vec<String> {
+        handle.read(|tree| {
+            let mut apps: Vec<String> = Vec::new();
+            for tab in tree.tabs() {
+                let Some(app) = tilo_desktop_model::apps::canonical_app_id(&tab.tile) else {
+                    continue;
+                };
+                if !apps.iter().any(|shown| shown == app.as_str()) {
+                    apps.push(app.as_str().to_owned());
+                }
+            }
+            apps
+        })
+    }
+
     /// The applications whose code the page is fetching now: a window of one
     /// fills in, and offers its views, once it arrives.
     pub(crate) fn loading_apps(&self) -> Vec<&'static str> {

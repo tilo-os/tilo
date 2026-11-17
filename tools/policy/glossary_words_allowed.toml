@@ -393,3 +393,12 @@ paths = ["crates/browser/tilo-browser-runtime/web/view-present.mjs"]
 reason = "The standard library's blocking hand-off between threads."
 words = ["channel"]
 identifiers = ["sync_channel"]
+
+[[allow]]
+reason = "A file's name: `./host.mjs` is the module that puts the wasm runtime in a page, and these two files name it in their imports."
+words = ["host"]
+identifiers = ["host"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+]
