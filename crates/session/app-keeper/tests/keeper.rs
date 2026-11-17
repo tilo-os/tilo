@@ -98,6 +98,50 @@ fn a_window_survives_the_desktop_restarting() {
     assert!(rig.keeper.describe().attached);
 }
 
+/// A Linux VM's window forwarder is one program with a connection per guest app.
+#[test]
+fn three_apps_on_one_keeper_survive_a_restart_but_the_one_that_exits_while_away() {
+    let mut rig = Rig::new(Some("legacy.linux."));
+    let mut apps: Vec<App> = Vec::new();
+    for (id, colour) in [("org.one", RED), ("org.two", GREEN), ("org.three", BLUE)] {
+        let mut app = App::connect(&mut rig);
+        app.open_window(&mut rig, id, Some(id));
+        app.show(&mut rig, (60, 40), colour);
+        apps.push(app);
+    }
+    let mut refs: Vec<&mut App> = apps.iter_mut().collect();
+    rig.pump(&mut refs, |rig, _| rig.windows().len() == 3);
+
+    rig.drop_desktop();
+    rig.settle(&mut refs);
+    drop(refs);
+    let gone = apps.remove(1);
+    drop(gone);
+    let mut refs: Vec<&mut App> = apps.iter_mut().collect();
+    rig.settle(&mut refs);
+    assert_eq!(
+        rig.keeper.describe().windows.len(),
+        2,
+        "the exited app's window is gone"
+    );
+
+    rig.attach_new(640, 480);
+    rig.pump(&mut refs, |rig, _| rig.windows().len() == 2);
+    rig.settle(&mut refs);
+    let mut shown: Vec<String> = rig
+        .windows()
+        .into_iter()
+        .filter_map(|(id, _, _)| id)
+        .collect();
+    shown.sort();
+    assert_eq!(shown, ["legacy.linux.org.one", "legacy.linux.org.three"]);
+    assert!(
+        refs.iter().all(|app| !app.broken),
+        "the others keep their connections"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
 #[test]
 fn frames_drawn_while_away_show_and_windows_closed_while_away_stay_closed() {
     let mut rig = Rig::new(None);

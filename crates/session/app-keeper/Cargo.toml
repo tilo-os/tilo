@@ -46,6 +46,9 @@ libc.workspace = true
 rustix = { workspace = true, features = ["net", "fs", "process", "event", "rand"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The registry: where keepers live, and a fresh directory's name.
+tilo-paths.workspace = true
+uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

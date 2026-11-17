@@ -174,6 +174,12 @@ pub struct Spawner {
     /// What starts an app behind a keeper, once the session has a desktop to attach keepers to.
     #[cfg(target_os = "linux")]
     keeping: Option<crate::kept::Keeping>,
+    /// The watch over the keepers' registry, and whether it saw a change not looked at yet.
+    #[cfg(target_os = "linux")]
+    registry: Option<(
+        tilo_files::native::ChangeWatch,
+        Arc<std::sync::atomic::AtomicBool>,
+    )>,
 }
 
 /// What ends a session: a logout ends every app it runs; an in-place restart of the desktop leaves
@@ -231,13 +237,39 @@ impl Spawner {
             memory,
             #[cfg(target_os = "linux")]
             keeping: None,
+            #[cfg(target_os = "linux")]
+            registry: None,
         }
     }
 
     /// Start the apps that are not Tilo's behind `keeping`'s keeper from now on, attached to its
     /// desktop ([`crate::kept`]).
+    ///
+    /// The registry is watched from now on: a keeper that appears there later (a service's) is
+    /// taken up by [`Self::adopt_appeared`], and this spawner's loop woken for it.
     #[cfg(target_os = "linux")]
     pub fn keep_behind(&mut self, keeping: crate::kept::Keeping) {
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&changed);
+        let wake = self.wake.clone();
+        let watched = std::fs::create_dir_all(&keeping.root).and_then(|()| {
+            tilo_files::native::watch_tree_changes(
+                &keeping.root,
+                |_| true,
+                move || {
+                    seen.store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(wake) = &wake {
+                        wake();
+                    }
+                },
+            )
+        });
+        match watched {
+            Ok(watch) => self.registry = Some((watch, changed)),
+            Err(error) => {
+                tracing::warn!(%error, "the keepers' registry is not watched: a keeper a service starts later is not shown");
+            }
+        }
         self.keeping = Some(keeping);
     }
 
@@ -446,7 +478,7 @@ pub struct Adopted {
     pub id: u64,
     /// The keeper's process: the window's process, and the launch's root.
     pub pid: u32,
-    pub launch: crate::kept::KeptLaunch,
+    pub launch: tilo_app_keeper::registry::KeptLaunch,
     /// Its windows, oldest first, each with the place the run before last told its keeper.
     pub windows: Vec<crate::kept::Window>,
 }
@@ -463,15 +495,16 @@ impl Spawner {
         command: &mut Command,
     ) -> Option<Arc<crate::kept::Kept>> {
         let keeping = self.keeping.as_ref().filter(|_| planned.kept())?;
-        let launch = crate::kept::KeptLaunch {
-            version: crate::kept::LAUNCH_VERSION,
+        let launch = tilo_app_keeper::registry::KeptLaunch {
+            version: tilo_app_keeper::registry::LAUNCH_VERSION,
             app: planned.app.clone(),
             title: planned.title.clone(),
             workspace: workspace.to_owned(),
             asked: asked.map(str::to_owned),
             window_identities: planned.window_identities.clone(),
+            service: false,
         };
-        match crate::kept::new_dir(&keeping.root, &launch) {
+        match tilo_app_keeper::registry::new_dir(&keeping.root, &launch) {
             Ok(dir) => {
                 command
                     .arg("--keeper")
@@ -480,7 +513,7 @@ impl Spawner {
                     .arg(&dir)
                     .arg("--keep-as")
                     .arg(launch.encode());
-                Some(crate::kept::Kept::new(dir))
+                Some(crate::kept::Kept::new(dir, false))
             }
             Err(error) => {
                 tracing::warn!(app = %planned.app, %error, "the app starts without a keeper: it ends if the desktop restarts");
@@ -525,11 +558,60 @@ impl Spawner {
                     );
                 }
                 Err(crate::kept::Refused::Gone) => {
-                    self.report_gone(&dir, None);
+                    if !crate::kept::written_launch(&dir).is_some_and(|launch| launch.service) {
+                        self.report_gone(&dir, None);
+                    } else if dir.join("control").exists() {
+                        // A service's keeper that listened once and is gone (the service was
+                        // stopped with it) leaves only its directory; one that does not listen yet
+                        // is taken up once it does.
+                        crate::kept::Kept::new(dir, false).remove();
+                    }
                 }
                 Err(crate::kept::Refused::Failed(error)) => {
                     tracing::warn!(dir = %dir.display(), %error, "not adopted: the keeper did not answer");
                 }
+            }
+        }
+        adopted
+    }
+
+    /// Take up the keepers that appeared in the registry since the last look, and show them at
+    /// once: a service's keeper started while this run goes on. Keepers of this spawner's own
+    /// launches, and ones that already answered or were refused, are passed over.
+    pub fn adopt_appeared(&mut self) -> Vec<Adopted> {
+        let Some(keeping) = self.keeping.clone() else {
+            return Vec::new();
+        };
+        let changed = self
+            .registry
+            .as_ref()
+            .is_some_and(|(_, changed)| changed.swap(false, std::sync::atomic::Ordering::AcqRel));
+        if !changed {
+            return Vec::new();
+        }
+        let known: Vec<PathBuf> = running(&self.running)
+            .values()
+            .filter_map(|app| app.kept.as_ref().map(|kept| kept.dir.clone()))
+            .collect();
+        let mut adopted = Vec::new();
+        for dir in crate::kept::dirs(&keeping.root) {
+            if known.contains(&dir)
+                || !crate::kept::written_launch(&dir).is_some_and(|launch| launch.service)
+            {
+                continue;
+            }
+            // A keeper that does not listen yet is looked at again when its socket appears.
+            let Ok(greeted) = crate::kept::greet(&dir, crate::kept::ANSWER) else {
+                continue;
+            };
+            if let Some(taken) = self.adopt_one(&dir, greeted) {
+                let kept = running(&self.running)
+                    .get(&taken.id)
+                    .and_then(|app| app.kept.clone());
+                if let Some(kept) = kept {
+                    kept.attach(&keeping.desktop);
+                }
+                adopted.push(taken);
             }
         }
         adopted
@@ -542,7 +624,7 @@ impl Spawner {
             description,
             inbox,
         } = greeted;
-        let launch = crate::kept::KeptLaunch::decode(&description.launch)
+        let launch = tilo_app_keeper::registry::KeptLaunch::decode(&description.launch)
             .or_else(|| crate::kept::written_launch(dir));
         let Some(launch) = launch else {
             tracing::warn!(dir = %dir.display(), "not adopted: the launch it keeps is not one this session reads");
@@ -550,14 +632,17 @@ impl Spawner {
         };
         if let Some(end) = description.ended {
             drop(control);
-            self.report_gone(dir, Some(crate::kept::end_of(end)));
+            if !launch.service {
+                self.report_gone(dir, Some(crate::kept::end_of(end)));
+            }
             return None;
         }
-        if !crate::kept::same_process(&description) {
+        // A keeper still waiting for its first desktop has started nothing to mistake.
+        if description.app_pid.is_some() && !crate::kept::same_process(&description) {
             tracing::warn!(app = %launch.app, dir = %dir.display(), "not adopted: its process is not the one the keeper started");
             return None;
         }
-        let kept = crate::kept::Kept::new(dir.to_path_buf());
+        let kept = crate::kept::Kept::new(dir.to_path_buf(), launch.service);
         if let Err(error) = kept.greeted(&control, keeper) {
             tracing::warn!(app = %launch.app, %error, "not adopted: its keeper cannot be written to");
             return None;
@@ -588,6 +673,11 @@ impl Spawner {
             .spawn(move || {
                 let heard = kept.listen(&control, inbox);
                 if kept.released() {
+                    return;
+                }
+                if kept.service {
+                    // The service restarts what it runs; nothing ended for the person.
+                    running(&still_running).remove(&id);
                     return;
                 }
                 // A keeper gone without a word was killed with its app.
@@ -671,12 +761,16 @@ impl Spawner {
     }
 
     /// End what a run that did not end in a restart left behind keepers, and remove their
-    /// directories: a start that follows no in-place restart takes nothing back.
+    /// directories: a start that follows no in-place restart takes nothing back but the keepers
+    /// of services, which [`Self::adopt_kept`] takes up after.
     pub fn clear_kept(&self) {
         let Some(keeping) = &self.keeping else {
             return;
         };
         for dir in crate::kept::dirs(&keeping.root) {
+            if crate::kept::written_launch(&dir).is_some_and(|launch| launch.service) {
+                continue;
+            }
             crate::kept::end_leftover(&dir);
         }
     }
@@ -784,13 +878,19 @@ impl App {
         }
     }
 
-    /// The keeper of a launch `teardown` leaves running: only an in-place restart, and only a launch
-    /// whose keeper answered in this run and still answers. Everything else ends.
+    /// The keeper of a launch `teardown` leaves running: a service's at any teardown; else only at
+    /// an in-place restart, and only a launch whose keeper answered in this run and still answers.
+    /// Everything else ends.
     #[cfg(target_os = "linux")]
     fn stays_for(&self, teardown: Teardown) -> Option<&Arc<crate::kept::Kept>> {
+        let kept = self.kept.as_ref()?;
+        // A service's keeper is the service's to end, whatever ends the session.
+        if kept.service {
+            return Some(kept);
+        }
         match teardown {
             Teardown::Logout => None,
-            Teardown::InPlaceRestart => self.kept.as_ref().filter(|kept| kept.answers()),
+            Teardown::InPlaceRestart => Some(kept).filter(|kept| kept.answers()),
         }
     }
 

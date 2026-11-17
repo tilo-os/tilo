@@ -682,6 +682,7 @@ mod tests {
                     workspace: "workspace-1".into(),
                     asked: None,
                     window_identities: vec!["org.example.Kept".into()],
+                    service: false,
                 },
                 windows: vec![
                     placed("w2", Some("999")),

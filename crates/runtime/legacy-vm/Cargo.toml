@@ -50,6 +50,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # A device certificate, for a material's device.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
@@ -61,6 +62,8 @@ workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The VM's window forwarder runs behind an app keeper, written into the keepers' registry.
+tilo-app-keeper = { path = "../../session/app-keeper" }
 # The VM network's bridge filter, over the same nf_tables encoder as a
 # sandbox's egress filter.
 tilo-egress = { path = "../egress" }

@@ -716,36 +716,56 @@ impl Apps {
     /// Take up what the keepers' registry holds as this run starts: after an in-place restart the
     /// apps the run before left running are this session's launches again, as if it had started
     /// them; after any other start what is there is left over, and ends.
+    ///
+    /// A service's keeper (the Linux VM's window forwarder) is taken up at any start.
     #[cfg(target_os = "linux")]
     pub fn take_up_kept(&self, following_restart: bool) {
         if !following_restart {
             self.state.borrow().spawner.clear_kept();
-            return;
         }
         let adopted = self.state.borrow_mut().spawner.adopt_kept();
+        self.took_up(adopted, true);
+    }
+
+    /// Show the keepers a service started since the last pass.
+    #[cfg(target_os = "linux")]
+    fn follow_kept(&self) {
+        let adopted = self.state.borrow_mut().spawner.adopt_appeared();
+        self.took_up(adopted, false);
+    }
+
+    /// Make `adopted` this run's launches; at the start of the run their windows claim the saved
+    /// tabs they stood in (`claim`). A service's keeper is no launch of the person's: only its
+    /// windows are claimed.
+    #[cfg(target_os = "linux")]
+    fn took_up(&self, adopted: Vec<tilo_app_launch::Adopted>, claim: bool) {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         for kept in adopted {
-            if let Some(launches) = &launches {
-                launches.started(kept.pid, &kept.launch.app, &kept.launch.workspace, false);
+            if !kept.launch.service {
+                if let Some(launches) = &launches {
+                    launches.started(kept.pid, &kept.launch.app, &kept.launch.workspace, false);
+                }
+                state.launched.insert(
+                    kept.id,
+                    Launching {
+                        asked: kept
+                            .launch
+                            .asked
+                            .clone()
+                            .unwrap_or_else(|| kept.launch.app.clone()),
+                        app: kept.launch.app.clone(),
+                        workspace: kept.launch.workspace.clone(),
+                        pid: Some(kept.pid),
+                        instance: None,
+                        started: std::time::Instant::now(),
+                        got: Got::Landed,
+                    },
+                );
             }
-            state.launched.insert(
-                kept.id,
-                Launching {
-                    asked: kept
-                        .launch
-                        .asked
-                        .clone()
-                        .unwrap_or_else(|| kept.launch.app.clone()),
-                    app: kept.launch.app.clone(),
-                    workspace: kept.launch.workspace.clone(),
-                    pid: Some(kept.pid),
-                    instance: None,
-                    started: std::time::Instant::now(),
-                    got: Got::Landed,
-                },
-            );
-            state.kept.push(kept);
+            if claim {
+                state.kept.push(kept);
+            }
         }
     }
 
@@ -781,6 +801,8 @@ impl Apps {
         self.start_asked_now();
         self.follow_ended();
         self.follow_policy();
+        #[cfg(target_os = "linux")]
+        self.follow_kept();
     }
 
     /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and

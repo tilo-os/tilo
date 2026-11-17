@@ -61,6 +61,7 @@ mod pointer_constraints;
 mod pointer_gestures;
 mod presentation;
 mod primary_selection;
+pub mod registry;
 mod relative_pointer;
 mod seat;
 mod state;
@@ -245,11 +246,12 @@ impl Keeper {
         insert(&handle, wayland, |listener, data: &mut Data| {
             data.accept_app(listener);
         })?;
-        let control = listen(&options.dir.join("control"))?;
-        std::fs::set_permissions(
-            options.dir.join("control"),
-            std::fs::Permissions::from_mode(0o600),
-        )?;
+        // Bound and made private under another name, then named `control`: a session that sees
+        // `control` appear finds it listening.
+        let binding = options.dir.join(".control");
+        let control = listen(&binding)?;
+        std::fs::set_permissions(&binding, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&binding, options.dir.join("control"))?;
         insert(&handle, control, |listener, data: &mut Data| {
             data.accept_session(listener);
         })?;
