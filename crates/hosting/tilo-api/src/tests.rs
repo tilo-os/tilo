@@ -1365,6 +1365,12 @@ async fn a_key_carries_its_grant_to_every_api_server() {
     assert!(carried.key().is_some(), "the key travels with its grant");
     assert_eq!(carried.id, first.store.access(&token, now).unwrap().id);
 
+    // Read from its token alone, nothing of it is kept. The API server
+    // keeps it once a server it is for has let its person in.
+    assert!(second.store.grants_of(&carried.person).is_empty());
+    second.store.keep_carried(&carried).unwrap();
+    assert_eq!(second.store.grants_of(&carried.person).len(), 1);
+
     // Revoked at one API server, that grant is revoked at that one for good.
     assert!(
         !second
@@ -1382,4 +1388,114 @@ async fn a_key_carries_its_grant_to_every_api_server() {
         second.store.access("tilo_sk_not-a-grant", now).unwrap_err(),
         store::Denied::Unknown
     );
+}
+
+/// A key `person`'s root certified for a service of theirs, made from
+/// `seed`, as whoever holds it brings it.
+fn key_of(person: &Person, seed: u8) -> GrantKey {
+    let now = tilo_clock::unix_now_ms();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: person.root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "anything".into(),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        issued_at_ns: now.saturating_sub(1_000).saturating_mul(1_000_000),
+        expires_at_ns: Some(now.saturating_add(86_400_000).saturating_mul(1_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &person.root).unwrap();
+    GrantKey::held(key, cert, now.saturating_mul(1_000_000)).unwrap()
+}
+
+/// A key this server never issued is read from its token alone, and nothing
+/// but the token vouches for it: a root anybody makes certifies a key
+/// anybody makes. Reading one keeps nothing of it, neither the grant with
+/// its secret nor a count for its person, however many are shown.
+#[test]
+fn a_key_read_from_its_token_alone_leaves_nothing_in_the_store() {
+    let store = Store::in_memory();
+    let now = tilo_clock::unix_now_ms();
+    let mut kept = 0;
+    for seed in 1..=20_u8 {
+        // Nobody: a root made for this one request, known to no server.
+        let stranger = Person::new(seed);
+        let token = store::key_token("anything", &key_of(&stranger, seed + 200)).unwrap();
+        let read = store.access(&token, now).unwrap();
+        assert_eq!(read.person, stranger.id());
+        assert!(read.key().is_some(), "the key is read from its token");
+        kept += store.grants_of(&stranger.id()).len();
+    }
+    assert_eq!(
+        kept, 0,
+        "{kept} of 20 keys that nobody approved here, each certified by a root made for the \
+         request, were kept as grants with their secrets"
+    );
+    let stranger = Person::new(1).id();
+    for _ in 0..2 {
+        let counted = store.next_run(&stranger).unwrap();
+        assert_eq!(counted, 1, "a person nothing is kept of was counted");
+    }
+}
+
+/// Once a server its key is for has let a person in, the key is kept, and
+/// a person's keys kept that way are bounded: past the bound the one used
+/// longest ago gives way, and is read from its token again when it is
+/// shown. One that was revoked stays refused, and one that minted a key
+/// stays for the key that reads as it.
+#[test]
+fn a_persons_keys_kept_without_being_issued_here_are_bounded() {
+    let store = Store::in_memory();
+    let ada = Person::new(9);
+    let now = tilo_clock::unix_now_ms();
+    let most = store::MAX_CARRIED_PER_PERSON;
+    let tokens: Vec<String> = (0..most + 6)
+        .map(|at| {
+            let key = key_of(&ada, 120 + u8::try_from(at).unwrap());
+            store::key_token("anything", &key).unwrap()
+        })
+        .collect();
+    let mut ids = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        let used = now + u64::try_from(at).unwrap();
+        let read = store.access(token, used).unwrap();
+        store.keep_carried(&read).unwrap();
+        match at {
+            // The first mints a key, which reads as it from then on.
+            0 => {
+                let minted = store::GrantKind::Minted {
+                    parent: read.id.clone(),
+                };
+                store
+                    .resource_key(&key_of(&ada, 119), "minted", minted, None, used)
+                    .unwrap();
+            }
+            // The second is revoked.
+            1 => assert!(
+                !store
+                    .revoke_grant(&ada.id(), &read.id, used)
+                    .unwrap()
+                    .is_empty()
+            ),
+            _ => {}
+        }
+        ids.push(read.id);
+    }
+    let kept = store
+        .grants_of(&ada.id())
+        .into_iter()
+        .filter(|grant| grant.kind == store::GrantKind::Key)
+        .count();
+    assert_eq!(kept, most, "a person's keys kept this way are bounded");
+    assert!(store.grant(&ids[0]).is_some(), "the one that minted stays");
+    assert!(store.grant(&ids[2]).is_none(), "the oldest gave way");
+    assert!(store.grant(&ids[most + 5]).is_some(), "the newest is kept");
+    // What gave way is read from its token again, and what was revoked is
+    // refused as revoked.
+    assert_eq!(store.access(&tokens[2], now).unwrap().id, ids[2]);
+    assert!(matches!(
+        store.access(&tokens[1], now),
+        Err(store::Denied::Revoked { .. })
+    ));
 }

@@ -37,6 +37,9 @@ pub const CODE_LIFETIME: Duration = Duration::from_secs(60);
 /// oldest client nobody holds a grant for gives way first.
 const MAX_CLIENTS: usize = 10_000;
 const MAX_CODES: usize = 4_096;
+/// The most keys of one person this store keeps that it did not issue
+/// itself ([`Store::keep_carried`]).
+pub const MAX_CARRIED_PER_PERSON: usize = 32;
 /// How often using a token writes when its grant was last used to the file:
 /// a use is noted in memory at once, and kept at most this much later.
 const LAST_USED_SAVE_MS: u64 = 60 * 1000;
@@ -196,6 +199,25 @@ fn scope_of(key: &GrantKey) -> Scope {
 
 fn expiry_ms(key: &GrantKey) -> Option<u64> {
     key.cert().expires_at_ns.map(|expiry| expiry / 1_000_000)
+}
+
+/// Whether `grant` is a live key this store keeps without having issued it:
+/// one that was read from its token ([`Store::keep_carried`]), which no
+/// token kept here names.
+fn is_carried(state: &State, grant: &Grant) -> bool {
+    grant.kind == GrantKind::Key
+        && grant.live()
+        && !state.tokens.values().any(|token| token.grant == grant.id)
+}
+
+/// Whether something kept here reads as the grant `id`: a grant it minted,
+/// or a webhook it made.
+fn is_read_as(state: &State, id: &str) -> bool {
+    state
+        .grants
+        .values()
+        .any(|grant| grant.parent() == Some(id))
+        || state.webhooks.values().any(|hook| hook.grant == id)
 }
 
 /// Revoke `id` and every grant it minted, forgetting their tokens. Answers
@@ -714,22 +736,34 @@ impl Store {
     /// The grant a key carries itself, for a token this store never saw: the
     /// key is the grant the person approved, so every API server reads it
     /// without holding anything another API server would have to share.
-    /// Revoking it here records the grant under the same id every API server
-    /// derives from it, so a store that revoked one refuses it from then on.
+    ///
+    /// Reading it keeps nothing. Nothing but the token vouches for such a
+    /// key, and a root anybody makes certifies a key anybody makes, so it
+    /// is kept only once a server it is for has let its person in
+    /// ([`Self::keep_carried`]). Revoking a kept one here records it under
+    /// the same id every API server derives from it, so a store that
+    /// revoked one refuses it from then on.
     fn carried(&self, token: &str, now_ms: u64) -> Result<Grant, Denied> {
         let (name, key) = carried_key(token).ok_or(Denied::Unknown)?;
         let id = grant_id_of(&key);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(known) = state.grants.get(&id) {
-            if let Some(denied) = Denied::of(known, now_ms) {
-                return Err(denied);
+        let kept = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match state.grants.get_mut(&id) {
+                Some(known) => {
+                    if let Some(denied) = Denied::of(known, now_ms) {
+                        return Err(denied);
+                    }
+                    known.last_used_ms = Some(now_ms);
+                    Some(known.clone())
+                }
+                None => None,
             }
-            let mut known = known.clone();
-            known.last_used_ms = Some(now_ms);
-            return Ok(known);
+        };
+        if let Some(kept) = kept {
+            return Ok(kept);
         }
         if !key.holds(now_ms.saturating_mul(1_000_000)) {
             return Err(Denied::Expired {
@@ -754,12 +788,54 @@ impl Store {
                 cert: hex::encode(key.cert_bytes()),
             }),
         };
-        state.grants.insert(grant.id.clone(), grant.clone());
-        if let Err(error) = self.save(&state) {
-            tracing::warn!(%error, "could not keep a key an API server was handed");
-        }
-        drop(state);
         Ok(grant)
+    }
+
+    /// Keep `grant`, a key this store did not issue and read from its token
+    /// alone ([`Self::access`]), now that a server it is for has let its
+    /// person in. From here on it is listed among that person's keys and
+    /// revoked here like one made here.
+    ///
+    /// A person's kept keys of this kind are bounded
+    /// ([`MAX_CARRIED_PER_PERSON`]). Past the bound the one used longest ago
+    /// gives way, which loses nothing: a key is read from its token again.
+    /// A revoked one stays, so it stays refused, and so does one that
+    /// minted a key or made a webhook, which read as it.
+    ///
+    /// # Errors
+    /// The store could not be written.
+    pub fn keep_carried(&self, grant: &Grant) -> io::Result<()> {
+        if self.read(|state| state.grants.contains_key(&grant.id)) {
+            return Ok(());
+        }
+        self.change(|state| {
+            state
+                .grants
+                .entry(grant.id.clone())
+                .or_insert_with(|| grant.clone());
+            let mut carried: Vec<(u64, String)> = state
+                .grants
+                .values()
+                .filter(|kept| kept.person == grant.person && is_carried(state, kept))
+                .map(|kept| {
+                    (
+                        kept.last_used_ms.unwrap_or(kept.created_ms),
+                        kept.id.clone(),
+                    )
+                })
+                .collect();
+            carried.sort();
+            let over = carried.len().saturating_sub(MAX_CARRIED_PER_PERSON);
+            let gone: Vec<String> = carried
+                .into_iter()
+                .map(|(_, id)| id)
+                .filter(|id| !is_read_as(state, id))
+                .take(over)
+                .collect();
+            for id in gone {
+                state.grants.remove(&id);
+            }
+        })
     }
 
     /// Record a grant the person approved as an API key on their device
@@ -909,11 +985,17 @@ impl Store {
         grants
     }
 
-    /// The number of `person`'s next agent run, counting from one.
+    /// The number of `person`'s next agent session, counting from one.
     ///
     /// # Errors
     /// The store could not be written.
     pub fn next_run(&self, person: &str) -> io::Result<u64> {
+        // Counted for a person this store keeps a grant of. A key read from
+        // its token alone, whose person no server has let in yet, leaves
+        // nothing here: its first is its person's first.
+        if !self.read(|state| state.grants.values().any(|grant| grant.person == person)) {
+            return Ok(1);
+        }
         self.change(|state| {
             let count = state.runs.entry(person.to_owned()).or_default();
             *count = count.saturating_add(1);

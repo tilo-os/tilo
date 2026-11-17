@@ -1433,6 +1433,7 @@ impl Server {
             .connection(&grant.id, &key)
             .await
             .map_err(|error| error.to_string())?;
+        self.keep_once_let_in(grant, &connection);
         Ok(Session::new(
             grant.id.clone(),
             scope,
@@ -1444,6 +1445,26 @@ impl Server {
 }
 
 impl Server {
+    /// Keep `grant` when it is a key this server did not issue, once the
+    /// server its session is with has let its person in
+    /// ([`Connection::when_let_in`]). Until then nothing of it is kept:
+    /// whoever certifies a key with a root of their own making leaves
+    /// nothing here.
+    fn keep_once_let_in(self: &Arc<Self>, grant: &store::Grant, connection: &Connection) {
+        if self.store.grant(&grant.id).is_some() {
+            return;
+        }
+        let (server, grant) = (Arc::downgrade(self), grant.clone());
+        connection.when_let_in(move || {
+            let Some(server) = server.upgrade() else {
+                return;
+            };
+            if let Err(error) = server.store.keep_carried(&grant) {
+                tracing::warn!(%error, "could not keep a key an API server was handed");
+            }
+        });
+    }
+
     /// `grant`'s session with the relay: the live one its other runs hold,
     /// else a new one. Runs starting at once wait for the one connecting.
     async fn connection(

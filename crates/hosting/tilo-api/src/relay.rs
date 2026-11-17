@@ -210,6 +210,7 @@ impl Relay {
             relay: Arc::clone(self),
             host: self.name.clone(),
             entered: Mutex::default(),
+            let_in: Mutex::default(),
             endpoint: tokio::sync::OnceCell::new(),
         };
         connection.device.connected().await?;
@@ -268,6 +269,11 @@ impl Relay {
             .personal_list(labels, workspace)
             .await
             .map_err(RelayError::from)?;
+        // A list is kept, and a workspace listed, only for a person who
+        // takes part there.
+        if !listed.workspaces.is_empty() {
+            connection.let_in();
+        }
         Ok(listed
             .workspaces
             .into_iter()
@@ -330,6 +336,7 @@ impl Relay {
             arguments.insert("labels".into(), json!(labels));
         }
         let (listing, _invitation) = connection.device.own_workspace(arguments).await?;
+        connection.let_in();
         Ok(connection.workspace(&listing))
     }
 
@@ -432,6 +439,9 @@ impl Relay {
             .get_or_try_init(|| connection.enter(workspace))
             .await
             .copied();
+        if entered.is_ok() {
+            connection.let_in();
+        }
         if entered.is_err() {
             let mut all = lock(&connection.entered);
             if all
@@ -457,6 +467,10 @@ pub struct Connection {
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
     entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<WorkspaceId>>>>,
+    /// What is told the next time the server this session is with does for
+    /// its key what it does only for a person it lets in
+    /// ([`Self::when_let_in`]).
+    let_in: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// The grant's own iroh endpoint, keyed by it: what dials the person's
     /// devices that host a workspace of theirs.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
@@ -472,6 +486,24 @@ impl Drop for Connection {
 }
 
 impl Connection {
+    /// Have `told` called the next time the server this session is with
+    /// does for its key what it does only for a person it lets in: lists a
+    /// workspace of theirs, makes one for them, or lets the key into one. A
+    /// session alone says less, since a server that keeps workspaces for
+    /// people takes a session from any certified key.
+    pub fn when_let_in(&self, told: impl FnOnce() + Send + 'static) {
+        *lock(&self.let_in) = Some(Box::new(told));
+    }
+
+    /// The server did for this session's key what it does only for a person
+    /// it lets in.
+    fn let_in(&self) {
+        let told = lock(&self.let_in).take();
+        if let Some(told) = told {
+            told();
+        }
+    }
+
     /// The host this session answers on.
     #[must_use]
     pub fn relay(&self) -> &Arc<Relay> {
