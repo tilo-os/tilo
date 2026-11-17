@@ -20,7 +20,10 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
             (600, 200),
             Theme::dark(),
         );
-        harness.set_permission_ctx(PermissionContext::member("ada", role));
+        harness.set_permission_ctx(PermissionContext::member(
+            &crate::permissions::MemberId::person("ada"),
+            role,
+        ));
         harness.relayout();
         harness.click_named("go").unwrap();
         harness.relayout();

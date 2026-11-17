@@ -30,7 +30,7 @@ fn original_remote_grant(
     now: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> crate::permissions::PermissionContext {
     crate::permissions::PermissionContext::granted(
-        "remote:original",
+        &crate::permissions::MemberId::person("remote:original"),
         &crate::permissions::TreePath::root().app("test.counter"),
         crate::permissions::policy::KindSet::ALL,
         Some(100),

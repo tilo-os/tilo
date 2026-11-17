@@ -33,7 +33,7 @@ fn locked() -> PermissionScope {
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::stranger("nobody")
+    PermissionContext::stranger(&tilo_ui::permissions::MemberId::person("nobody"))
 }
 
 fn stamp(

@@ -173,7 +173,7 @@ fn leave_remains_available_after_downgrade() {
     app.reload(&doc);
     app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
     app.perms = crate::permissions::ChatPermissions::from_context(PermissionContext::member(
-        model::ME,
+        &ui::permissions::MemberId::person(model::ME),
         Role::Viewer,
     ));
     app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
@@ -534,7 +534,8 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     let (mut app, mut doc) = app_with_doc();
     // Restrict this peer to a read-only member with no file capabilities —
     // exactly what an invite without write/file access produces.
-    let ctx = PermissionContext::member(model::ME, Role::Viewer);
+    let ctx =
+        PermissionContext::member(&ui::permissions::MemberId::person(model::ME), Role::Viewer);
     app.perms = crate::permissions::ChatPermissions::from_context(ctx);
 
     assert!(

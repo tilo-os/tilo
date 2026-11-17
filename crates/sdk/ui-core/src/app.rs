@@ -3199,7 +3199,9 @@ pub(crate) mod ordinary_confirmation_tests {
         fn revoke(&self) {
             self.binding
                 .permissions
-                .set(crate::permissions::PermissionContext::stranger("fixture"));
+                .set(crate::permissions::PermissionContext::stranger(
+                    &crate::permissions::MemberId::person("fixture"),
+                ));
         }
     }
     fn owned(widget: Fixture) -> (Box<dyn Widget>, OwnerGuard) {
@@ -3428,7 +3430,9 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::stranger("fixture");
+            let denied = crate::permissions::PermissionContext::stranger(
+                &crate::permissions::MemberId::person("fixture"),
+            );
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
                 Self::FrameHarness(driver) => driver.set_permission_ctx(denied),

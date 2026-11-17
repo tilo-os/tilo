@@ -1616,7 +1616,10 @@ pub(crate) fn role_permissions(
     author: &str,
     role: Role,
 ) -> ui_core::permissions::SharedPermissions {
-    ui_core::permissions::SharedPermissions::new(PermissionContext::member(author, role))
+    ui_core::permissions::SharedPermissions::new(PermissionContext::member(
+        &ui_core::permissions::MemberId::person(author),
+        role,
+    ))
 }
 
 /// Prepare `definition` on `host`: the record a launch named, else the one

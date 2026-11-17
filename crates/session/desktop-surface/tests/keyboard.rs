@@ -653,7 +653,7 @@ impl TileSource for Source {
         );
         let permissions =
             ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
-                "keyboard-author",
+                &ui::permissions::MemberId::person("keyboard-author"),
                 ui::permissions::Role::Owner,
             ));
         let context = HostContext::prepare(

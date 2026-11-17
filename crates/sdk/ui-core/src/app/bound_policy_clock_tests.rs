@@ -18,7 +18,7 @@ tilo_test_env::scenario! {
         let sampled = clock.clone();
         fixture.permissions.set(
             crate::permissions::PermissionContext::granted(
-                "fixture-user",
+                &crate::permissions::MemberId::person("fixture-user"),
                 &crate::permissions::TreePath::root(),
                 crate::permissions::policy::KindSet::ALL,
                 Some(110),
@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
         let (sampled, read) = (clock.clone(), readable.clone());
         fixture.permissions.set(
             crate::permissions::PermissionContext::granted(
-                "fixture-user",
+                &crate::permissions::MemberId::person("fixture-user"),
                 &crate::permissions::TreePath::root(),
                 crate::permissions::policy::KindSet::ALL,
                 Some(110),

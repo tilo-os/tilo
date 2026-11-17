@@ -546,7 +546,7 @@ fn permissions_for_participation(
             ));
         }
     };
-    Ok(PermissionContext::member_of(workspace, author.key(), role))
+    Ok(PermissionContext::member_of(workspace, author, role))
 }
 
 /// The host's view of the person's authority over one app's actions, read

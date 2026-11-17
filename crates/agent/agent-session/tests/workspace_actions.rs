@@ -262,7 +262,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
         &workspace.workspace,
-        "ada",
+        &ui::permissions::MemberId::person("ada"),
         ui::permissions::Role::Owner,
     );
     let source_views = source

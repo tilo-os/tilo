@@ -275,7 +275,7 @@ mod install_tests {
             .in_workspace(WORKSPACE),
             permissions: PermissionContext::member_of(
                 WORKSPACE,
-                hex::encode(REPORTER),
+                &ui::permissions::MemberId::person(hex::encode(REPORTER)),
                 Role::Owner,
             )
             .at_unix_time(0),

@@ -1488,7 +1488,11 @@ fn replica_standing(
     let mut invoker = tilo_actions::ActionInvoker::person(participant);
     let permissions = match actor {
         ReplicaActor::Agent => {
-            let member = PermissionContext::member_of(workspace, participant, Role::Editor);
+            let member = PermissionContext::member_of(
+                workspace,
+                &ui::permissions::MemberId::person(participant),
+                Role::Editor,
+            );
             let acting =
                 policy::Acting::agent(participant).acting_for(policy::Acting::person(participant));
             let granted = policy::roles::agent_grants(workspace, participant, participant, &[]);
@@ -1502,7 +1506,11 @@ fn replica_standing(
                 None => member.read_only(),
             }
         }
-        ReplicaActor::Owner => PermissionContext::member_of(workspace, participant, Role::Owner),
+        ReplicaActor::Owner => PermissionContext::member_of(
+            workspace,
+            &ui::permissions::MemberId::person(participant),
+            Role::Owner,
+        ),
         ReplicaActor::Bot {
             installer,
             standing,

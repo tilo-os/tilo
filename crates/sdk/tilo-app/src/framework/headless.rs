@@ -860,8 +860,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
-        self.permissions
-            .set(PermissionContext::member(self.author.as_str(), role));
+        self.permissions.set(PermissionContext::member(
+            &ui_core::permissions::MemberId::person(self.author.as_str()),
+            role,
+        ));
         self.role = role;
         self.harness().relayout();
     }
@@ -883,8 +885,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Take the participant out of the workspace while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_workspace(&mut self) {
-        self.permissions
-            .set(PermissionContext::stranger(self.author.as_str()));
+        self.permissions.set(PermissionContext::stranger(
+            &ui_core::permissions::MemberId::person(self.author.as_str()),
+        ));
         self.harness().relayout();
     }
 

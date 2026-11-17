@@ -226,21 +226,30 @@ pub fn local_state() -> LocalState<String> {
     LOCAL.with_borrow(|v| v.clone().unwrap())
 }
 pub fn permissions() -> SharedPermissions {
-    SharedPermissions::new(PermissionContext::stranger("probe-author").at_unix_time(100))
+    SharedPermissions::new(
+        PermissionContext::stranger(&tilo_ui::permissions::MemberId::person("probe-author"))
+            .at_unix_time(100),
+    )
 }
 /// The author as the workspace's Owner: everything is allowed, so an outside
 /// effect runs without asking.
 pub fn owner_permissions() -> SharedPermissions {
     SharedPermissions::new(
-        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
-            .at_unix_time(100),
+        PermissionContext::member(
+            &tilo_ui::permissions::MemberId::person("probe-author"),
+            tilo_ui::permissions::Role::Owner,
+        )
+        .at_unix_time(100),
     )
 }
 /// The author as an Editor of the workspace: may make undoable changes.
 pub fn editor_permissions() -> SharedPermissions {
     SharedPermissions::new(
-        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)
-            .at_unix_time(100),
+        PermissionContext::member(
+            &tilo_ui::permissions::MemberId::person("probe-author"),
+            tilo_ui::permissions::Role::Editor,
+        )
+        .at_unix_time(100),
     )
 }
 pub fn author() -> MemberId {
@@ -279,8 +288,11 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
 pub use tilo_ui::headless::fixture_runner_inputs as runner_inputs;
 pub fn runner_permissions() -> SharedPermissions {
     SharedPermissions::new(
-        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
-            .at_unix_time(100),
+        PermissionContext::member(
+            &tilo_ui::permissions::MemberId::person("probe-author"),
+            tilo_ui::permissions::Role::Owner,
+        )
+        .at_unix_time(100),
     )
 }
 pub struct ProbeHost {

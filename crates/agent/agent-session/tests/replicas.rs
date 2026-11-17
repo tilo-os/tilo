@@ -84,8 +84,12 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_api() {
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     let resource = chat::projection::item_id("categories", &category);
     let before = body(&page);
-    let viewer = PermissionContext::member_of(WORKSPACE, "ada", Role::Viewer);
-    let denied = PermissionContext::stranger("ada");
+    let viewer = PermissionContext::member_of(
+        WORKSPACE,
+        &ui::permissions::MemberId::person("ada"),
+        Role::Viewer,
+    );
+    let denied = PermissionContext::stranger(&ui::permissions::MemberId::person("ada"));
     let views = page.resource_views(&resource, "chat.workspace.categories", &viewer);
     assert!(
         !views.is_empty(),
@@ -691,7 +695,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     };
     let standing = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
-        "ada",
+        &ui::permissions::MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
     .standing()
@@ -774,7 +778,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     };
     let standing = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
-        "ada",
+        &ui::permissions::MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
     .standing()

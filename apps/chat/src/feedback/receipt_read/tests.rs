@@ -217,9 +217,11 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         checkout,
         reveal: None,
     };
-    let permissions = ui::permissions::SharedPermissions::new(
-        ui::permissions::PermissionContext::member(author, ui::permissions::Role::Owner),
-    );
+    let permissions =
+        ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
+            &ui::permissions::MemberId::person(author),
+            ui::permissions::Role::Owner,
+        ));
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
@@ -283,7 +285,7 @@ fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
     fixture
         .permissions
         .set(ui::permissions::PermissionContext::member(
-            "maintainer",
+            &ui::permissions::MemberId::person("maintainer"),
             role,
         ));
 }

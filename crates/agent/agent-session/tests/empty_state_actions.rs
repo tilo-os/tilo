@@ -33,8 +33,11 @@ fn open(app_id: &str) -> (FrameHarness, tempfile::TempDir) {
     let catalogue = catalogue();
     let definition = catalogue.get(app_id).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let permissions =
-        SharedPermissions::new(PermissionContext::member_of(WORKSPACE, PERSON, Role::Owner));
+    let permissions = SharedPermissions::new(PermissionContext::member_of(
+        WORKSPACE,
+        &ui::permissions::MemberId::person(PERSON),
+        Role::Owner,
+    ));
     let mut host = ApplicationHost::new(
         directory.path().join("state"),
         "empty-state-device".into(),

@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// `member` as an Editor of the local workspace, with one extra grant of `answer`
 /// on the `fixture` app until Unix second 100.
 fn member_with(answer: Answer) -> PermissionContext {
-    let context = PermissionContext::member("member", Role::Viewer);
+    let context = PermissionContext::member(
+        &crate::permissions::MemberId::person("member"),
+        Role::Viewer,
+    );
     let mut standing = context.standing().clone();
     if answer == Answer::Deny {
         std::sync::Arc::make_mut(&mut standing.policy)

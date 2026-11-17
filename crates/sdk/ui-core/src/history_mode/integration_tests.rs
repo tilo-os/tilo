@@ -211,7 +211,7 @@ tilo_test_env::scenario! {
             match case {
                 "expiry" => NOW.set(200),
                 "replacement" => driver.set_permission_ctx(
-                    crate::permissions::PermissionContext::stranger(LOCAL_USER),
+                    crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(LOCAL_USER)),
                 ),
                 _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
             }
@@ -360,7 +360,7 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
 fn grant(actor: &str, app: &str, until: Option<u64>) -> crate::permissions::PermissionContext {
     use crate::permissions::*;
     PermissionContext::granted(
-        actor,
+        &crate::permissions::MemberId::person(actor),
         &TreePath::root().app(app),
         policy::KindSet::ALL,
         until,

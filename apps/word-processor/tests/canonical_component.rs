@@ -13,9 +13,11 @@ fn harness() -> (
         .open(definition.app_id(), "w1")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "w1").unwrap());
-    let permissions = ui::permissions::SharedPermissions::new(
-        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
-    );
+    let permissions =
+        ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
+            &ui::permissions::MemberId::person("author"),
+            ui::permissions::Role::Owner,
+        ));
     let context = HostContext::prepare(
         definition,
         HostContextInputs {

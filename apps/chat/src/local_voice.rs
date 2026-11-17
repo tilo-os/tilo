@@ -1172,7 +1172,7 @@ mod tests {
             let mut pointer = crate::app::ChatApp::new_ephemeral();
             pointer.reload(&doc);
             pointer.perms = crate::permissions::ChatPermissions::from_context(
-                PermissionContext::member("reader", Role::Viewer),
+                PermissionContext::member(&ui::permissions::MemberId::person("reader"), Role::Viewer),
             );
             pointer.on_hit(
                 crate::app::Hit::Channel("c_standup".into()),

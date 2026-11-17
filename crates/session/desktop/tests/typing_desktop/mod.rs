@@ -77,7 +77,7 @@ impl ComponentContextSource for Host {
                 instance_id: request.tab.id,
                 permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::member(
-                        "author",
+                        &ui::permissions::MemberId::person("author"),
                         ui::permissions::Role::Owner,
                     ),
                 ),

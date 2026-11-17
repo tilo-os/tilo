@@ -10,7 +10,7 @@ use tilo_ui::permissions::{
 
 /// A viewer in the workspace: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(user, Role::Viewer)
+    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), Role::Viewer)
 }
 
 /// An editor in the workspace, additionally shared one file.
@@ -19,11 +19,13 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// authority over the filesystem, so even an Owner needs one of these
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(user, Role::Editor).granting(CapOverride::grant(
-        Grantee::person(user),
-        Scope::FsPath("/var/workspace/report.md".into()),
-        Access::Write,
-    ))
+    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), Role::Editor).granting(
+        CapOverride::grant(
+            Grantee::person(user),
+            Scope::FsPath("/var/workspace/report.md".into()),
+            Access::Write,
+        ),
+    )
 }
 
 /// What a denial was decided by, for the cases that pin it.
@@ -61,10 +63,10 @@ tilo_test_env::scenario! {
     {
         // An actor with no role has no base authority at all, so absent an
         // explicit capability it is denied — fail-closed by construction.
-        let no_role = || PermissionContext::stranger("x");
+        let no_role = || PermissionContext::stranger(&tilo_ui::permissions::MemberId::person("x"));
         // A block is not an absence. A broader grant must not undo it.
         let denied_with_admin_grant = || {
-            let ctx = PermissionContext::member("mallory", Role::Editor);
+            let ctx = PermissionContext::member(&tilo_ui::permissions::MemberId::person("mallory"), Role::Editor);
             let block = ctx
                 .standing()
                 .policy
@@ -206,7 +208,7 @@ tilo_test_env::scenario! {
     {
         let terminal = TreePath::root().app(AppKind::Terminal.app_id());
         {
-            let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
+            let ctx = PermissionContext::member(&tilo_ui::permissions::MemberId::person("alice"), Role::Editor).with_grant(policy::Grant::new(
                 "terminal",
                 policy::Grantee::person("alice"),
                 TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
@@ -242,7 +244,7 @@ tilo_test_env::scenario! {
                 policy::Grantee::person("owner"),
             )
             .with_lifetime(policy::Lifetime::Until(2_000_000));
-            let ctx = || PermissionContext::member("alice", Role::Editor).with_grant(grant.clone());
+            let ctx = || PermissionContext::member(&tilo_ui::permissions::MemberId::person("alice"), Role::Editor).with_grant(grant.clone());
             let live = ctx().at_unix_time(1_999);
             assert_eq!(live.answer(&terminal, ActionKind::Outside), Answer::Allow);
             let lapsed = ctx().at_unix_time(2_000);

@@ -94,7 +94,11 @@ impl NotebookFixture {
             tag,
             author: MemberId::person("notes-fixture-author"),
             authority: ui::permissions::SharedPermissions::new(
-                PermissionContext::member("notes-fixture-author", Role::Owner).at_unix_time(100),
+                PermissionContext::member(
+                    &ui::permissions::MemberId::person("notes-fixture-author"),
+                    Role::Owner,
+                )
+                .at_unix_time(100),
             ),
             workspace,
             bodies: RefCell::new(bodies),

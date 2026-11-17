@@ -2594,7 +2594,7 @@ tilo_test_env::scenario! {
             .filter(|c| c.id == id)
             .for_each(|c| c.topic.clear());
         app.perms = crate::permissions::ChatPermissions::from_context(
-            ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
+            ui::permissions::PermissionContext::member(&ui::permissions::MemberId::person("reader"), ui::permissions::Role::Viewer),
         );
         assert_eq!(app.empty_channel_message(), None, "no invitation to write");
     }

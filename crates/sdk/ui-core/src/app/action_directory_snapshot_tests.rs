@@ -1224,7 +1224,7 @@ tilo_test_env::scenario! {
             );
             app.actions.permission_generation.set(u64::MAX);
             app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-                "restricted",
+                &crate::permissions::MemberId::person("restricted"),
             ));
             assert_ne!(app.action_directory_revision(), revision);
             assert!(

@@ -131,7 +131,10 @@ mod tests {
     /// A read-only member with no file capabilities — the restricted peer a
     /// real invite without write or file access would produce.
     fn restricted_member() -> ChatPermissions {
-        ChatPermissions::from_context(PermissionContext::member("u_guest", Role::Viewer))
+        ChatPermissions::from_context(PermissionContext::member(
+            &ui::permissions::MemberId::person("u_guest"),
+            Role::Viewer,
+        ))
     }
 
     tilo_test_env::scenario! {
@@ -175,7 +178,7 @@ mod tests {
         phase only_moderators_and_owners_moderate;
         {
             let as_role =
-                |role| ChatPermissions::from_context(PermissionContext::member("u_someone", role));
+                |role| ChatPermissions::from_context(PermissionContext::member(&ui::permissions::MemberId::person("u_someone"), role));
             assert!(as_role(Role::Moderator).can_moderate());
             assert!(as_role(Role::Owner).can_moderate());
             assert!(!as_role(Role::Editor).can_moderate());
@@ -185,7 +188,7 @@ mod tests {
 
         phase a_reader_the_workspace_granted_no_files_cannot_open_attachments;
         {
-            let p = ChatPermissions::from_context(PermissionContext::stranger(crate::model::ME));
+            let p = ChatPermissions::from_context(PermissionContext::stranger(&ui::permissions::MemberId::person(crate::model::ME)));
             assert!(
                 !p.can_embed(crate::images::DEMO_CLIP),
                 "attachments stay closed"
@@ -199,7 +202,7 @@ mod tests {
         // The launch opened Chat read-only: its workspace did not let Chat author.
         let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
             "3f2b1c00-0000-4000-8000-000000000001",
-            "u_guest",
+            &ui::permissions::MemberId::person("u_guest"),
             Role::Viewer,
         ));
         ui::workspace_sync::follow_participation(&launch);

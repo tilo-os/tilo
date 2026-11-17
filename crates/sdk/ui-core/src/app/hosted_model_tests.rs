@@ -682,7 +682,7 @@ tilo_test_env::scenario! {
             let sample_time = time.clone();
             let sample_failed = failed.clone();
             app.permission_ctx = crate::permissions::PermissionContext::granted(
-                "fixture-user",
+                &crate::permissions::MemberId::person("fixture-user"),
                 &crate::permissions::TreePath::root(),
                 crate::permissions::policy::KindSet::ALL,
                 Some(110),

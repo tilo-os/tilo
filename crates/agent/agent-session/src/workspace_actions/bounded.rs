@@ -423,7 +423,7 @@ impl Worker {
             None if who.person == self.participant && !self.governed(workspace_id) => {
                 let owner = ui::permissions::PermissionContext::member_of(
                     cluster,
-                    who.person.clone(),
+                    &ui::permissions::MemberId::person(who.person.clone()),
                     ui::permissions::Role::Owner,
                 );
                 Ok(super::ViewReadPolicy {
@@ -1015,8 +1015,12 @@ mod tests {
     }
 
     fn as_role(role: ui::permissions::Role) -> ui::permissions::PermissionContext {
-        ui::permissions::PermissionContext::member_of(WORKSPACE, "grace", role)
-            .at_unix_time(1_900_000_000)
+        ui::permissions::PermissionContext::member_of(
+            WORKSPACE,
+            &ui::permissions::MemberId::person("grace"),
+            role,
+        )
+        .at_unix_time(1_900_000_000)
     }
 
     fn comment(doc: &mut automerge::AutoCommit) {

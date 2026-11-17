@@ -820,7 +820,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
         app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            "restricted",
+            &crate::permissions::MemberId::person("restricted"),
         ));
 
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
@@ -940,7 +940,7 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         assert!(unsafe { (*pointer).is_enabled() });
 
         app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            "restricted",
+            &crate::permissions::MemberId::person("restricted"),
         ));
         assert!(!unsafe { (*pointer).is_enabled() });
         assert!(!unsafe {
@@ -1424,7 +1424,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             binding
                 .permissions
                 .set(crate::permissions::PermissionContext::member(
-                    "reader",
+                    &crate::permissions::MemberId::person("reader"),
                     collab_types::role::Role::Viewer,
                 ));
             let before = owner
@@ -1496,7 +1496,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         observed.enqueue("run");
         let readonly = crate::permissions::PermissionContext::member(
-            "reader",
+            &crate::permissions::MemberId::person("reader"),
             collab_types::role::Role::Viewer,
         );
         host.set_permission_ctx(readonly);

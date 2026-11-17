@@ -76,8 +76,18 @@ mod tests {
     #[test]
     fn host_action_authority_cannot_be_borrowed_by_agents_or_other_people() {
         let own = TreePath::root().app("so.tilo.store").action("buy");
-        let authority = || PermissionContext::member_of("workspace-a", "person-a", Role::Owner);
-        let agent = PermissionContext::member_of("workspace-a", "person-a", Role::Editor);
+        let authority = || {
+            PermissionContext::member_of(
+                "workspace-a",
+                &crate::permissions::MemberId::person("person-a"),
+                Role::Owner,
+            )
+        };
+        let agent = PermissionContext::member_of(
+            "workspace-a",
+            &crate::permissions::MemberId::person("person-a"),
+            Role::Editor,
+        );
         let bounded = agent
             .clone()
             .with_standing(agent.standing().clone().acting_as(
@@ -86,15 +96,23 @@ mod tests {
             ));
         for permissions in [
             bounded,
-            PermissionContext::member_of("workspace-a", "person-b", Role::Editor),
+            PermissionContext::member_of(
+                "workspace-a",
+                &crate::permissions::MemberId::person("person-b"),
+                Role::Editor,
+            ),
         ] {
             let permissions = permissions
                 .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
-        let permissions = PermissionContext::member_of("workspace-a", "person-a", Role::Editor)
-            .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
+        let permissions = PermissionContext::member_of(
+            "workspace-a",
+            &crate::permissions::MemberId::person("person-a"),
+            Role::Editor,
+        )
+        .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         let permissions =
             permissions.with_policy_time_sampler(Arc::new(|| Err("clock unavailable".into())));

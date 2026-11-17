@@ -384,7 +384,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 /// reads the terminal surface and an Editor writes it — no individual
 /// capabilities needed.
 fn member_ctx(user: &str, role: Role) -> PermissionContext {
-    PermissionContext::member(user, role)
+    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), role)
 }
 
 fn terminal_write() -> PermissionScope {

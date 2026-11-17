@@ -65,7 +65,10 @@ impl Fixture {
                 .open(crate::definition().app_id(), WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
-            authority: SharedPermissions::new(PermissionContext::member("reader", Role::Owner)),
+            authority: SharedPermissions::new(PermissionContext::member(
+                &ui::permissions::MemberId::person("reader"),
+                Role::Owner,
+            )),
         }
     }
 

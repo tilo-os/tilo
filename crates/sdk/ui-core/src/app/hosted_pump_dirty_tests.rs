@@ -432,7 +432,7 @@ tilo_test_env::scenario! {
         let time = Arc::new(AtomicU64::new(100));
         let sample = time.clone();
         fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
-            "fixture-user",
+            &crate::permissions::MemberId::person("fixture-user"),
             &crate::permissions::TreePath::root(),
             crate::permissions::policy::KindSet::ALL,
             Some(110),
@@ -541,7 +541,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.actions.resource_generation.get(), generation);
         // What a host does with its recomputed authority before a pump.
         permissions.set(crate::permissions::PermissionContext::stranger(
-            "fixture-user",
+            &crate::permissions::MemberId::person("fixture-user"),
         ));
         let report = app.pump_hosted_model_as(false);
         assert!(report.synced && report.published);
@@ -669,13 +669,13 @@ tilo_test_env::scenario! {
         let sample = current.clone();
         let mut fixture = HostedPumpFixture::new(1);
         fixture.app.permission_ctx =
-            crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+            crate::permissions::PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "test.directory".into(),
                     Arc::new(move || {
                         Ok(match *sample.lock().unwrap() {
-                            Some(role) => PermissionContext::member("fixture-user", role),
-                            None => PermissionContext::stranger("fixture-user"),
+                            Some(role) => PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), role),
+                            None => PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")),
                         })
                     }),
                 );

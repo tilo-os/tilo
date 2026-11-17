@@ -48,10 +48,13 @@ impl Reading {
             return None;
         }
         let person = hex::encode(self.person);
-        let standing =
-            ui::permissions::PermissionContext::member_of(WORKSPACE, person.clone(), Role::Editor)
-                .standing()
-                .clone();
+        let standing = ui::permissions::PermissionContext::member_of(
+            WORKSPACE,
+            &ui::permissions::MemberId::person(person.clone()),
+            Role::Editor,
+        )
+        .standing()
+        .clone();
         let denied: Vec<Grant> = self
             .bound
             .lock()

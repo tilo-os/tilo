@@ -791,7 +791,10 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                 })
                 .unwrap();
             permissions.set(
-                crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100),
+                crate::permissions::PermissionContext::stranger(
+                    &crate::permissions::MemberId::person("probe-author"),
+                )
+                .at_unix_time(100),
             );
             assert!(runner.invoke("edit").is_err());
             assert_eq!(body(&host.records, &checkout), "edited");

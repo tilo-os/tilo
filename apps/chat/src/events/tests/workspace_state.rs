@@ -791,7 +791,10 @@ fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
         "a moderator sees where to add a channel"
     );
     app.perms = crate::permissions::ChatPermissions::from_context(
-        ui::permissions::PermissionContext::member("guest", ui::permissions::Role::Viewer),
+        ui::permissions::PermissionContext::member(
+            &ui::permissions::MemberId::person("guest"),
+            ui::permissions::Role::Viewer,
+        ),
     );
     assert!(!app.keeps_layout());
     assert!(

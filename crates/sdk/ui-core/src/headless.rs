@@ -11398,7 +11398,7 @@ mod tests {
                 binding
                     .permissions
                     .set(crate::permissions::PermissionContext::member(
-                        "reader",
+                        &crate::permissions::MemberId::person("reader"),
                         collab_types::role::Role::Viewer,
                     ));
                 let before = owner
@@ -11485,7 +11485,7 @@ mod tests {
             );
             observed.enqueue("run");
             let readonly = crate::permissions::PermissionContext::member(
-                "reader",
+                &crate::permissions::MemberId::person("reader"),
                 collab_types::role::Role::Viewer,
             );
             host.set_permission_ctx(readonly);

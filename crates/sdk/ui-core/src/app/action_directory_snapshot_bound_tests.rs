@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
             let revision = capture_bound_directory(&mut fixture);
             fixture
                 .permissions
-                .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
+                .set(crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")).at_unix_time(100));
             assert!(matches!(
                 fixture
                     .app

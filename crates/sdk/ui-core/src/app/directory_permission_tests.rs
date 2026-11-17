@@ -5,7 +5,7 @@ fn directory_sampled_permission(
 ) -> crate::permissions::PermissionContext {
     let now = time.load(std::sync::atomic::Ordering::Acquire);
     crate::permissions::PermissionContext::granted(
-        "fixture-user",
+        &crate::permissions::MemberId::person("fixture-user"),
         &crate::permissions::TreePath::root(),
         crate::permissions::policy::KindSet::ALL,
         Some(110),
@@ -335,13 +335,13 @@ tilo_test_env::scenario! {
         let source = current.clone();
         let mut fixture = ActionFixture::broker();
         fixture.permissions.set(
-            crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+            crate::permissions::PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "so.tilo.binding-probe".into(),
                     Arc::new(move || {
                         Ok(match *source.lock().unwrap() {
-                            Some(role) => PermissionContext::member("fixture-user", role),
-                            None => PermissionContext::stranger("fixture-user"),
+                            Some(role) => PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), role),
+                            None => PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")),
                         })
                     }),
                 ),

@@ -34,9 +34,11 @@ impl TileSource for Readers {
             )
             .expect("views"),
         );
-        let permissions = ui::permissions::SharedPermissions::new(
-            ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Owner),
-        );
+        let permissions =
+            ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
+                &ui::permissions::MemberId::person("reader"),
+                ui::permissions::Role::Owner,
+            ));
         let mut context = HostContext::prepare(
             definition,
             HostContextInputs {

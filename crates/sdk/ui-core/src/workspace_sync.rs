@@ -603,12 +603,12 @@ mod tests {
         set(None);
         let launch = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
             workspace,
-            "person-a",
+            &crate::permissions::MemberId::person("person-a"),
             Role::Viewer,
         ));
         let own = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
             workspace,
-            "person-a",
+            &crate::permissions::MemberId::person("person-a"),
             Role::Owner,
         ));
         follow_participation(&launch);

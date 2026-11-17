@@ -892,7 +892,7 @@ impl ActionFixture {
         );
         let permissions = crate::permissions::SharedPermissions::new(
             crate::permissions::PermissionContext::granted(
-                "fixture-user",
+                &crate::permissions::MemberId::person("fixture-user"),
                 &crate::permissions::TreePath::root(),
                 crate::permissions::policy::KindSet::ALL,
                 Some(110),
@@ -1325,9 +1325,12 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         }
         let alias = second.rows[0].resource.clone();
         let previous_permissions = fixture.permissions.borrow().clone();
-        fixture
-            .permissions
-            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
+        fixture.permissions.set(
+            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+                "fixture-user",
+            ))
+            .at_unix_time(100),
+        );
         let stale = fixture
             .app
             .action_directory_page(runtime_collab::ActionDirectoryQuery {
@@ -1473,9 +1476,12 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             CONTROL_AUTHORITY.with_borrow(Clone::clone),
             vec![(false, true), (true, true)]
         );
-        fixture
-            .permissions
-            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
+        fixture.permissions.set(
+            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+                "fixture-user",
+            ))
+            .at_unix_time(100),
+        );
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         fixture.app.refresh_control_action_availability();
         assert_eq!(
@@ -1515,7 +1521,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
         crate::application::follow_host_authority(
             crate::permissions::PermissionContext::member_of(
                 WORKSPACE,
-                "fixture-user",
+                &crate::permissions::MemberId::person("fixture-user"),
                 crate::permissions::Role::Viewer,
             ),
             read,
@@ -1896,8 +1902,10 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
-            let denied =
-                crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+            let denied = crate::permissions::PermissionContext::stranger(
+                &crate::permissions::MemberId::person("fixture-user"),
+            )
+            .at_unix_time(100);
             if !initially_allowed {
                 fixture.permissions.set(denied.clone());
             }
@@ -2051,9 +2059,12 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             ticks += 1;
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
-        fixture
-            .permissions
-            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
+        fixture.permissions.set(
+            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+                "fixture-user",
+            ))
+            .at_unix_time(100),
+        );
         ticks = 0;
         loop {
             progress = step(palette);
@@ -2902,9 +2913,12 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
             schema_version: 1,
             bytes: b"pending-peer-view".to_vec(),
         });
-    fixture
-        .permissions
-        .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
+    fixture.permissions.set(
+        crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+            "fixture-user",
+        ))
+        .at_unix_time(100),
+    );
     let heads = fixture.app.state.doc.get_heads();
     let mut actual_before = fixture
         .records

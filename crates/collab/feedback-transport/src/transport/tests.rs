@@ -27,8 +27,12 @@ fn enrollment() -> Enrollment {
             .in_workspace(WORKSPACE),
         reporter: Caller::authenticated([12; 32], reporter.verifying_key().to_bytes())
             .in_workspace(WORKSPACE),
-        permissions: PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Owner)
-            .at_unix_time(0),
+        permissions: PermissionContext::member_of(
+            WORKSPACE,
+            &ui::permissions::MemberId::person(hex::encode([12; 32])),
+            Role::Owner,
+        )
+        .at_unix_time(0),
     }
 }
 
@@ -408,8 +412,12 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
     .in_workspace(WORKSPACE);
-    wrong_reporter.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner).at_unix_time(0);
+    wrong_reporter.permissions = PermissionContext::member_of(
+        WORKSPACE,
+        &ui::permissions::MemberId::person(hex::encode([15; 32])),
+        Role::Owner,
+    )
+    .at_unix_time(0);
     assert!(matches!(
         service.receipt(&report, &wrong_reporter),
         Err(Error::ReceiptMismatch)
@@ -708,9 +716,12 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     .unwrap();
     let mut host = Host::open(Rc::new(MemoryStore::new()), setup).unwrap();
     host.receipt(&report).unwrap().unwrap();
-    current.borrow_mut().permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
-            .at_unix_time(0);
+    current.borrow_mut().permissions = PermissionContext::member_of(
+        WORKSPACE,
+        &ui::permissions::MemberId::person(hex::encode([12; 32])),
+        Role::Viewer,
+    )
+    .at_unix_time(0);
     // Read-only admission can confirm a previous durable report, never resend it.
     host.receipt(&report).unwrap().unwrap();
     assert!(host.send(&report).is_err());
@@ -750,12 +761,12 @@ tilo_test_env::scenario! {
         // Filing feedback is commenting: a commenter files, a viewer cannot.
         let mut commenter = enrollment();
         commenter.permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Commenter)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Commenter)
                 .at_unix_time(0);
         assert!(commenter.authorize().is_ok());
         let mut viewer = enrollment();
         viewer.permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
                 .at_unix_time(0);
         assert!(viewer.authorize().is_err());
         let mut other = enrollment();
@@ -764,12 +775,12 @@ tilo_test_env::scenario! {
         // A workspace's owner holds everything; a member's grants can be refused.
         let mut blocked = enrollment();
         blocked.permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
                 .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
                 .at_unix_time(0);
         let mut editor = blocked.clone();
         editor.permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Editor)
                 .at_unix_time(0);
         assert!(editor.authorize().is_ok());
         assert!(blocked.authorize().is_err());
@@ -796,7 +807,7 @@ tilo_test_env::scenario! {
         )
         .in_workspace(WORKSPACE);
         current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner);
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([15; 32])), Role::Owner);
         assert!(matches!(
             transport.enqueue(&submission()),
             Err(Error::ReceiptMismatch)
@@ -825,7 +836,7 @@ tilo_test_env::scenario! {
         assert!(now > 0, "execution clock must be observable");
         let mut expired = enrollment();
         expired.permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer)
                 .with_grant(
                     submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
                         .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
@@ -859,7 +870,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let mut host = Host::open(store.clone(), setup).unwrap();
         current.borrow_mut().permissions =
-            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer);
+            PermissionContext::member_of(WORKSPACE, &ui::permissions::MemberId::person(hex::encode([12; 32])), Role::Viewer);
         assert!(host.send(&submission()).is_err());
         drop(host);
         let mut changed = enrollment();

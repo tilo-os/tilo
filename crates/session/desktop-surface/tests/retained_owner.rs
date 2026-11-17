@@ -114,7 +114,10 @@ impl TileSource for Source {
                 .unwrap(),
         );
         let permissions = ui::permissions::SharedPermissions::new(
-            ui::permissions::PermissionContext::stranger("retained-author").at_unix_time(100),
+            ui::permissions::PermissionContext::stranger(&ui::permissions::MemberId::person(
+                "retained-author",
+            ))
+            .at_unix_time(100),
         );
         let context = HostContext::prepare(
             &definition,

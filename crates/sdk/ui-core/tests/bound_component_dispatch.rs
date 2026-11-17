@@ -2087,7 +2087,11 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
         let permissions = tilo_ui::permissions::SharedPermissions::new(
-            PermissionContext::member("probe-author", role).at_unix_time(100),
+            PermissionContext::member(
+                &tilo_ui::permissions::MemberId::person("probe-author"),
+                role,
+            )
+            .at_unix_time(100),
         );
         let context = host
             .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
@@ -2151,7 +2155,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         let definition = definition(action_probe_factory);
         let permissions = tilo_ui::permissions::SharedPermissions::new(
             tilo_ui::permissions::PermissionContext::member(
-                "probe-author",
+                &tilo_ui::permissions::MemberId::person("probe-author"),
                 tilo_ui::permissions::Role::Owner,
             )
             .at_unix_time(100),
@@ -2266,11 +2270,13 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                 let permissions = tilo_ui::permissions::SharedPermissions::new(
                     if allowed {
                         tilo_ui::permissions::PermissionContext::member(
-                            "probe-author",
+                            &tilo_ui::permissions::MemberId::person("probe-author"),
                             tilo_ui::permissions::Role::Owner,
                         )
                     } else {
-                        tilo_ui::permissions::PermissionContext::stranger("probe-author")
+                        tilo_ui::permissions::PermissionContext::stranger(
+                            &tilo_ui::permissions::MemberId::person("probe-author"),
+                        )
                     }
                     .at_unix_time(100),
                 );

@@ -304,17 +304,16 @@ impl PermissionContext {
         )
     }
 
-    /// `person` holding `role` in [`LOCAL_WORKSPACE`] (owning it for
-    /// [`Role::Owner`]), with no sandbox reach.
-    pub fn member(person: impl Into<String>, role: Role) -> Self {
-        let person = person.into();
+    /// The person `person` holding `role` in [`LOCAL_WORKSPACE`] (owning it
+    /// for [`Role::Owner`]), with no sandbox reach.
+    pub fn member(person: &MemberId, role: Role) -> Self {
         Self::member_of(LOCAL_WORKSPACE, person, role)
     }
 
-    /// `person` holding `role` in `workspace` (owning it for [`Role::Owner`]), with
-    /// no sandbox reach.
-    pub fn member_of(workspace: &str, person: impl Into<String>, role: Role) -> Self {
-        let person = person.into();
+    /// The person `person` holding `role` in `workspace` (owning it for
+    /// [`Role::Owner`]), with no sandbox reach.
+    pub fn member_of(workspace: &str, person: &MemberId, role: Role) -> Self {
+        let person = person.id().to_owned();
         let policy = if role == Role::Owner {
             policy::WorkspacePolicy::new(workspace, person.clone())
         } else {
@@ -341,9 +340,10 @@ impl PermissionContext {
         )
     }
 
-    /// `person`, who is no member of [`LOCAL_WORKSPACE`]: nothing is allowed.
-    pub fn stranger(person: impl Into<String>) -> Self {
-        let person = person.into();
+    /// The person `person`, who is no member of [`LOCAL_WORKSPACE`]: nothing
+    /// is allowed.
+    pub fn stranger(person: &MemberId) -> Self {
+        let person = person.id().to_owned();
         Self::new(
             Acting::person(person.clone()),
             Vec::new(),
@@ -357,17 +357,17 @@ impl PermissionContext {
         )
     }
 
-    /// `person`, no member of [`LOCAL_WORKSPACE`], granted exactly `kinds` at
-    /// `relative` (a path below the workspace), until Unix second `until` if given.
+    /// The person `person`, no member of [`LOCAL_WORKSPACE`], granted exactly
+    /// `kinds` at `relative` (a path below the workspace), until Unix second
+    /// `until` if given.
     pub fn granted(
-        person: impl Into<String>,
+        person: &MemberId,
         relative: &TreePath,
         kinds: policy::KindSet,
         until: Option<u64>,
     ) -> Self {
-        let person = person.into();
         let grant = local_grant(
-            policy::Grantee::person(person.clone()),
+            policy::Grantee::Member(person.clone()),
             relative,
             kinds,
             until,
@@ -390,7 +390,7 @@ impl PermissionContext {
             .iter()
             .map(|node| local_grant(subject.clone(), node, kinds, None))
             .collect();
-        Self::member(LOCAL_USER, Role::Owner).acting_as(
+        Self::member(&MemberId::person(LOCAL_USER), Role::Owner).acting_as(
             policy::Actor::Member(policy::MemberId::agent(agent)),
             grants,
         )
@@ -403,7 +403,7 @@ impl PermissionContext {
     #[must_use]
     pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
         let grant = local_grant(
-            policy::Grantee::person(self.user.key()),
+            policy::Grantee::Member(self.user.clone()),
             relative,
             kinds,
             None,
@@ -431,7 +431,7 @@ impl PermissionContext {
     /// version offers whoever holds it.
     #[must_use]
     pub fn read_only(&self) -> Self {
-        let mut context = Self::member_of(self.standing.workspace(), self.user.key(), Role::Viewer);
+        let mut context = Self::member_of(self.standing.workspace(), &self.user, Role::Viewer);
         context.acting = self.acting.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
@@ -1392,7 +1392,10 @@ mod own_record_tests {
         let mut edit =
             ActionSpec::operation("edit", "Edit", OperationKind::Effect, "t.edit", &()).unwrap();
         edit.type_mut().contract.kind = ActionKind::Undoable;
-        let viewer = PermissionContext::member(ada.clone(), Role::Viewer);
+        let viewer = PermissionContext::member(
+            &crate::permissions::MemberId::person(ada.clone()),
+            Role::Viewer,
+        );
         for action in [&edit, &effect] {
             assert!(
                 !viewer.permits_action("so.tilo.mail", "mail.mailbox", "mail.mailbox", action),
@@ -1413,7 +1416,10 @@ mod own_record_tests {
         // decide on as their own. What keeps them out of it is that its writes
         // carry Ada as its person, which the workspace's hosts and every
         // member's replica check, and that it reaches none of their devices.
-        let owner = PermissionContext::member("bb".repeat(32), Role::Owner);
+        let owner = PermissionContext::member(
+            &crate::permissions::MemberId::person("bb".repeat(32)),
+            Role::Owner,
+        );
         assert!(owner.own_person("so.tilo.mail", &own).is_none());
         let mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail")
             .with_action(edit.clone());
@@ -1463,7 +1469,7 @@ mod tests {
 
                 // The same owner, no capability: a workspace role confers no reach over
                 // paths.
-                let stripped = PermissionContext::member(LOCAL_USER, Role::Owner);
+                let stripped = PermissionContext::member(&crate::permissions::MemberId::person(LOCAL_USER), Role::Owner);
                 assert!(!stripped.check(&PermissionScope::path(
                     "/var/workspace/secret.png",
                     Access::Read
@@ -1473,7 +1479,7 @@ mod tests {
             // phase: action_grant_is_narrow_while_app_grant_covers_every_action
             {
                 let agent = |grants: Vec<policy::Grant>| {
-                    let owner = PermissionContext::member("owner", Role::Owner);
+                    let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
                     owner
                         .clone()
                         .with_standing(owner.standing().clone().acting_as(
@@ -1524,7 +1530,7 @@ mod tests {
                 .with_expiry(1_000);
                 let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
                 let context =
-                    || PermissionContext::member("u_guest", Role::Viewer).granting(cap.clone());
+                    || PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer).granting(cap.clone());
                 assert!(
                     context().at_unix_time(999).check(&scope),
                     "before the deadline"
@@ -1549,7 +1555,7 @@ mod tests {
             let action =
                 ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
             assert_eq!(action.contract.kind, ActionKind::Outside);
-            let owner = PermissionContext::member("owner", Role::Owner);
+            let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
             let node = TreePath::workspace(LOCAL_WORKSPACE).join(&action_node(
                 "notes",
                 "notes.page",
@@ -1583,7 +1589,7 @@ mod tests {
         {
             // phase: viewer_is_denied_changes
             {
-                let ctx = PermissionContext::member("u_guest", Role::Viewer);
+                let ctx = PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer);
                 let write = PermissionScope::app("notes", ActionKind::Undoable);
                 assert!(!ctx.check(&write), "a Viewer must not change the workspace");
                 assert!(matches!(
@@ -1594,7 +1600,7 @@ mod tests {
             }
             // phase: a_restriction_denies_inside_its_node
             {
-                let mut ctx = PermissionContext::member("u_editor", Role::Editor);
+                let mut ctx = PermissionContext::member(&crate::permissions::MemberId::person("u_editor"), Role::Editor);
                 let mut standing = ctx.standing().clone();
                 Arc::make_mut(&mut standing.policy)
                     .grants
@@ -1618,7 +1624,7 @@ mod tests {
             }
             // phase: a_delegation_without_grants_is_denied_everything
             {
-                let owner = PermissionContext::member("owner", Role::Owner);
+                let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
                 let app = owner
                     .clone()
                     .with_standing(owner.standing().clone().acting_as(

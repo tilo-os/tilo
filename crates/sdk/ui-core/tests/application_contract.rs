@@ -59,7 +59,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         definition.required.push(denied_scope());
         let authority = permissions();
         authority.set(tilo_ui::permissions::PermissionContext::granted(
-            "probe-author",
+            &tilo_ui::permissions::MemberId::person("probe-author"),
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
@@ -927,7 +927,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         if case == "revoked" {
             definition.required.push(denied_scope());
             authority.set(tilo_ui::permissions::PermissionContext::granted(
-                "probe-author",
+                &tilo_ui::permissions::MemberId::person("probe-author"),
                 &tilo_ui::permissions::TreePath::root(),
                 tilo_ui::permissions::policy::KindSet::ALL,
                 None,
@@ -998,7 +998,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert_eq!(calls(), 1);
         definition.app_id = APP.into();
         authority.set(tilo_ui::permissions::PermissionContext::granted(
-            "probe-author",
+            &tilo_ui::permissions::MemberId::person("probe-author"),
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,

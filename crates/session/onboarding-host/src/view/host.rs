@@ -549,7 +549,10 @@ fn mount_in_memory(
         views: Rc::new(views),
         device_id: DEVICE.to_owned(),
         instance_id: instance,
-        permissions: SharedPermissions::new(PermissionContext::member(&author, Role::Owner)),
+        permissions: SharedPermissions::new(PermissionContext::member(
+            &ui::permissions::MemberId::person(&author),
+            Role::Owner,
+        )),
         author: MemberId::person(author),
         action_context: tilo_actions::ActionContext::default(),
     };

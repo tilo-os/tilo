@@ -935,7 +935,10 @@ impl Joined {
             attachment
                 .permissions
                 .set(self.permitted.iter().filter(|(_, (_, may))| *may).fold(
-                    ui::permissions::PermissionContext::member(attachment.author.clone(), role),
+                    ui::permissions::PermissionContext::member(
+                        &ui::permissions::MemberId::person(attachment.author.clone()),
+                        role,
+                    ),
                     |context, (node, _)| {
                         context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
                     },

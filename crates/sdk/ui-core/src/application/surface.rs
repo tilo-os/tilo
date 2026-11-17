@@ -42,7 +42,7 @@ pub fn prepare_private_surface(
             device_id: device.to_owned(),
             instance_id: instance,
             permissions: SharedPermissions::new(PermissionContext::member(
-                person,
+                &crate::permissions::MemberId::person(person),
                 crate::permissions::Role::Owner,
             )),
             author: MemberId::person(person),

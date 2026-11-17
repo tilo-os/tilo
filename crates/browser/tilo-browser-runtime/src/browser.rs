@@ -1705,7 +1705,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     } else {
         collab_types::role::Role::Owner
     };
-    let permissions = SharedPermissions::new(PermissionContext::member(config.author(), assumed));
+    let permissions = SharedPermissions::new(PermissionContext::member(
+        &ui::permissions::MemberId::person(config.author()),
+        assumed,
+    ));
     let Presentation {
         root,
         stores,

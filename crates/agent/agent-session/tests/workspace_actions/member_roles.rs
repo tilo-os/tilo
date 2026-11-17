@@ -41,9 +41,13 @@ impl Membership {
             && caller.device_public_key() == Some(&self.device)
             && caller.acting().is_person())
         .then(|| {
-            ui::permissions::PermissionContext::member_of(WORKSPACE, hex::encode(self.person), role)
-                .standing()
-                .clone()
+            ui::permissions::PermissionContext::member_of(
+                WORKSPACE,
+                &ui::permissions::MemberId::person(hex::encode(self.person)),
+                role,
+            )
+            .standing()
+            .clone()
         })
     }
 }

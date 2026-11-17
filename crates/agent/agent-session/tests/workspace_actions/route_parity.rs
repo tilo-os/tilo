@@ -69,12 +69,15 @@ impl Member {
 /// (`assistant`) may make notes.
 fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
     use tilo_action_policy::agent_answers::{AnswerScope, grant};
-    let mut policy =
-        ui::permissions::PermissionContext::member_of(WORKSPACE, member.to_owned(), Role::Editor)
-            .standing()
-            .policy
-            .as_ref()
-            .clone();
+    let mut policy = ui::permissions::PermissionContext::member_of(
+        WORKSPACE,
+        &ui::permissions::MemberId::person(member.to_owned()),
+        Role::Editor,
+    )
+    .standing()
+    .policy
+    .as_ref()
+    .clone();
     for kind in [
         tilo_action_policy::ActionKind::Read,
         tilo_action_policy::ActionKind::Undoable,
