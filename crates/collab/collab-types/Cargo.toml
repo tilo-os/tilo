@@ -28,6 +28,8 @@ path = "src/lib.rs"
 # A file's record id, kept in the extended attribute the filesystem serves.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 fnv.workspace = true
+# Deflates incremental document frames.
+miniz_oxide.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }

@@ -55,8 +55,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@30"
-tilo-fs = "optional@30"
+collab = "optional@31"
+tilo-fs = "optional@31"
 
 [entrypoint]
 bin             = "bin/totp"

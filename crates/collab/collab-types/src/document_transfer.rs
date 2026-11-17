@@ -310,6 +310,8 @@ impl DocumentMutation {
             return self.encode().map(|frame| vec![frame]);
         }
         let kind = self.kind();
+        let body = self.wire_body();
+        let data = body.as_ref();
         let digest = transfer_digest(kind, data);
         let total_len = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let segment_len_u32 = u32::try_from(segment_len).unwrap_or(u32::MAX);
@@ -679,6 +681,85 @@ mod tests {
         out
     }
 
+    /// The changes typing one word makes in a note, as the notes app makes
+    /// them: one change per letter, each under its own actor, continuing its
+    /// gesture's history entry, and marking the letter with its author.
+    fn one_typed_word() -> Vec<u8> {
+        use automerge::transaction::{CommitOptions, Transactable as _};
+        let person = "9a4e3a3a67b8a60e20418ac050ecd2dc8bff7e7b0f2fc564a60ab02bc4604f26";
+        let mut doc = automerge::AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(
+            format!("{person}\u{1f}12110a5f").into_bytes(),
+        ));
+        let text = doc
+            .put_object(automerge::ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&text, 0, 0, "Host line one.").unwrap();
+        doc.commit();
+        let before = doc.get_heads();
+        let author = hex::encode(person);
+        for (at, letter) in (14..).zip(" ada0x".chars()) {
+            doc.set_actor(automerge::ActorId::random());
+            doc.splice_text(&text, at, 0, &letter.to_string()).unwrap();
+            doc.mark(
+                &text,
+                automerge::marks::Mark::new(
+                    "author".into(),
+                    author.as_str(),
+                    at,
+                    at.saturating_add(1),
+                ),
+                automerge::marks::ExpandMark::None,
+            )
+            .unwrap();
+            let message = format!(
+                "tilo.cont/1 01a1e8eb62e277f2a19bf41136d4b472 pages/12980f87-fbbb-446e-8620-ee255ff8498f/body \
+                 {{\"op\":{{\"action\":\"field-edit\",\"args\":{{\"op\":\"rich\",\"rich\":{{\"SpliceText\":\
+                 {{\"region\":\"Body\",\"block\":\"genesis.0\",\"at\":{at},\"del\":0,\"ins\":\"{letter}\"}}}},\
+                 \"path\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
+                 {{\"field\":\"body\"}}]}}}},\"at\":0}}"
+            );
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_message(message)
+                    .with_time(1_700_000_000),
+            );
+        }
+        doc.save_after(&before)
+    }
+
+    tilo_test_env::scenario! {
+        /// A typed word's changes travel deflated: they repeat their history
+        /// entry, actor and author mark letter after letter.
+        fn a_typed_word_travels_deflated;
+
+        phase a_typed_word_frame_stays_under_a_third_of_its_changes;
+        {
+            let changes = one_typed_word();
+            assert!(changes.len() > 3500, "six letters' changes are {} bytes", changes.len());
+            let mutation = DocumentMutation::Incremental(changes);
+            let frames = mutation.encode_frames().unwrap();
+            let [frame] = frames.as_slice() else {
+                panic!("one word is one frame, not {}", frames.len());
+            };
+            // What a letter's change holds that no other letter's does: its
+            // hash's checksum, its dependency, its actor and its letter; the
+            // entry, the author mark and the earlier writer's actor every
+            // letter repeats are carried once.
+            assert!(
+                frame.len() < 1200,
+                "a typed word's frame is {} bytes of {} bytes of changes",
+                frame.len(),
+                mutation.data().len()
+            );
+            assert_eq!(
+                DocumentFrame::decode(frame).unwrap(),
+                DocumentFrame::Whole(mutation),
+                "the frame reads back as the changes it carries"
+            );
+        }
+    }
+
     tilo_test_env::scenario! {
         /// Small mutations keep the single-frame wire format; over-limit mutations are refused before
         /// encoding; unsegmented frames above the limit and malformed segment headers are rejected.
@@ -715,7 +796,10 @@ mod tests {
         {
             let mut wire = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
             wire.push(DOCUMENT_INCREMENTAL_TAG);
-            wire.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES + 1]);
+            wire.extend(miniz_oxide::deflate::compress_to_vec(
+                &vec![0; MAX_DOCUMENT_MUTATION_BYTES + 1],
+                1,
+            ));
             assert!(matches!(
                 DocumentFrame::decode(&wire),
                 Err(DocumentMutationError::TooLarge { .. })
@@ -783,7 +867,10 @@ mod tests {
                     DocumentMutation::Incremental(data)
                 };
                 let frames = mutation.encode_frames().unwrap();
-                assert_eq!(frames.len(), len.div_ceil(DOCUMENT_SEGMENT_BYTES));
+                assert_eq!(
+                    frames.len(),
+                    mutation.wire_body().len().div_ceil(DOCUMENT_SEGMENT_BYTES)
+                );
                 assert!(
                     frames
                         .iter()

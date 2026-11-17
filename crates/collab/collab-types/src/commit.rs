@@ -24,9 +24,7 @@
 //! [`COMMIT_VERSION`]), so a host can store it beside the units it names. The
 //! units, their channels and their seals keep their names: only the frame
 //! around a document frame is new, and a frame without one is read exactly as
-//! before. Version 1 commits still decode (they carried the action's name, item
-//! and invocation); version 2 dropped the name and item for the invocation and
-//! run alone.
+//! before.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,9 +36,6 @@ use crate::op::DocumentMutation;
 pub const COMMIT_RECORD_KIND: &str = "tilo.workspace.commit";
 /// Version of the commit object; a receiver refuses one it does not know.
 pub const COMMIT_VERSION: u16 = 2;
-/// The commit version before a commit was grouping alone: it named the
-/// action's name and item. Read, never written.
-pub const COMMIT_VERSION_NAMED_ACTION: u16 = 1;
 /// Prefix of a document frame that carries an action's commit: the commit's
 /// byte length, the commit, then the document frame it belongs to.
 pub const COMMIT_FRAME_PREFIX: &[u8] = b"tilo-commit-frame-v1\0";
@@ -338,48 +333,10 @@ impl WorkspaceCommit {
     /// # Errors
     /// [`CommitError`] for bytes that are not such a commit.
     pub fn decode(bytes: &[u8]) -> Result<Self, CommitError> {
-        // The version is the second field of every commit, so it is read
-        // before the rest: version 1 carried the action's name and item where
-        // this version carries the invocation and run, and postcard cannot
-        // tell a missing field from a short one.
-        let (head, _) = postcard::take_from_bytes::<Head>(bytes)
+        let commit = crate::canonical::from_canonical_bytes::<Self>(bytes)
             .map_err(|error| CommitError::Decode(error.to_string()))?;
-        let commit = match head.version {
-            COMMIT_VERSION => crate::canonical::from_canonical_bytes::<Self>(bytes)
-                .map_err(|error| CommitError::Decode(error.to_string()))?,
-            COMMIT_VERSION_NAMED_ACTION => {
-                let old = crate::canonical::from_canonical_bytes::<V1>(bytes)
-                    .map_err(|error| CommitError::Decode(error.to_string()))?;
-                Self::of_v1(old)
-            }
-            other => return Err(CommitError::Version(other)),
-        };
         commit.check()?;
         Ok(commit)
-    }
-
-    /// The commit `old` names, as this version reads it: the invocation it
-    /// ran under, and no run (version 1 carried none). Its action's name and
-    /// item are dropped: the changes carry them.
-    fn of_v1(old: V1) -> Self {
-        Self {
-            kind: old.kind,
-            version: COMMIT_VERSION,
-            workspace: old.workspace,
-            author: old.author,
-            at_ms: old.at_ms,
-            invocation: old.action.invocation,
-            run: None,
-            parts: old
-                .parts
-                .into_iter()
-                .map(|part| CommitPart {
-                    app: part.app,
-                    document: part.document,
-                    changes: part.changes,
-                })
-                .collect(),
-        }
     }
 
     /// The commit's content address: two peers holding the same commit name
@@ -540,46 +497,6 @@ impl WorkspaceCommit {
         let commit = Self::decode(body)?;
         Ok((inner, Some(commit)))
     }
-}
-
-/// The head every version of a commit starts with: what it is and how to
-/// read the rest.
-#[derive(Deserialize)]
-struct Head {
-    #[allow(dead_code, reason = "read to reach the version beside it")]
-    kind: String,
-    version: u16,
-}
-
-/// A commit as version 1 wrote it: the action's name, item and invocation,
-/// and the changes of each part.
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct V1 {
-    kind: String,
-    #[allow(dead_code, reason = "the head chose this shape by reading it")]
-    version: u16,
-    workspace: String,
-    author: CommitAuthor,
-    at_ms: u64,
-    action: CommitActionV1,
-    parts: Vec<CommitPartV1>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CommitActionV1 {
-    name: String,
-    item: Option<String>,
-    invocation: Option<uuid::Uuid>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CommitPartV1 {
-    app: String,
-    document: String,
-    changes: Vec<[u8; 32]>,
 }
 
 /// One unit's changes, read for the commit that names them.
@@ -803,50 +720,6 @@ mod tests {
         {
             assert_eq!(two_part().kind, COMMIT_RECORD_KIND);
             assert_eq!(two_part().version, COMMIT_VERSION);
-        }
-
-        phase a_version_1_commit_still_reads_with_nothing_it_never_carried;
-        {
-            let old = V1 {
-                kind: COMMIT_RECORD_KIND.to_owned(),
-                version: COMMIT_VERSION_NAMED_ACTION,
-                workspace: "workspace".to_owned(),
-                author: author([7; 32]),
-                at_ms: 1_700_000_000_000,
-                action: CommitActionV1 {
-                    name: "create".to_owned(),
-                    item: Some("child".to_owned()),
-                    invocation: Some(uuid::Uuid::from_u128(5)),
-                },
-                parts: vec![CommitPartV1 {
-                    app: "tasks".to_owned(),
-                    document: "a".to_owned(),
-                    changes: vec![[5; 32]],
-                }],
-            };
-            let bytes = crate::canonical::canonical_bytes(&old).unwrap();
-            let read = WorkspaceCommit::decode(&bytes).expect("a version 1 commit reads");
-            assert_eq!(read.version, COMMIT_VERSION);
-            assert_eq!(
-                read.invocation,
-                Some(uuid::Uuid::from_u128(5)),
-                "the invocation it ran under carries over"
-            );
-            assert_eq!(read.run, None, "version 1 named no run");
-            assert_eq!(read.parts[0].changes, vec![[5; 32]]);
-            assert_eq!(
-                read.encode(),
-                WorkspaceCommit::new(
-                    "workspace",
-                    author([7; 32]),
-                    1_700_000_000_000,
-                    read.invocation,
-                    read.run.clone(),
-                    read.parts,
-                )
-                .encode(),
-                "a version 1 commit writes as version 2 once read"
-            );
         }
     }
 

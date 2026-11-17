@@ -2648,6 +2648,7 @@ dependencies = [
  "fnv",
  "getrandom 0.4.3",
  "hex",
+ "miniz_oxide",
  "postcard",
  "serde",
  "serde_bytes",

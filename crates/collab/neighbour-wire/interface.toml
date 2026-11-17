@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 52
+version = 53
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -189,9 +189,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DocumentAnswer::Sent" = "#0 struct"
 "DocumentAnswer::Sent.frames" = "#0 u32"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct"
+"EncryptionMetadata" = "struct deny_unknown_fields"
 "EncryptionMetadata.epoch" = "#0 u64"
-"EncryptionMetadata.retired_channel" = "#2 Option<Uuid>"
 "EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
@@ -833,8 +832,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedOp.artifact" = "#1 ArtifactId"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
-"SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
+"SignedOp.claims" = "#8 Vec<ChangeClaim> with=claims_wire"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"
