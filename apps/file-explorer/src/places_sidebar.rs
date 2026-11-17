@@ -532,14 +532,14 @@ mod tests {
                 item("loc:/home/a/Remote/Work")
                     .status
                     .as_ref()
-                    .map(|s| s.row_status()),
+                    .map(ui::widget::NavItemStatus::row_status),
                 Some(RowStatus::Idle)
             );
             assert_eq!(
                 item("loc:/home/a/Remote/Mail")
                     .status
                     .as_ref()
-                    .map(|s| s.row_status()),
+                    .map(ui::widget::NavItemStatus::row_status),
                 Some(RowStatus::Warning)
             );
             assert_eq!(order[4], "account:archive");
@@ -646,7 +646,7 @@ mod tests {
             assert_eq!(drives.items[1].icon, Some(Icon::Usb));
             assert!(drives.items[0].status.is_none());
             assert_eq!(
-                drives.items[1].status.as_ref().map(|s| s.row_status()),
+                drives.items[1].status.as_ref().map(ui::widget::NavItemStatus::row_status),
                 Some(RowStatus::Active)
             );
             assert_eq!(places.selected_id().as_deref(), Some("drive:sdb1:7"));
