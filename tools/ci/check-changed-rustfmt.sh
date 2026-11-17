@@ -40,5 +40,33 @@ if [ "${#rust_files[@]}" -eq 0 ]; then
     exit 0
 fi
 
-rustfmt --edition 2024 --check -- "${rust_files[@]}"
+# rustfmt formats a file's child modules with it (`skip_children` is not stable), so a changed
+# parent module would report a child it never touched, unformatted by someone else. Only the
+# changed files' differences count.
+status=0
+rustfmt --edition 2024 --check -- "${rust_files[@]}" >"$changed_paths" 2>&1 || status=$?
+if [ "$status" -ne 0 ] && ! grep -q '^Diff in ' "$changed_paths"; then
+    cat "$changed_paths"  # rustfmt failed for a reason of its own, not a difference
+    exit "$status"
+fi
+if ! python3 -I - "$repo" "$changed_paths" "${rust_files[@]}" <<'PY'
+import os, re, sys
+repo, report, files = sys.argv[1], sys.argv[2], sys.argv[3:]
+changed = {os.path.realpath(os.path.join(repo, path)) for path in files}
+keep, shown = False, False
+for line in open(report, errors="replace"):
+    heading = re.match(r"^Diff in (.+?):\d+:", line)
+    if heading:
+        keep = os.path.realpath(heading.group(1)) in changed
+    elif line.strip() and not line.startswith((" ", "+", "-", "\\")):
+        keep = True  # not part of a difference: an error of rustfmt's own
+    if keep:
+        sys.stdout.write(line)
+        shown = True
+sys.exit(1 if shown else 0)
+PY
+then
+    exit 1
+fi
+[ "$status" -eq 0 ] || echo "(rustfmt also differs in modules these files declare, which this change did not touch)"
 echo "changed Rust formatting OK (${#rust_files[@]} files)"

@@ -86,6 +86,12 @@ assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
 # The toolchain's installed targets, which say whether the page build can be linted here.
 RUSTFMT_STUB = """#!/bin/sh
 printf 'rustfmt %s\\n' "$*" >> "$HOOK_LOG"
+# As rustfmt does: a difference names the file it is in.
+if [ "${STUB_FMT_STATUS:-0}" != 0 ]; then
+  for file in "$@"; do
+    case "$file" in *.rs) printf 'Diff in %s:1:\\n-a\\n+b\\n' "$(realpath "$file")" ;; esac
+  done
+fi
 exit "${STUB_FMT_STATUS:-0}"
 """
 RUSTUP_STUB = """#!/bin/sh

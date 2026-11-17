@@ -343,7 +343,7 @@ paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget
 [[allow]]
 reason = "The push lint and the land queue start cargo, rustfmt and Git: a run there is one of those processes, and Python's subprocess.run names it."
 words = ["run"]
-paths = ["tools/ci/pre_push_lint.py", "tools/land.py", "tools/tests/test_pre_push_lint.py", "tools/tests/test_land.py"]
+paths = ["tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/land.py", "tools/tests/test_pre_push_lint.py", "tools/tests/test_land.py", "tools/tests/test_changed_rustfmt.py"]
 
 [[allow]]
 reason = "The launch error the framework returns when a new item cannot be made."
