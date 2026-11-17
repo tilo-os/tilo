@@ -31,6 +31,12 @@ chown "$user:$user" "$work"
 state=${TILO_SH_STATE:?}
 mkdir -p "$state"
 chown "$user:$user" "$state"
+# The keys of people's sealed stores are kept beside it, and whichever run made
+# that folder owns it: the server writes there as this user, so it is theirs.
+people_keys=${TILO_SH_PEOPLE_KEYS:-$state-keys}
+mkdir -p "$people_keys"
+chown "$user:$user" "$people_keys"
+chmod 700 "$people_keys"
 
 # The image's Chromium is Playwright's, in root's cache: named for the user,
 # whose own home has none, and made reachable.

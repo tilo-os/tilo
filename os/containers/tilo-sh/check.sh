@@ -555,8 +555,14 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     # What the proofs read is an engine that renders: the window the open made
     # shows the visa test page, which is what a person and their agent see
     # there before anything is asked of them.
-    hosted_flow --page 2>&1 | tee "$work/hosted-page.log" \
-      || fail 'the visa test page did not open in the hosted window (see above)'
+    if ! hosted_flow --page 2>&1 | tee "$work/hosted-page.log"; then
+      echo '--- the server said of the page action:' >&2
+      bash "$here/stack.sh" logs server 2>/dev/null \
+        | grep -iE 'page action|person|ask|confirm|browser|environment' | tail -60 >&2 || true
+      echo '--- the API said, to its end:' >&2
+      bash "$here/stack.sh" logs api 2>/dev/null | tail -40 >&2 || true
+      fail 'the visa test page did not open in the hosted window (see above)'
+    fi
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
       python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
