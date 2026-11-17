@@ -167,6 +167,27 @@ fields = [
   { path = "issues.*.origin.created_ms", type = { option = "int" } },
   { path = "issues.*.origin.updated_ms", type = { option = "int" } },
   { path = "issues.*.url", type = { option = "text" } },
+  { path = "issues.*.work", type = { option = { named = "Work" } }, readonly = true, stored = "record" },
+  { path = "issues.*.work.folder", type = "text" },
+  { path = "issues.*.work.note", type = "text" },
+  { path = "issues.*.work.waits", type = { list = { named = "WaitFor" } } },
+  { path = "issues.*.work.until_ms", type = { option = "int" } },
+  { path = "issues.*.work.since_ms", type = { option = "int" } },
+  { path = "issues.*.work.budget_micros", type = { option = "int" } },
+  { path = "issues.*.work.budget_ms", type = { option = "int" } },
+  { path = "issues.*.work.budget_by", type = { named = "BudgetBy" } },
+  { path = "issues.*.work.spent_micros", type = "int" },
+  { path = "issues.*.work.worked_ms", type = "int" },
+  { path = "issues.*.work.runs", type = "int" },
+  { path = "issues.*.work.running_since_ms", type = { option = "int" } },
+  { path = "issues.*.work.lost", type = "int" },
+  { path = "issues.*.work.stopped", type = { option = { named = "Stopped" } }, stored = "record" },
+  { path = "issues.*.work.stopped.why", type = { named = "StoppedWhy" } },
+  { path = "issues.*.work.stopped.words", type = "text" },
+  { path = "issues.*.work.stopped.at_ms", type = "int" },
+  { path = "issues.*.work.resumed", type = { option = { named = "Resumed" } }, stored = "record" },
+  { path = "issues.*.work.resumed.cause", type = "text" },
+  { path = "issues.*.work.resumed.at_ms", type = "int" },
   { path = "before", type = "int", readonly = true },
   { path = "numbers", type = "int", readonly = true },
 ]
@@ -177,12 +198,12 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1 } },
   { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "status", type = { option = { named = "Status" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
   { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1 } },
   { name = "priority", type = { option = { named = "Priority" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "none" }, { type = "string", const = "urgent" }, { type = "string", const = "high" }, { type = "string", const = "medium" }, { type = "string", const = "low" }] }] } },
   { name = "estimate", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
   { name = "due_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
@@ -216,7 +237,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1 } },
 ]
 
 [[resources.verbs]]
@@ -234,7 +255,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1 } },
   { name = "goal", type = { option = { named = "Area" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
 ]
 
@@ -274,7 +295,7 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "status", type = { named = "Status" }, required = true, schema = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] } },
-  { name = "before", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "before", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1 } },
   { name = "rank", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -332,6 +353,73 @@ params = [
   { name = "due_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
 
+[[resources.verbs]]
+id = "set-place"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = "text", required = true, schema = { type = "string" } },
+  { name = "note", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "wait"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "waits", type = { list = { named = "WaitFor" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { event = { type = ["string", "null"] }, kind = { oneOf = [{ type = "string", const = "time" }, { type = "string", const = "reply" }, { type = "string", const = "change" }, { type = "string", const = "answer" }, { type = "string", const = "people" }] }, on = { type = ["string", "null"] }, what = { type = "string" } }, required = ["what"] } } },
+  { name = "until_ms", type = "int", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "resume"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "cause", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "set-budget"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "money_micros", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "time_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "run-began"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "run-ended"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "cost_micros", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "worked_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "stop"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "why", type = { named = "StoppedWhy" }, required = true, schema = { oneOf = [{ type = "string", const = "failed" }, { type = "string", const = "budget" }, { type = "string", const = "time" }, { type = "string", const = "lost-worker" }, { type = "string", const = "person" }] } },
+  { name = "words", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
 [[resources.types]]
 name = "Area"
 fields = [
@@ -350,6 +438,13 @@ fields = [
   { name = "author", type = { option = "actor" } },
   { name = "author_name", type = "text" },
   { name = "at_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "BudgetBy"
+cases = [
+  { name = "person" },
+  { name = "agent" },
 ]
 
 [[resources.types]]
@@ -377,6 +472,7 @@ fields = [
   { name = "created_ms", type = "int" },
   { name = "origin", type = { option = { named = "Origin" } } },
   { name = "url", type = { option = "text" } },
+  { name = "work", type = { option = { named = "Work" } } },
 ]
 
 [[resources.types]]
@@ -458,6 +554,13 @@ cases = [
 ]
 
 [[resources.types]]
+name = "Resumed"
+fields = [
+  { name = "cause", type = "text" },
+  { name = "at_ms", type = "int" },
+]
+
+[[resources.types]]
 name = "Status"
 cases = [
   { name = "backlog" },
@@ -466,5 +569,62 @@ cases = [
   { name = "in-review" },
   { name = "done" },
   { name = "cancelled" },
+]
+
+[[resources.types]]
+name = "Stopped"
+fields = [
+  { name = "why", type = { named = "StoppedWhy" } },
+  { name = "words", type = "text" },
+  { name = "at_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "StoppedWhy"
+cases = [
+  { name = "failed" },
+  { name = "budget" },
+  { name = "time" },
+  { name = "lost-worker" },
+  { name = "person" },
+]
+
+[[resources.types]]
+name = "WaitFor"
+fields = [
+  { name = "kind", type = { named = "WaitKind" } },
+  { name = "what", type = "text" },
+  { name = "on", type = { option = "text" } },
+  { name = "event", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "WaitKind"
+cases = [
+  { name = "time" },
+  { name = "reply" },
+  { name = "change" },
+  { name = "answer" },
+  { name = "people" },
+]
+
+[[resources.types]]
+name = "Work"
+fields = [
+  { name = "folder", type = "text" },
+  { name = "note", type = "text" },
+  { name = "waits", type = { list = { named = "WaitFor" } } },
+  { name = "until_ms", type = { option = "int" } },
+  { name = "since_ms", type = { option = "int" } },
+  { name = "budget_micros", type = { option = "int" } },
+  { name = "budget_ms", type = { option = "int" } },
+  { name = "budget_by", type = { named = "BudgetBy" } },
+  { name = "spent_micros", type = "int" },
+  { name = "worked_ms", type = "int" },
+  { name = "runs", type = "int" },
+  { name = "running_since_ms", type = { option = "int" } },
+  { name = "lost", type = "int" },
+  { name = "stopped", type = { option = { named = "Stopped" } } },
+  { name = "resumed", type = { option = { named = "Resumed" } } },
 ]
 

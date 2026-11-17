@@ -1,14 +1,32 @@
 //! What the people of a workspace ask its agents on the tracker: the issues they gave an agent.
 //!
 //! An agent works inside a turn a person caused ([`tilo_action_policy::turn`]). On the tracker the
-//! cause is a person giving an issue to the agent (its `assign` action), or a person writing in the
-//! thread of an issue the agent has; the issue's thread is the conversation, and the agent's answer
-//! is its own message there after the ask. Nothing is kept beside the record: whoever runs the
-//! agent reads the same asks from it.
+//! cause is a person giving an issue to the agent (its `assign` action), a person writing in the
+//! thread of an issue the agent has, the issue being told to go on (`resume`), or its wait running
+//! out; the issue's thread is the conversation, and the agent's answer is its own message there
+//! after the ask. Nothing is kept beside the record: whoever runs the agent reads the same asks
+//! from it, also after a restart.
+//!
+//! An issue that waits asks nothing until the wait ends, and one whose work stopped asks nothing
+//! until somebody says something new: what was asked before the wait began or before the stop is
+//! not asked a second time.
 
 use tilo_resource::{Id, MemberId};
 
 use super::{Issue, MessageKind};
+
+/// What asked an agent to work on an issue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asked {
+    /// A person gave it the issue.
+    Assigned,
+    /// A person wrote in the issue's thread.
+    Message,
+    /// The issue was told to go on: [`IssueAsk::words`] says by what.
+    Resumed,
+    /// The latest moment its wait ends has come.
+    WaitEnded,
+}
 
 /// A person's ask of the agent an issue is assigned to that the agent has not answered yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,20 +37,34 @@ pub struct IssueAsk {
     pub agent: String,
     /// The person who asked: the agent works for them.
     pub person: MemberId,
-    /// What asked: the id of the person's message in the thread, or `assigned-<ms>` for the
-    /// assignment itself.
+    /// What asked: the id of the person's message in the thread, `assigned-<ms>` for the
+    /// assignment itself, `resumed-<ms>` for an issue told to go on, or `waited-<ms>` for a wait
+    /// that ran out.
     pub cause: String,
-    /// The person's words in the thread, when a message asked; empty for the assignment.
+    /// The person's words in the thread, when a message asked; what let it go on, when it was
+    /// resumed; empty otherwise.
     pub words: String,
+    /// What kind of ask it is.
+    pub asked: Asked,
 }
 
 /// Every open issue of `issues` whose agent has a person's ask it has not answered: the newest
-/// ask on each.
+/// ask on each. No wait has run out: an issue that waits asks only once it is told to go on or a
+/// person writes in it ([`agent_asks_at`] reads the clock too).
 #[must_use]
 pub fn agent_asks<'a>(issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>) -> Vec<IssueAsk> {
+    agent_asks_at(issues, i64::MIN)
+}
+
+/// [`agent_asks`] at `now_ms`: an issue whose wait was to end by then asks its agent again.
+#[must_use]
+pub fn agent_asks_at<'a>(
+    issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>,
+    now_ms: i64,
+) -> Vec<IssueAsk> {
     issues
         .into_iter()
-        .filter_map(|(id, issue)| ask_on(id, issue))
+        .filter_map(|(id, issue)| ask_on(id, issue, now_ms))
         .collect()
 }
 
@@ -40,26 +72,26 @@ fn is_person(member: Option<&MemberId>) -> bool {
     member.is_some_and(MemberId::is_person)
 }
 
-/// The ask on `issue` its agent has not answered, if any.
-fn ask_on(id: &Id, issue: &Issue) -> Option<IssueAsk> {
+/// The ask on `issue` its agent has not answered at `now_ms`, if any.
+fn ask_on(id: &Id, issue: &Issue, now_ms: i64) -> Option<IssueAsk> {
     if issue.status.closed() {
         return None;
     }
     let agent = issue.assigned_agent()?.strip_prefix("agent:")?.to_owned();
     let by_agent = MemberId::agent(agent.clone());
-    // The newest ask: the assignment, or a person's later message in the thread.
-    let mut ask: Option<(i64, MemberId, String, String)> = issue
+    // Whoever gave it the issue: the person its agent works on it for.
+    let given = issue
         .assigned_by
         .clone()
-        .filter(|by| is_person(Some(by)) && issue.assigned_ms > 0)
-        .map(|by| {
-            (
-                issue.assigned_ms,
-                by,
-                format!("assigned-{}", issue.assigned_ms),
-                String::new(),
-            )
-        });
+        .filter(|by| is_person(Some(by)) && issue.assigned_ms > 0)?;
+    // The newest ask: the assignment, or what came after it.
+    let mut ask = (
+        issue.assigned_ms,
+        given.clone(),
+        format!("assigned-{}", issue.assigned_ms),
+        String::new(),
+        Asked::Assigned,
+    );
     for (message_id, message) in issue.comments.iter() {
         let Some(author) = message
             .author
@@ -72,19 +104,58 @@ fn ask_on(id: &Id, issue: &Issue) -> Option<IssueAsk> {
             continue;
         }
         // Only what was said once the agent had the issue asks it.
-        let Some((since, ..)) = &ask else {
-            continue;
-        };
-        if message.at_ms >= *since {
-            ask = Some((
+        if message.at_ms >= ask.0 {
+            ask = (
                 message.at_ms,
                 author,
                 message_id.to_string(),
                 message.text.clone(),
-            ));
+                Asked::Message,
+            );
         }
     }
-    let (since, person, cause, words) = ask?;
+    let work = issue.work.as_ref();
+    if let Some(resumed) = work.and_then(|work| work.resumed.as_ref())
+        && resumed.at_ms >= ask.0
+    {
+        ask = (
+            resumed.at_ms,
+            given.clone(),
+            format!("resumed-{}", resumed.at_ms),
+            resumed.cause.clone(),
+            Asked::Resumed,
+        );
+    }
+    if let Some(until_ms) = work.and_then(|work| work.until_ms)
+        && until_ms <= now_ms
+        && until_ms >= ask.0
+    {
+        ask = (
+            until_ms,
+            given,
+            format!("waited-{until_ms}"),
+            String::new(),
+            Asked::WaitEnded,
+        );
+    }
+    let (since, person, cause, words, asked) = ask;
+    if let Some(work) = work {
+        // While it waits, only what came since the wait began asks it.
+        if let (Some(until_ms), Some(began_ms)) = (work.until_ms, work.since_ms)
+            && until_ms > now_ms
+            && since < began_ms
+        {
+            return None;
+        }
+        // Once its work stopped, only what came since asks it.
+        if work
+            .stopped
+            .as_ref()
+            .is_some_and(|stopped| since < stopped.at_ms)
+        {
+            return None;
+        }
+    }
     let answered = issue
         .comments
         .iter()
@@ -95,5 +166,6 @@ fn ask_on(id: &Id, issue: &Issue) -> Option<IssueAsk> {
         person,
         cause,
         words,
+        asked,
     })
 }

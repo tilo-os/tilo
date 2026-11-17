@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@188395cb119c73de";
+export const SURFACE = "so.tilo.tasks@5f233b6ef94db006";
 
 /** One of "project", "area". */
 export type Kind = "project" | "area";
@@ -55,6 +55,9 @@ export interface Attachment {
   at_ms: number;
 }
 
+/** One of "person", "agent". */
+export type BudgetBy = "person" | "agent";
+
 export interface Issue {
   number: number;
   rank: string;
@@ -78,6 +81,7 @@ export interface Issue {
   created_ms: number;
   origin: Origin | null;
   url: string | null;
+  work: Work | null;
 }
 
 export interface Link {
@@ -135,8 +139,50 @@ export interface Origin {
 /** One of "none", "urgent", "high", "medium", "low". */
 export type Priority = "none" | "urgent" | "high" | "medium" | "low";
 
+export interface Resumed {
+  cause: string;
+  at_ms: number;
+}
+
 /** One of "backlog", "todo", "in-progress", "in-review", "done", "cancelled". */
 export type Status = "backlog" | "todo" | "in-progress" | "in-review" | "done" | "cancelled";
+
+export interface Stopped {
+  why: StoppedWhy;
+  words: string;
+  at_ms: number;
+}
+
+/** One of "failed", "budget", "time", "lost-worker", "person". */
+export type StoppedWhy = "failed" | "budget" | "time" | "lost-worker" | "person";
+
+export interface WaitFor {
+  kind: WaitKind;
+  what: string;
+  on: string | null;
+  event: string | null;
+}
+
+/** One of "time", "reply", "change", "answer", "people". */
+export type WaitKind = "time" | "reply" | "change" | "answer" | "people";
+
+export interface Work {
+  folder: string;
+  note: string;
+  waits: WaitFor[];
+  until_ms: number | null;
+  since_ms: number | null;
+  budget_micros: number | null;
+  budget_ms: number | null;
+  budget_by: BudgetBy;
+  spent_micros: number;
+  worked_ms: number;
+  runs: number;
+  running_since_ms: number | null;
+  lost: number;
+  stopped: Stopped | null;
+  resumed: Resumed | null;
+}
 
 /** The arguments of `create-area`. */
 export interface CreateAreaArgs {
@@ -285,6 +331,52 @@ export interface PlanArgs {
   priority?: Priority;
   estimate?: number;
   due_ms?: number;
+}
+
+/** The arguments of `set-place`. */
+export interface SetPlaceArgs {
+  issue: string;
+  folder: string;
+  note?: string;
+}
+
+/** The arguments of `wait`. */
+export interface WaitArgs {
+  issue: string;
+  waits: WaitFor[];
+  until_ms: number;
+}
+
+/** The arguments of `resume`. */
+export interface ResumeArgs {
+  issue: string;
+  cause: string;
+}
+
+/** The arguments of `set-budget`. */
+export interface SetBudgetArgs {
+  issue: string;
+  money_micros?: number;
+  time_ms?: number;
+}
+
+/** The arguments of `run-began`. */
+export interface RunBeganArgs {
+  issue: string;
+}
+
+/** The arguments of `run-ended`. */
+export interface RunEndedArgs {
+  issue: string;
+  cost_micros: number;
+  worked_ms: number;
+}
+
+/** The arguments of `stop`. */
+export interface StopArgs {
+  issue: string;
+  why: StoppedWhy;
+  words: string;
 }
 
 /** Tasks — `tasks.tracker`. */
@@ -456,11 +548,57 @@ export interface Issues extends tilo.Resource {
   }): Promise<void>;
   /** Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   planMany(items: PlanArgs[]): Promise<tilo.ActionAnswer[]>;
+  setPlace(args: {
+    issue: string;
+    folder: string;
+    note?: string;
+  }): Promise<void>;
+  /** Runs `set-place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setPlaceMany(items: SetPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
+  wait(args: {
+    issue: string;
+    waits: WaitFor[];
+    until_ms: number;
+  }): Promise<void>;
+  /** Runs `wait` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  waitMany(items: WaitArgs[]): Promise<tilo.ActionAnswer[]>;
+  resume(args: {
+    issue: string;
+    cause: string;
+  }): Promise<void>;
+  /** Runs `resume` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resumeMany(items: ResumeArgs[]): Promise<tilo.ActionAnswer[]>;
+  setBudget(args: {
+    issue: string;
+    money_micros?: number;
+    time_ms?: number;
+  }): Promise<void>;
+  /** Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setBudgetMany(items: SetBudgetArgs[]): Promise<tilo.ActionAnswer[]>;
+  runBegan(args: {
+    issue: string;
+  }): Promise<void>;
+  /** Runs `run-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  runBeganMany(items: RunBeganArgs[]): Promise<tilo.ActionAnswer[]>;
+  runEnded(args: {
+    issue: string;
+    cost_micros: number;
+    worked_ms: number;
+  }): Promise<void>;
+  /** Runs `run-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  runEndedMany(items: RunEndedArgs[]): Promise<tilo.ActionAnswer[]>;
+  stop(args: {
+    issue: string;
+    why: StoppedWhy;
+    words: string;
+  }): Promise<void>;
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Issues` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany"] as const;
+export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany", "setPlace", "setPlaceMany", "wait", "waitMany", "resume", "resumeMany", "setBudget", "setBudgetMany", "runBegan", "runBeganMany", "runEnded", "runEndedMany", "stop", "stopMany"] as const;
 
 /** The `tasks.issues` kind at `path`. */
 export function issues(ws: tilo.Workspace, path: string): Issues {
