@@ -330,8 +330,10 @@ fn is_output_limit(body: &str) -> bool {
 /// about "this week" or "overdue" is answered from this, never found out by reading change times.
 fn today_line(today: ui::format::NaiveDate) -> String {
     let week = today.week(ui::format::Weekday::Mon);
+    let tomorrow = today.succ_opt().unwrap_or(today);
     format!(
-        "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}.",
+        "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}. \
+         A `Date` in a program is the day as written here: tomorrow is `{tomorrow}`.",
         ui::format::day_heading(today, true),
         week.first_day(),
         week.last_day()
@@ -2869,7 +2871,9 @@ mod tests;
 
 #[cfg(test)]
 mod today_tests {
-    /// The model is told the day and the week it is in, so "this week" needs no step.
+    /// The model is told the day and the week it is in, so "this week" needs no step, and how a
+    /// day is written in a program: unsure of it, a model spent a turn describing the action that
+    /// takes one ("remind me to call mum tomorrow").
     #[test]
     fn the_request_names_today_and_its_week() {
         let friday = ui::format::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
@@ -2877,7 +2881,8 @@ mod today_tests {
             super::today_line(friday),
             format!(
                 "Today is {} where the person is (2026-11-13); this week runs from Monday \
-                 2026-11-09 to Sunday 2026-11-15.",
+                 2026-11-09 to Sunday 2026-11-15. A `Date` in a program is the day as written \
+                 here: tomorrow is `2026-11-14`.",
                 ui::format::day_heading(friday, true)
             )
         );
