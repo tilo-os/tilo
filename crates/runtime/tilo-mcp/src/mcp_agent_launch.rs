@@ -236,8 +236,9 @@ pub(super) fn names_files(name: &str) -> bool {
 }
 
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
-/// the workspace's own folder, or one of its reads of it ([`reads_workspace_folder`]): a path in
-/// the workspace, and no device whose own disk it would change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
+/// the workspace's own folder, its `write-file` there, or one of its reads of it
+/// ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
+/// change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
 /// into the workspace does; with a `device` they stay Files' own on that device.
 pub(super) fn in_workspace_folder(
     parsed: &ParsedPath,
@@ -246,7 +247,9 @@ pub(super) fn in_workspace_folder(
 ) -> bool {
     parsed.segments.is_empty()
         && names_files(&parsed.app)
-        && (fs_protocol::tree::is_tree_verb(action) || reads_workspace_folder(action, arguments))
+        && (fs_protocol::tree::is_tree_verb(action)
+            || action == fs_protocol::tree::WRITE_FILE
+            || reads_workspace_folder(action, arguments))
         && !arguments.contains_key("device")
 }
 

@@ -19,7 +19,9 @@ use crate::namespace::{Namespace, ROOT_INO, hash_from_hex};
 
 mod by_path;
 
-pub use by_path::{Changed, FileAt, MOST_COPIED, MOST_LISTED, Page, Row, Touched, Trashed};
+pub use by_path::{
+    Changed, FileAt, MOST_COPIED, MOST_LISTED, Page, Row, Touched, Trashed, Written,
+};
 
 /// A file put into the tree: the changes that put it there, and where in the
 /// tree it now is.

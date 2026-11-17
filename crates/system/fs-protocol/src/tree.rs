@@ -147,6 +147,12 @@ pub fn is_tree_read(action: &str) -> bool {
     matches!(action, LIST | READ_TEXT)
 }
 
+/// The verb of Files that writes a file into a workspace's own folder by a path in the
+/// workspace, from text or from content the workspace keeps, where its tree is kept: what
+/// another app answered as content becomes a file with every device off. With a `device` it
+/// writes text to that device's own disk, and only that device carries it out.
+pub const WRITE_FILE: &str = "write-file";
+
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
 

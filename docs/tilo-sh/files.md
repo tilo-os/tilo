@@ -102,6 +102,7 @@ The workspace's folder is on no one computer. So Files' verbs take a path in the
 | Bring them back to where they were | `files#restore` with `entries` |
 | See what a folder holds | `files#list` with `folder`; `trash: true` for what the trash holds |
 | Read what a file says | `files#read-text` with `file`, its path |
+| Write a file | `files#write-file` with `folder`, `name`, and its `text` or its `content` |
 
 A path starts at the workspace's folder, with no leading `/` and no `..`, and `""` is that folder
 itself. No verb writes over a file: a name that is taken is refused, and a copy beside what it
@@ -119,6 +120,12 @@ with the `id` that `files#restore` brings it back by and where it `was`.
 way. It reads text up to one mebibyte: a document, a spreadsheet, a PDF or a picture is refused
 with the name of what reads it. Both read where the workspace is kept, so neither opens a window
 nor needs a computer of yours to be on.
+
+`write-file` writes a file into a folder, making the folders on the way: from `text`, up to 256
+KiB, or from `content`, the `tilo.content:` reference an upload or another app's export answered,
+so a PDF Writer made lands in a task's folder. A name that is taken is refused; `replace: true`
+gives that file the new content. Like the verbs it answers as `undo` the one call that takes it
+back: the trash for a new file, and for one written over the write of what it held before.
 
 ## The round trip
 

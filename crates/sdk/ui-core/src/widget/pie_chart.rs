@@ -28,6 +28,9 @@ pub struct PieSlice {
     pub label: String,
     pub value: f64,
     pub color: Color,
+    /// Its place in the theme's palette, when it is coloured by that and not by `color`: the
+    /// colour then follows the theme the slice is drawn with.
+    pub palette: Option<usize>,
     pub detail: String,
     /// A column after the legend's label and share: the slice's size
     /// ("12.4 GB"). Empty for none.
@@ -42,10 +45,30 @@ impl PieSlice {
             label: label.into(),
             value,
             color,
+            palette: None,
             detail: String::new(),
             legend_detail: String::new(),
             interactive: true,
         }
+    }
+
+    /// A slice in the colour the theme's palette has at `index`, whichever theme draws it.
+    pub fn from_palette(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        value: f64,
+        index: usize,
+    ) -> Self {
+        Self {
+            palette: Some(index),
+            ..Self::new(id, label, value, Color::TRANSPARENT)
+        }
+    }
+
+    fn color_in(&self, theme: &Theme) -> Color {
+        self.palette.map_or(self.color, |index| {
+            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        })
     }
 
     #[must_use]
@@ -145,6 +168,9 @@ pub struct PieMarks {
 }
 
 pub type PieChart = Plot<PieMarks>;
+
+mod pie_chart_component;
+pub use pie_chart_component::{PieChartProps, PiePart, slice_description};
 
 impl PieChart {
     pub fn new(slices: Vec<PieSlice>) -> Self {
@@ -712,7 +738,7 @@ impl PlotMarks for PieMarks {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                slice.color,
+                slice.color_in(theme),
                 None,
                 &chart_geometry::ring_sector(
                     center,
@@ -738,7 +764,7 @@ impl PlotMarks for PieMarks {
                     tr,
                     theme,
                     label_rect,
-                    slice.color,
+                    slice.color_in(theme),
                     &legend_label(slice, total),
                 );
                 if detail_w > 0.0 && !slice.legend_detail.is_empty() {
