@@ -414,9 +414,7 @@ impl ListRowFace<'_> {
                 Point::new(words, y),
                 None,
             );
-            crate::widget::avatar::AvatarFace::new(change.name, change.identity)
-                .presence(change.colour(theme))
-                .paint(ctx, face);
+            crate::widget::avatar::AvatarFace::of(change.by).paint(ctx, face);
         }
         if let Some(note) = self.note {
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);

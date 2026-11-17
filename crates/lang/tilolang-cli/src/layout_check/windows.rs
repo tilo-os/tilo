@@ -486,7 +486,7 @@ fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
 /// The changes the rows of `staged`'s window show, as who made it, what they are called and what
 /// they did: a list row draws its mark in the row instead of holding a node of it, so what the
 /// person reads is read off the rows themselves.
-fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
+fn row_changes(staged: &stage::Staged) -> Vec<(tilo_actions::Actor, String, String)> {
     // One change reads once however many rows show it: a task open where it stands shows it on its
     // row and again over the step that made it, and both are the same change.
     let mut changes = Vec::new();
@@ -495,8 +495,8 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
         .filter_map(ui::widget::ListRow::shown_change)
     {
         let change = (
-            change.identity.to_owned(),
-            change.name.to_owned(),
+            change.by.identity.clone(),
+            change.by.name.clone(),
             change.said.to_owned(),
         );
         if !changes.contains(&change) {
@@ -1589,9 +1589,8 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut st
         "the row of the task Bo took says so under its title: {rows:?}"
     );
     for (identity, name, said) in &rows {
-        // A row carries the id inside the actor, which its colour is read from.
         assert_ne!(
-            identity,
+            identity.id(),
             stage::ME,
             "a marked row names who changed it, never the person's own step"
         );

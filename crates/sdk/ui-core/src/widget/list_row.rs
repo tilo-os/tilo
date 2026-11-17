@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{RowJoin, SelectionState};
+use crate::component::Person;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -104,15 +105,16 @@ impl std::fmt::Debug for RowLeading<'_> {
 /// A status dot on the row's trailing edge, on the title's line; beside a check or a
 /// disclosure chevron it centres with them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RowStatus<'a> {
+pub enum RowStatus {
     Active,
     Warning,
     Error,
     Idle,
-    Presence(&'a str),
+    /// Someone else is at the item, in the hue they wear.
+    Presence(PresenceHue),
 }
 
-impl RowStatus<'_> {
+impl RowStatus {
     pub(crate) fn colour(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
@@ -120,7 +122,7 @@ impl RowStatus<'_> {
             Self::Warning => colors.semantic.warning,
             Self::Error => colors.semantic.danger,
             Self::Idle => theme.text_tertiary,
-            Self::Presence(id) => colors.presence.hue(PresenceHue::of_identity(id)),
+            Self::Presence(hue) => colors.presence.hue(hue),
         }
     }
 
@@ -245,7 +247,7 @@ pub struct ListRowFace<'a> {
     nested: bool,
     depth: u32,
     chevron_column: f64,
-    status: Option<RowStatus<'a>>,
+    status: Option<RowStatus>,
     change: Option<RowChange<'a>>,
     struck: bool,
     quiet: bool,
@@ -288,9 +290,9 @@ impl<'a> ListRowFace<'a> {
     /// Who else is at the item, when the row shows them: the identity its presence dot
     /// stands for ([`ListRow::presence`]).
     #[cfg(test)]
-    pub(crate) fn presence_identity(&self) -> Option<&'a str> {
+    pub(crate) fn presence_hue(&self) -> Option<PresenceHue> {
         match self.status {
-            Some(RowStatus::Presence(identity)) => Some(identity),
+            Some(RowStatus::Presence(hue)) => Some(hue),
             _ => None,
         }
     }
@@ -666,7 +668,7 @@ impl<'a> ListRowFace<'a> {
     }
 
     #[must_use]
-    pub fn status(mut self, status: RowStatus<'a>) -> Self {
+    pub fn status(mut self, status: RowStatus) -> Self {
         self.status = Some(status);
         self
     }
@@ -1030,8 +1032,7 @@ const SWIPE_COMMIT: f64 = 0.4;
 const MIN_TEXT_LINES: u8 = 8;
 
 struct Changed {
-    identity: String,
-    name: String,
+    by: Person,
     spoken: String,
     said: String,
     show: Option<Box<dyn FnMut()>>,
@@ -1042,8 +1043,7 @@ struct Changed {
 /// technology hears of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShownChange<'a> {
-    pub identity: &'a str,
-    pub name: &'a str,
+    pub by: &'a Person,
     pub said: &'a str,
     pub spoken: &'a str,
 }
@@ -1086,7 +1086,7 @@ pub struct ListRow {
     /// The files the row can be dragged out of the window with
     /// ([`crate::carry_out`]), by their offer's key.
     carries_out: Option<String>,
-    status: Option<(StatusKind, String)>,
+    status: Option<RowStatus>,
     change: Option<Changed>,
     struck: bool,
     quiet: bool,
@@ -1128,15 +1128,6 @@ pub struct ListRow {
     card_lines: u8,
     dense: bool,
     row_height: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StatusKind {
-    Active,
-    Warning,
-    Error,
-    Idle,
-    Presence,
 }
 
 impl ListRow {
@@ -1652,25 +1643,25 @@ impl ListRow {
 
     #[must_use]
     pub fn active(mut self) -> Self {
-        self.status = Some((StatusKind::Active, String::new()));
+        self.status = Some(RowStatus::Active);
         self
     }
 
     #[must_use]
     pub fn warning(mut self) -> Self {
-        self.status = Some((StatusKind::Warning, String::new()));
+        self.status = Some(RowStatus::Warning);
         self
     }
 
     #[must_use]
     pub fn error(mut self) -> Self {
-        self.status = Some((StatusKind::Error, String::new()));
+        self.status = Some(RowStatus::Error);
         self
     }
 
     #[must_use]
     pub fn idle(mut self) -> Self {
-        self.status = Some((StatusKind::Idle, String::new()));
+        self.status = Some(RowStatus::Idle);
         self
     }
 
@@ -1698,15 +1689,14 @@ impl ListRow {
         self
     }
 
-    /// A change `identity` (called `name`) made to what the row shows and the person has
-    /// not seen: their face on the trailing edge and their colour faintly under the row, at
-    /// its own height, and `said` as a line under the row's title; `spoken` (who, in which
-    /// run) on hover and to assistive technology; pressing the face runs `show`.
+    /// A change `by` made to what the row shows and the person has not seen: their face on
+    /// the trailing edge and their colour faintly under the row, at its own height, and `said`
+    /// as a line under the row's title; `spoken` (who, in which run) on hover and to assistive
+    /// technology; pressing the face runs `show`.
     #[must_use]
     pub fn change(
         mut self,
-        identity: impl Into<String>,
-        name: impl Into<String>,
+        by: Person,
         spoken: impl Into<String>,
         said: impl Into<String>,
         show: Option<Box<dyn FnMut()>>,
@@ -1716,8 +1706,7 @@ impl ListRow {
             self.tooltip = Some(spoken.clone());
         }
         self.change = Some(Changed {
-            identity: identity.into(),
-            name: name.into(),
+            by,
             spoken,
             said: said.into(),
             show,
@@ -1731,8 +1720,7 @@ impl ListRow {
     pub fn shown_change(&self) -> Option<ShownChange<'_>> {
         let change = self.change.as_ref()?;
         Some(ShownChange {
-            identity: &change.identity,
-            name: &change.name,
+            by: &change.by,
             said: &change.said,
             spoken: &change.spoken,
         })
@@ -1745,10 +1733,10 @@ impl ListRow {
         self.tooltips_suppressed = suppressed;
     }
 
-    /// The presence dot of the person `identity`.
+    /// The presence dot of `person`, in the hue they wear.
     #[must_use]
-    pub fn presence(mut self, identity: impl Into<String>) -> Self {
-        self.status = Some((StatusKind::Presence, identity.into()));
+    pub fn presence(mut self, person: &Person) -> Self {
+        self.status = Some(RowStatus::Presence(person.hue));
         self
     }
 
@@ -2256,20 +2244,13 @@ impl ListRow {
         face = face.quiet(self.quiet).faint(self.faint);
         if let Some(change) = &self.change {
             face = face.change(RowChange {
-                identity: &change.identity,
-                name: &change.name,
+                by: &change.by,
                 spoken: &change.spoken,
                 said: &change.said,
             });
         }
-        if let Some((kind, id)) = &self.status {
-            face = face.status(match kind {
-                StatusKind::Active => RowStatus::Active,
-                StatusKind::Warning => RowStatus::Warning,
-                StatusKind::Error => RowStatus::Error,
-                StatusKind::Idle => RowStatus::Idle,
-                StatusKind::Presence => RowStatus::Presence(id),
-            });
+        if let Some(status) = self.status {
+            face = face.status(status);
         }
         if self.disclosure {
             face = face.disclosure();

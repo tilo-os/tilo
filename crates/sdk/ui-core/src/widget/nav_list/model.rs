@@ -11,38 +11,6 @@ use crate::chrome::NavCount;
 use crate::icons::Icon;
 use crate::widget::{ListModel, RowStatus, Tone};
 
-/// An owned [`RowStatus`], as a navigation item keeps it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NavStatus {
-    Active,
-    Warning,
-    Error,
-    Idle,
-    Presence(String),
-}
-
-impl NavStatus {
-    pub(crate) fn of(status: RowStatus<'_>) -> Self {
-        match status {
-            RowStatus::Active => Self::Active,
-            RowStatus::Warning => Self::Warning,
-            RowStatus::Error => Self::Error,
-            RowStatus::Idle => Self::Idle,
-            RowStatus::Presence(id) => Self::Presence(id.to_owned()),
-        }
-    }
-
-    pub(crate) fn row_status(&self) -> RowStatus<'_> {
-        match self {
-            Self::Active => RowStatus::Active,
-            Self::Warning => RowStatus::Warning,
-            Self::Error => RowStatus::Error,
-            Self::Idle => RowStatus::Idle,
-            Self::Presence(id) => RowStatus::Presence(id),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NavItemSpec {
     pub icon: Option<Icon>,
@@ -51,7 +19,7 @@ pub(crate) struct NavItemSpec {
     pub under_section: bool,
     pub secondary: Option<String>,
     pub meta: Option<String>,
-    pub status: Option<NavStatus>,
+    pub status: Option<RowStatus>,
     pub status_label: Option<(String, Tone)>,
     pub badge: Option<String>,
     pub section_badges: Rc<Vec<String>>,
@@ -533,7 +501,7 @@ impl NavModel {
                     depth,
                     secondary: item.secondary.clone(),
                     meta: item.meta.clone(),
-                    status: item.status.as_ref().map(|status| status.0.clone()),
+                    status: item.status.as_ref().map(|status| status.0),
                     status_label: item.status_label.clone(),
                     badge: item.badge.clone(),
                     section_badges: Rc::clone(badges),

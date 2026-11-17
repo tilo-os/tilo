@@ -1342,10 +1342,10 @@ fn row_of(
         row = row.struck();
     }
     if let Some(mark) = node.change.as_ref().and_then(|mark| mark.again().row()) {
-        row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
+        row = row.change(mark.by, mark.spoken, mark.said, mark.show);
     }
     if let Some(person) = &node.presence {
-        row = row.presence(person.identity.id());
+        row = row.presence(person);
     }
     let row = Box::new(row) as Element;
     if node.toolbar.is_empty() {
@@ -2361,15 +2361,13 @@ mod tests {
         });
         let tree = tree_of(vec![props], true, Moves::default());
         assert_eq!(
-            row_face(&tree, "a", |row| row
-                .with_face(|face| face.presence_identity().map(str::to_owned))),
-            Some("bo".to_owned()),
+            row_face(&tree, "a", |row| row.with_face(|face| face.presence_hue())),
+            Some(crate::tokens::PresenceHue::of_identity("bo")),
             "the row says who else is at the item"
         );
         let plain = tree_of(vec![node("b", None, false, &queue)], true, Moves::default());
         assert_eq!(
-            row_face(&plain, "b", |row| row
-                .with_face(|face| face.presence_identity().map(str::to_owned))),
+            row_face(&plain, "b", |row| row.with_face(|face| face.presence_hue())),
             None,
             "and says nothing while nobody else is"
         );

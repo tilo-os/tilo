@@ -998,13 +998,13 @@ fn bare_row(
                 let value_free = props.value.is_none();
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
-                    row = row.presence(person.identity.id());
+                    row = row.presence(&person);
                 }
                 if removed {
                     row = row.struck();
                 }
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
-                    row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
+                    row = row.change(mark.by, mark.spoken, mark.said, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
                 if let Some(marks) = tree {
@@ -1058,13 +1058,7 @@ fn bare_row(
             (true, ItemRow::Row(props)) => {
                 let mut document = ListRow::from_props(key, *props);
                 if let Some(mark) = page_mark.and_then(ChangeMarkProps::row) {
-                    document = document.change(
-                        mark.identity,
-                        mark.name,
-                        mark.spoken,
-                        mark.said,
-                        mark.show,
-                    );
+                    document = document.change(mark.by, mark.spoken, mark.said, mark.show);
                 }
                 if let Some(marks) = tree {
                     document = document.depth(marks.depth(&key.to_owned()));
