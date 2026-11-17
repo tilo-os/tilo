@@ -40,6 +40,13 @@ die() {
   printf 'host-assurance: FAIL %s\n' "$*" >/dev/console 2>/dev/null || true
   exit 1
 }
+# An exit at once takes the guest's output port with it, so a step that dies
+# without a message of its own leaves none. Report the code on the console too.
+report_exit() {
+  local code=$?
+  [ "$code" = 0 ] || printf 'assurance check: exited %s\n' "$code" >/dev/console 2>/dev/null || true
+}
+trap report_exit EXIT
 
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 command -v qemu-system-x86_64 qemu-img podman skopeo systemd-repart >/dev/null
@@ -72,15 +79,32 @@ free -m >&2 || true
 # sandbox last pointed TMPDIR.
 export TMPDIR=$work/tmp
 mkdir -p "$TMPDIR"
+# The image as an unpacked OCI layout, the way the desktop disk checks load
+# theirs: a transport that reads the archive file itself holds every layer it
+# unpacks in the step's memory, which is what ended this step on its 1.16 GB
+# before it installed anything.
+layout=$work/image.oci
+rm -rf "$layout"
+mkdir -p "$layout"
+tar -xf "$pub/image.oci.tar" -C "$layout"
+# The tag the build wrote into the archive's index; without one podman takes
+# the layout's single image.
+tag=$(python3 -c 'import json, sys
+for entry in json.load(open(sys.argv[1])).get("manifests", []):
+    name = (entry.get("annotations") or {}).get("org.opencontainers.image.ref.name", "").rsplit("/", 1)[-1]
+    if ":" in name:
+        print(name.rsplit(":", 1)[1])
+        break' "$layout/index.json")
 # The archive names its image, and the build wrote that name beside it. Read it
-# from the file, not from podman: an image loaded out of an archive carries no
-# repository digest, so podman's is empty and comparing it proves nothing.
-digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:$pub/image.oci.tar") \
-  || die "skopeo cannot read $pub/image.oci.tar"
+# from the layout, not from podman: an image loaded out of a layout this way
+# carries no repository digest, so podman's is empty and comparing it proves
+# nothing.
+digest=$(skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") \
+  || die "skopeo cannot read the image in $pub/image.oci.tar"
 [[ $digest == "$(cat "$pub/digest")" ]] \
   || die "$pub/image.oci.tar holds $digest, not the image $pub/digest names"
-image=$(podman pull -q "oci-archive:$pub/image.oci.tar") \
-  || die "podman could not load $pub/image.oci.tar; the space and memory it had are above"
+image=$(podman pull -q "oci:$layout${tag:+:$tag}") \
+  || die "podman could not load the image in $pub/image.oci.tar"
 podman tag "$image" localhost/tilo-host:ci
 TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
   TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
@@ -121,6 +145,7 @@ boot_vm() {
   ./os/dev/vm.sh boot --2d --disk "$disk" --attach "$work/update.qcow2"
 }
 finish() {
+  report_exit
   ./os/dev/vm.sh serial > "$out/serial.log" 2>&1 || true
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
 }
