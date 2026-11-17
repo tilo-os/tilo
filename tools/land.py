@@ -49,9 +49,12 @@ import subprocess
 import sys
 import time
 
-# Changes put on main and linted together in one round. A lint that fails is
-# retried on the first half, so a bad change costs a few rounds, not everyone's.
-BATCH = 8
+# Changes put on main and linted together in one round. A lint of a widely used crate
+# reaches the whole workspace and takes many minutes on a loaded builder while main
+# gets a change a minute, so a round takes everything that queued meanwhile: one
+# lint for all of it. A lint that fails is retried on the first half, so a bad
+# change costs a few rounds, not everyone's.
+BATCH = 24
 # How long the lander stays up with nothing queued before it stops.
 IDLE_SECONDS = 120
 # How long the command waits for its answer before it says to run it again; under
