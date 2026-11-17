@@ -79,6 +79,12 @@ public final class TiloSource: AssistantSource {
     private let serverAgain = Again()
     /// The ask for what came while she was away, made again where it went unanswered.
     private let sinceAgain = Again()
+    /// What she saw on this device that her server has not heard yet: each thing it told her
+    /// of, by its id, with how she saw it. It is said again until her server has heard it.
+    private var unheard: [String: String] = [:]
+    private let hearing = Again()
+    /// Whether word that she saw something is on its way right now: one round goes at a time.
+    private var saysSeen = false
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -270,6 +276,8 @@ public final class TiloSource: AssistantSource {
         toldRefused = false
         serverAgain.settle()
         sinceAgain.settle()
+        unheard = [:]
+        hearing.settle()
         for chat in Array(feeds.keys) {
             feeds[chat]?.conversation = nil
             say([], in: chat, doubting: false)
@@ -1115,7 +1123,47 @@ public final class TiloSource: AssistantSource {
     public func seen(_ item: Item.ID, in chat: Chat) async {
         guard let told = toldPieces[chat]?[item] else { return }
         toldPieces[chat]?[item] = nil
-        try? await engine.acknowledge(told: told, device: deviceName)
+        await saySeen(told, by: "opened")
+    }
+
+    /// Tell her server that she saw a thing it told her of, or acted on it: `how` says which.
+    /// Word her server did not take is not lost: it is said again by itself, after a pause that
+    /// grows, until her server has heard it. Until then her server would go on raising a thing
+    /// that insists, and tell her of it on her other devices, though she saw it here.
+    private func saySeen(_ told: String, by how: String) async {
+        // What she pressed says more than that she looked.
+        if unheard[told] == nil || how != "opened" { unheard[told] = how }
+        await sayUnheard()
+    }
+
+    private func sayUnheard() async {
+        guard !saysSeen else { return }
+        saysSeen = true
+        defer { saysSeen = false }
+        var owed = false
+        // Word that came while another was on its way is said in the next round.
+        while !owed, !unheard.isEmpty {
+            for (told, how) in unheard.sorted(by: { $0.key < $1.key }) {
+                // What her server's log calls settled meanwhile needs no word any more: she saw
+                // it on another device, or what it told was taken back.
+                if toldByMessage.values.contains(where: { $0.id == told && $0.isSettled }) {
+                    unheard[told] = nil
+                    continue
+                }
+                do {
+                    try await engine.acknowledge(told: told, by: how, device: deviceName)
+                    unheard[told] = nil
+                } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+                    // A server that takes no such word is not told again.
+                    unheard[told] = nil
+                } catch {
+                    // Not answered, or her server failed at it this time.
+                    owed = true
+                }
+            }
+        }
+        guard owed else { return hearing.settle() }
+        hearing.later(first: firstPause) { [weak self] in await self?.sayUnheard() }
     }
 
     /// The person pressed one of the things their server offers with a piece, where they were
@@ -1133,7 +1181,7 @@ public final class TiloSource: AssistantSource {
             try await taken { try await self.engine.invoke(wanted.action, on: wanted.resource, wanted.arguments.object ?? [:]) }
         }
         toldPieces[chat]?[item] = nil
-        try? await engine.acknowledge(told: told.id, by: wanted.id, device: deviceName)
+        await saySeen(told.id, by: wanted.id)
     }
 
     private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {
