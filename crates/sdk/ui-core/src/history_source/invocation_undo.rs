@@ -6,14 +6,14 @@
 //! one document. This is the piece between them: coordination and reporting
 //! which steps were completed.
 //!
-//! A run undone while one of its apps is closed leaves a report that no longer
+//! An invocation undone while one of its apps is closed leaves a report that no longer
 //! mentions a photo and a photo that is still cropped — and from inside either
-//! app that looks finished. So any unreachable step refuses the whole run
+//! app that looks finished. So any unreachable step refuses the whole invocation
 //! ([`unreachable_steps`], then [`refuse_invocation`]), nothing is written, and the
 //! refusal names the affected apps.
 //!
 //! The one partial allowed is within a step, where slots somebody edited after
-//! the run are kept rather than overwritten. It is never silent:
+//! the invocation are kept rather than overwritten. It is never silent:
 //! [`InvocationUndoReport::is_complete`] is false whenever any step carries one.
 
 use automerge::AutoCommit;
@@ -22,7 +22,7 @@ use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::invocations::{AgentSession, InvocationStep};
 use crate::history_source::revert::{KeptSlot, RevertError, revert_invocation};
 
-/// What happened to one application's share of a run.
+/// What happened to one application's share of an invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StepState {
     /// Every slot this step wrote was inverted.
@@ -36,12 +36,12 @@ pub enum StepState {
     /// This process could not reach the document — the app is not running here,
     /// or the record is not open. Nothing was attempted.
     Unreachable,
-    /// Reachable, but deliberately left alone because the run as a whole was
+    /// Reachable, but deliberately left alone because the invocation as a whole was
     /// refused. Distinct from [`StepState::Unreachable`]: this app was fine,
     /// another one was not.
     NotAttempted,
-    /// The document this step was performed against does not contain the run's
-    /// changes. Usually the wrong document, or a peer that has not synced them.
+    /// The document this step was performed against does not contain the
+    /// invocation's changes. Usually the wrong document, or a peer that has not synced them.
     NotInDocument,
 }
 
@@ -52,7 +52,7 @@ impl StepState {
     }
 }
 
-/// One application's outcome within a run undo.
+/// One application's outcome within an invocation undo.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepOutcome {
     pub app: String,
@@ -60,9 +60,9 @@ pub struct StepOutcome {
     pub state: StepState,
 }
 
-/// What a whole-run undo did, across every application it touched.
+/// What undoing a whole invocation did, across every application it touched.
 ///
-/// Exists so a caller cannot accidentally report success for a run where one app
+/// Exists so a caller cannot accidentally report success for an invocation where one app
 /// was unreachable.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvocationUndoReport {

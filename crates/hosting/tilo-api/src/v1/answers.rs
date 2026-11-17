@@ -698,7 +698,7 @@ pub struct Upload {
 pub struct Event {
     /// The cursor after it: `Last-Event-ID` resumes there.
     pub id: String,
-    /// `change`, `run` or `presence`.
+    /// `change`, `invocation` or `presence`.
     #[serde(rename = "type")]
     pub kind: String,
     pub workspace: String,
@@ -710,7 +710,7 @@ pub struct Event {
 pub struct NewWebhook {
     /// `https://…`, where each event is posted.
     pub url: String,
-    /// The kinds to post (`change`, `run`, `presence`); all without it.
+    /// The kinds to post (`change`, `invocation`, `presence`); all without it.
     #[serde(default)]
     pub events: Vec<String>,
     /// One resource's changes only, and what is under it.

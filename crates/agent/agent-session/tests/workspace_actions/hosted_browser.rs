@@ -189,8 +189,11 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         .await
     };
     let mut agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, hosted_documents::RUN_LABEL)
-        .await;
+    let _ = tilo_session_client::device::session_as_agent(
+        &agent.peer,
+        hosted_documents::INVOCATION_LABEL,
+    )
+    .await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
@@ -198,7 +201,10 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_session(hosted_documents::RUN, hosted_documents::RUN_LABEL);
+    .with_agent_session(
+        hosted_documents::INVOCATION,
+        hosted_documents::INVOCATION_LABEL,
+    );
 
     // The workspace lists Browser like any app: an agent names it `browser`.
     let listing = agent

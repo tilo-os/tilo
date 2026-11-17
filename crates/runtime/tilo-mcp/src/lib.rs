@@ -65,7 +65,7 @@ pub struct McpServer<H> {
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
-    /// The agent run every invocation of this connection is attributed to.
+    /// The agent's group every invocation of this connection is attributed to.
     agent_session: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
@@ -133,8 +133,8 @@ pub struct McpServer<H> {
     /// ([`crate::watch`]).
     pub(crate) invocations: std::sync::Mutex<Vec<agent::watch::WatchedInvocation>>,
     /// Who waits for the next run event of this session: one of its invocations
-    /// starting, being held for its person, or ending ([`McpServer::runs_moved`]).
-    pub(crate) run_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
+    /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
+    pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
     /// What this session's invocations changed, oldest first: where taking
     /// one's invocation back finds its changes ([`McpServer::undo_invocation`]).
     pub(crate) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
@@ -169,7 +169,7 @@ pub enum Surface {
 /// What an agent is told as it connects: what the tools reach, and the one
 /// step that runs a shell command in the workspace.
 const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
-     History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
+     History keeps what you do as your invocation. tilo_ls lists the workspace's apps and what is in \
      them; tilo_read reads a resource; tilo_do runs an action, and answers the link to a record \
      it changed; tilo_link answers the link to what a path names, for the person to open it; \
      tilo_view reads what a person's window shows, as lines of its labels, values and \
@@ -673,7 +673,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
-            run_waiters: std::sync::Mutex::default(),
+            invocation_waiters: std::sync::Mutex::default(),
             undoable: std::sync::Mutex::default(),
         }
     }

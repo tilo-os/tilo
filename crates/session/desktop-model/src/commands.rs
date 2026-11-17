@@ -40,8 +40,8 @@ pub mod layout {
     /// Open a resource, content or web address in a new window.
     pub const OPEN: &str = "open";
     pub const ARRANGE: &str = "arrange";
-    /// Take a run of layout changes back (`{"run": …}`), as every
-    /// history's `undo` does.
+    /// Take an invocation of layout changes back (`{"invocation": …}`), as
+    /// every history's `undo` does.
     pub const UNDO: &str = "undo";
 }
 

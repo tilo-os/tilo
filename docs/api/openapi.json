@@ -3959,7 +3959,7 @@
           },
           "type": {
             "type": "string",
-            "description": "`change`, `run` or `presence`."
+            "description": "`change`, `invocation` or `presence`."
           },
           "workspace": {
             "type": "string"
@@ -3988,7 +3988,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The kinds to post (`change`, `run`, `presence`); all without it.",
+            "description": "The kinds to post (`change`, `invocation`, `presence`); all without it.",
             "default": []
           },
           "path": {

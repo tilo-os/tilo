@@ -164,11 +164,11 @@ nothing applies. A group answers no `result`: its members' values are not carrie
 Each event's `id` is a cursor: reconnecting with `Last-Event-ID` resumes after it, so each event is
 seen once. `event` is the kind, `data` its JSON:
 
-- `change` `{"path", "resources", "change", "sentence", "actor", "title", "group", "time_ms", "undone"}`
+- `change` `{"path", "resources", "change", "sentence", "actor", "invocation", "title", "group", "group_kind", "time_ms", "undone"}`
   — `resources` names every resource the change wrote: each entry's `path`, and its `app`,
   `resource` and `item` where the change names them. `actor` is structured (`{"kind": "person"|
-  "agent", "name": …, …}`), `run` is the invocation it is a step of, `title` that run's name and
-  `group` the run a client opened. A change a person made by hand has no `run`.
+  "agent", "name": …, …}`), `invocation` is the invocation that made it, `title` the name of the
+  group it is a step of and `group` that group. A change a person made by hand has no `group`.
 - `invocation` `{"phase": "started"|"succeeded"|"failed"|"cancelled", "invocation", "path", "title", "group", "time_ms"}`
 - `presence` `{"here": [{"who", "name", "kind": "person"|"agent"}]}`
 

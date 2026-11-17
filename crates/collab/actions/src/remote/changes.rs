@@ -26,9 +26,9 @@ pub struct ResourceChanged {
     /// The record's id there; empty for the app's record of the workspace.
     pub record: String,
     /// The change as the record's `history` lists it: its `change` id, its
-    /// `sentence`, `time_ms`, who made it (`actor`, `by`), the run it was a
-    /// step of (`run`, `run_id`) and the invocation that made it
-    /// (`invocation`).
+    /// `sentence`, `time_ms`, who made it (`actor`, `by`), the group it was a
+    /// step of (`title`, `group`, `group_kind`) and the invocation that made
+    /// it (`invocation`).
     pub entry: serde_json::Value,
 }
 

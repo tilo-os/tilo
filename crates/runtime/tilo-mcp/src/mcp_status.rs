@@ -1,5 +1,5 @@
 //! `tilo_status`: how an invocation went, and the two things done to one after
-//! it answered: stopping it (`cancel`) and taking its run back (`undo`).
+//! it answered: stopping it (`cancel`) and taking it back (`undo`).
 //! Named no invocation, it answers this session's invocations and how each
 //! stands, so an agent that lost an id, or wonders what is still running,
 //! asks the same tool.
