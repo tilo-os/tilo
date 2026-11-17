@@ -78,6 +78,80 @@ pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usiz
     Some(start..last.saturating_add(last_len))
 }
 
+/// How far back from where it would start an excerpt looks for a word's
+/// start.
+const EXCERPT_REACH: usize = 96;
+
+/// How many characters an excerpt shows in all.
+const EXCERPT_LENGTH: usize = 180;
+
+/// The part of `passage` around the first word of `query` it holds, the
+/// match in its middle, cut at word boundaries and marked where it was cut:
+/// what a hit inside prose shows of it.
+#[must_use]
+pub fn excerpt(passage: &str, query: &str) -> String {
+    let chars: Vec<(usize, char)> = passage.char_indices().collect();
+    // The passage folded a character at a time, each folded character
+    // pointing back at the one it came from.
+    let mut folded = String::new();
+    let mut origin = Vec::new();
+    for (at, (_, ch)) in chars.iter().enumerate() {
+        fold_char(*ch, &mut |folded_char| {
+            folded.push(folded_char);
+            origin.extend(std::iter::repeat_n(at, folded_char.len_utf8()));
+        });
+    }
+    let (found, word_len) = query
+        .split_whitespace()
+        .map(fold)
+        .filter(|word| !word.is_empty() && !word.contains(':'))
+        .find_map(|word| {
+            let byte = folded.find(&word)?;
+            Some((*origin.get(byte)?, word.chars().count()))
+        })
+        .unwrap_or((0, 0));
+    excerpt_around(passage, found, word_len)
+}
+
+/// The part of `passage` around the `len` characters at character `at`, them in its middle, cut at
+/// word boundaries and marked where it was cut.
+#[must_use]
+pub fn excerpt_around(passage: &str, at: usize, len: usize) -> String {
+    let chars: Vec<(usize, char)> = passage.char_indices().collect();
+    // The match in the middle, or as near it as the passage's ends allow.
+    let before = EXCERPT_LENGTH.saturating_sub(len) / 2;
+    let mut start = at
+        .saturating_sub(before)
+        .min(chars.len().saturating_sub(EXCERPT_LENGTH));
+    let planned = start;
+    // Back to the word's start, unless the word runs on for long.
+    while start > 0
+        && planned.saturating_sub(start) < EXCERPT_REACH
+        && !chars
+            .get(start.saturating_sub(1))
+            .is_some_and(|(_, ch)| ch.is_whitespace())
+    {
+        start = start.saturating_sub(1);
+    }
+    let mut end = start.saturating_add(EXCERPT_LENGTH).min(chars.len());
+    while end < chars.len() && !chars.get(end).is_some_and(|(_, ch)| ch.is_whitespace()) {
+        end = end.saturating_add(1);
+    }
+    let byte = |at: usize| chars.get(at).map_or(passage.len(), |(byte, _)| *byte);
+    let mut shown = passage
+        .get(byte(start)..byte(end))
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if start > 0 {
+        shown.insert(0, '\u{2026}');
+    }
+    if end < chars.len() {
+        shown.push('\u{2026}');
+    }
+    shown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

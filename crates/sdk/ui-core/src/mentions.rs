@@ -44,7 +44,6 @@ const RESOURCE_META: &str = "tilo:record";
 /// input, not a request to walk it without end.
 const MAX_DEPTH: usize = 32;
 const MAX_OBJECTS: usize = 200_000;
-const EXCERPT_CHARS: usize = 160;
 
 /// One mention in a record: who is named, by whom, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,14 +106,21 @@ pub fn touched_by(
             // A person's id is written in many places that are no mention of them (who wrote a
             // change, who sits where): only a mention's mark, or the value a stored mark span
             // keeps ([`Walk::mark_value`]), can make one.
-            let mark_value = matches!(
-                &op.key,
-                Key::Map(key) if matches!(key.as_str(), "value" | STR_FIELD | STR_FIELD_FLAT)
-            );
+            // So can an item's channel that is a direct conversation with one of them
+            // ([`Walk::addressed`]).
+            let key = match &op.key {
+                Key::Map(key) => key.as_str(),
+                Key::Seq(_) => "",
+            };
+            let mark_value = matches!(key, "value" | STR_FIELD | STR_FIELD_FLAT);
             match &op.action {
                 OpType::Put(ScalarValue::Str(value))
-                    if mark_value
-                        && member_of(value).is_some_and(|member| people.contains(&member)) =>
+                    if (mark_value
+                        && member_of(value).is_some_and(|member| people.contains(&member)))
+                        || (key == "channel"
+                            && MemberId::direct_conversation_members(value).is_some_and(
+                                |members| members.iter().any(|m| people.contains(m)),
+                            )) =>
                 {
                     touched.names = true;
                 }
@@ -204,6 +210,9 @@ impl Walk<'_> {
                                 item_obj: Some(child.clone()),
                             }
                         });
+                    if let Some(item) = &entered {
+                        self.addressed(item);
+                    }
                     path.push(key);
                     self.object(&child, child_kind, path, entered.as_ref().unwrap_or(cx));
                     path.pop();
@@ -265,6 +274,35 @@ impl Walk<'_> {
         }
     }
 
+    /// An item said in a direct conversation is addressed to each member of it but its author: news
+    /// for them as a mention of them is, its excerpt the item's first paragraph.
+    fn addressed(&mut self, cx: &Context) {
+        let Some(item) = cx.item_obj.clone() else {
+            return;
+        };
+        let Some(members) = self
+            .string(&item, "channel")
+            .and_then(|channel| MemberId::direct_conversation_members(&channel))
+        else {
+            return;
+        };
+        let author = self.author(&item);
+        let first = match self.doc.get(&item, "body") {
+            Ok(Some((Value::Object(ObjType::List), body))) => self.doc.get(&body, 0).ok().flatten(),
+            _ => None,
+        };
+        let excerpt = match first {
+            Some((Value::Object(ObjType::Map), block)) => self.paragraph(&block, 0),
+            _ => excerpt(&self.string(&item, "text").unwrap_or_default(), 0),
+        };
+        for member in members
+            .into_iter()
+            .filter(|member| author.as_deref() != Some(member.id()))
+        {
+            self.push(member, None, None, excerpt.clone(), cx);
+        }
+    }
+
     /// The excerpt of `text` around character `at`, each of its `references` (a resource's run: start,
     /// end and the mark's value) read for the person told.
     fn read_around(&self, text: &str, references: &[(usize, usize, String)], at: usize) -> String {
@@ -294,19 +332,23 @@ impl Walk<'_> {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);
-        let text = (path.len() >= 2)
-            .then(|| self.object_at(&path[..path.len() - 2]))
-            .flatten()
-            .and_then(|block| self.string(&block, "text"))
-            .unwrap_or_default();
-        let references = path
-            .split_last()
-            .and_then(|(_, up)| self.object_at(up))
-            .map(|marks| self.stored_references(&marks))
-            .unwrap_or_default();
-        let by = cx.item_obj.as_ref().and_then(|item| self.author(item));
-        let excerpt = self.read_around(&text, &references, start);
-        self.push(person, by, None, excerpt, cx);
+        let block = path
+            .len()
+            .checked_sub(2)
+            .and_then(|up| self.object_at(&path[..up]));
+        let excerpt = block.map_or_else(String::new, |block| self.paragraph(&block, start));
+        self.push(person, None, None, excerpt, cx);
+    }
+
+    /// The excerpt around character `at` of a stored paragraph (`{text, marks}`), as a chat
+    /// message keeps its paragraphs.
+    fn paragraph(&self, block: &ObjId, at: usize) -> String {
+        let references = match self.doc.get(block, "marks") {
+            Ok(Some((Value::Object(_), marks))) => self.stored_references(&marks),
+            _ => Vec::new(),
+        };
+        let text = self.string(block, "text").unwrap_or_default();
+        self.read_around(&text, &references, at)
     }
 
     /// The references to resources among the stored mark spans of the list `marks`: each run's start,
@@ -422,31 +464,10 @@ impl Walk<'_> {
     }
 }
 
+/// The text around character `at` of `text`, on one line.
 fn excerpt(text: &str, at: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let start = at.saturating_sub(EXCERPT_CHARS / 2).min(chars.len());
-    let start = if start == 0 {
-        0
-    } else {
-        chars[start..]
-            .iter()
-            .position(|c| c.is_whitespace())
-            .map_or(start, |offset| start + offset + 1)
-            .min(at.min(chars.len()))
-    };
-    let line: String = chars[start..]
-        .iter()
-        .take(EXCERPT_CHARS)
-        .map(|c| if c.is_control() { ' ' } else { *c })
-        .collect();
-    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let more = chars.len() > start + EXCERPT_CHARS;
-    match (start > 0, more) {
-        (false, false) => line,
-        (true, false) => format!("…{line}"),
-        (false, true) => format!("{line}…"),
-        (true, true) => format!("…{line}…"),
-    }
+    let around = tilo_search::excerpt_around(text, at, 0);
+    around.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Where choosing a notice lands: the app keeping a record, the record, and the item in it, opened

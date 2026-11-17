@@ -56,3 +56,40 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     // Where the chat's resource is: the message's item in the chat's own document.
     assert_eq!(ui::mentions::chain_of(&route), Some(""));
 }
+
+#[test]
+fn a_direct_message_is_news_for_the_person_it_is_addressed_to() {
+    let mut ada = Talk::new();
+    let mut bo = ada.fork_as(BO);
+    let before = AutoCommit::load(&bo.part.save()).unwrap().get_heads();
+    let to_bo = super::Chat::direct_id([
+        ui::tilo_resource::MemberId::person(ADA),
+        ui::tilo_resource::MemberId::person(BO),
+    ]);
+    ada.apply(ChatPart::POST.with(chat_part::Post {
+        message: NewMessage {
+            channel: to_bo,
+            text: "Have a look at this plan".into(),
+            parent: None,
+            quoted: None,
+            body: None,
+            attachments: Vec::new(),
+            mentions: None,
+            written: None,
+            origin: None,
+        },
+    }))
+    .unwrap();
+    bo.sync_with(&mut ada);
+    let mut part = AutoCommit::load(&bo.part.save()).unwrap();
+
+    // What reached Bo's device names him, so a device following the chat reads it whole.
+    let people = [ui::tilo_resource::MemberId::person(BO)].into();
+    let touched = ui::mentions::touched_by(&part.save_after(&before), &people).unwrap();
+    assert!(touched.names, "{touched:?}");
+    let found = ui::mentions::in_resource(&part);
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].person, ui::tilo_resource::MemberId::person(BO));
+    assert_eq!(found[0].by.as_deref(), Some(ADA));
+    assert_eq!(found[0].excerpt, "Have a look at this plan");
+}

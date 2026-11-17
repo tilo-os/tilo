@@ -156,50 +156,6 @@ fn names_of(entries: &[IndexedEntry]) -> HashMap<(String, String), String> {
         .collect()
 }
 
-/// The one line of `text` a row shows for `needle`: all of it when it is
-/// short, else a window around what the person typed, so the match is in
-/// the row rather than the start it happens to have.
-fn excerpt(text: &str, needle: &str) -> String {
-    /// How much of a long line a row shows.
-    const SHOWN: usize = 120;
-    /// How much of the window leads the match.
-    const LEAD: usize = 40;
-    let word: String = ui::search::fold_search_text(needle.trim())
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let chars: Vec<char> = text.chars().collect();
-    if word.is_empty() || chars.len() <= SHOWN {
-        return text.to_owned();
-    }
-    let folded: Vec<char> = ui::search::fold_search_text(text).chars().collect();
-    // Folding keeps one char per char for the scripts a message is written
-    // in; where it does not, the beginning is the line.
-    let found = (folded.len() == chars.len())
-        .then(|| {
-            let word: Vec<char> = word.chars().collect();
-            folded
-                .windows(word.len())
-                .position(|window| window == word.as_slice())
-        })
-        .flatten();
-    let Some(found) = found else {
-        return chars.iter().take(SHOWN).collect();
-    };
-    let start = found.saturating_sub(LEAD);
-    let end = start.saturating_add(SHOWN).min(chars.len());
-    let mut out = String::new();
-    if start > 0 {
-        out.push_str("\u{2026} ");
-    }
-    out.extend(chars.get(start..end).unwrap_or_default());
-    if end < chars.len() {
-        out.push_str(" \u{2026}");
-    }
-    out
-}
-
 /// The entries' texts, each found by its position.
 fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
     // Names a person half remembers: words across fields and typos.
@@ -404,7 +360,7 @@ impl IndexedContent {
         });
         let (avatar, faces) = self.shown(slot, entry);
         let title = match entry.kind {
-            Some(IndexKind::Message) => excerpt(&entry.title, needle),
+            Some(IndexKind::Message) => tilo_search::excerpt(&entry.title, needle),
             _ => entry.title.clone(),
         };
         // What the entry is, when its app says something the generic record

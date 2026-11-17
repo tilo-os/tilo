@@ -417,6 +417,7 @@ turn-unanswered = Der Agent hat aufgehört, bevor er antwortete
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice-channel = { $name } hat dich in { $channel } erwähnt
+mention-notice-direct = { $name } hat dir geschrieben
 mention-notice = { $name } hat dich erwähnt
 mention-notice-someone = Jemand
 mention-notice-open = Öffnen

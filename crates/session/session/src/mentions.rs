@@ -127,7 +127,13 @@ impl Held {
                 look.tree
                     .and_then(|tree| ui::mentions::channel_name(tree, channel))
             });
+            let direct = mention.channel.as_deref().is_some_and(|channel| {
+                ui::MemberId::direct_conversation_members(channel).is_some()
+            });
             let title = match (channel, &mention.title) {
+                _ if direct => {
+                    crate::i18n::t_args("mention-notice-direct", &[("name", who.as_str().into())])
+                }
                 (Some(channel), _) => crate::i18n::t_args(
                     "mention-notice-channel",
                     &[

@@ -126,9 +126,14 @@ words = ["collaborator"]
 paths = ["apps/music/*"]
 
 [[allow]]
-reason = "Chat's channels."
+reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
-paths = ["apps/chat/*", "apps/tl/chat/*"]
+paths = [
+    "apps/chat/*",
+    "apps/tl/chat/*",
+    "crates/sdk/ui-core/src/mentions.rs",
+    "crates/session/session/src/mentions.rs",
+]
 
 [[allow]]
 reason = "The room speakers are calibrated in."
