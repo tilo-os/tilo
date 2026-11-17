@@ -47,27 +47,12 @@ const CONTACTS_PER_ACTION: usize = 100;
 /// several; the default profile otherwise. Nothing is chosen until the person says.
 ///
 /// # Errors
-/// No Thunderbird profile is here, or it could not be read.
+/// No Thunderbird profile is here, or none that is here could be read; the
+/// message names what could not be read and why.
 pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
-    let profiles = migration_sources::thunderbird::discover(home).map_err(|why| anyhow!(why))?;
-    let found = match profile {
-        Some(wanted) => profiles
-            .iter()
-            .find(|candidate| candidate.source_id == wanted || candidate.label == wanted)
-            .ok_or_else(|| {
-                anyhow!(
-                    "no Thunderbird profile {wanted:?} here; there are: {}",
-                    profiles
-                        .iter()
-                        .map(|profile| profile.label.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?,
-        None => profiles
-            .first()
-            .ok_or_else(|| anyhow!("no Thunderbird profile on this computer"))?,
-    };
+    let scan = migration_sources::thunderbird::scan(home);
+    let reviewed = readable_profile(&scan, profile)?;
+    let found = reviewed.profile();
     let mut items = Vec::new();
     for account in &found.accounts {
         let key = account_key(account);
@@ -122,9 +107,55 @@ pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
     Ok(Review {
         source: SOURCE.into(),
         title: format!("Thunderbird profile {}", found.label),
-        handle: found.source_id.clone(),
+        handle: found.source_id,
+        unreadable: scan
+            .problems
+            .iter()
+            .chain(&reviewed.problems)
+            .map(ToString::to_string)
+            .collect(),
         items,
     })
+}
+
+/// The reviewed profile `profile` names by its id or label, or the first one
+/// that could be read.
+fn readable_profile<'a>(
+    scan: &'a migration_sources::thunderbird::Scan,
+    profile: Option<&str>,
+) -> Result<&'a migration_sources::thunderbird::ReviewedThunderbird> {
+    if scan.reviewed.is_empty() {
+        return if scan.problems.is_empty() {
+            Err(anyhow!("no Thunderbird profile on this computer"))
+        } else {
+            Err(anyhow!(
+                "no Thunderbird profile could be read: {}",
+                scan.problems_text()
+            ))
+        };
+    }
+    match profile {
+        Some(wanted) => scan
+            .reviewed
+            .iter()
+            .find(|candidate| {
+                candidate.profile.source_id == wanted || candidate.profile.label == wanted
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "no Thunderbird profile {wanted:?} here; there are: {}",
+                    scan.reviewed
+                        .iter()
+                        .map(|candidate| candidate.profile.label.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }),
+        None => scan
+            .reviewed
+            .first()
+            .ok_or_else(|| anyhow!("no Thunderbird profile on this computer")),
+    }
 }
 
 /// What `tilo migrate choose` names an account by: its address, else its name.

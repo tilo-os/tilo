@@ -254,6 +254,7 @@ fn of(source: &str, review: &ServiceReview) -> Review {
         source: source.to_owned(),
         title: review.title.clone(),
         handle: review.account.clone(),
+        unreadable: Vec::new(),
         items: review
             .groups
             .iter()

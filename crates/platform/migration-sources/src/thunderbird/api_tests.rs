@@ -2,7 +2,10 @@
 
 use std::ops::ControlFlow;
 
-use super::fixture::{HOME_EMAIL, HOME_HOST, WORK_EMAIL, WORK_HOST, write_sample_profile};
+use super::fixture::{
+    HOME_EMAIL, HOME_SERVER, WORK_EMAIL, WORK_SERVER, write_flatpak_profile, write_sample_profile,
+    write_stale_mail_directories,
+};
 use super::*;
 
 fn sample() -> (tempfile::TempDir, ThunderbirdProfile) {
@@ -71,9 +74,9 @@ fn account_settings_carry_the_imap_and_smtp_endpoints_without_a_password() {
         .find(|account| account.email.as_deref() == Some(WORK_EMAIL))
         .unwrap();
     let settings = account_settings(&profile, &work.source_id).expect("settings");
-    assert_eq!(settings.hostname.as_deref(), Some(WORK_HOST));
+    assert_eq!(settings.hostname.as_deref(), Some(WORK_SERVER));
     let candidate = settings.candidate.expect("an IMAP candidate");
-    assert_eq!(candidate.incoming.host, WORK_HOST);
+    assert_eq!(candidate.incoming.host, WORK_SERVER);
     assert_eq!(candidate.incoming.port, 993);
     assert_eq!(candidate.incoming.username, WORK_EMAIL);
     assert_eq!(candidate.outgoing.host, "smtp.example.com");
@@ -150,7 +153,7 @@ fn messages_come_one_bounded_file_at_a_time_with_their_flags() {
         })
         .is_err()
     );
-    assert_ne!(HOME_HOST, WORK_HOST);
+    assert_ne!(HOME_SERVER, WORK_SERVER);
 }
 
 #[test]
@@ -210,4 +213,104 @@ fn a_home_reached_through_a_link_is_read() {
     let profiles = discover(&linked).unwrap();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].accounts.len(), 2);
+}
+
+/// A profile root reached through the application's link, as Flatpak keeps
+/// it, is the root it points at.
+#[cfg(unix)]
+#[test]
+fn a_profile_root_behind_the_packaged_application_link_is_read() {
+    let home = tempfile::tempdir().unwrap();
+    write_flatpak_profile(home.path());
+
+    let scan = scan(home.path());
+    assert!(scan.problems.is_empty(), "{:?}", scan.problems);
+    assert_eq!(scan.reviewed.len(), 1);
+    let profile = scan.reviewed[0].profile();
+    assert_eq!(profile.accounts.len(), 2);
+}
+
+/// A profile copied in from another Thunderbird location still names that
+/// place in `prefs.js`; its mail is in the profile itself, and is read.
+#[test]
+fn mail_named_at_another_location_is_found_where_thunderbird_lays_it_out() {
+    let home = tempfile::tempdir().unwrap();
+    write_sample_profile(home.path());
+    write_stale_mail_directories(home.path());
+
+    let scan = scan(home.path());
+    assert!(scan.problems.is_empty(), "{:?}", scan.problems);
+    assert_eq!(scan.reviewed.len(), 1);
+    let profile = scan.reviewed[0].profile();
+    let work = profile
+        .accounts
+        .iter()
+        .find(|account| account.email.as_deref() == Some(WORK_EMAIL))
+        .expect("the Work account");
+    assert_eq!(
+        work.folders
+            .iter()
+            .find(|folder| folder.hierarchy == ["INBOX"])
+            .and_then(|folder| folder.messages),
+        Some(3)
+    );
+    assert_eq!(
+        work.folders
+            .iter()
+            .find(|folder| folder.hierarchy == ["Sent"])
+            .and_then(|folder| folder.messages),
+        Some(1)
+    );
+}
+
+/// One folder that cannot be read is named with its path and reason, and the
+/// folders beside it are still listed.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_is_named_and_the_rest_is_still_listed() {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let home = tempfile::tempdir().unwrap();
+    write_sample_profile(home.path());
+    // A subfolder tree whose entry name is not UTF-8: the folder cannot be
+    // read, while its siblings in the account are fine.
+    let subfolder = home.path().join(format!(
+        ".thunderbird/fx8r2l9p.default-release/ImapMail/{WORK_SERVER}/Projects.sbd"
+    ));
+    std::fs::create_dir(&subfolder).unwrap();
+    std::fs::write(
+        subfolder.join(std::ffi::OsStr::from_bytes(b"2026-\xff")),
+        b"",
+    )
+    .unwrap();
+
+    let scan = scan(home.path());
+    let reviewed = scan.reviewed.first().expect("the profile is still read");
+    let work = reviewed
+        .profile
+        .accounts
+        .iter()
+        .find(|account| account.email.as_deref() == Some(WORK_EMAIL))
+        .expect("the Work account");
+    assert!(
+        work.folders
+            .iter()
+            .any(|folder| folder.hierarchy == ["INBOX"]),
+        "the folders beside it are still listed"
+    );
+    assert!(
+        work.folders
+            .iter()
+            .any(|folder| folder.hierarchy == ["Sent"]),
+        "the folders beside it are still listed"
+    );
+    let relative = format!("ImapMail/{WORK_SERVER}/Projects.sbd");
+    assert_eq!(reviewed.problems.len(), 1, "{:?}", reviewed.problems);
+    let problem = &reviewed.problems[0];
+    assert_eq!(problem.relative.as_deref(), Some(relative.as_str()));
+    assert_eq!(problem.kind, std::io::ErrorKind::InvalidData);
+    assert!(
+        problem.to_string().contains(&relative) && problem.to_string().contains("unreadable data"),
+        "{problem}"
+    );
 }

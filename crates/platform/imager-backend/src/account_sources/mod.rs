@@ -187,7 +187,11 @@ fn append_thunderbird(home: &Path, inventory: &mut Inventory) {
         inventory.thunderbird.push(reviewed.profile.clone());
         inventory.thunderbird_reviewed.push(reviewed);
     }
-    inventory.unreadable_sources.extend(scan.unreadable);
+    inventory.unreadable_sources.extend(
+        scan.problems
+            .iter()
+            .map(migration_sources::thunderbird::Unreadable::source),
+    );
 }
 
 fn append_home_profiles(home: &Path, inventory: &mut Inventory) {

@@ -340,6 +340,7 @@ fn review_answer(review: &Review, journal: &Journal) -> Value {
         "source": review.source,
         "title": review.title,
         "items": review.items,
+        "unreadable": review.unreadable,
         "chosen": chosen.iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
         "already_here": journal.landed.len(),
         "state": journal.state,
@@ -866,6 +867,11 @@ fn sentences(answer: &Value) -> String {
                 item["count"],
                 item["counts"].as_str().unwrap_or_default(),
             );
+        }
+        if let Some(problems) = answer.get("unreadable").and_then(Value::as_array) {
+            for problem in problems.iter().filter_map(Value::as_str) {
+                let _ = writeln!(out, "  incomplete: {problem}");
+            }
         }
         if let Some(next) = answer.get("next").and_then(Value::as_str) {
             let _ = writeln!(out, "next: {next}");

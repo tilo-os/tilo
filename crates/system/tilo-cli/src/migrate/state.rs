@@ -40,6 +40,10 @@ pub struct Review {
     /// The source's own handle: the Thunderbird profile id, the vault account of a service.
     pub handle: String,
     pub items: Vec<Item>,
+    /// What the source holds that could not be read, each naming its path and
+    /// why. A review with any of these lists only part of the source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
 }
 
 impl Review {

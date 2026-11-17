@@ -461,3 +461,67 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
     // Kept: a second start works from the same review.
     assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
 }
+
+/// A profile copied in from another Thunderbird location reviews with its
+/// mail; a folder that cannot be read is named in the answer, and the folders
+/// beside it are still listed.
+#[cfg(unix)]
+#[test]
+fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let server = migration_sources::thunderbird::fixture::WORK_SERVER;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    migration_sources::thunderbird::fixture::write_stale_mail_directories(&home);
+
+    let review = thunderbird::review(&home, None).unwrap();
+    assert!(review.unreadable.is_empty(), "{:?}", review.unreadable);
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/INBOX")
+    );
+
+    let subfolder = home.join(format!(
+        ".thunderbird/fx8r2l9p.default-release/ImapMail/{server}/Projects.sbd"
+    ));
+    std::fs::create_dir(&subfolder).unwrap();
+    std::fs::write(
+        subfolder.join(std::ffi::OsStr::from_bytes(b"2026-\xff")),
+        b"",
+    )
+    .unwrap();
+
+    let review = thunderbird::review(&home, None).unwrap();
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/INBOX"),
+        "the folders beside the unreadable one are still listed"
+    );
+    assert!(
+        review
+            .items
+            .iter()
+            .any(|item| item.key == "ada@example.com/Sent"),
+        "the folders beside it are still listed"
+    );
+    let relative = format!("ImapMail/{server}/Projects.sbd");
+    let problem = review
+        .unreadable
+        .first()
+        .expect("the review says what it could not read");
+    assert!(problem.contains(&relative), "{problem}");
+    assert!(problem.contains("unreadable data"), "{problem}");
+
+    let answer = super::review_answer(&review, &Journal::default());
+    let text = super::sentences(&answer);
+    assert!(
+        text.contains("incomplete:") && text.contains(&relative),
+        "{text}"
+    );
+}
