@@ -24,7 +24,6 @@
 //! client.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
@@ -48,12 +47,10 @@ use smithay::xwayland::xwm::XwmId;
 
 use crate::state::{ClientState, State};
 
+pub use tilo_x11_transfer::MAX_SELECTION_BYTES;
 pub use tilo_x11_transfer::TEXT_MIME;
-pub(crate) use tilo_x11_transfer::normalized_mimes;
 use tilo_x11_transfer::{MAX_MIMES, TEXT_MIMES, is_text_mime, valid_mime};
-
-/// Cap on what a surface app's offer holds in all.
-pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) use tilo_x11_transfer::{normalized_mimes, serve};
 
 /// How long after a connection arrives the session's keeper may re-assert the selection its app
 /// owned: long enough for the new desktop to hand out its globals, short enough that the person
@@ -254,16 +251,6 @@ pub(crate) fn surface_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<St
         values.insert(mime, bytes);
     }
     (!values.is_empty()).then_some(values)
-}
-
-/// Write `bytes` to a reader's pipe off the loop: a reader that is slow or never reads must not
-/// stall the compositor. Closing the pipe is the end.
-pub(crate) fn serve(fd: OwnedFd, bytes: Vec<u8>) {
-    std::thread::spawn(move || {
-        if let Err(error) = std::fs::File::from(fd).write_all(&bytes) {
-            tracing::debug!(%error, "selection reader went away mid-transfer");
-        }
-    });
 }
 
 impl State {

@@ -77,8 +77,6 @@ mod uploads;
 mod window_frame;
 mod x11;
 mod x11_windows;
-mod xdnd;
-mod xdnd_bridge;
 mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};

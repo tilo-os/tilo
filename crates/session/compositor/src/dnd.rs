@@ -14,7 +14,7 @@
 //! ([`ShellSurface::drop_offered`]), an X11 window is spoken to in XDND
 //! through [`XdndBridge`]. An X11 client's drag runs inside Xwayland until
 //! it leaves the X11 windows; then the bridge's proxy window takes it (see
-//! [`crate::xdnd_bridge`]).
+//! [`tilo_x11_transfer::bridge`]).
 //!
 //! A Wayland source is told its drag was cancelled as the button comes up
 //! over anything that is not a Wayland client (smithay validates drops
@@ -59,8 +59,9 @@ use smithay::xwayland::xwm::XwmId;
 use crate::render::OutputRenderElement;
 use crate::selection::{MAX_SELECTION_BYTES, normalized_mimes, serve, surface_offer, value_for};
 use crate::state::State;
-use crate::xdnd::{self, Action};
-use crate::xdnd_bridge::{BridgeEvent, Request, XdndBridge};
+use tilo_x11_transfer::bridge::{BridgeEvent, Request, XdndBridge};
+use tilo_x11_transfer::pick_format;
+use tilo_x11_transfer::xdnd::{self, Action};
 
 /// The left button, which starts a surface app's drag.
 const BTN_LEFT: u32 = 0x110;
@@ -635,7 +636,7 @@ impl State {
         };
         let old = drag.target.clone();
         let mimes = drag.mimes.clone();
-        let action = Action::preferred(drag.actions);
+        let action = Action::preferred(drag.actions.bits());
         let same = old.is(under);
         if !same {
             match old {
@@ -701,7 +702,7 @@ impl State {
         source.target(mime.map(str::to_owned));
         if source.version() >= 3 {
             source.action(if mime.is_some() {
-                action.dnd()
+                DndAction::from_bits_truncate(action.bits())
             } else {
                 DndAction::None
             });
@@ -854,7 +855,7 @@ impl State {
             .dnd
             .incoming
             .as_ref()
-            .and_then(|incoming| xdnd::pick_format(mime, &incoming.types))
+            .and_then(|incoming| pick_format(mime, &incoming.types))
         else {
             return;
         };
@@ -1034,7 +1035,7 @@ impl State {
                     .chain(served.loading.iter())
                     .cloned()
                     .collect();
-                match xdnd::pick_format(&request.target, &available) {
+                match pick_format(&request.target, &available) {
                     Some(mime) if served.loading.contains(&mime) => {
                         // The bytes are still being read: answered when they arrive.
                         served.waiting.push(request);
@@ -1054,7 +1055,7 @@ impl State {
 
     /// Connect an XDND bridge to the display of `xwm` 's server.
     pub(crate) fn start_xdnd(&mut self, display: u32, xwm: XwmId) {
-        let bridge = match XdndBridge::connect(display) {
+        let bridge = match XdndBridge::connect(display, None) {
             Ok(bridge) => bridge,
             Err(error) => {
                 tracing::warn!(%error, "no drag-and-drop with X11 windows");
@@ -1442,7 +1443,7 @@ impl ClientDndGrabHandler for State {
                 actions,
                 target: Target::Nothing,
                 outcome: None,
-                chosen: Action::preferred(actions),
+                chosen: Action::preferred(actions.bits()),
             }
         });
     }
@@ -1458,7 +1459,7 @@ impl ClientDndGrabHandler for State {
             return None;
         }
         self.dnd.finishing = Some(source.clone());
-        Some(drag.chosen.dnd())
+        Some(DndAction::from_bits_truncate(drag.chosen.bits()))
     }
 
     fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
@@ -1471,7 +1472,7 @@ impl ClientDndGrabHandler for State {
 impl ServerDndGrabHandler for State {
     fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
         let x11 = match &self.dnd.served {
-            Some(Served::X11 { xwm, types }) => Some((*xwm, xdnd::pick_format(&mime_type, types))),
+            Some(Served::X11 { xwm, types }) => Some((*xwm, pick_format(&mime_type, types))),
             _ => None,
         };
         if let Some((xwm, target)) = x11 {

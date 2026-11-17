@@ -39,3 +39,7 @@ mod text_input;
 
 #[path = "x11.rs"]
 mod x11;
+
+// Drag-and-drop between a kept launch's X11 programs and the desktop.
+#[path = "x11_drag.rs"]
+mod x11_drag;

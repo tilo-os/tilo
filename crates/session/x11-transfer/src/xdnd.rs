@@ -1,45 +1,50 @@
 //! The XDND protocol (version 5) as plain data: its client messages, the version both sides speak,
 //! the actions and the names formats go by.
 //! X11 clients drag and drop with XDND among themselves; the X11 window manager does not take part.
-//! To let a drag cross between X11 and Wayland windows (and surface apps) the compositor
-//! speaks it too, through [`crate::xdnd_bridge`]: as the target, with a window it raises over
-//! everything that is not an X11 window while an X11 drag runs, and as the source when a Wayland or
-//! surface drag enters an X11 window. What travels is encoded and decoded here, free of any
-//! connection.
+//! To let a drag cross between X11 and Wayland windows, whoever carries it (the compositor for its
+//! own X11 displays, the app keeper for a kept launch's) speaks it too, through
+//! [`crate::bridge`]: as the target, with a window it raises over everything that is not an X11
+//! window while an X11 drag is under way, and as the source when a Wayland drag enters an X11 window. What
+//! travels is encoded and decoded here, free of any connection.
 
-use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
+use crate::{TEXT_MIME, is_text_mime, normalized_mimes, pick_format};
 
-pub(crate) use tilo_x11_transfer::pick_format;
-use tilo_x11_transfer::{TEXT_MIME, is_text_mime, normalized_mimes};
+/// Wayland's drag actions as `wl_data_device_manager.dnd_action` numbers them.
+pub mod dnd_action {
+    pub const NONE: u32 = 0;
+    pub const COPY: u32 = 1;
+    pub const MOVE: u32 = 2;
+    pub const ASK: u32 = 4;
+}
 
 /// The newest XDND version spoken.
-pub(crate) const VERSION: u32 = 5;
+pub const VERSION: u32 = 5;
 /// The oldest XDND version spoken: older ones lack the action field.
-pub(crate) const MIN_VERSION: u32 = 3;
+pub const MIN_VERSION: u32 = 3;
 
 /// The version a drag with a peer that speaks `theirs` uses, if any.
-pub(crate) fn negotiate(theirs: u32) -> Option<u32> {
+pub fn negotiate(theirs: u32) -> Option<u32> {
     (theirs >= MIN_VERSION).then(|| theirs.min(VERSION))
 }
 
 /// The atoms XDND's messages and actions are named by, interned on the connection the bridge holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct XdndAtoms {
-    pub(crate) enter: u32,
-    pub(crate) position: u32,
-    pub(crate) status: u32,
-    pub(crate) leave: u32,
-    pub(crate) drop: u32,
-    pub(crate) finished: u32,
-    pub(crate) action_copy: u32,
-    pub(crate) action_move: u32,
-    pub(crate) action_ask: u32,
-    pub(crate) action_private: u32,
+pub struct XdndAtoms {
+    pub enter: u32,
+    pub position: u32,
+    pub status: u32,
+    pub leave: u32,
+    pub drop: u32,
+    pub finished: u32,
+    pub action_copy: u32,
+    pub action_move: u32,
+    pub action_ask: u32,
+    pub action_private: u32,
 }
 
 /// A drop's action, as both protocols know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     /// Nothing happens (a refused drop).
     None,
     /// The target gets a copy.
@@ -52,7 +57,7 @@ pub(crate) enum Action {
 
 impl Action {
     /// The atom naming this action (`None` for no action).
-    pub(crate) const fn atom(self, atoms: &XdndAtoms) -> u32 {
+    pub const fn atom(self, atoms: &XdndAtoms) -> u32 {
         match self {
             Self::None => 0,
             Self::Copy => atoms.action_copy,
@@ -62,7 +67,7 @@ impl Action {
     }
 
     /// The action an atom names; a private action is a copy to us, an unknown one no action.
-    pub(crate) fn of_atom(atom: u32, atoms: &XdndAtoms) -> Self {
+    pub fn of_atom(atom: u32, atoms: &XdndAtoms) -> Self {
         if atom == 0 {
             Self::None
         } else if atom == atoms.action_copy || atom == atoms.action_private {
@@ -76,24 +81,26 @@ impl Action {
         }
     }
 
-    /// The Wayland action.
-    pub(crate) const fn dnd(self) -> DndAction {
+    /// The Wayland action's bits.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
         match self {
-            Self::None => DndAction::None,
-            Self::Copy => DndAction::Copy,
-            Self::Move => DndAction::Move,
-            Self::Ask => DndAction::Ask,
+            Self::None => dnd_action::NONE,
+            Self::Copy => dnd_action::COPY,
+            Self::Move => dnd_action::MOVE,
+            Self::Ask => dnd_action::ASK,
         }
     }
 
-    /// One action out of a set Wayland offers: copy when allowed, as the safe default, then move,
-    /// then ask.
-    pub(crate) fn preferred(actions: DndAction) -> Self {
-        if actions.contains(DndAction::Copy) {
+    /// One action out of a set of Wayland action bits: copy when allowed, as the safe default,
+    /// then move, then ask.
+    #[must_use]
+    pub const fn preferred(actions: u32) -> Self {
+        if actions & dnd_action::COPY != 0 {
             Self::Copy
-        } else if actions.contains(DndAction::Move) {
+        } else if actions & dnd_action::MOVE != 0 {
             Self::Move
-        } else if actions.contains(DndAction::Ask) {
+        } else if actions & dnd_action::ASK != 0 {
             Self::Ask
         } else {
             Self::None
@@ -103,7 +110,7 @@ impl Action {
 
 /// One XDND client message (format 32).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Message {
+pub enum Message {
     /// The source's drag entered the target; up to three types inline,
     /// `more_types` when the rest are on the source's `XdndTypeList`.
     Enter {
@@ -141,7 +148,7 @@ pub(crate) enum Message {
 
 impl Message {
     /// The message's type atom and its five 32-bit words.
-    pub(crate) fn encode(&self, atoms: &XdndAtoms) -> (u32, [u32; 5]) {
+    pub fn encode(&self, atoms: &XdndAtoms) -> (u32, [u32; 5]) {
         match self {
             Self::Enter {
                 source,
@@ -189,7 +196,7 @@ impl Message {
     }
 
     /// The message a client message of type `kind` carries, if it is XDND.
-    pub(crate) fn decode(kind: u32, words: [u32; 5], atoms: &XdndAtoms) -> Option<Self> {
+    pub fn decode(kind: u32, words: [u32; 5], atoms: &XdndAtoms) -> Option<Self> {
         let [first, second, third, fourth, fifth] = words;
         let message = if kind == atoms.enter {
             Self::Enter {
@@ -241,7 +248,7 @@ impl Message {
     clippy::cast_sign_loss,
     reason = "the halves carry the two's-complement bits of each coordinate"
 )]
-pub(crate) const fn pack_point(x: i16, y: i16) -> u32 {
+pub const fn pack_point(x: i16, y: i16) -> u32 {
     ((x as u16 as u32) << 16) | (y as u16 as u32)
 }
 
@@ -251,7 +258,7 @@ pub(crate) const fn pack_point(x: i16, y: i16) -> u32 {
     clippy::cast_possible_wrap,
     reason = "each half is one coordinate's two's-complement bits"
 )]
-pub(crate) const fn unpack_point(word: u32) -> (i16, i16) {
+pub const fn unpack_point(word: u32) -> (i16, i16) {
     ((word >> 16) as u16 as i16, word as u16 as i16)
 }
 
@@ -260,7 +267,7 @@ pub(crate) const fn unpack_point(word: u32) -> (i16, i16) {
     clippy::cast_possible_truncation,
     reason = "clamped to the i16 range first"
 )]
-pub(crate) fn root_coordinate(value: f64) -> i16 {
+pub fn root_coordinate(value: f64) -> i16 {
     value
         .round()
         .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
@@ -279,7 +286,7 @@ const META_TARGETS: [&str; 7] = [
 
 /// The formats an X11 drag's types are offered as to Wayland clients and surface apps: format names
 /// pass through as they are (`text/uri-list` above all), text also under its Wayland names.
-pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
+pub fn mimes_of_targets(targets: &[String]) -> Vec<String> {
     normalized_mimes(
         targets
             .iter()
@@ -290,18 +297,18 @@ pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
 
 /// The types a Wayland or surface drag's formats are offered as to an X11 target: the same names,
 /// text also under its X11 names.
-pub(crate) fn targets_of_mimes(mimes: &[String]) -> Vec<String> {
+pub fn targets_of_mimes(mimes: &[String]) -> Vec<String> {
     normalized_mimes(mimes.iter().cloned())
 }
 
 /// Files dragged out of a sandbox through the document portal: a key the receiving app redeems with
 /// the portal. It passes through as any format.
-pub(crate) const PORTAL_FILES_MIME: &str = "application/vnd.portal.filetransfer";
+pub const PORTAL_FILES_MIME: &str = "application/vnd.portal.filetransfer";
 
 /// Formats read ahead from a Wayland drag dropped on an X11 window, best first, at most four: the
 /// source is told the drop is over as the button comes up, so what the X11 target will ask for must
 /// be read before.
-pub(crate) fn read_ahead(mimes: &[String]) -> Vec<String> {
+pub fn read_ahead(mimes: &[String]) -> Vec<String> {
     let mut chosen: Vec<String> = Vec::new();
     for wanted in ["text/uri-list", PORTAL_FILES_MIME, TEXT_MIME] {
         if let Some(found) = pick_format(wanted, mimes)
@@ -458,17 +465,17 @@ mod tests {
             assert_eq!(Action::of_atom(ATOMS.action_private, &ATOMS), Action::Copy);
             assert_eq!(Action::of_atom(0, &ATOMS), Action::None);
             assert_eq!(Action::of_atom(12345, &ATOMS), Action::None);
-            assert_eq!(Action::Move.dnd(), DndAction::Move);
+            assert_eq!(Action::Move.bits(), dnd_action::MOVE);
             assert_eq!(
-                Action::preferred(DndAction::Move | DndAction::Copy),
+                Action::preferred(dnd_action::MOVE | dnd_action::COPY),
                 Action::Copy
             );
             assert_eq!(
-                Action::preferred(DndAction::Move | DndAction::Ask),
+                Action::preferred(dnd_action::MOVE | dnd_action::ASK),
                 Action::Move
             );
-            assert_eq!(Action::preferred(DndAction::Ask), Action::Ask);
-            assert_eq!(Action::preferred(DndAction::empty()), Action::None);
+            assert_eq!(Action::preferred(dnd_action::ASK), Action::Ask);
+            assert_eq!(Action::preferred(dnd_action::NONE), Action::None);
         }
 
         phase file_lists_keep_their_name_and_text_gains_every_name;

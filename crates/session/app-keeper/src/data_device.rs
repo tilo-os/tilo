@@ -90,8 +90,21 @@ struct Offer {
 struct UpOffer {
     offer: c::wl_data_offer::WlDataOffer,
     mimes: Vec<String>,
+    /// The actions a drag's source allows, as `wl_data_device_manager.dnd_action` bits.
+    source_actions: u32,
     /// The offers made to the app from it.
     apps: Vec<ObjectId>,
+}
+
+impl UpOffer {
+    fn new(offer: c::wl_data_offer::WlDataOffer) -> Self {
+        Self {
+            offer,
+            mimes: Vec::new(),
+            source_actions: 0,
+            apps: Vec::new(),
+        }
+    }
 }
 
 /// The clipboard and drag-and-drop state of both sides.
@@ -113,6 +126,9 @@ pub(crate) struct DataDevice {
     drag: Option<ObjectId>,
     /// The app surface the desktop's drag entered, and the app devices told of it.
     entered: Option<(ObjectId, Vec<ObjectId>)>,
+    /// The desktop's drag was dropped on the app: its offers live on until the app, done
+    /// reading, destroys them.
+    dropped: bool,
 }
 
 impl DataDevice {
@@ -129,6 +145,7 @@ impl DataDevice {
             owner_at: 0,
             drag: None,
             entered: None,
+            dropped: false,
         }
     }
 
@@ -479,11 +496,7 @@ impl State {
         self.data_device
             .up_offers
             .entry(id)
-            .or_insert_with(|| UpOffer {
-                offer,
-                mimes: Vec::new(),
-                apps: Vec::new(),
-            });
+            .or_insert_with(|| UpOffer::new(offer));
         self.data_device.clipboard = Some(id);
         if let Some(client) = self.data_device.focus.clone() {
             self.offer_clipboard_to(&client);
@@ -505,6 +518,16 @@ impl State {
         let Some(app) = self.surfaces.get(&id).map(|kept| kept.surface.clone()) else {
             return;
         };
+        if self.xdnd.is_server(&app) {
+            let mimes = offer
+                .as_ref()
+                .and_then(|offer| self.data_device.up_offers.remove(&offer.id().protocol_id()))
+                .map(|up| (up.mimes, up.source_actions))
+                .unwrap_or_default();
+            if self.x11_drag_enter(serial, &app, (x, y), offer.clone(), mimes) {
+                return;
+            }
+        }
         let Some(client) = app.client().map(|c| c.id()) else {
             return;
         };
@@ -514,11 +537,7 @@ impl State {
             self.data_device
                 .up_offers
                 .entry(up)
-                .or_insert_with(|| UpOffer {
-                    offer,
-                    mimes: Vec::new(),
-                    apps: Vec::new(),
-                });
+                .or_insert_with(|| UpOffer::new(offer));
             let Some(mimes) = self
                 .data_device
                 .up_offers
@@ -565,13 +584,21 @@ impl State {
             }
         }
         self.data_device.entered = Some((id, devices));
+        self.data_device.dropped = false;
     }
 
     fn upstream_leave(&mut self) {
+        if self.x11_drag_leave() {
+            return;
+        }
         let Some((id, devices)) = self.data_device.entered.take() else {
             return;
         };
-        self.clear_drag_offers();
+        // Destroying a dropped offer before the app finished would cancel the drop at its
+        // source, and the app could not read it any more.
+        if !std::mem::take(&mut self.data_device.dropped) {
+            self.clear_drag_offers();
+        }
         if !self.surfaces.contains_key(&id) {
             return;
         }
@@ -582,7 +609,17 @@ impl State {
         }
     }
 
-    fn upstream_drag(&self, at: SurfacePoint) {
+    fn upstream_drag(&mut self, at: SurfacePoint) {
+        let carried = match at {
+            SurfacePoint::Motion { time, x, y } => self.x11_drag_motion(time, (x, y)),
+            SurfacePoint::Drop => self.x11_drag_drop(),
+        };
+        if carried {
+            return;
+        }
+        if matches!(at, SurfacePoint::Drop) {
+            self.data_device.dropped = true;
+        }
         let Some((id, devices)) = self.data_device.entered.clone() else {
             return;
         };
@@ -889,14 +926,10 @@ impl wayland_client::Dispatch<c::wl_data_device::WlDataDevice, ()> for State {
         use c::wl_data_device::Event;
         match event {
             Event::DataOffer { id } => {
-                state.data_device.up_offers.insert(
-                    id.id().protocol_id(),
-                    UpOffer {
-                        offer: id,
-                        mimes: Vec::new(),
-                        apps: Vec::new(),
-                    },
-                );
+                state
+                    .data_device
+                    .up_offers
+                    .insert(id.id().protocol_id(), UpOffer::new(id));
             }
             Event::Selection { id } => state.upstream_selection(id),
             Event::Enter {
@@ -949,9 +982,22 @@ impl wayland_client::Dispatch<c::wl_data_offer::WlDataOffer, ()> for State {
                 }
             }
             Event::SourceActions { source_actions } => {
+                if let WEnum::Value(actions) = source_actions {
+                    if state.x11_drag_offer_actions(offer, actions.bits(), false) {
+                        return;
+                    }
+                    if let Some(up) = state.data_device.up_offers.get_mut(&id) {
+                        up.source_actions = actions.bits();
+                    }
+                }
                 state.upstream_offer_actions(id, source_actions, false);
             }
             Event::Action { dnd_action } => {
+                if let WEnum::Value(action) = dnd_action
+                    && state.x11_drag_offer_actions(offer, action.bits(), true)
+                {
+                    return;
+                }
                 state.upstream_offer_actions(id, dnd_action, true);
             }
             _ => {}
@@ -969,6 +1015,9 @@ impl wayland_client::Dispatch<c::wl_data_source::WlDataSource, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         use c::wl_data_source::Event;
+        let Some(event) = state.x11_drag_source_event(source, event) else {
+            return;
+        };
         let Some(app) = state.data_device.app_source_of(source.id().protocol_id()) else {
             return;
         };

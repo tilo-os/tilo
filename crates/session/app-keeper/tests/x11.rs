@@ -22,7 +22,7 @@ const BLUE: u32 = 0x0000_00ff;
 const RED: u32 = 0x00ff_0000;
 
 /// Whether the X server a keeper runs is installed here.
-fn servers() -> Result<(), String> {
+pub fn servers() -> Result<(), String> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     for program in ["xwayland-satellite", "Xwayland"] {
         if !std::env::split_paths(&path).any(|dir| dir.join(program).is_file()) {
@@ -33,10 +33,10 @@ fn servers() -> Result<(), String> {
 }
 
 /// A keeper serving an X11 display, attached to a desktop, and an X client connected to it.
-struct X {
-    rig: Rig,
-    x11: RustConnection,
-    root: Window,
+pub struct X {
+    pub rig: Rig,
+    pub x11: RustConnection,
+    pub root: Window,
     /// The clipboard this client owns, answered while the rig runs.
     clipboard: Option<Vec<u8>>,
     /// Whether it names its text only `UTF8_STRING`, as old toolkits do.
@@ -87,7 +87,7 @@ fn connect(rig: &mut Rig, with_cookie: bool) -> Option<RustConnection> {
 }
 
 impl X {
-    fn start() -> Self {
+    pub fn start() -> Self {
         let mut rig = Rig::with_x11();
         let x11 = connect(&mut rig, true).expect("the X client connects with the cookie");
         let root = x11.setup().roots[0].root;
@@ -100,7 +100,7 @@ impl X {
         }
     }
 
-    fn atom(&self, name: &str) -> u32 {
+    pub fn atom(&self, name: &str) -> u32 {
         self.x11
             .intern_atom(false, name.as_bytes())
             .expect("atom")
@@ -111,7 +111,13 @@ impl X {
 
     /// A window at `at` of `size` in `colour`, mapped: a toplevel of `class`, or an
     /// override-redirect one (a menu) when `class` is `None`.
-    fn window(&self, class: Option<&str>, at: (i16, i16), size: (u16, u16), colour: u32) -> Window {
+    pub fn window(
+        &self,
+        class: Option<&str>,
+        at: (i16, i16),
+        size: (u16, u16),
+        colour: u32,
+    ) -> Window {
         let window = self.x11.generate_id().expect("id");
         self.x11
             .create_window(
@@ -186,7 +192,7 @@ impl X {
     }
 
     /// The desktop's window of the class `class`, once it shows: its rectangle.
-    fn shown(&mut self, class: &str) -> (i32, i32, i32, i32) {
+    pub fn shown(&mut self, class: &str) -> (i32, i32, i32, i32) {
         let mut found = None;
         self.pump(|x| {
             found = x

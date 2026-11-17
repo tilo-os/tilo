@@ -74,6 +74,7 @@ mod upstream;
 mod viewporter;
 pub mod wire;
 mod x11;
+mod xdnd;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -418,14 +419,20 @@ fn insert_for<F: std::os::fd::AsFd + 'static>(
 }
 
 impl Data {
-    fn accept_app(&self, listener: &UnixListener) {
+    fn accept_app(&mut self, listener: &UnixListener) {
         while let Some(stream) = accept(listener) {
-            if let Err(error) = self
+            let server = self.x11.as_ref().and_then(x11::XDisplay::server_pid);
+            let from_server = server.is_some_and(|server| {
+                control::peer_pid(&stream).is_ok_and(|pid| u32::try_from(pid).ok() == Some(server))
+            });
+            match self
                 .display
                 .handle()
                 .insert_client(stream, Arc::new(ClientState::default()))
             {
-                tracing::warn!(%error, "an app connection could not be taken");
+                Ok(client) if from_server => self.state.xdnd.server_connected(client.id()),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "an app connection could not be taken"),
             }
         }
     }
@@ -759,6 +766,7 @@ impl Data {
             self.desktop_lost = Some((Instant::now(), None));
             self.state.hold_all();
             self.state.hold_color();
+            self.state.hold_xdnd();
             self.state.hold_data_device();
             self.state.hold_primary_selection();
             self.state.hold_pointer_constraints();

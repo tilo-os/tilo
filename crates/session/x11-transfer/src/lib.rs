@@ -7,6 +7,26 @@
 //! carries an offer from one side to the other (the compositor for its own X11 displays, the app
 //! keeper for a kept launch's) offers text under every name ([`with_text_names`]) and serves a
 //! request for any of them with the best name the source has ([`pick_format`]).
+//!
+//! Drags cross too: [`xdnd`] is the XDND protocol as plain data, [`bridge`] an X11 connection that
+//! speaks it for whoever carries a drag between an X11 display and Wayland.
+
+pub mod bridge;
+pub mod xdnd;
+
+/// Cap on the bytes one transfer carries.
+pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+
+/// Write `bytes` to a reader's pipe off the caller's loop: a reader that is slow or never reads
+/// must not stall it. Closing the pipe is the end.
+pub fn serve(fd: std::os::fd::OwnedFd, bytes: Vec<u8>) {
+    std::thread::spawn(move || {
+        use std::io::Write as _;
+        if let Err(error) = std::fs::File::from(fd).write_all(&bytes) {
+            tracing::debug!(%error, "selection reader went away mid-transfer");
+        }
+    });
+}
 
 /// UTF-8 text, the form every text offer is also given in.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";

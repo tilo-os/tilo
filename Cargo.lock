@@ -23502,7 +23502,9 @@ name = "tilo-x11-transfer"
 version = "0.1.0"
 dependencies = [
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
+ "x11rb",
 ]
 
 [[package]]

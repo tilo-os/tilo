@@ -42,7 +42,7 @@ identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "
 [[allow]]
 reason = "A Wayland or logind seat: a set of input devices and the session on them."
 words = ["seat"]
-paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*"]
+paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*", "crates/session/app-keeper/*"]
 
 [[allow]]
 reason = "A seat at a poker table."
@@ -168,6 +168,12 @@ paths = [
 reason = "A Spotify playlist's collaborators."
 words = ["collaborator"]
 paths = ["apps/music/*"]
+
+[[allow]]
+reason = "A queue of messages between threads: std's mpsc and calloop's."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/session/app-keeper/*"]
 
 [[allow]]
 reason = "Chat's channels, and the mentions read from a chat's messages."

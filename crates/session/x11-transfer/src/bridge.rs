@@ -1,25 +1,30 @@
-//! The compositor's own X11 connection to Xwayland, speaking XDND for
+//! An X11 connection of its own to an X11 display, speaking XDND for
 //! drags that cross between X11 windows and everything else.
 //!
-//! smithay's X11 window manager knows selections but not XDND, so the
-//! bridge holds a second connection with two windows of its own:
+//! Neither the window manager of the compositor's own X11 displays nor the
+//! X11 server of a kept launch speaks XDND, so whoever carries drags across
+//! holds a connection with two windows of its own:
 //!
-//! - the *proxy*, an override-redirect window that is `XdndAware`. While an
-//!   X11 client drags and the pointer is over something that is not an X11
-//!   window (a Wayland window, a surface, the desktop), it is raised
-//!   over the whole root, so the X11 source finds it under the pointer and
-//!   sends it the drag. The compositor never shows it.
+//! - the *proxy*, an override-redirect, input-only window that is
+//!   `XdndAware`. While an X11 client drags and the pointer is over
+//!   something that is not an X11 window (a Wayland window, a surface
+//!   app, the desktop), it is raised over the whole root, so the X11
+//!   source finds it under the pointer and sends it the drag. It has
+//!   nothing to show, so no X11 server for Wayland presents it.
 //! - the *source window*, unmapped, which owns `XdndSelection` and sends
 //!   the XDND messages while a Wayland or surface drag is over an X11 window.
 //!
 //! The bridge only speaks the protocol and moves bytes; what a drag means
-//! (which target is under the pointer, who serves the data) is the state's,
-//! told through [`BridgeEvent`]s.
+//! (which target is under the pointer, who serves the data) is its owner's,
+//! told through [`BridgeEvent`]s. Every call may wait for the X11 server's
+//! answer: an owner whose loop must never stall on X11 keeps the bridge on
+//! a thread of its own.
 
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsFd as _, OwnedFd};
 
 use x11rb::connection::Connection as _;
+use x11rb::errors::ConnectError;
 use x11rb::errors::ReplyOrIdError;
 use x11rb::protocol::Event;
 use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
@@ -28,10 +33,10 @@ use x11rb::protocol::xproto::{
     ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Property, SELECTION_NOTIFY_EVENT,
     SelectionNotifyEvent, SelectionRequestEvent, StackMode, Window, WindowClass,
 };
-use x11rb::rust_connection::RustConnection;
+use x11rb::rust_connection::{DefaultStream, RustConnection};
 use x11rb::wrapper::ConnectionExt as _;
 
-use crate::selection::MAX_SELECTION_BYTES;
+use crate::MAX_SELECTION_BYTES;
 use crate::xdnd::{self, Action, Message, XdndAtoms};
 
 x11rb::atom_manager! {
@@ -61,7 +66,7 @@ x11rb::atom_manager! {
 const CHUNK: usize = 64 * 1024;
 
 /// What happened on the X11 side that the state has to act on.
-pub(crate) enum BridgeEvent {
+pub enum BridgeEvent {
     /// An X11 drag reached the proxy, offering these types.
     Enter { types: Vec<String> },
     /// The X11 drag is at this root position over the proxy.
@@ -79,10 +84,10 @@ pub(crate) enum BridgeEvent {
 }
 
 /// An X11 window's request for the data of a drag we own.
-pub(crate) struct Request {
+pub struct Request {
     event: SelectionRequestEvent,
     /// The format asked for, by name.
-    pub(crate) target: String,
+    pub target: String,
 }
 
 /// The X11 drag the proxy is the target of.
@@ -125,7 +130,7 @@ struct Sending {
 }
 
 /// The connection, its windows and the drags in flight.
-pub(crate) struct XdndBridge {
+pub struct XdndBridge {
     conn: RustConnection,
     atoms: Atoms,
     xdnd: XdndAtoms,
@@ -147,10 +152,32 @@ pub(crate) struct XdndBridge {
 }
 
 impl XdndBridge {
-    /// Connect to Xwayland's display `:display` and set up the windows.
-    pub(crate) fn connect(display: u32) -> Result<Self, String> {
-        let (conn, screen) =
-            x11rb::connect(Some(&format!(":{display}"))).map_err(|error| error.to_string())?;
+    /// Connect to the X11 display `:display` and set up the windows: with the display's
+    /// `cookie` (`MIT-MAGIC-COOKIE-1`) when given, otherwise as `XAUTHORITY` says.
+    ///
+    /// # Errors
+    ///
+    /// The display refused or failed the connection, or the windows could not be made.
+    pub fn connect(display: u32, cookie: Option<&[u8]>) -> Result<Self, String> {
+        let (conn, screen) = match cookie {
+            None => {
+                x11rb::connect(Some(&format!(":{display}"))).map_err(|error| error.to_string())?
+            }
+            Some(cookie) => {
+                let socket = format!("/tmp/.X11-unix/X{display}");
+                let (stream, _) = std::os::unix::net::UnixStream::connect(socket)
+                    .and_then(DefaultStream::from_unix_stream)
+                    .map_err(|error| ConnectError::from(error).to_string())?;
+                let conn = RustConnection::connect_to_stream_with_auth_info(
+                    stream,
+                    0,
+                    b"MIT-MAGIC-COOKIE-1".to_vec(),
+                    cookie.to_vec(),
+                )
+                .map_err(|error| error.to_string())?;
+                (conn, 0)
+            }
+        };
         Self::new(conn, screen).map_err(|error| error.to_string())
     }
 
@@ -178,6 +205,8 @@ impl XdndBridge {
             .override_redirect(1)
             .event_mask(EventMask::PROPERTY_CHANGE);
         let proxy = conn.generate_id()?;
+        // Input-only: an X11 server for Wayland would present a mapped window that can show
+        // something as a surface of its own, here one over everything.
         conn.create_window(
             x11rb::COPY_DEPTH_FROM_PARENT,
             proxy,
@@ -187,7 +216,7 @@ impl XdndBridge {
             1,
             1,
             0,
-            WindowClass::INPUT_OUTPUT,
+            WindowClass::INPUT_ONLY,
             x11rb::COPY_FROM_PARENT,
             &attributes,
         )?;
@@ -244,22 +273,22 @@ impl XdndBridge {
     }
 
     /// The connection's descriptor, readable when events arrived.
-    pub(crate) fn fd(&self) -> std::io::Result<OwnedFd> {
+    pub fn fd(&self) -> std::io::Result<OwnedFd> {
         self.conn.stream().as_fd().try_clone_to_owned()
     }
 
     /// The proxy window, which the window manager must leave unmapped in the scene.
-    pub(crate) const fn proxy(&self) -> Window {
+    pub const fn proxy(&self) -> Window {
         self.proxy
     }
 
     /// Whether an X11 client may be dragging: it owns `XdndSelection` .
-    pub(crate) const fn x11_may_drag(&self) -> bool {
+    pub const fn x11_may_drag(&self) -> bool {
         self.x11_owner.is_some()
     }
 
     /// Raise the proxy over the whole root (or take it down).
-    pub(crate) fn show_proxy(&mut self, shown: bool) {
+    pub fn show_proxy(&mut self, shown: bool) {
         if shown == self.proxy_shown {
             return;
         }
@@ -329,7 +358,7 @@ impl XdndBridge {
     // The proxy as the target of an X11 drag.
 
     /// Answer the X11 drag's last position: whether a drop there would be taken, and how.
-    pub(crate) fn status(&self, accept: bool, action: Action) {
+    pub fn status(&self, accept: bool, action: Action) {
         let Some(incoming) = &self.incoming else {
             return;
         };
@@ -339,12 +368,13 @@ impl XdndBridge {
             accept,
             action: action.atom(&self.xdnd),
         };
-        let result = self.send(incoming.source, self.proxy, &message);
+        // Addressed as XDND's sources expect: the window field names the window it is sent to.
+        let result = self.send(incoming.source, incoming.source, &message);
         self.flush_or_log(result, "drag status not sent");
     }
 
     /// Tell the X11 source the drop is done, and take the proxy down.
-    pub(crate) fn finish(&mut self, success: bool, action: Action) {
+    pub fn finish(&mut self, success: bool, action: Action) {
         let Some(incoming) = self.incoming.take() else {
             return;
         };
@@ -354,13 +384,13 @@ impl XdndBridge {
             success: success || incoming.version < 5,
             action: if success { action } else { Action::None }.atom(&self.xdnd),
         };
-        let result = self.send(incoming.source, self.proxy, &message);
+        let result = self.send(incoming.source, incoming.source, &message);
         self.flush_or_log(result, "drag finish not sent");
         self.show_proxy(false);
     }
 
     /// Read the X11 drag's data as `target` into `fd` , after any reads before it.
-    pub(crate) fn convert(&mut self, target: String, fd: OwnedFd) {
+    pub fn convert(&mut self, target: String, fd: OwnedFd) {
         self.conversions.push_back(Conversion { target, fd });
         self.next_conversion();
     }
@@ -398,7 +428,7 @@ impl XdndBridge {
     // The source window as the source of a Wayland or surface drag.
 
     /// Our drag entered X11 window `target` , offering `types` ; false when it takes no XDND drops.
-    pub(crate) fn source_enter(&mut self, target: Window, types: &[String]) -> bool {
+    pub fn source_enter(&mut self, target: Window, types: &[String]) -> bool {
         self.source_leave();
         match self.enter(target, types) {
             Ok(entered) => entered,
@@ -467,8 +497,54 @@ impl XdndBridge {
             .map(|version| (to, version)))
     }
 
+    /// Our drag is wherever the X11 pointer is: offer it, as `types` , to the window there that
+    /// takes XDND drops (entering it when it is a new one, leaving the old), at the pointer's root
+    /// position. For a carrier that knows which X11 window is under the drag only by moving the
+    /// X11 pointer there. False when no window there takes the drag.
+    pub fn source_over_pointer(&mut self, types: &[String], action: Action) -> bool {
+        let found = match self.window_at_pointer() {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::debug!(%error, "the X11 pointer was not found");
+                None
+            }
+        };
+        let Some((window, x, y)) = found else {
+            self.source_leave();
+            return false;
+        };
+        let entered = self
+            .outgoing
+            .as_ref()
+            .is_some_and(|outgoing| outgoing.target == window);
+        if !entered && !self.source_enter(window, types) {
+            return false;
+        }
+        self.source_position(f64::from(x), f64::from(y), action);
+        true
+    }
+
+    /// The window under the X11 pointer that takes XDND drops (directly or through its proxy),
+    /// and the pointer's root position; the proxy is never one.
+    fn window_at_pointer(&self) -> Result<Option<(Window, i16, i16)>, ReplyOrIdError> {
+        let at = self.conn.query_pointer(self.root)?.reply()?;
+        let mut window = at.child;
+        // Toolkits mark their toplevel; a window manager's frame or a nested child is searched
+        // through, as far as a sane depth.
+        for _ in 0..8 {
+            if window == x11rb::NONE || window == self.proxy {
+                return Ok(None);
+            }
+            if self.aware(window)?.is_some() {
+                return Ok(Some((window, at.root_x, at.root_y)));
+            }
+            window = self.conn.query_pointer(window)?.reply()?.child;
+        }
+        Ok(None)
+    }
+
     /// Our drag moved to this root position over the X11 window.
-    pub(crate) fn source_position(&self, x: f64, y: f64, action: Action) {
+    pub fn source_position(&self, x: f64, y: f64, action: Action) {
         let Some(outgoing) = &self.outgoing else {
             return;
         };
@@ -484,7 +560,7 @@ impl XdndBridge {
     }
 
     /// Our drag left the X11 window (before a drop).
-    pub(crate) fn source_leave(&mut self) {
+    pub fn source_leave(&mut self) {
         let Some(outgoing) = self.outgoing.take_if(|outgoing| !outgoing.dropped) else {
             return;
         };
@@ -496,14 +572,14 @@ impl XdndBridge {
     }
 
     /// Whether the X11 window our drag is over would take a drop.
-    pub(crate) fn source_accepted(&self) -> bool {
+    pub fn source_accepted(&self) -> bool {
         self.outgoing
             .as_ref()
             .is_some_and(|outgoing| outgoing.accepted)
     }
 
     /// Drop our drag on the X11 window; false (and a leave) when it would not take it.
-    pub(crate) fn source_drop(&mut self) -> bool {
+    pub fn source_drop(&mut self) -> bool {
         if !self.source_accepted() {
             self.source_leave();
             return false;
@@ -523,7 +599,7 @@ impl XdndBridge {
     }
 
     /// Answer an X11 window's request for our drag's data (`None`: we have none in that format).
-    pub(crate) fn answer(&mut self, request: &Request, data: Option<&[u8]>) {
+    pub fn answer(&mut self, request: &Request, data: Option<&[u8]>) {
         let result = self.reply(&request.event, data);
         self.flush_or_log(result, "drag data not sent");
     }
@@ -599,7 +675,7 @@ impl XdndBridge {
     // Events.
 
     /// Handle what arrived on the connection; what the state must act on is returned.
-    pub(crate) fn events(&mut self) -> Vec<BridgeEvent> {
+    pub fn events(&mut self) -> Vec<BridgeEvent> {
         let mut out = Vec::new();
         loop {
             match self.conn.poll_for_event() {
@@ -802,7 +878,7 @@ impl XdndBridge {
             }
             Some(reply) => {
                 if let Some(done) = self.converting.take() {
-                    crate::selection::serve(done.conversion.fd, reply.value);
+                    crate::serve(done.conversion.fd, reply.value);
                 }
                 self.next_conversion();
             }
@@ -865,7 +941,7 @@ impl XdndBridge {
             if let Some(done) = self.converting.take() {
                 let mut bytes = done.incremental.unwrap_or_default();
                 bytes.truncate(MAX_SELECTION_BYTES);
-                crate::selection::serve(done.conversion.fd, bytes);
+                crate::serve(done.conversion.fd, bytes);
             }
             self.next_conversion();
         }

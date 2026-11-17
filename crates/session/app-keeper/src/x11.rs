@@ -41,6 +41,7 @@ pub(crate) struct XDisplay {
     listener: XWaylandListener,
     /// The display's cookie, in the keeper's directory.
     authority: PathBuf,
+    cookie: [u8; 16],
     /// What watches the sockets for a client while no server runs.
     watching: Vec<RegistrationToken>,
     server: Option<Server>,
@@ -75,6 +76,7 @@ impl XDisplay {
         Ok(Self {
             listener,
             authority,
+            cookie,
             watching: Vec::new(),
             server: None,
         })
@@ -83,6 +85,11 @@ impl XDisplay {
     /// `N` of the display `:N`.
     pub(crate) fn number(&self) -> u32 {
         self.listener.display_number()
+    }
+
+    /// The process id of the server, while there is one.
+    pub(crate) fn server_pid(&self) -> Option<u32> {
+        self.server.as_ref().map(|server| server.child.id())
     }
 
     /// The file a client finds the display's cookie in.
@@ -148,12 +155,33 @@ fn client_waiting(data: &mut Data) {
                 token: Some(token),
                 started: Instant::now(),
             });
+            let cookie = display.cookie.to_vec();
+            start_drag_and_drop(data, number, cookie);
         }
         Err(error) => {
             tracing::warn!(%error, "the launch's X server did not start: no X11 programs");
             refuse_waiting(display);
             watch(data);
         }
+    }
+}
+
+/// Drag-and-drop with the new server's programs, on a connection of the keeper's own: it waits
+/// for the server off the loop.
+fn start_drag_and_drop(data: &mut Data, number: u32, cookie: Vec<u8>) {
+    let (sender, heard) = smithay::reexports::calloop::channel::channel();
+    let inserted = data.handle.insert_source(heard, |event, (), data| {
+        if let smithay::reexports::calloop::channel::Event::Msg(heard) = event {
+            data.state.xdnd_heard(heard);
+        }
+    });
+    if let Err(error) = inserted {
+        tracing::warn!(error = %error.error, "no drag-and-drop with the launch's X11 programs");
+        return;
+    }
+    match crate::xdnd::start(number, cookie, sender) {
+        Ok(bridge) => data.state.xdnd.started(bridge),
+        Err(error) => tracing::warn!(%error, "no drag-and-drop with the launch's X11 programs"),
     }
 }
 

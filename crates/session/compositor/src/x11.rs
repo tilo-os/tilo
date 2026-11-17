@@ -41,7 +41,7 @@ const NO_CLIENTS: Duration = Duration::from_secs(60);
 const STOPPING: Duration = Duration::from_secs(5);
 /// The clients every display has that are not apps: Xwayland's own connection for the window
 /// manager's socket, the window manager's, the one [`crate::x11_windows::X11Windows`] reads window
-/// properties on, and [`crate::xdnd_bridge::XdndBridge`]'s. Any besides them are apps.
+/// properties on, and [`tilo_x11_transfer::bridge::XdndBridge`]'s. Any besides them are apps.
 const OWN_CLIENTS: usize = 4;
 
 /// The displays of this session, by workspace.

@@ -333,6 +333,19 @@ pub(crate) struct Buffers {
     pools: HashMap<(u64, u64), KeptPool>,
 }
 
+impl Buffers {
+    /// The size in pixels of the held buffer `key`.
+    pub(crate) fn size_of(&self, key: u64) -> Option<(i32, i32)> {
+        match &self.kept.get(&key)?.source {
+            Source::Shm { width, height, .. } => Some((*width, *height)),
+            Source::Dmabuf(dmabuf) => {
+                let size = dmabuf.size();
+                Some((size.w, size.h))
+            }
+        }
+    }
+}
+
 struct KeptBuffer {
     /// The client's buffer, until the client destroys it.
     client: Option<WlBuffer>,
@@ -1548,6 +1561,7 @@ impl State {
         self.color_surface_gone(id);
         self.presentation_surface_gone(id);
         self.seat.surface_gone(id);
+        self.xdnd_surface_gone(id);
     }
 
     /// Recreate every held surface on a desktop that was just attached, oldest first.
