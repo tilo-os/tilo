@@ -2252,12 +2252,12 @@ mod tests {
             let listed = serde_json::json!({
                 "members": [{"name": "Ada", "role": "owner", "owner": true, "administrator": true},
                             {"name": "Rosa Ortiz", "role": "editor"}],
-                "invitations": [{"id": "inv-1", "role": "viewer", "status": "pending"}],
+                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo"}],
             });
             assert_eq!(
                 members_text(&listed),
                 "members:\n  Ada — owner, administrator\n  Rosa Ortiz — editor\n\
-             invitations:\n  viewer invitation pending, inv-1"
+             invitations:\n  viewer invitation for Bo, inv-1"
             );
             let alone = serde_json::json!({"members": [], "invitations": []});
             assert_eq!(
