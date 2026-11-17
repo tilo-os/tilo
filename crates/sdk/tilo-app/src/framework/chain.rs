@@ -1374,10 +1374,9 @@ impl<P: Chained> ChainState<P> {
                 offer_nested_reads::<P>(&mut child.children, table, &self.id);
             }
             // Shown where the app's window shows it, as its search hit
-            // opens it: the window's openers answer the item's address.
-            if !child.actions.iter().any(|spec| spec.id == "open") {
-                child.actions.push(super::root::item_open_spec(&item));
-            }
+            // opens it (the window's openers answer the item's address), and
+            // named by a link of its own, as an item of the record is.
+            super::root::offer_item(child);
         }
         let own: std::collections::HashSet<String> = published
             .actions
