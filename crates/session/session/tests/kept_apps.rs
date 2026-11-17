@@ -430,6 +430,40 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     assert!(!dir.exists(), "a logout removes the keeper's directory");
 }
 
+/// The command line the session starts an app that is not Tilo's with is one the real launcher
+/// takes: asked to plan the launch rather than make it, the launcher names the app the session
+/// asked for. A launcher that answers to another command opens no such app at all.
+#[test]
+fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.run(false);
+    rig.launch(&first);
+    let stand_in = rig.home.home().join("tilo-launcher");
+    until(&mut first.session, "the launcher was started", |_| {
+        !testing::launcher_handed(&stand_in).is_empty()
+    });
+    let handed = testing::launcher_handed(&stand_in);
+    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    let nowhere = rig.home.home().join("no-other-applications");
+    fs::create_dir_all(&nowhere).unwrap();
+    let planned = std::process::Command::new(&launcher)
+        .args(&handed)
+        .arg("--dry-run")
+        .env("XDG_DATA_HOME", rig.home.data())
+        .env("XDG_DATA_DIRS", &nowhere)
+        .output()
+        .expect("the launcher answers");
+    let said = String::from_utf8_lossy(&planned.stdout);
+    assert!(
+        planned.status.success(),
+        "{handed:?}: {}",
+        String::from_utf8_lossy(&planned.stderr)
+    );
+    assert!(said.contains(&format!("desktop-id : {APP}")), "{said}");
+    first.end(Teardown::Logout);
+}
+
 #[test]
 fn a_start_that_follows_no_restart_ends_what_a_restart_left() {
     let _settled = ui::motion::testing::settled();

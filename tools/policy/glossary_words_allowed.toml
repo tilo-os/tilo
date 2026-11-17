@@ -407,3 +407,9 @@ paths = [
 reason = "A photo taken standing is a portrait: plain English, and the gallery's tall photos say it."
 words = ["standing"]
 paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]
+
+[[allow]]
+reason = "The launcher's `--dry-run`, the common command-line name for planning a launch without making it, which a test hands the launcher."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/session/session/tests/kept_apps.rs"]
