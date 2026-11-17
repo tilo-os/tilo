@@ -6,25 +6,25 @@ use super::*;
 use std::sync::Condvar;
 use tilo_actions::remote::Caller;
 
-/// A hosted workspace with one person in its chat and their agent made to run on the server, as
-/// the tests beside this one set it up. The person's page joins: its device is the one the server
-/// admits their agent's turns on. Nothing on it runs an agent.
+/// A hosted workspace with one person in its chat and their agent made to work on the server,
+/// as the tests beside this one set it up. The person's page joins: its device is the one the
+/// server admits their agent's turns on. No agent works on that device.
 macro_rules! team {
     ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let host = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (relay, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let (server, $actions) = crate::harness::hosted::serving_records_with_actions(
             &$root,
             &host,
             state.path(),
             crate::common::catalogue,
         )
         .await;
-        let $workspaces = relay.workspaces().unwrap().clone();
+        let $workspaces = server.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&relay, &$browser, &host, &$workspace).await;
+        let $page = Browser::open_at(&server, &$browser, &host, &$workspace).await;
         let $person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &$person, None).await;
         let catalogue = crate::common::catalogue();
@@ -61,7 +61,8 @@ async fn chat_action(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let host = tilo_relay::workspace_agents::WorkspaceActionHost::new(
+    use tilo_relay::workspace_agents;
+    let host = workspace_agents::WorkspaceActionHost::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
     );
@@ -70,7 +71,7 @@ async fn chat_action(
         cluster_id: workspace.into(),
         document: record.into(),
     };
-    tilo_relay::workspace_agents::invoke_named(
+    workspace_agents::invoke_named(
         &host,
         caller,
         &route,
@@ -298,7 +299,7 @@ async fn dies_at(
             "the turn never reached its model's call {calls}"
         );
         tokio::select! {
-            ended = &mut working => panic!("the turn ended before the host stopped: {ended:?}"),
+            ended = &mut working => panic!("the turn ended before the server stopped: {ended:?}"),
             () = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
     }
@@ -543,8 +544,10 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_reaches_a_turn_that_is_going() {
-    use tilo_relay::workspaces::person_model::ProviderProtocol;
-    use tilo_relay::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_relay::workspaces::person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
+    };
 
     team!(root, browser, actions, workspaces, workspace, page, person);
     let written = (&root, &browser);
@@ -765,3 +768,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
 /// Sub-agents: started by the person's own agent, working in conversations of their own.
 #[path = "hosted_sub_agents.rs"]
 mod sub_agents;
+
+/// A reminder a person's assistant set up itself, from the asking to the answer.
+#[path = "hosted_agent_reminders.rs"]
+mod reminders;
