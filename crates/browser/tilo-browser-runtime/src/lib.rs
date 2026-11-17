@@ -270,6 +270,17 @@ mod identity_api;
 // The page's collaboration plane: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
 mod peer_sync;
+// What the page says of itself, as its live layer hands it back: its tests
+// run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the page's board reads what it says of itself"
+    )
+)]
+mod presence_value;
 // The sign-in route's answer to a service (`web/sign-in.mjs`).
 #[cfg(target_arch = "wasm32")]
 mod sign_in_page;

@@ -45,7 +45,8 @@ use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::peer_sync::{JsPresence, due, hear, members, release, say, set_label};
+use crate::peer_sync::{due, hear, members, release, say, set_label};
+use crate::presence_value::JsPresence;
 
 pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())

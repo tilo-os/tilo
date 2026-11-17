@@ -9,179 +9,17 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collab_types::presence::{
-    ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown, ShownLayout,
-    ShownWave,
-};
+use collab_types::presence::Shown;
 use iroh_base::{EndpointAddr, EndpointId};
-use serde::{Deserialize, Serialize};
 use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
 use tilo_session_client::Link;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
-use crate::peer::{JsRecord, js_error, workspace_id};
+use crate::peer::{js_error, workspace_id};
+use crate::presence_value::{JsPresence, pointer_of, shell_from_js};
 use tilo_relay_protocol::WorkspaceId;
-
-/// `{kind: 'person' | 'agent', label, color: '#rrggbb', profile_ms}`: `profile_ms` when the
-/// person last changed their profile, as this page knows it (`0` for unknown).
-#[derive(Clone, Serialize, Deserialize)]
-struct JsParticipant {
-    kind: String,
-    label: String,
-    color: String,
-    #[serde(default)]
-    profile_ms: u64,
-}
-
-/// Where this page's pointer is: over the tile of a tab of the workspace, in
-/// that tile's logical pixels — the way every device's pointer travels. The
-/// tab's id is a decimal string: it can pass 2^53.
-#[derive(Clone, Serialize, Deserialize)]
-struct JsPointer {
-    tile: JsTile,
-    at: [f32; 2],
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct JsTile {
-    tab: String,
-}
-
-/// What this page says of itself in one workspace: its face and screen, the
-/// window the person works in and their caret there, where its pointer is,
-/// what it is saying beside it, its wave and who it follows. The page sends
-/// it whole with each change; the client keeps what changed and says it under
-/// the session's schedule.
-#[derive(Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct JsPresence {
-    /// This view's sequence, as the shell wire carries it: receivers order
-    /// views by it, and one at or below the last they took is a repeat.
-    #[serde(default)]
-    seq: u32,
-    #[serde(default)]
-    sent_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    focus: Option<JsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pointer: Option<JsPointer>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    selection: Option<ShellSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    participant: Option<JsParticipant>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    place: Option<String>,
-    /// Cursor chat, beside the pointer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    chat: Option<ShellChat>,
-    /// The latest reaction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reaction: Option<ShellReaction>,
-    /// The latest wave, `target` the waved-at member's publisher.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    wave: Option<ShownWave>,
-    /// Where the windows are: `{size, windows: [{app, document, rect, focused}]}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    layout: Option<ShownLayout>,
-    /// Whose view this member follows: their publisher.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    following: Option<String>,
-}
-
-/// This page's shell as its value names it: who it is, its screen, the
-/// window the person works in and their caret there. `None` while the value
-/// names nobody, which says nothing of a shell.
-fn shell_from_js(value: &JsPresence) -> Result<Option<Box<ShellPresence>>, JsError> {
-    let Some(participant) = &value.participant else {
-        return Ok(None);
-    };
-    if !matches!(participant.kind.as_str(), "person" | "agent") {
-        return Err(js_error("participant kind"));
-    }
-    let colour = participant.color.clone();
-    let hex = colour
-        .strip_prefix('#')
-        .ok_or_else(|| js_error("participant colour must be #rrggbb"))?;
-    if hex.len() != 6 || hex::decode(hex).is_err() {
-        return Err(js_error("participant colour must be #rrggbb"));
-    }
-    let (size, mut windows) = match &value.layout {
-        Some(layout) => (
-            [u32::from(layout.size[0]), u32::from(layout.size[1])],
-            layout
-                .windows
-                .iter()
-                .map(|window| {
-                    let document =
-                        <[u8; 8]>::try_from(hex::decode(&window.document).map_err(js_error)?)
-                            .map_err(|_| js_error("a window's document is a 16-hex digest"))?;
-                    Ok(ShellWindow {
-                        app: window.app.clone(),
-                        document,
-                        rect: window.rect,
-                        focused: window.focused,
-                    })
-                })
-                .collect::<Result<Vec<_>, JsError>>()?,
-        ),
-        None => ([0, 0], Vec::new()),
-    };
-    // The window the person works in is the one their caret is in, whatever
-    // the layout said: the value names it on its own.
-    if let Some(focus) = &value.focus {
-        let mut found = false;
-        for window in &mut windows {
-            window.focused =
-                window.app == focus.app && hex::encode(window.document) == focus.record;
-            found |= window.focused;
-        }
-        if !found {
-            windows.push(ShellWindow {
-                app: focus.app.clone(),
-                document: <[u8; 8]>::try_from(hex::decode(&focus.record).map_err(js_error)?)
-                    .map_err(|_| js_error("a focused window's record is a 16-hex digest"))?,
-                rect: [0, 0, 0, 0],
-                focused: true,
-            });
-        }
-    }
-    Ok(Some(Box::new(ShellPresence {
-        seq: value.seq,
-        sent_at_ms: value.sent_at_ms,
-        label: participant.label.clone(),
-        agent: participant.kind == "agent",
-        colour,
-        // What a person is doing travels as their status (`set_status`), never as their shell's.
-        activity: None,
-        place: value.place.clone(),
-        size,
-        windows,
-        selection: value.selection.clone(),
-        chat: value.chat.clone(),
-        reaction: value.reaction.clone(),
-    })))
-}
-
-/// Where this page's pointer is, on the tile it names. `None` while it names none.
-fn pointer_of(value: &JsPresence) -> Result<Option<tilo_live::presence::Point>, JsError> {
-    value
-        .pointer
-        .as_ref()
-        .map(|pointer| {
-            Ok(tilo_live::presence::Point {
-                tab: pointer
-                    .tile
-                    .tab
-                    .parse()
-                    .map_err(|_| js_error("a pointer's tab is a decimal u64"))?,
-                x: pointer.at[0],
-                y: pointer.at[1],
-            })
-        })
-        .transpose()
-}
 
 /// A started page's plane: the session's client, the transport ends it says through, and the
 /// workspaces its mounts show.
@@ -391,8 +229,10 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
         }
         // Where this page is said after it takes part: a workspace this page just joined hears its
         // whole word.
-        page.client
-            .set_where(pointer_of(value)?, shell_from_js(value)?);
+        page.client.set_where(
+            pointer_of(value).map_err(js_error)?,
+            shell_from_js(value).map_err(js_error)?,
+        );
         let mut own = page.client.own();
         own.following.clone_from(&value.following);
         if let Some(participant) = &value.participant {
