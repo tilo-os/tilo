@@ -320,12 +320,17 @@ impl HostAgents {
                         continue;
                     };
                     let (request, _) = chat::summons::request(message);
-                    let request = chat::summons::with_conversation(
-                        request,
+                    // What came before it in the conversation, as every turn is told it: the
+                    // same on a host as on the device that would answer it.
+                    let request = chat::recall::told(
+                        &chat,
                         &part,
-                        &summons,
-                        runtime_collab::INSTRUCTION_CONVERSATION,
-                    );
+                        &summons.conversation,
+                        &summons.message,
+                        &ui::permissions::MemberId::agent(&summons.agent),
+                        request,
+                    )
+                    .instruction;
                     turns.push(Turn {
                         agent: agent.clone(),
                         person: summons.person.clone(),

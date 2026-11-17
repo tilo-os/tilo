@@ -885,12 +885,18 @@ fn turns(
             let message = part.messages.get(&summons.message)?;
             let address = summons.address();
             let (instruction, subject) = chat::summons::request(message);
-            let instruction = chat::summons::with_conversation(
-                instruction,
+            // What came before it in the conversation, as every turn is told it
+            // ([`chat::recall::told`]): "what did I ask you before?" and "move the reminder to
+            // Friday" are understood through it.
+            let instruction = chat::recall::told(
+                chat,
                 part,
-                &summons,
-                runtime_collab::INSTRUCTION_CONVERSATION,
-            );
+                &summons.conversation,
+                &summons.message,
+                &MemberId::agent(&summons.agent),
+                instruction,
+            )
+            .instruction;
             let name = agent_names
                 .get(&summons.agent)
                 .cloned()
