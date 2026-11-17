@@ -426,3 +426,12 @@ on a machine with no GPU) crashed mapping it. Every dma-buf supports seeking to 
 `src/wayland/dmabuf/mod.rs` now posts `out_of_bounds` for a plane that cannot be sized.
 
 Remove this once upstream refuses such planes.
+
+## A tablet tool reports its hardware identity whole
+
+`zwp_tablet_tool_v2.hardware_serial` and `hardware_id_wacom` carry a 64-bit value as two uint32
+words, `hi` and `lo`. `src/wayland/tablet_manager/tablet_tool.rs` sent bits 16-47 as `hi`, so
+every identity whose upper half is not zero reached a client truncated and a client that
+compares the value it read against the tool it knows saw a different pen.
+
+Remove this once upstream sends the high word from bit 32.

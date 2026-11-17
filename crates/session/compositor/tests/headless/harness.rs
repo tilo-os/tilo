@@ -26,7 +26,8 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+    Connection, Dispatch, EventQueue, Proxy as _, QueueHandle, WEnum, delegate_noop,
+    event_created_child,
 };
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
@@ -62,7 +63,7 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
     zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
     zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
-    zwp_tablet_tool_v2::ZwpTabletToolV2,
+    zwp_tablet_tool_v2::{self, ZwpTabletToolV2},
     zwp_tablet_v2::ZwpTabletV2,
 };
 use wayland_protocols::wp::text_input::zv3::client::{
@@ -194,6 +195,12 @@ pub struct Seen {
     pub frames_done: u32,
     pub closed: bool,
     pub tablet_manager: Option<ZwpTabletManagerV2>,
+    /// The tablet tools announced to this client, oldest first.
+    pub tablet_tools: Vec<ZwpTabletToolV2>,
+    /// The hardware serial a tool named, as the two words the protocol carries.
+    pub tool_serial: Option<(u32, u32)>,
+    /// The Wacom hardware id a tool named, as the two words the protocol carries.
+    pub tool_wacom_id: Option<(u32, u32)>,
     pub wm_dialog: Option<XdgWmDialogV1>,
     pub icon_manager: Option<XdgToplevelIconManagerV1>,
     pub tag_manager: Option<XdgToplevelTagManagerV1>,
@@ -1344,6 +1351,36 @@ impl Dispatch<ZwpTabletSeatV2, ()> for Seen {
     ]);
 }
 
+impl Dispatch<ZwpTabletToolV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        tool: &ZwpTabletToolV2,
+        event: zwp_tablet_tool_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_tool_v2::Event::HardwareSerial {
+                hardware_serial_hi,
+                hardware_serial_lo,
+            } => seen.tool_serial = Some((hardware_serial_hi, hardware_serial_lo)),
+            zwp_tablet_tool_v2::Event::HardwareIdWacom {
+                hardware_id_hi,
+                hardware_id_lo,
+            } => seen.tool_wacom_id = Some((hardware_id_hi, hardware_id_lo)),
+            _ => {}
+        }
+        if !seen
+            .tablet_tools
+            .iter()
+            .any(|known| known.id() == tool.id())
+        {
+            seen.tablet_tools.push(tool.clone());
+        }
+    }
+}
+
 impl Dispatch<ZwpTabletPadV2, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -1627,7 +1664,6 @@ delegate_noop!(Seen: ignore ZwpKeyboardShortcutsInhibitManagerV1);
 delegate_noop!(Seen: ignore WlRegion);
 delegate_noop!(Seen: ignore ZwpTabletManagerV2);
 delegate_noop!(Seen: ignore ZwpTabletV2);
-delegate_noop!(Seen: ignore ZwpTabletToolV2);
 delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
 delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);

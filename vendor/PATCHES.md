@@ -958,7 +958,9 @@ and a parent surface's whole stack is readable in drawing order
 (`compositor::children_in_stack_order`), the parent included at its place, so
 the app keeper mirrors subsurfaces above and below it. A dma-buf plane whose
 descriptor cannot be sized (a pipe, a socket) is refused when the buffer is
-made, instead of crashing a software renderer that maps it. Five
+made, instead of crashing a software renderer that maps it. A tablet tool's
+hardware identity reaches a client whole: both 64-bit values are sent as
+their two uint32 words. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 

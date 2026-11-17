@@ -997,6 +997,76 @@ fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
     );
 }
 
+/// A pen at `(x, y)` with the tool `serial` identifies, in `phase`.
+fn pen_input(phase: TabletPhase, x: f64, y: f64, serial: u64, id_wacom: u64) -> InputEvent {
+    use smithay::backend::input::{TabletToolCapabilities, TabletToolDescriptor, TabletToolType};
+    use smithay::wayland::tablet_manager::TabletDescriptor;
+
+    InputEvent::Tablet(TabletEvent {
+        tablet: TabletDescriptor {
+            name: "Pen tablet".into(),
+            usb_id: Some((0x056a, 0x0374)),
+            syspath: None,
+        },
+        tool: TabletToolDescriptor {
+            tool_type: TabletToolType::Pen,
+            hardware_serial: serial,
+            hardware_id_wacom: id_wacom,
+            capabilities: TabletToolCapabilities::empty(),
+        },
+        phase,
+        x,
+        y,
+        pressure: 0.0,
+        distance: 0.0,
+        tilt: (0.0, 0.0),
+        rotation: 0.0,
+        slider: 0.0,
+        wheel: (0.0, 0),
+        as_pointer: false,
+        tip_button: Some(BTN_LEFT),
+    })
+}
+
+#[test]
+fn a_tools_hardware_identity_reaches_its_client_whole() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), [0, 255, 0, 255]);
+    let seat = client.seen.seat.clone().expect("wl_seat");
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    let (_, (x, y, w, h)) = compositor.windows()[0].clone();
+    compositor
+        .input(pen_input(
+            TabletPhase::ProximityIn,
+            f64::from(x + w / 2),
+            f64::from(y + h / 2),
+            0x1_2345_6789,
+            0x2_0000_0802,
+        ))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.tablet_tools.len() == 1
+            && clients[0].seen.tool_serial.is_some()
+            && clients[0].seen.tool_wacom_id.is_some()
+    });
+    assert_eq!(
+        client.seen.tool_serial,
+        Some((0x1, 0x2345_6789)),
+        "the tool's hardware serial reaches the client as two words, whole"
+    );
+    assert_eq!(
+        client.seen.tool_wacom_id,
+        Some((0x2, 0x0000_0802)),
+        "and its Wacom id"
+    );
+}
+
 #[test]
 fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
     use smithay::wayland::tablet_manager::{

@@ -1165,8 +1165,12 @@ fn assert_pen_matches(
     assert_eq!(tablet.id, Some((0x056a, 0x0374)));
     assert!(tablet.done, "the description is finished");
     assert_eq!(tool.tool_type, Some(u32::from(Type::Pen)), "the pen's type");
-    assert_eq!(tool.hardware_serial, Some((0, 0x5678)));
-    assert_eq!(tool.hardware_id, Some((0x0000, 0x0802)));
+    assert_eq!(
+        tool.hardware_serial,
+        Some((0x1, 0x2345_6789)),
+        "the tool's 64-bit serial reaches the app as two words, whole"
+    );
+    assert_eq!(tool.hardware_id, Some((0x1, 0x0000_0802)));
     assert!(
         tool.capabilities.contains(&u32::from(Capability::Pressure))
             && tool.capabilities.contains(&u32::from(Capability::Tilt)),
@@ -1238,8 +1242,8 @@ fn pen_input(x: f64, y: f64, phase: TabletPhase) -> InputEvent {
         },
         tool: TabletToolDescriptor {
             tool_type: TabletToolType::Pen,
-            hardware_serial: 0x5678,
-            hardware_id_wacom: 0x0802,
+            hardware_serial: 0x1_2345_6789,
+            hardware_id_wacom: 0x1_0000_0802,
             capabilities: TabletToolCapabilities::PRESSURE
                 | TabletToolCapabilities::DISTANCE
                 | TabletToolCapabilities::TILT
