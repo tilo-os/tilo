@@ -103,6 +103,9 @@ use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
 };
 
+// A page action handed to a window for a turn this server carries out itself.
+mod turn_pages;
+
 /// The app a hosted workspace opens Browser through.
 pub use ui::apps::BROWSER as APP;
 /// What people read Browser's name as.
@@ -498,6 +501,9 @@ pub struct HostedBrowsers {
     /// the id the window published them with: a session that reports one
     /// again is told it is asked already rather than asked twice.
     asking: Arc<Mutex<std::collections::HashSet<(WorkspaceId, u32)>>>,
+    /// The page actions this server handed to windows for the turns it carries out itself
+    /// ([`turn_pages`]).
+    turn_pages: turn_pages::TurnPages,
     /// The number naming the next caller waiting for an invocation to move.
     next_waiter: AtomicU64,
     /// How long an environment device that disconnected has to come back
@@ -533,6 +539,7 @@ impl HostedBrowsers {
             authority: Mutex::default(),
             handed: Arc::default(),
             asking: Arc::default(),
+            turn_pages: turn_pages::TurnPages::default(),
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
             answer_wait: ANSWER_WAIT,
@@ -721,6 +728,29 @@ impl HostedBrowsers {
         self.route_as(workspace_id, caller, Some(certificate), message)
     }
 
+    /// Where a message that invokes nothing goes: what a window reports of an action it holds,
+    /// what a window says of a page action this server handed it for a turn of its own, which
+    /// is taken here since nobody on a connection asked for it, or a caller asking after an
+    /// invocation.
+    fn answered_or_asked_after(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        if let RemoteActionMessage::Confirm {
+            correlation,
+            request,
+        } = message
+        {
+            return self.held_reported(workspace_id, caller, *correlation, request);
+        }
+        if let Some(taken) = self.page_answered(workspace_id, caller, message) {
+            return Some(taken);
+        }
+        self.asked_after(caller, message)
+    }
+
     fn route_as(
         &self,
         workspace_id: WorkspaceId,
@@ -751,14 +781,7 @@ impl HostedBrowsers {
             return Some(crate::app_serving::Routing::Device(up.window.device));
         }
         let RemoteActionMessage::Invoke(request) = message else {
-            if let RemoteActionMessage::Confirm {
-                correlation,
-                request,
-            } = message
-            {
-                return self.held_reported(workspace_id, caller, *correlation, request);
-            }
-            return self.asked_after(caller, message);
+            return self.answered_or_asked_after(workspace_id, caller, message);
         };
         let (provider, window) = {
             let open = self.open.lock_recover();

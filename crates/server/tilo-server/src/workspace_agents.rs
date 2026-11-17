@@ -90,6 +90,8 @@ mod vault_uses;
 mod connections;
 // A turn's open of Browser, where this server places the window.
 mod turn_browser;
+// What a turn does at the page in that window.
+mod turn_pages;
 
 pub use asks::{Answered, Carried, Carries, ServerAsk};
 pub use sub_agents::Line;
@@ -1146,6 +1148,15 @@ impl HostAgents {
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
         scope.provider = scope.provider.answering(browser);
+        // What it does at that window's page: where it has the window sent.
+        let pages = turn_pages::TurnPages::for_turn(
+            self.browsers.clone(),
+            &self.workspaces,
+            turn,
+            &scope.reply(turn),
+        )
+        .await;
+        scope.provider = scope.provider.answering(pages);
         Ok(scope)
     }
 
