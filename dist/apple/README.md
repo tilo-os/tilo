@@ -475,12 +475,26 @@ is as one that was not told. A build with push also carries the notice extension
 woken by a push that shows nothing. What it takes at Apple, which nothing here makes: Push
 Notifications and Time Sensitive Notifications on the App ID `so.tilo.assistant`, an App ID
 `so.tilo.assistant.notice`, their profiles made again after that, and a key for Apple's push
-service, which the person's server holds and never the app. So far the build is all there is
-of it: the app hands its person's server no address yet (`AssistantSource.register`), and the
-extension hands a notice on as it came, so a push would show its one plain line. A Mac build
-with push names itself by its application identifier for the first time; whether it still
-reads what a build without one kept on that Mac is not shown. A live activity that the app
-starts and keeps current itself needs no capability.
+service, which the person's server holds and never the app. A Mac build with push names
+itself by its application identifier for the first time; whether it still reads what a build
+without one kept on that Mac is not shown.
+
+In a build with push the app asks Apple's service for an address once its person allowed
+notifications, at every launch, and hands it to the person's server
+(`AssistantSource.register`; `register` on `addresses` of `tilo.telling`) with a key of the
+device's own (`AssistantClosed`): a P-256 key their server seals what a push says for, and
+sixteen secret bytes it names a thing by, so that no word and no id of a thing can be read on
+the way. The key is made when the address is first handed over after a sign-in, kept in the
+group the app shares with the extension, and gone at sign-out, when their server is also told
+to forget the address; a key left behind is gone the moment a sign-in begins. A piece the
+person was told of carries the name a push gives it (`Item.toldAs`), and the app's own notice
+is kept under that name, so a push for the same thing takes its place and nothing is shown
+twice; a push that comes while the app is in front shows nothing, and one that says a thing
+waits no more takes its notice away. A build without push does none of this: it asks for no
+address, hands over nothing and keeps no key. So far the extension hands a notice on as it
+came, so a push shows the one plain line the bundle's sentences give it (`TOLD_WAITS`), and a
+press on it opens the app, not yet the thing. A live activity that the app starts and keeps
+current itself needs no capability.
 
 **Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and
 dark: the Mac's by this Mac, in a window that is never put on a screen, and the iPhone's in a
@@ -627,6 +641,14 @@ to whose profile grants none: the rights its signature would claim, what the bun
 itself, the files it carries, and what is signed in which order. Not checked by anything
 here: a build with push signed under a real profile, installed or started, and a push from
 Apple's service.
+
+`AssistantClosed` is checked by its own tests: what the device's key opens against the
+example message the standard for web push itself gives (RFC 8291, section 5), which nothing
+of Tilo made, and against messages the tests seal the way the person's server does; the name
+of a thing against names worked out outside the package; and that a key prints nothing of
+itself. `TiloSourceTests` hands the source a store that keeps the key in memory: no test
+touches a keychain, so the keychain store itself is checked by nothing here, and neither is
+anything the system does with a push.
 
 `EntryPageShots` in the tests takes pictures of a site's entry page as the apps show it, with nothing on
 screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
