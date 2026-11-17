@@ -282,13 +282,13 @@ fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNod
 /// The changes the rows of `staged`'s window set down, as the row they stand in, who made it and
 /// what they did: a row the app draws at the item's page holds the mark as a node of its own, where
 /// a list row draws it in the row instead.
-fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
+fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, tilo_actions::Actor, String)> {
     let rows = staged.rows();
     let mut changes = Vec::new();
     for (key, row) in &rows {
         for mark in nodes_of(row, "ui.ChangeMark") {
             let identity = match mark.props.get("by") {
-                Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.to_string(),
+                Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.clone(),
                 other => panic!("a marked row names who changed it: {other:?}"),
             };
             let said = match mark.props.get("said") {
@@ -508,11 +508,16 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
 
 /// What a mark of a change the person has not seen says of it: who changed it, never the person's
 /// own step, and what they did, in words of "it".
-fn a_change_names_its_maker(identity: &str, said: &str) {
+fn a_change_names_its_maker(identity: &tilo_actions::Actor, said: &str) {
     assert!(
-        !identity.is_empty() && identity != "ada",
+        *identity != tilo_actions::Actor::Member(tilo_actions::MemberId::person(stage::ME)),
         "a marked row names who changed it, never the person's own step: {identity}"
     );
+    it_says_what_they_did(said);
+}
+
+/// What a mark says a change did: in words, of "it".
+fn it_says_what_they_did(said: &str) {
     assert!(
         !said.is_empty() && !said.contains("this") && !said.contains("done to"),
         "a marked row says what they did, in words, of \"it\": {said}"
@@ -1584,7 +1589,13 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut st
         "the row of the task Bo took says so under its title: {rows:?}"
     );
     for (identity, name, said) in &rows {
-        a_change_names_its_maker(identity, said);
+        // A row carries the id inside the actor, which its colour is read from.
+        assert_ne!(
+            identity,
+            stage::ME,
+            "a marked row names who changed it, never the person's own step"
+        );
+        it_says_what_they_did(said);
         assert!(!name.is_empty(), "a marked row names the changer: {name}");
         assert!(
             said.contains("assigned") && said.contains("you"),
