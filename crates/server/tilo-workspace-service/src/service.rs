@@ -43,6 +43,14 @@ pub struct ServiceConfig {
     /// The work this device takes from others. A device of its person hands it a workspace to
     /// serve only when the setting takes that person's work.
     pub work: WorkSetting,
+    /// The name this keeper goes by among the holders of the workspaces it serves: its
+    /// server's name from its person's admin workspace, or its site's name for a hosting
+    /// service. Empty for its device's own label.
+    pub label: String,
+    /// Whether the machine under this keeper is rented from a cloud provider, whose operator
+    /// can read what the machine holds. A keeper declares it in the address it signs, so every
+    /// member reads what can read their workspace.
+    pub rented: bool,
     /// Who the handshake admits besides the person's own devices and the
     /// workspaces' members.
     pub trust_policy: TrustPolicy,
@@ -73,6 +81,8 @@ impl ServiceConfig {
         Self {
             state_root,
             work,
+            label: String::new(),
+            rented: false,
             trust_policy: TrustPolicy::AllowMatchingUser,
             max_workspace_grants: None,
             apps: None,
@@ -300,6 +310,10 @@ impl ServiceSessions {
             agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
+            holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
+                label: cfg.label.clone(),
+                cloud: cfg.rented,
+            })),
             arrivals: self.handler.arrivals.clone(),
         }
     }

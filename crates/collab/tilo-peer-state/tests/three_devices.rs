@@ -42,6 +42,8 @@ fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&cert.device_public_key).unwrap(),

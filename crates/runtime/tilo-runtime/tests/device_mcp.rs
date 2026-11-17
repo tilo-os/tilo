@@ -804,6 +804,8 @@ fn address_on_b(
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: tilo_desktop_model::WorkspaceId::parse(workspace).unwrap(),
         endpoint_addr: addr(&b.endpoint),
         user_public_key: person.b.1.user_public_key,

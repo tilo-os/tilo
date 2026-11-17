@@ -537,6 +537,11 @@ workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
 workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
 workspace-settings-people-header = Personen
+workspace-settings-kept-header = Wo er liegt
+workspace-settings-kept-reads = Liest den Arbeitsbereich
+workspace-settings-kept-reads-cloud = Liest den Arbeitsbereich, und der Cloud-Anbieter auch
+workspace-settings-kept-stores = Hält eine verschlüsselte Kopie und liest nichts davon
+workspace-settings-kept-unnamed = Ein Server
 workspace-settings-you = Du
 workspace-settings-member-extra = { $count ->
     [one] 1 zusätzliche Berechtigung

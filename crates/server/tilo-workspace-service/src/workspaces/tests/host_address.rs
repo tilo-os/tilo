@@ -100,7 +100,7 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
         .bind()
         .await
         .expect("a loopback endpoint binds");
-    let host = WorkspaceService::open(
+    let keeper = WorkspaceService::open(
         // The fixture's own setting: a host serving other people's workspaces
         // takes their work in them.
         ServiceConfig::new(
@@ -121,16 +121,80 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
     )
     .await
     .expect("a host with no relay to reach opens");
-    let addr = host.node_addr();
+    let addr = keeper.node_addr();
     assert_eq!(addr.relay_urls().count(), 0, "{addr:?}");
     assert!(addr.ip_addrs().next().is_some(), "{addr:?}");
-    let workspaces = host.workspaces();
+    let workspaces = keeper.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let hosts = workspaces.hosts(&created.workspace).await.unwrap();
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     let hint = WorkspaceDeviceHintV1::from_transport_hint(&hosts[0]).unwrap();
     assert_eq!(hint.endpoint_addr, reachable(&addr));
     assert_eq!(hint.packet_relay_url, "iroh:direct");
-    host.shutdown().await;
+    keeper.shutdown().await;
+    endpoint.close().await;
+}
+
+/// A keeper names itself and whether its machine is rented in the address it
+/// signs, and the workspace's owners read both back with what it can read of
+/// the workspace; renaming it re-signs the address every holder reads.
+#[tokio::test]
+async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .bind()
+        .await
+        .expect("a loopback endpoint binds");
+    let keeper = WorkspaceService::open(
+        ServiceConfig {
+            label: "tilo.sh".to_owned(),
+            rented: true,
+            ..ServiceConfig::new(
+                dir.path().to_owned(),
+                tilo_server_protocol::WorkSetting::none(),
+            )
+        },
+        ServiceIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        endpoint.clone(),
+        None,
+    )
+    .await
+    .expect("a keeper opens");
+    let workspaces = keeper.workspaces();
+    let created = workspaces.create("Demo").await.unwrap();
+    let hint = WorkspaceDeviceHintV1::from_transport_hint(
+        &workspaces.hosts(&created.workspace).await.unwrap()[0],
+    )
+    .unwrap();
+    assert_eq!(hint.label, "tilo.sh");
+    assert!(hint.cloud, "a rented machine says its provider can read it");
+
+    let listed = workspaces
+        .keeping_devices(&created.workspace)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].label, "tilo.sh");
+    assert!(listed[0].reads, "a keeper holds the workspace's keys");
+    assert!(listed[0].cloud);
+
+    // Its person renames it in their admin workspace: every workspace it
+    // holds names it by the new name from then on.
+    workspaces.name_holder("Kitchen NAS").await;
+    let renamed = WorkspaceDeviceHintV1::from_transport_hint(
+        &workspaces.hosts(&created.workspace).await.unwrap()[0],
+    )
+    .unwrap();
+    assert_eq!(renamed.label, "Kitchen NAS");
+    assert!(renamed.cloud, "a name does not change the machine under it");
+    keeper.shutdown().await;
     endpoint.close().await;
 }

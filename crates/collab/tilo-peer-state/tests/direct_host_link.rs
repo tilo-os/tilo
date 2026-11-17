@@ -336,6 +336,8 @@ pub(crate) fn hint(
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         user_public_key: certificate.user_public_key,

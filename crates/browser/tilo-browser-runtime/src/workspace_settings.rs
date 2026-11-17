@@ -305,8 +305,13 @@ impl PageWorkspaceSettings {
             .collect();
         // The owner first, then everyone else by key, as the session's shell lists them.
         rows.sort_by(|a, b| b.owns.cmp(&a.owns).then_with(|| a.user.cmp(&b.user)));
+        let kept = workspace_people::holders(
+            workspace
+                .as_ref()
+                .map_or(&[], |workspace| &workspace.holders),
+        );
         let mut people =
-            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner)));
+            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner), &kept));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
         let mut tabs = vec![sheet::Tab::People];

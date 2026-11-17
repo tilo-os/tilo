@@ -300,6 +300,55 @@ tilo_test_env::scenario! {
         ));
     }
 
+    phase the_holders_of_the_workspace_say_what_each_can_read;
+    {
+        let mut app = staged("people");
+        for text in [
+            "Where it is kept",
+            "Kitchen NAS",
+            "Reads the workspace",
+            "tilo.sh",
+            "Reads the workspace, and so can the cloud provider",
+            "Backup box",
+            "Keeps an encrypted copy and reads none of it",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        assert!(
+            !says(&mut app, "Keeps an encrypted copy and reads none of it, and so can the cloud provider"),
+            "a store reads nothing, whatever its machine"
+        );
+
+        // A workspace held by a store, a server of the person's own and a
+        // keeper on a rented machine: three ways of holding it, in a person's
+        // words.
+        let mut settings = staged_settings("people");
+        settings.people.holders = vec![
+            tilo_sheets::workspace_settings::Holder {
+                name: "Kitchen NAS".to_owned(),
+                can_read: "Reads the workspace".to_owned(),
+            },
+            tilo_sheets::workspace_settings::Holder {
+                name: "tilo.sh".to_owned(),
+                can_read: "Reads the workspace, and so can the cloud provider".to_owned(),
+            },
+            tilo_sheets::workspace_settings::Holder {
+                name: "Backup box".to_owned(),
+                can_read: "Keeps an encrypted copy and reads none of it".to_owned(),
+            },
+        ];
+        let (mut app, _state) = mounted_with(settings);
+        assert!(says(&mut app, "Kitchen NAS"));
+        assert!(says(
+            &mut app,
+            "Reads the workspace, and so can the cloud provider"
+        ));
+        assert!(says(
+            &mut app,
+            "Keeps an encrypted copy and reads none of it"
+        ));
+    }
+
     phase removing_someone_asks_first_and_keep_changes_nothing;
     {
         let (mut app, state) = mounted("people");

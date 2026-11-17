@@ -498,6 +498,11 @@ workspace-settings-view-only = View only
 workspace-settings-members-empty-title = No one else is in this workspace
 workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
 workspace-settings-people-header = People
+workspace-settings-kept-header = Where it is kept
+workspace-settings-kept-reads = Reads the workspace
+workspace-settings-kept-reads-cloud = Reads the workspace, and so can the cloud provider
+workspace-settings-kept-stores = Keeps an encrypted copy and reads none of it
+workspace-settings-kept-unnamed = A server
 workspace-settings-you = You
 workspace-settings-member-extra = { $count ->
     [one] 1 extra permission

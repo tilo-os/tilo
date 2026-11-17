@@ -609,6 +609,12 @@ impl Server {
             crate::service::ServiceConfig {
                 state_root: cfg.state_root.clone(),
                 work: cfg.work.clone(),
+                // A keeper that serves pages is a site, and goes by its
+                // site's name among the holders of the workspaces it serves;
+                // a server of someone's own goes by the name their admin
+                // workspace gives it, applied below once it is open.
+                label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
+                rented: cfg.rented,
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
                 apps: app_serving.clone(),
@@ -739,6 +745,13 @@ impl Server {
                 // told to be, is its entry in the admin workspace's document:
                 // it applies the document now and after each change to it.
                 push_background_task(&background_tasks, crate::servers::applied::follow(governed));
+            }
+            // A server's name is its entry's in its person's admin workspace:
+            // the workspaces it holds show it by that name from now on.
+            if let Some(label) =
+                crate::servers::name(governed, &identity.device_cert.device_public_key).await
+            {
+                governed.name_holder(&label).await;
             }
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,
@@ -990,6 +1003,19 @@ fn home_peer_server_workspaces(
         workspace.server_workspace_ids.clone()
     };
     Ok((ticket, server_workspace_ids))
+}
+
+/// The site name a keeper's web entry names: `tilo.sh` for
+/// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
+/// server's name alone.
+fn site_name(web_entry: &str) -> String {
+    let rest = web_entry
+        .split_once("://")
+        .map_or(web_entry, |(_, rest)| rest);
+    rest.split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Check the home-peer bundle the filesystem worker consumes and, when there
@@ -1394,6 +1420,9 @@ impl ProtocolHandler for ManagementProtocol {
                 )
                 .await
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
+                // The workspaces it holds show it by the name its entry gives
+                // it from now on, in the address each holder reads.
+                workspaces.name_holder(label).await;
             }
             HomePeerManagementRequest::Decommission { revocation } => {
                 if !peer.cert.capabilities.can_admit_devices {

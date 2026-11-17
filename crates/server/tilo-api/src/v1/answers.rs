@@ -593,9 +593,10 @@ pub struct NewMember {
 }
 
 /// The hosts holding the workspace (`hosts`, each its `device` key, the
-/// `person` it runs for, and whether it `governs` the workspace: the one it
-/// was made on, first), and after a removal whether that host confirmed it let
-/// the workspace go (`confirmed`).
+/// `person` it serves, the `label` it goes by, whether it `reads` the
+/// workspace, and whether its machine is `cloud` so its provider can read it
+/// too), and after a removal whether that keeper confirmed it let the
+/// workspace go (`confirmed`).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Hosts(pub Map<String, Value>);
 

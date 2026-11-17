@@ -242,6 +242,8 @@ impl TestGovernor {
             version: 1,
             holds_keys: true,
             runs_work: false,
+            label: String::new(),
+            cloud: false,
             workspace_id: self.workspace_id,
             endpoint_addr,
             user_public_key: self.host.user_public_key,

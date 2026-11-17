@@ -21,6 +21,7 @@ use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
+use crate::engine::Holder;
 use crate::lists::AppLists;
 use crate::search::SessionSearch;
 use crate::workspaces::{DeviceChoice, Personal};
@@ -680,7 +681,14 @@ fn settings(
         tabs: tabs(),
         tab,
         general: general(tree, person, personal, engine),
-        people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
+        people: workspace.map_or_else(sheet::People::default, |ws| {
+            people(
+                ws,
+                &names,
+                person,
+                &engine.map_or_else(Vec::new, |engine| engine.holders(&ws.id().to_string())),
+            )
+        }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
         }),
@@ -940,9 +948,29 @@ fn own_name() -> Option<String> {
     ui::local_identity::load().map(|identity| identity.display_name)
 }
 
-/// The People tab: who shares the workspace and their roles.
-fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
-    crate::workspace_people::tab(domain::people::content(ws, names, person, ws.owns(person)))
+/// The People tab: who shares the workspace, their roles, and the holders of
+/// the workspace with what each can read.
+fn people(
+    ws: &Workspace,
+    names: &PeopleNames,
+    person: &UserId,
+    holders: &[Holder],
+) -> sheet::People {
+    let kept: Vec<domain::people::MemberHolder> = holders
+        .iter()
+        .map(|holder| domain::people::MemberHolder {
+            name: holder.label.clone(),
+            reads: holder.reads,
+            cloud: holder.cloud,
+        })
+        .collect();
+    crate::workspace_people::tab(domain::people::content(
+        ws,
+        names,
+        person,
+        ws.owns(person),
+        &kept,
+    ))
 }
 
 /// The Privacy & Security tab: the permissions the workspace gives, who holds each, and the

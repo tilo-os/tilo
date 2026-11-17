@@ -35,6 +35,7 @@ use tilo_server_client::{
     LinkError,
     https::{HttpClient, HttpFuture},
 };
+use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_session::client::ServerClient;
 use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
@@ -525,18 +526,12 @@ impl Workspaces {
     /// # Errors
     ///
     /// The workspace is not held here.
-    pub async fn keeping_devices(&self, workspace: &str) -> Result<Vec<KeepingDevice>, String> {
+    pub async fn keeping_devices(&self, workspace: &str) -> Result<Vec<WorkspaceHolder>, String> {
         let hosts = self
             .hosts(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(hosts
-            .iter()
-            .map(|hint| KeepingDevice {
-                device: hex::encode(hint.host.device_public_key),
-                person: hex::encode(hint.host.user_public_key),
-            })
-            .collect())
+        Ok(holders_of(&hosts))
     }
 
     /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
@@ -689,13 +684,30 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// One host of a workspace, as its owners list them ([`Workspaces::keeping_devices`]).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct KeepingDevice {
-    /// The holder's device key, hex: what removing it may name it by.
-    pub device: String,
-    /// The person the holder runs for, by their user public key, hex.
-    pub person: String,
+/// `holders` as a member reads them: each named by its own signed address. A
+/// holder that names itself nowhere goes by its device's label, and one whose
+/// address does not decode reads as holding no keys.
+pub(super) fn holders_of(holders: &[TransportHint]) -> Vec<WorkspaceHolder> {
+    let mut keepers: Vec<WorkspaceHolder> = holders
+        .iter()
+        .map(|hint| {
+            let payload = WorkspaceDeviceHintV1::from_transport_hint(hint).ok();
+            let label = payload
+                .as_ref()
+                .map(|payload| payload.label.trim())
+                .filter(|label| !label.is_empty())
+                .unwrap_or(&hint.host.device_label);
+            WorkspaceHolder {
+                device: hex::encode(hint.host.device_public_key),
+                person: hex::encode(hint.host.user_public_key),
+                label: label.to_owned(),
+                reads: payload.as_ref().is_some_and(|payload| payload.holds_keys),
+                cloud: payload.as_ref().is_some_and(|payload| payload.cloud),
+            }
+        })
+        .collect();
+    keepers.sort_by(|a, b| a.label.cmp(&b.label));
+    keepers
 }
 
 /// `text` as a device key, when it is 64 hex characters; anything else names
@@ -830,10 +842,13 @@ impl Workspaces {
             .relay_urls()
             .next()
             .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        let claim = host.holder();
         tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
             version: 1,
             holds_keys,
             runs_work: holds_keys && !host.work.takes_nothing(),
+            label: claim.label,
+            cloud: claim.cloud,
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
             user_public_key: host.cert.user_public_key,
@@ -842,5 +857,22 @@ impl Workspaces {
         }
         .transport_hint(&host.key)
         .map_err(|error| CollaborationError::new(error.to_string()))
+    }
+
+    /// Name this keeper among the holders of every workspace it serves as
+    /// `label`, which its signed addresses carry from now on: a server's name
+    /// its person changed in their admin workspace, so members read the name
+    /// it goes by now.
+    pub async fn name_holder(&self, label: &str) {
+        let label = label.trim();
+        {
+            let mut claim = self.inner.host.holder.write_recover();
+            if claim.label == label {
+                return;
+            }
+            claim.label.clear();
+            claim.label.push_str(label);
+        }
+        self.name_own_hosts().await;
     }
 }

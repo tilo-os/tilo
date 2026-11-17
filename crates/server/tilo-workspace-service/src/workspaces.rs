@@ -65,7 +65,6 @@ mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
-pub use hosts::KeepingDevice;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
 pub use tilo_endpoint_reachability::await_relay;
@@ -852,6 +851,9 @@ pub(crate) struct WorkspaceServices {
     /// The work this device takes: it serves a workspace placed on it only when the setting
     /// takes the placing person's work.
     pub(crate) work: tilo_server_protocol::WorkSetting,
+    /// What this keeper says of itself among the holders of the workspaces it serves, which
+    /// its signed address carries.
+    pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::attach::Arrivals,
@@ -861,9 +863,28 @@ pub(crate) struct WorkspaceServices {
     pub(crate) channels: Option<DeviceKeyGroups>,
 }
 
+impl WorkspaceServices {
+    /// What this keeper says of itself among a workspace's holders.
+    pub(crate) fn holder(&self) -> HolderClaim {
+        self.holder.read_recover().clone()
+    }
+}
+
+/// The workspaces this server governs.
 #[derive(Clone)]
 pub struct Workspaces {
     inner: Arc<WorkspacesInner>,
+}
+
+/// What a keeper says of itself among the holders of the workspaces it serves.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HolderClaim {
+    /// What it calls itself: its server's name from its person's admin workspace, or its site's
+    /// name. Empty for its device's own label.
+    pub(crate) label: String,
+    /// Whether the machine under it is rented from a cloud provider, whose operator can read
+    /// what it holds.
+    pub(crate) cloud: bool,
 }
 
 struct WorkspacesInner {

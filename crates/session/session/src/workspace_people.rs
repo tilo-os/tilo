@@ -45,6 +45,15 @@ pub fn tab(content: PeopleContent) -> sheet::People {
             .collect(),
         empty: content.empty,
         note: content.note,
+        holders_header: content.holders_header,
+        holders: content
+            .holders
+            .into_iter()
+            .map(|holder| sheet::Holder {
+                name: holder.name,
+                can_read: holder.can_read,
+            })
+            .collect(),
         remove_decision: sheet::Decision {
             title: t("workspace-settings-remove-sheet-title"),
             description: t("workspace-settings-remove-sheet-description"),
@@ -53,6 +62,21 @@ pub fn tab(content: PeopleContent) -> sheet::People {
             confirm: t("workspace-settings-remove-person"),
         },
     }
+}
+
+/// The holders a workspace's keeper answered for, in the People tab's terms.
+#[must_use]
+pub fn holders(
+    holders: &[tilo_server_protocol::workspaces::WorkspaceHolder],
+) -> Vec<domain::people::MemberHolder> {
+    holders
+        .iter()
+        .map(|holder| domain::people::MemberHolder {
+            name: holder.label.clone(),
+            reads: holder.reads,
+            cloud: holder.cloud,
+        })
+        .collect()
 }
 
 /// One tab's name in the strip, and the shorter one a narrow sheet uses.
@@ -103,5 +127,49 @@ pub fn refusal(reason: &str) -> sheet::Notice {
     sheet::Notice {
         title: t("workspace-settings-refused"),
         detail: Some(reason.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_server_protocol::workspaces::WorkspaceHolder;
+
+    /// A workspace's holders reach the People tab as what each is called and
+    /// what it can read: a page and the session's own sheet say them alike.
+    #[test]
+    fn holders_keep_their_names_and_what_each_can_read() {
+        let holder = |label: &str, reads: bool, cloud: bool| WorkspaceHolder {
+            device: label.to_owned(),
+            person: "person".to_owned(),
+            label: label.to_owned(),
+            reads,
+            cloud,
+        };
+        let listed = holders(&[
+            holder("Kitchen NAS", true, false),
+            holder("tilo.sh", true, true),
+            holder("Backup box", false, false),
+        ]);
+        assert_eq!(
+            listed,
+            [
+                domain::people::MemberHolder {
+                    name: "Kitchen NAS".to_owned(),
+                    reads: true,
+                    cloud: false,
+                },
+                domain::people::MemberHolder {
+                    name: "tilo.sh".to_owned(),
+                    reads: true,
+                    cloud: true,
+                },
+                domain::people::MemberHolder {
+                    name: "Backup box".to_owned(),
+                    reads: false,
+                    cloud: false,
+                },
+            ]
+        );
     }
 }

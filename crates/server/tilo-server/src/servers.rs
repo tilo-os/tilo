@@ -394,6 +394,18 @@ pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
         .map_err(|error| error.to_string())
 }
 
+/// The name the admin workspace gives the server `device`: what the
+/// workspaces it holds show it by. `None` where its entry names it nowhere,
+/// and the keeper goes by its device's label.
+pub async fn name(workspaces: &Workspaces, device: &[u8; 32]) -> Option<String> {
+    read(workspaces)
+        .await
+        .ok()?
+        .active(device)
+        .map(|server| server.label.clone())
+        .filter(|label| !label.is_empty())
+}
+
 /// Enter this host's device into its person's servers, named `label` and
 /// dialled at `endpoint`, making the admin workspace first where this host has
 /// none: what a server enrolled into the person's identity does on its first

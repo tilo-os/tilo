@@ -240,6 +240,23 @@ pub struct Engine {
     named_hosts: std::sync::Mutex<NamedHosts>,
 }
 
+/// One holder of a workspace, as a member's device reads it off the holder's
+/// own signed address ([`Engine::holders`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    /// Its device key, hex.
+    pub device: String,
+    /// What it calls itself: its server's name from its person's admin
+    /// workspace, or its site's name; its device's label when it names none.
+    pub label: String,
+    /// Whether it holds the workspace's keys: it reads the workspace. A store
+    /// holds its ciphertext and reads none of it.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider, whose
+    /// operator can read what it holds.
+    pub cloud: bool,
+}
+
 /// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
 /// workspaces that were hosted then.
 #[derive(Default)]
@@ -1739,6 +1756,39 @@ impl Engine {
             .ok()
     }
 
+    /// The holders of `workspace`, each as its own signed address names it:
+    /// what a member reads of who keeps their workspace and which of them can
+    /// read it. Empty while this device holds no governance for the workspace.
+    pub fn holders(&self, workspace: &str) -> Vec<Holder> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        let Ok(hints) = self.owner.with_current(workspace, |view| {
+            Ok(view.peer().governance().keeping_devices())
+        }) else {
+            return Vec::new();
+        };
+        let mut holders: Vec<Holder> = hints
+            .into_iter()
+            .filter_map(|hint| {
+                let payload = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(&hint).ok()?;
+                let label = payload.label.trim();
+                Some(Holder {
+                    device: hex::encode(hint.host.device_public_key),
+                    label: if label.is_empty() {
+                        hint.host.device_label
+                    } else {
+                        label.to_owned()
+                    },
+                    reads: payload.holds_keys,
+                    cloud: payload.cloud,
+                })
+            })
+            .collect();
+        holders.sort_by(|a, b| a.label.cmp(&b.label));
+        holders
+    }
+
     /// Where the holders of the workspaces this device holds are reached, one entry per holder, by
     /// workspace id, postcard encoded: what the person's other devices need to enter a workspace
     /// listed here at any of the devices that keep it.
@@ -1833,6 +1883,8 @@ impl Engine {
             version: 1,
             holds_keys: true,
             runs_work: false,
+            label: String::new(),
+            cloud: false,
             workspace_id,
             endpoint_addr: endpoint.clone(),
             user_public_key: identity.device_cert.user_public_key,
