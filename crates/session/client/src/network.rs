@@ -88,14 +88,27 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
         self.send(Cmd::JoinPlaced(workspace.to_owned(), name.to_owned()))
     }
 
-    /// A receipt that completes once every write said before it is durable at the host, or with
-    /// the refusal that prevents it.
+    /// A receipt that completes once every write said before it is durable at its holder, or
+    /// with the refusal that prevents it.
     ///
     /// # Errors
     /// The transport is gone.
     fn barrier(&self) -> Result<Receipt<Result<(), String>>, Closed> {
         let (answer, receipt) = answer();
         self.send(Cmd::Barrier(answer))?;
+        Ok(receipt)
+    }
+
+    /// [`Self::barrier`] for `workspaces` alone: a receipt that completes once every write said
+    /// before it to one of them is durable at its holder, or with the refusal that prevents it.
+    /// What this device still holds or owes in a workspace not named does not keep it waiting:
+    /// a session many workspaces share answers each for its own writes.
+    ///
+    /// # Errors
+    /// The transport is gone.
+    fn barrier_of(&self, workspaces: &[Topic]) -> Result<Receipt<Result<(), String>>, Closed> {
+        let (answer, receipt) = answer();
+        self.send(Cmd::BarrierOf(workspaces.to_vec(), answer))?;
         Ok(receipt)
     }
 
@@ -403,6 +416,9 @@ pub enum Cmd {
     KeepContent(Topic, std::sync::Arc<dyn crate::content::Kept>),
     /// Answer once every write said before this is durable at the host ([`Outbox::barrier`]).
     Barrier(Answer<Result<(), String>>),
+    /// Answer once every write said before this to one of these workspaces is durable at its
+    /// holder ([`Outbox::barrier_of`]).
+    BarrierOf(Vec<Topic>, Answer<Result<(), String>>),
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.

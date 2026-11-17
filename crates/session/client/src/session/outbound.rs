@@ -21,6 +21,24 @@ const SIGNING_FAILED: &str = "signing-failed";
 /// The failures of writes that wait, held: gone once nothing is held.
 const HELD_CODES: &[&str] = &[RECORD_FULL, SIGNING_FAILED];
 
+/// The workspaces a barrier answers for ([`crate::Outbox::barrier_of`]): these alone, or every
+/// one this session joined.
+pub(super) type Scope = Option<BTreeSet<WorkspaceId>>;
+
+/// A barrier waiting on what this device owes: the writes still unanswered of those it was
+/// asked about, the refusal one of them met, where its outcome goes, and the workspaces it
+/// answers for.
+pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope);
+
+/// Whether `route` is of a workspace `scope` answers for.
+fn within(scope: Option<&BTreeSet<WorkspaceId>>, route: &DocumentRoute) -> bool {
+    scope.is_none_or(|workspaces| {
+        route
+            .workspace_id()
+            .is_ok_and(|workspace| workspaces.contains(&workspace))
+    })
+}
+
 impl Task {
     /// `route` holds new writes of this device, held as the session was told of them: to commit
     /// to its replica sealed with the route's keys ([`Self::commit_held`]). Never in the clear:
@@ -312,38 +330,76 @@ impl Task {
         if self.barriers.is_empty() {
             return;
         }
-        let owed = self.owed();
+        // Read once for the barriers that answer for every workspace, and for each of those
+        // that answer for their own.
+        let every = self
+            .barriers
+            .iter()
+            .any(|(.., scope)| scope.is_none())
+            .then(|| self.owed(None));
         let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
             .into_iter()
-            .map(|(mut left, refused, complete)| {
-                if !left.is_subset(&owed) {
-                    left.clone_from(&owed);
+            .map(|(mut left, refused, complete, scope)| {
+                let own = scope.as_ref().map(|named| self.owed(Some(named)));
+                if let Some(owed) = own.as_ref().or(every.as_ref())
+                    && !left.is_subset(owed)
+                {
+                    left.clone_from(owed);
                 }
-                (left, refused, complete)
+                (left, refused, complete, scope)
             })
-            .partition(|(left, _, _)| !left.is_empty());
+            .partition(|(left, ..)| !left.is_empty());
         self.barriers = waiting;
-        for (_, refused, complete) in done {
+        for (_, refused, complete, _) in done {
             let _ = complete.send(refused.map_or(Ok(()), Err));
         }
     }
 
-    /// Complete `done` once every write now in this device's ownership is answered by its host, or
-    /// the write that carries it is ([`Self::follow_ownership`]).
-    pub(super) fn await_ownership(&mut self, done: Completion, refused: Option<String>) {
-        let owed = self.owed();
-        if owed.is_empty() {
-            let _ = done.send(refused.map_or(Ok(()), Err));
+    /// Complete `done` once every write said so far is durable at this device's holder: every
+    /// write of this session, or, with a `scope`, those to its workspaces alone. What another
+    /// workspace still holds back or is owed then keeps nothing waiting here: a write that
+    /// waits in one workspace, for its document or for its keys, says nothing about the
+    /// others'.
+    pub(super) fn barrier(&mut self, done: Completion, scope: Scope) {
+        let held: BTreeSet<DocumentRoute> = self
+            .engine
+            .held_writes()
+            .lock()
+            .keys()
+            .filter(|route| within(scope.as_ref(), route))
+            .cloned()
+            .collect();
+        if held.is_empty() {
+            self.await_ownership(done, None, scope);
         } else {
-            self.barriers.push((owed, refused, done));
+            self.held_barriers.push((held, done, scope));
         }
     }
 
-    /// Every write in this device's ownership, over every workspace, sendable now or not.
-    fn owed(&self) -> BTreeSet<[u8; 32]> {
+    /// Complete `done` once every write now in this device's ownership is answered by its host, or
+    /// the write that carries it is ([`Self::follow_ownership`]): every write, or those of
+    /// `scope`'s workspaces alone.
+    pub(super) fn await_ownership(
+        &mut self,
+        done: Completion,
+        refused: Option<String>,
+        scope: Scope,
+    ) {
+        let owed = self.owed(scope.as_ref());
+        if owed.is_empty() {
+            let _ = done.send(refused.map_or(Ok(()), Err));
+        } else {
+            self.barriers.push((owed, refused, done, scope));
+        }
+    }
+
+    /// Every write in this device's ownership, sendable now or not: over every workspace, or
+    /// over `scope`'s alone.
+    fn owed(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> BTreeSet<[u8; 32]> {
         let owner = self.replicas.owner();
         self.workspaces
             .iter()
+            .filter(|workspace_id| scope.is_none_or(|named| named.contains(*workspace_id)))
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
             .flat_map(|workspace| owner.owed_writes(workspace).unwrap_or_default())
             .collect()
@@ -381,11 +437,11 @@ impl Task {
         let held = self.engine.held_writes().lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
-            .partition(|(routes, _)| routes.iter().any(|route| held.contains_key(route)));
+            .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
-        for (routes, done) in released {
+        for (routes, done, scope) in released {
             let why = routes.iter().find_map(|route| refused.get(route)).cloned();
-            self.await_ownership(done, why);
+            self.await_ownership(done, why, scope);
         }
     }
 
@@ -490,15 +546,15 @@ impl Task {
             let refusal = outcome.err().map(|refusal| refusal_text(&refusal));
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
-                .map(|(mut owed, mut refused, complete)| {
+                .map(|(mut owed, mut refused, complete, scope)| {
                     if owed.remove(&id) && refused.is_none() {
                         refused.clone_from(&refusal);
                     }
-                    (owed, refused, complete)
+                    (owed, refused, complete, scope)
                 })
-                .partition(|(owed, _, _)| !owed.is_empty());
+                .partition(|(owed, ..)| !owed.is_empty());
             self.barriers = waiting;
-            for (_, refused, complete) in done {
+            for (_, refused, complete, _) in done {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
             }
         }
