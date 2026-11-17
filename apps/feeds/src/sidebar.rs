@@ -68,7 +68,8 @@ const NEW_FOLDER: &str = "new-folder";
 
 impl Core {
     pub(crate) fn nav_sections(&self) -> Vec<NavSection> {
-        let store = &self.store;
+        let library = &self.store;
+        let store = self.articles();
         let smart = vec![
             // Unread, below, already counts what is new everywhere.
             NavItem::new(nav_id(&Filter::All), "All articles")
@@ -100,11 +101,11 @@ impl Core {
                 None => item,
             }
         };
-        let mut feeds: Vec<NavItem> = store
+        let mut feeds: Vec<NavItem> = library
             .folders_sorted()
             .into_iter()
             .map(|folder| {
-                let children = store
+                let children = library
                     .feeds_in_folder(Some(folder.id))
                     .into_iter()
                     .map(|f| feed_item(f.id, &f.shown_title(), f.kind))
@@ -125,7 +126,7 @@ impl Core {
             })
             .collect();
         feeds.extend(
-            store
+            library
                 .feeds_in_folder(None)
                 .into_iter()
                 .map(|f| feed_item(f.id, &f.shown_title(), f.kind)),

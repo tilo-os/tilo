@@ -1,29 +1,40 @@
-//! What search finds in the library: its folders, its feeds and their
-//! articles, each kind under its own heading with the mark the sidebar gives
-//! it, and a preview worth reading before opening one.
+//! What search finds in the library: its folders and subscriptions, and, in
+//! the parts the articles are kept in, the articles themselves. Each kind
+//! under its own heading with the mark the sidebar gives it, and a preview
+//! worth reading before opening one.
+//!
+//! A part is searched on its own ([`crate::part::ArticlePart`]): it does not
+//! read the library, so an article names where it came from by its address.
 
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{SearchEntry, SearchPreview, SearchWeight};
 
 use crate::model::{Article, BlockKind, Feed, FeedKind, Folder, Library, Row};
+use crate::part::ArticlePart;
 
 pub const FOLDERS: &str = "Folders";
 pub const FEEDS: &str = "Feeds";
 pub const ARTICLES: &str = "Articles";
 
-const LATEST: usize = 3;
 const EXCERPT_CHARS: usize = 280;
 
+/// What search finds in the library's own record: its folders and its
+/// subscriptions.
 pub fn entries(library: &Library) -> Vec<SearchEntry> {
     let folders = library
         .folders_sorted()
         .into_iter()
         .map(|folder| folder_entry(library, &folder));
-    let feeds = library.feed_rows().map(|feed| feed_entry(library, &feed));
-    let articles = library
-        .article_rows()
-        .map(|article| article_entry(library, &article));
-    folders.chain(feeds).chain(articles).collect()
+    let feeds = library.feed_rows().map(|feed| feed_entry(&feed));
+    folders.chain(feeds).collect()
+}
+
+/// What search finds in one part of the library: its articles.
+pub fn part_entries(part: &ArticlePart) -> Vec<SearchEntry> {
+    part.articles
+        .iter()
+        .map(|(id, article)| article_entry(id, article))
+        .collect()
 }
 
 pub fn feed_icon(kind: FeedKind) -> ui::icons::Icon {
@@ -37,10 +48,6 @@ pub fn feed_icon(kind: FeedKind) -> ui::icons::Icon {
 fn folder_entry(library: &Library, folder: &Row<'_, Folder>) -> SearchEntry {
     let feeds = library.feeds_in_folder(Some(folder.id));
     let mut preview = SearchPreview::titled(&folder.name).fact(count(feeds.len(), "feed", "feeds"));
-    let unread = library.unread_for_folder(folder.id);
-    if unread > 0 {
-        preview = preview.fact(format!("{unread} unread"));
-    }
     for feed in &feeds {
         preview = preview.line(feed.shown_title());
     }
@@ -51,24 +58,11 @@ fn folder_entry(library: &Library, folder: &Row<'_, Folder>) -> SearchEntry {
         .previewed(preview)
 }
 
-fn feed_entry(library: &Library, feed: &Row<'_, Feed>) -> SearchEntry {
+fn feed_entry(feed: &Row<'_, Feed>) -> SearchEntry {
     let title = feed.shown_title();
     let mut preview = SearchPreview::titled(&title);
     if let Some(site) = host(&feed.site_url) {
         preview = preview.fact(site);
-    }
-    let unread = library.unread_for_feed(feed.id);
-    preview = preview.fact(if unread > 0 {
-        format!("{unread} unread")
-    } else {
-        "All read".to_owned()
-    });
-    for article in library
-        .articles_for(&crate::model::Filter::Feed(feed.id.clone()))
-        .into_iter()
-        .take(LATEST)
-    {
-        preview = preview.line(article.title.clone());
     }
     let mut entry = SearchEntry::new(&title, String::new())
         .anchored(item_resource_id::<Library>("feeds", feed.id))
@@ -84,10 +78,8 @@ fn feed_entry(library: &Library, feed: &Row<'_, Feed>) -> SearchEntry {
     entry
 }
 
-fn article_entry(library: &Library, article: &Row<'_, Article>) -> SearchEntry {
-    let source = library
-        .feed(&article.feed_id)
-        .map(|feed| feed.shown_title());
+fn article_entry(id: &ui::tilo_resource::Id, article: &Article) -> SearchEntry {
+    let source = host(&article.url);
     let mut preview = SearchPreview::titled(&article.title);
     if let Some(source) = &source {
         preview = preview.fact(source.clone());
@@ -99,7 +91,7 @@ fn article_entry(library: &Library, article: &Row<'_, Article>) -> SearchEntry {
         preview = preview.body(excerpt);
     }
     let mut entry = SearchEntry::new(&article.title, String::new())
-        .anchored(item_resource_id::<Library>("articles", article.id))
+        .anchored(item_resource_id::<ArticlePart>("articles", id))
         .grouped(ARTICLES)
         .with_icon(ui::icons::Icon::FileText.name())
         .previewed(preview);
@@ -178,7 +170,7 @@ fn excerpt(article: &Article) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn sample() -> Library {
+    fn sample() -> (Library, ArticlePart) {
         crate::sample::store()
     }
 
@@ -191,29 +183,34 @@ mod tests {
 
     #[test]
     fn each_kind_is_its_own_group_with_its_own_mark() {
-        let library = sample();
-        let entries = entries(&library);
-        let (folders, feeds, articles) = (
-            of_kind(&entries, FOLDERS),
-            of_kind(&entries, FEEDS),
-            of_kind(&entries, ARTICLES),
+        let (library, part) = sample();
+        let library_entries = entries(&library);
+        let article_entries = part_entries(&part);
+        assert_eq!(
+            of_kind(&library_entries, FOLDERS).len(),
+            library.folders_sorted().len()
         );
-        assert_eq!(folders.len(), library.folders_sorted().len());
-        assert_eq!(feeds.len(), library.feed_rows().count());
-        assert_eq!(articles.len(), library.article_rows().count());
-        assert_eq!(entries.len(), folders.len() + feeds.len() + articles.len());
+        assert_eq!(
+            of_kind(&library_entries, FEEDS).len(),
+            library.feed_rows().count()
+        );
+        assert_eq!(
+            of_kind(&article_entries, ARTICLES).len(),
+            part.articles.len(),
+            "every article the part keeps is found"
+        );
         assert!(
-            folders
+            of_kind(&library_entries, FOLDERS)
                 .iter()
                 .all(|entry| entry.icon.as_deref() == Some("folder"))
         );
         assert!(
-            feeds
+            of_kind(&library_entries, FEEDS)
                 .iter()
-                .all(|entry| { matches!(entry.icon.as_deref(), Some("rss" | "file-text")) })
+                .all(|entry| matches!(entry.icon.as_deref(), Some("rss" | "file-text")))
         );
         assert!(
-            articles
+            article_entries
                 .iter()
                 .all(|entry| entry.icon.as_deref() == Some("file-text"))
         );
@@ -221,22 +218,25 @@ mod tests {
 
     #[test]
     fn an_article_previews_its_source_date_and_first_lines() {
-        let library = sample();
-        let entries = entries(&library);
-        let article = library
-            .article_rows()
-            .find(|article| article.published > 0 && !article.summary.is_empty())
+        let (_, part) = sample();
+        let article = part
+            .articles
+            .iter()
+            .find(|(_, article)| article.published > 0 && !article.summary.is_empty())
             .expect("the sample has a dated article with a summary");
-        let feed = library.feed(&article.feed_id).expect("its feed");
+        let source = host(&article.1.url).expect("its address names its site");
+        let entries = part_entries(&part);
         let entry = entries
             .iter()
-            .find(|entry| entry.group.as_deref() == Some(ARTICLES) && entry.title == article.title)
+            .find(|entry| {
+                entry.group.as_deref() == Some(ARTICLES) && entry.title == article.1.title
+            })
             .expect("the article is found");
-        assert_eq!(entry.subtitle.as_deref(), Some(feed.shown_title().as_str()));
+        assert_eq!(entry.subtitle.as_deref(), Some(source.as_str()));
         assert!(entry.text.is_empty(), "nothing raw reads as its preview");
         let preview = entry.preview.as_ref().expect("an article previews");
-        assert_eq!(preview.title.as_deref(), Some(article.title.as_str()));
-        assert_eq!(preview.facts.first(), Some(&feed.shown_title()));
+        assert_eq!(preview.title.as_deref(), Some(article.1.title.as_str()));
+        assert_eq!(preview.facts.first(), Some(&source));
         assert_eq!(preview.facts.len(), 2, "its source and its date");
         assert!(
             preview
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn a_feed_and_a_folder_preview_what_they_hold() {
-        let library = sample();
+        let (library, _) = sample();
         let entries = entries(&library);
         let feed = library.feed_rows().next().expect("a feed");
         let feed_entry = entries
@@ -259,13 +259,6 @@ mod tests {
             .expect("the feed is found");
         let preview = feed_entry.preview.as_ref().expect("a feed previews");
         assert_eq!(preview.facts.first(), host(&feed.site_url).as_ref());
-        let newest: Vec<String> = library
-            .articles_for(&crate::model::Filter::Feed(feed.id.clone()))
-            .into_iter()
-            .take(LATEST)
-            .map(|article| article.title.clone())
-            .collect();
-        assert_eq!(preview.lines, newest);
         assert!(
             feed_entry.fields.iter().any(|(text, _)| *text == feed.url),
             "a feed is still found by its address"

@@ -759,9 +759,11 @@ app writes none of them:
   order), so the verb itself reads only its part and replays the same
   everywhere.
 - **Held whole or by the reader.** A chain whose views list all of it
-  (`Chained::HELD_WHOLE`: a tracker's issues) holds every part as soon as
-  it knows the head; one read back in time (a chat) holds the head and what
-  a reader scrolled to.
+  (`Chained::HELD_WHOLE`: a tracker's issues, a reader's articles) holds every
+  part as soon as it knows the head; one read back in time (a chat) holds the
+  head and what a reader scrolled to. What one step changes across many parts
+  (marking every subscription read) is written as a summary in the part it is
+  invoked on, so the step costs one part too.
 - **Read as it changes.** `ViewCx::chain_value` follows the record and the
   chain's parts the way `ViewCx::value` follows the record, and a part is a
   record a view part is built over (`Chain::part_record` with
@@ -787,7 +789,8 @@ there before it moves into parts:
 | Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole record per change |
 | Files (folder) | (now) the tree's own record, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
 | Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
-| Feeds | every article with its full text | articles | grows until its feed is removed |
+| Feeds | (before) every article with its full text | articles | grows until its feed is removed |
+| Feeds | (now) folders and subscriptions; articles in parts of at most 300 articles or 1 MiB of their text | parts | one part's cost, the same bytes at 10× the articles |
 | Messages | every conversation with every message | messages | grows without bound |
 | Discord bridge | a mapping row per mirrored message | messages | grows without bound |
 | Calendar | every event with overrides and attendees | events | grows with the calendar |

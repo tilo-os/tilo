@@ -168,7 +168,7 @@ impl Core {
     /// empty library offers its one action, an empty place says what would
     /// fill it.
     pub(crate) fn empty_list(&self) -> Option<EmptyList> {
-        if !self.store.articles_for(&self.filter).is_empty() {
+        if !self.articles().articles_for(&self.filter).is_empty() {
             return None;
         }
         let library_empty = self.store.feeds.is_empty();
@@ -218,7 +218,7 @@ impl Core {
         self.list.theme = theme.clone();
 
         let ids: Vec<Id> = self
-            .store
+            .articles()
             .articles_for(&self.filter)
             .iter()
             .map(|a| a.id.clone())
@@ -343,7 +343,7 @@ impl Core {
         next: Option<&Id>,
     ) -> (u64, bool, bool) {
         use std::hash::{Hash, Hasher};
-        let Some(article) = self.store.article(id).map(|article| article.item()) else {
+        let Some(article) = self.articles().article(id).map(|article| article.item()) else {
             return (0, false, false);
         };
         let viewport = self.list.viewport;
@@ -549,7 +549,7 @@ impl Core {
             .rows
             .iter()
             .filter_map(|row| {
-                let article = self.store.article(&row.id)?.item();
+                let article = self.articles().article(&row.id)?.item();
                 let time = relative_time(article.published, self.now);
                 let face = ListRowFace::new(&article.title)
                     .secondary(self.row_secondary(article))
@@ -578,7 +578,7 @@ impl Core {
 
     fn list_tooltip(&self, point: Point) -> Option<(Rect, String)> {
         let row = self.list.rows.iter().find(|row| row.rect.contains(point))?;
-        let article = self.store.article(&row.id)?.item();
+        let article = self.articles().article(&row.id)?.item();
         if let Some(star) = row.star.filter(|r| r.contains(point)) {
             return Some((star, star_label(article).to_string()));
         }

@@ -105,12 +105,20 @@ feeds-effects-reader-paper = Use reader paper
 feeds-library = Feeds
 feeds-library-add-subscription = Add subscription
 feeds-library-unsubscribe = Unsubscribe
-feeds-library-mark-feed-read = Mark a subscription read
-feeds-library-mark-everything-read = Mark all articles as read
 feeds-library-new-folder = New folder
 feeds-library-delete-folder = Delete folder
 feeds-library-import-subscriptions = Import subscriptions
-feeds-library-refreshed = Record fetched articles
+feeds-library-note-feed = Note what a feed says of itself
+
+## The parts the articles are kept in
+
+feeds-articles = Articles
+feeds-articles-receive = Land fetched articles
+feeds-articles-mark-read = Mark articles read
+feeds-articles-set-read = Mark an article read or unread
+feeds-articles-set-starred = Star an article
+feeds-articles-set-tags = Tag an article
+feeds-articles-forget-feed = Drop a subscription's articles
 
 ## What the app is called in a window and in the launcher
 feeds-app-title = Feeds

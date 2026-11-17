@@ -104,7 +104,7 @@ fn search_offers_the_apps_actions_beside_what_it_holds() {
     harness.relayout();
     let open = listed(harness);
     assert!(
-        open.iter().any(|name| name == "Mark all articles as read"),
+        open.iter().any(|name| name == "Add subscription"),
         "the app's actions are offered: {open:?}"
     );
     assert!(
@@ -114,12 +114,12 @@ fn search_offers_the_apps_actions_beside_what_it_holds() {
     harness.key("Escape");
     harness.relayout();
     harness
-        .open_search(&ui::search::SearchRequest::this_app().with_query("mark all"))
+        .open_search(&ui::search::SearchRequest::this_app().with_query("subscri"))
         .expect("search opens again");
     harness.relayout();
     let typed = listed(harness);
     assert!(
-        typed.iter().any(|name| name == "Mark all articles as read"),
+        typed.iter().any(|name| name == "Add subscription"),
         "a typed word finds an action: {typed:?}"
     );
 }

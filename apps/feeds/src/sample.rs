@@ -10,6 +10,22 @@
 
 use crate::gemtext;
 use crate::model::{Article, BlockKind, ContentBlock, Feed, FeedKind, Folder, Id, Library};
+use crate::part::ArticlePart;
+
+/// The bundled library's articles, staged into the parts as a capture's or a
+/// test's window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scene;
+
+/// Fill an empty chain of parts with the bundled articles, as their
+/// fixture: each under its own id, so a scenario can name them.
+pub fn fill(chain: &ui::framework::Chain<ArticlePart>) {
+    if !chain.parts().is_empty() {
+        return;
+    }
+    let (_, part) = store();
+    let _ = chain.write_start(0, &part);
+}
 
 fn para(s: &str) -> ContentBlock {
     ContentBlock::new(BlockKind::Paragraph, s)
@@ -30,16 +46,19 @@ fn code(s: &str) -> ContentBlock {
 const HOUR: i64 = 3600;
 const DAY: i64 = 24 * HOUR;
 
-/// Build the full sample store. Timestamps are anchored to "now" so the
-/// relative dates ("3h", "2d") read correctly whenever the app launches.
+/// Build the full sample store: the folders and subscriptions of the library,
+/// and one part holding the articles they brought in. Timestamps are anchored
+/// to "now" so the relative dates ("3h", "2d") read correctly whenever the
+/// app launches.
 #[allow(
     clippy::too_many_lines,
     reason = "one block of fixture literals per bundled article; splitting it would only \
               relocate the sample data, not shrink what a reader must trace for one entry"
 )]
-pub fn store() -> Library {
+pub fn store() -> (Library, ArticlePart) {
     let now = ui::clock::local_now().timestamp();
     let mut s = Library::new();
+    let mut part = ArticlePart::default();
 
     let tech = folder(&mut s, "Technology");
     let science = folder(&mut s, "Science");
@@ -103,7 +122,7 @@ pub fn store() -> Library {
     );
 
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             rust.clone(),
             "Announcing Rust 1.96.1",
@@ -137,7 +156,7 @@ pub fn store() -> Library {
         .starred(),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             rust.clone(),
             "A new era for the borrow checker",
@@ -160,7 +179,7 @@ pub fn store() -> Library {
         .read(),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             rust,
             "Async fn in traits, one year on",
@@ -177,7 +196,7 @@ pub fn store() -> Library {
 
     // --- Hacker News -----------------------------------------------------
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             hn.clone(),
             "Show HN: I built a spatial OS in Rust",
@@ -199,7 +218,7 @@ pub fn store() -> Library {
         ),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             hn.clone(),
             "The hidden cost of microservices",
@@ -213,7 +232,7 @@ pub fn store() -> Library {
         ),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             hn.clone(),
             "SQLite is not a toy database",
@@ -228,7 +247,7 @@ pub fn store() -> Library {
         .read(),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             hn,
             "Ask HN: How do you stay focused?",
@@ -243,7 +262,7 @@ pub fn store() -> Library {
     );
 
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             lob.clone(),
             "Writing a WASM runtime in 500 lines",
@@ -263,7 +282,7 @@ pub fn store() -> Library {
         ),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             lob,
             "The case against config files",
@@ -279,7 +298,7 @@ pub fn store() -> Library {
     );
 
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             quanta.clone(),
             "Mathematicians prove a long-standing knot conjecture",
@@ -303,7 +322,7 @@ pub fn store() -> Library {
         .starred(),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             quanta,
             "The physics of how cells know their size",
@@ -318,7 +337,7 @@ pub fn store() -> Library {
     );
 
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             nasa.clone(),
             "Webb captures the deepest infrared image yet",
@@ -336,7 +355,7 @@ pub fn store() -> Library {
         ),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             nasa,
             "Artemis IV crew completes splashdown rehearsal",
@@ -352,7 +371,7 @@ pub fn store() -> Library {
     );
 
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             smashing.clone(),
             "Designing for the CRDT era",
@@ -374,7 +393,7 @@ pub fn store() -> Library {
         ),
     );
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             smashing,
             "Modern CSS nesting in practice",
@@ -392,7 +411,7 @@ pub fn store() -> Library {
     let gem_body = "# Antenna — aggregated gemlogs\n\nWelcome to Antenna, a feed of recent posts from across Geminispace.\n\n## Recent entries\n\n=> gemini://example.org/log/2026-06-30.gmi On writing small software\n=> gemini://another.capsule/posts/tea.gmi A defence of loose-leaf tea\n\nGemini is a lightweight internet protocol sitting between Gopher and the Web. Pages are written in gemtext:\n\n```\n# A heading\n* a list item\n=> gemini://link.example a link line\n```\n\n> Slow down. Read one thing at a time.\n\nThat's the whole format. No tracking, no ads, no JavaScript.";
     let gem_blocks = gemtext::to_blocks(gem_body);
     article(
-        &mut s,
+        &mut part,
         SampleArticle::new(
             antenna,
             "Antenna — fresh posts from Geminispace",
@@ -404,7 +423,7 @@ pub fn store() -> Library {
         ),
     );
 
-    s
+    (s, part)
 }
 
 fn folder(s: &mut Library, name: &str) -> Id {
@@ -482,7 +501,7 @@ impl<'a> SampleArticle<'a> {
     }
 }
 
-fn article(s: &mut Library, fixture: SampleArticle<'_>) {
+fn article(part: &mut ArticlePart, fixture: SampleArticle<'_>) {
     let lower = fixture.title.to_lowercase();
     let tags = [
         lower.contains("rust").then_some("rust"),
@@ -494,8 +513,8 @@ fn article(s: &mut Library, fixture: SampleArticle<'_>) {
     .flatten()
     .map(str::to_string)
     .collect();
-    let id = Id::from_raw(format!("sample-article-{}", s.articles.len()));
-    s.articles.push(
+    let id = Id::from_raw(format!("sample-article-{}", part.articles.len()));
+    part.articles.push(
         id,
         Article {
             feed_id: fixture.feed_id,
@@ -519,15 +538,15 @@ mod tests {
     #[test]
     fn sample_store_covers_demo_surfaces_and_preserves_states() {
         {
-            let s = store();
+            let (s, part) = store();
             assert_eq!(s.folders.len(), 3);
             assert_eq!(s.feeds.len(), 7);
-            assert_eq!(s.articles.len(), 16);
+            assert_eq!(part.articles.len(), 16);
             assert!(s.feeds.values().any(|f| f.kind == FeedKind::Gemini));
 
             // The gemini article has gemtext-derived blocks (incl. a link).
             let gem_feed = s.feed_rows().find(|f| f.kind == FeedKind::Gemini).unwrap();
-            let gem_art = s
+            let gem_art = part
                 .articles
                 .values()
                 .find(|a| &a.feed_id == gem_feed.id)
@@ -536,9 +555,9 @@ mod tests {
         }
 
         {
-            let s = store();
+            let (_, part) = store();
             let article = |title: &str| {
-                s.articles
+                part.articles
                     .values()
                     .find(|article| article.title == title)
                     .unwrap()
