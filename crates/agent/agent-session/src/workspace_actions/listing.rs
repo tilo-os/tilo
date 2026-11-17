@@ -61,12 +61,11 @@ impl Worker {
             let window = (skip, wanted.saturating_sub(rows.len()));
             match self.listed_page(workspace_id, bounded, route, state, query, window) {
                 Ok((held, listed)) => {
+                    self.unmounted.remove(route);
                     skip = skip.saturating_sub(held);
                     rows.extend(listed.into_iter().map(kept));
                 }
-                Err(error) => {
-                    tracing::warn!(%error, record = %route.document, "workspace actions: a record did not mount");
-                }
+                Err(error) => self.did_not_mount(route, error),
             }
             // The record's registered reads, over its retained source: kept
             // while the record stands where it was ([`super::canonical`]).
@@ -94,6 +93,23 @@ impl Worker {
         let more = rows.len() > size;
         rows.truncate(size);
         CataloguePage::window(revision, rows, query, more)
+    }
+
+    /// Log why the document at `route` did not mount for a listing: once for
+    /// each cause, as an agent lists at every step of its turn.
+    pub(super) fn did_not_mount(&mut self, route: &DocumentRoute, error: String) {
+        if self.unmounted.get(route) == Some(&error) {
+            tracing::debug!(%error, app = %route.app_id, document = %route.document, "workspace actions: a document still does not mount");
+            return;
+        }
+        tracing::warn!(
+            %error,
+            app = %route.app_id,
+            document = %route.document,
+            "workspace actions: {} did not mount",
+            super::named(route)
+        );
+        self.unmounted.insert(route.clone(), error);
     }
 
     /// [`Self::listed`], one page of it as `query` lists it: how many

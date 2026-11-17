@@ -11,7 +11,7 @@ use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 const CHAT: &str = "so.tilo.chat";
-const TASKS: &str = "so.tilo.tasks";
+pub(super) const TASKS: &str = "so.tilo.tasks";
 /// The agent's id in the workspace's record of its agents.
 pub(super) const SCOUT: &str = "scout";
 
@@ -150,7 +150,7 @@ pub(super) async fn make_agent(
 
 /// The person files "Plan the launch" through the server's action service, as their page or their
 /// MCP client does, and gives it to the agent. The part of the tracker's issues it went into.
-async fn file_issue(
+pub(super) async fn file_issue(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
@@ -164,7 +164,7 @@ async fn file_issue(
         .await
         .unwrap();
     let id = WorkspaceId::parse(workspace).unwrap();
-    let host = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let service = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
     let person = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -178,7 +178,7 @@ async fn file_issue(
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
     tilo_server::workspace_agents::invoke_named(
-        &host,
+        &service,
         &person,
         &route,
         &ui::resource::chain_resource_id(&tasks::part::chain()),
@@ -191,7 +191,7 @@ async fn file_issue(
 }
 
 /// The first part of the tracker's issues, as the workspace keeps it.
-async fn tracker(
+pub(super) async fn tracker(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     record: &str,
@@ -630,7 +630,7 @@ pub(super) async fn write_to_agent(
 ) -> Id {
     let person = hex::encode(root.verifying_key().to_bytes());
     let id = WorkspaceId::parse(workspace).unwrap();
-    let host = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let service = tilo_server::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -644,7 +644,7 @@ pub(super) async fn write_to_agent(
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});
     tilo_server::workspace_agents::invoke_named(
-        &host,
+        &service,
         &caller,
         &route,
         &ui::resource::chain_resource_id(&chat::parts::chain()),

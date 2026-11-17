@@ -1287,6 +1287,10 @@ struct Worker {
     notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
     /// When each record's name was last read for its app's index ([`publish`]).
     named: HashMap<DocumentRoute, Instant>,
+    /// Why each document a listing offers did not mount, as it was told last
+    /// ([`listing`]): an agent lists at every step it takes, so a cause is
+    /// logged once, not once per listing.
+    unmounted: HashMap<DocumentRoute, String>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1417,6 +1421,7 @@ impl Worker {
             notes_failures: HashMap::new(),
             notes_followed: HashMap::new(),
             named: HashMap::new(),
+            unmounted: HashMap::new(),
         }
     }
 
@@ -1625,6 +1630,14 @@ impl Worker {
         if workspace.ask(workspace_id, needs) {
             return false;
         }
+        // The chains its app keeps beside the document it names are asked for
+        // too, and waited for.
+        if self.ask_chains(workspace_id, needs) {
+            return false;
+        }
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return true;
+        };
         let sealed = workspace.sealed(workspace_id, needs);
         if sealed.is_empty() {
             return true;
@@ -2071,7 +2084,7 @@ impl Worker {
     /// app there is installed and none running, and what a member's agent
     /// names is not found. A record listed here that the replica has not been
     /// sent is asked for when a request names it.
-    fn records(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+    fn documents(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = state.records.clone();
         if let Some(held) = self
             .shared

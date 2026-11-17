@@ -59,7 +59,7 @@ impl Worker {
         else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
-        let routes = self.records(&state, &cluster_id);
+        let routes = self.documents(&state, &cluster_id);
         let own_provider = workspace_provider(&cluster_id);
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
             Some(provider) if provider == own_provider => Vec::new(),
@@ -152,16 +152,13 @@ impl Worker {
         for route in wanted {
             let provider = record_provider(route);
             match self.listed(workspace_id, bounded, route, state) {
-                Ok(descriptors) => rows.extend(descriptors.into_iter().map(|descriptor| {
-                    CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-                })),
-                Err(error) => tracing::warn!(
-                    %error,
-                    app = %route.app_id,
-                    record = %route.document,
-                    "workspace actions: {} did not mount",
-                    super::named(route)
-                ),
+                Ok(descriptors) => {
+                    self.unmounted.remove(route);
+                    rows.extend(descriptors.into_iter().map(|descriptor| {
+                        CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
+                    }));
+                }
+                Err(error) => self.did_not_mount(route, error),
             }
         }
         rows

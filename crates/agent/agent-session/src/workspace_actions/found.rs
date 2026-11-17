@@ -110,7 +110,7 @@ impl Worker {
             .as_ref()
             .map_or_else(|| self.member.clone(), |who| who.person.clone());
         let routes: Vec<(DocumentRoute, Readable)> = self
-            .records(&state, &cluster_id)
+            .documents(&state, &cluster_id)
             .into_iter()
             .filter_map(|route| {
                 let readable = self.readable(workspace_id, who.as_ref(), &route)?;
@@ -351,7 +351,7 @@ impl Worker {
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         // Nothing written in the workspace yet: no records, and its first ones are news.
         let routes = match state.workspace.clone() {
-            Some(cluster_id) => self.records(&state, &cluster_id),
+            Some(cluster_id) => self.documents(&state, &cluster_id),
             None => Vec::new(),
         };
         let records: Vec<DocumentKey> = routes

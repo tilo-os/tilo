@@ -704,7 +704,7 @@ impl Worker {
         }
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         let routes: Vec<DocumentRoute> = match state.workspace.clone() {
-            Some(cluster_id) => self.records(&state, &cluster_id),
+            Some(cluster_id) => self.documents(&state, &cluster_id),
             None => Vec::new(),
         };
         let records: Vec<DocumentKey> = routes

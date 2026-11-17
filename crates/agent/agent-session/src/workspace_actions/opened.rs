@@ -191,6 +191,52 @@ impl Workspace {
 }
 
 impl Worker {
+    /// In a workspace that sends its documents only once they are opened,
+    /// ask it for the chains kept beside the document `needs` names: the head
+    /// of each chain of its app that the workspace lists a part of. An app
+    /// keeps its chains (Tasks' issues, Chat's messages) in parts beside its
+    /// own document, and the workspace sends a part only to a device that
+    /// asks for its chain's head, which it answers with the newest part: the
+    /// document is handed that ([`super::catch_up::hold_parts`]). Without it
+    /// a document mounted here held its chains empty, so an agent listed,
+    /// read and acted on no issue and no message of it. Whether an answer is
+    /// still owed.
+    pub(super) fn ask_chains(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
+        let (Needs::Read { app_id, .. } | Needs::Act { app_id, .. }) = needs else {
+            return false;
+        };
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return false;
+        };
+        if !workspace.when_opened {
+            return false;
+        }
+        let Some(cluster_id) = workspace.cluster_id(workspace_id) else {
+            return false;
+        };
+        let state = workspace.state();
+        let mut heads: Vec<DocumentRoute> = Vec::new();
+        for listed in self.documents(&state, &cluster_id) {
+            if listed.app_id != app_id {
+                continue;
+            }
+            let Some(chain) = chain_of(&listed.document) else {
+                continue;
+            };
+            let head = DocumentRoute {
+                document: chain.chain_head().as_str().to_owned(),
+                ..listed
+            };
+            if !heads.contains(&head) {
+                heads.push(head);
+            }
+        }
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return false;
+        };
+        workspace.ask_routes(workspace_id, heads)
+    }
+
     /// What running `request` waits for: the record it acts on
     /// ([`invoke_keys`]), and for an open of an app, the record the open
     /// shows, which the workspace may hold and send only when asked. That is
