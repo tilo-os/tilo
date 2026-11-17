@@ -34,6 +34,18 @@ struct Info {
     position: (i32, i32),
 }
 
+impl Info {
+    /// The monitor as `wl_output` describes it.
+    fn physical(&self) -> PhysicalProperties {
+        PhysicalProperties {
+            size: self.physical.into(),
+            subpixel: subpixel(self.subpixel),
+            make: self.make.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
+
 /// One of the desktop's outputs.
 pub(crate) struct UpOutput {
     pub global: u32,
@@ -96,11 +108,49 @@ impl State {
             WlTransform::try_from(info.transform).map_or(Transform::Normal, Transform::from);
         let position = Some(info.position.into());
         let scale = Some(Scale::Integer(info.scale.max(1)));
-        if let Some(kept) = self
+        let physical = info.physical();
+        let at = self
             .outputs
-            .iter_mut()
-            .find(|kept| kept.output.name() == name)
-        {
+            .iter()
+            .position(|kept| kept.output.name() == name);
+        if let Some(at) = at {
+            // The monitor on that connector changed: make, model or size are another monitor
+            // now, and `wl_output` has no event for them, so the app is shown a new output of
+            // the same name where the old one stood.
+            let Some(known) = self
+                .outputs
+                .get(at)
+                .map(|kept| kept.output.physical_properties())
+            else {
+                return;
+            };
+            let same_monitor = known.make == physical.make
+                && known.model == physical.model
+                && known.size == physical.size
+                && known.subpixel == physical.subpixel;
+            if !same_monitor {
+                let old = self.outputs.remove(at);
+                self.dh.remove_global::<Self>(old.global);
+                let output = Output::new(name, physical);
+                if let Some(mode) = mode {
+                    output.add_mode(mode);
+                    output.set_preferred(mode);
+                }
+                output.change_current_state(mode, Some(transform), scale, position);
+                let global = output.create_global::<Self>(&self.dh);
+                self.outputs.insert(
+                    at,
+                    KeptOutput {
+                        output,
+                        global,
+                        seen: generation,
+                    },
+                );
+                return;
+            }
+            let Some(kept) = self.outputs.get_mut(at) else {
+                return;
+            };
             if let Some(mode) = mode {
                 kept.output.add_mode(mode);
                 kept.output.set_preferred(mode);
@@ -110,15 +160,7 @@ impl State {
             kept.seen = generation;
             return;
         }
-        let output = Output::new(
-            name,
-            PhysicalProperties {
-                size: info.physical.into(),
-                subpixel: subpixel(info.subpixel),
-                make: info.make,
-                model: info.model,
-            },
-        );
+        let output = Output::new(name, physical);
         if let Some(mode) = mode {
             output.add_mode(mode);
             output.set_preferred(mode);
@@ -269,6 +311,11 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for State {
             zxdg_output_v1::Event::LogicalPosition { x, y } => {
                 if let Some(output) = state.up_output(*global) {
                     output.info.position = (x, y);
+                }
+            }
+            zxdg_output_v1::Event::Name { name } => {
+                if let Some(output) = state.up_output(*global) {
+                    output.name = Some(name);
                 }
             }
             // Before version 3 the xdg-output's own done ends its description.

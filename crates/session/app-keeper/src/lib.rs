@@ -47,6 +47,7 @@ mod child;
 mod control;
 mod dmabuf;
 mod outputs;
+mod pings;
 mod seat;
 mod state;
 mod surfaces;
@@ -567,6 +568,7 @@ impl Data {
         if self.state.up.take().is_some() {
             self.state.hold_all();
             self.state.seat.hold();
+            self.state.pings.clear();
             self.state.windows_changed = true;
         }
     }

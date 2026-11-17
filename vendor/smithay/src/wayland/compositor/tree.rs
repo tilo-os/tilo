@@ -413,6 +413,12 @@ impl PrivateSurfaceData {
             .collect()
     }
 
+    /// Retrieve the parent's whole stack in drawing order, the parent surface itself included
+    /// at its place: what comes before it draws below it, what comes after above.
+    pub fn children_in_stack_order(parent: &WlSurface) -> Vec<WlSurface> {
+        Self::lock_user_data(parent).children.clone()
+    }
+
     /// Reorders a surface relative to one of its sibling
     ///
     /// Fails if `relative_to` is not a sibling or parent of `surface`.

@@ -88,10 +88,25 @@ pub(crate) enum Role {
     Popup(Box<Pop>),
 }
 
-#[derive(Default)]
 pub(crate) struct Sub {
     pub location: (i32, i32),
     pub sync: bool,
+    /// The surface it is a subsurface of: its desktop twin is stacked against it.
+    pub parent: ObjectId,
+    /// Its `wl_subsurface` went while the surface stays: the twin goes at the next commit of
+    /// the parent.
+    pub ended: bool,
+}
+
+impl Sub {
+    pub(crate) fn new(parent: ObjectId) -> Self {
+        Self {
+            location: (0, 0),
+            sync: true,
+            parent,
+            ended: false,
+        }
+    }
 }
 
 /// A window.
@@ -587,6 +602,7 @@ impl State {
             ((location.x, location.y), xdg)
         });
         let sync = is_sync_subsurface(surface);
+        let parent = get_parent(surface).map(|parent| parent.id());
         let new = match assignment {
             Some(BufferAssignment::NewBuffer(buffer)) => Some(self.buffers.key_for(&buffer)),
             Some(BufferAssignment::Removed) => Some(None),
@@ -602,6 +618,21 @@ impl State {
         kept.damage.extend(damage);
         kept.frames
             .extend(frames.into_iter().map(|frame| (frame, 0)));
+        if self.up.is_none() {
+            // No desktop is showing these commits, and the next one gets the whole picture
+            // (a fresh desktop is pushed every buffer and full damage). Damage from the
+            // commits in between could never be used, and an app that commits without waiting
+            // would otherwise collect a callback per commit until a desktop returns: keep the
+            // newest callback, which wakes it once on re-attach, and complete the rest now,
+            // which the protocol allows for a frame nobody will show.
+            kept.damage.clear();
+            while kept.frames.len() > 1 {
+                let (frame, _) = kept.frames.remove(0);
+                if frame.is_alive() {
+                    frame.done(0);
+                }
+            }
+        }
         kept.scale = scale;
         kept.transform = transform;
         if let Some(delta) = delta {
@@ -612,6 +643,11 @@ impl State {
         kept.input = input;
         match &mut kept.role {
             Role::Sub(sub) => {
+                match parent {
+                    Some(parent) => sub.parent = parent,
+                    // The `wl_subsurface` is gone; its twin goes on the parent's commit.
+                    None => sub.ended = true,
+                }
                 sub.location = location;
                 sub.sync = sync;
             }
@@ -752,6 +788,8 @@ impl State {
         if let (Some(up), Some(kept)) = (&self.up, self.surfaces.get(id)) {
             up.sending_for(&kept.surface);
         }
+        // A `wl_subsurface` destroyed on its own leaves nothing to show on the desktop.
+        self.forget_ended_children(id);
         if !self.ensure_up(id) {
             return;
         }
@@ -759,6 +797,82 @@ impl State {
         self.push_toplevel_meta(id);
         self.push_attributes(id);
         self.push_content(id);
+        self.stack_children(id);
+    }
+
+    /// A child's `wl_subsurface` was destroyed while its surface stays: the desktop's twin
+    /// goes, and the surface stops showing anything.
+    fn forget_ended_children(&mut self, parent: &ObjectId) {
+        let ended: Vec<ObjectId> = self
+            .surfaces
+            .iter()
+            .filter_map(|(id, kept)| {
+                let Role::Sub(sub) = &kept.role else {
+                    return None;
+                };
+                (sub.parent == *parent && (sub.ended || get_parent(&kept.surface).is_none()))
+                    .then(|| id.clone())
+            })
+            .collect();
+        for id in ended {
+            let Some(kept) = self.surfaces.get_mut(&id) else {
+                continue;
+            };
+            kept.role = Role::None;
+            kept.attached = false;
+            kept.damage.clear();
+            let buffer = kept.buffer.take();
+            if let Some(us) = kept.up.as_mut() {
+                destroy_role(std::mem::replace(&mut us.role, UpRole::Plain));
+                us.pushed = Pushed::default();
+            }
+            self.buffers.replace_current(buffer, None);
+        }
+    }
+
+    /// The parent's children, stacked on the desktop exactly as the app has them: below the
+    /// parent, above it, and in the order between them.
+    fn stack_children(&mut self, parent_id: &ObjectId) {
+        let Some(parent) = self
+            .surfaces
+            .get(parent_id)
+            .map(|kept| kept.surface.clone())
+        else {
+            return;
+        };
+        let order = smithay::wayland::compositor::children_in_stack_order(&parent);
+        if order.len() <= 1 {
+            return;
+        }
+        for child in &order {
+            if child.id() != *parent_id {
+                self.ensure_up(&child.id());
+            }
+        }
+        let Some(parent_up) = self.up_surface(parent_id) else {
+            return;
+        };
+        let mut previous: Option<c::wl_surface::WlSurface> = None;
+        for child in &order {
+            let id = child.id();
+            if id == *parent_id {
+                previous = Some(parent_up.clone());
+                continue;
+            }
+            let Some(up) = self.surfaces.get(&id).and_then(|kept| kept.up.as_ref()) else {
+                continue;
+            };
+            match (&up.role, previous.as_ref()) {
+                (UpRole::Sub(sub), Some(above_this)) => sub.place_above(above_this),
+                (UpRole::Sub(sub), None) => sub.place_below(&parent_up),
+                _ => {}
+            }
+            previous = Some(up.surface.clone());
+        }
+    }
+
+    fn up_surface(&self, id: &ObjectId) -> Option<c::wl_surface::WlSurface> {
+        Some(self.surfaces.get(id)?.up.as_ref()?.surface.clone())
     }
 
     /// The surface's role state and attributes that changed: position and sync of a

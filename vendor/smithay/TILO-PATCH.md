@@ -379,3 +379,16 @@ descriptor, the pool's current size and the buffer's place in it without
 mapping or touching its contents.
 
 Remove this once upstream exposes a buffer's pool descriptor.
+
+## A parent surface's whole stack in drawing order
+
+`PrivateSurfaceData` keeps a surface's children in drawing order with the surface itself among
+them, so `wl_subsurface.place_above`/`place_below` can name the parent, but `get_children`
+filters the parent out and nothing exposes where it sits. A proxy that mirrors an app's
+surfaces (the app keeper) then cannot tell a subsurface above the parent from one below it, and
+recreates a tree with the wrong stacking. `src/wayland/compositor/tree.rs`
+`PrivateSurfaceData::children_in_stack_order` and the re-export
+`compositor::children_in_stack_order` return the list as it stands, parent included at its
+place.
+
+Remove this once upstream exposes the parent's place among its children.

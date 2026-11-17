@@ -73,6 +73,8 @@ pub struct State {
     pub(crate) placements: HashMap<String, String>,
     pub(crate) windows_changed: bool,
     pub(crate) fault: Option<String>,
+    /// The desktop's pings and the app connections that owe them an answer.
+    pub(crate) pings: crate::pings::Pings,
     /// App connections whose state broke the desktop's protocol once already.
     pub(crate) faulted: HashSet<ClientId>,
     /// Messages for every connected session.
@@ -109,6 +111,7 @@ impl State {
             placements: HashMap::new(),
             windows_changed: false,
             fault: None,
+            pings: crate::pings::Pings::default(),
             faulted: HashSet::new(),
             outbox: Vec::new(),
             ready_once: false,
@@ -191,8 +194,8 @@ impl CompositorHandler for State {
         self.new_kept(surface);
     }
 
-    fn new_subsurface(&mut self, surface: &WlSurface, _parent: &WlSurface) {
-        self.set_role(surface, Role::Sub(crate::surfaces::Sub::default()));
+    fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
+        self.set_role(surface, Role::Sub(crate::surfaces::Sub::new(parent.id())));
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -364,6 +367,10 @@ impl XdgShellHandler for State {
 
     fn popup_destroyed(&mut self, surface: PopupSurface) {
         self.role_destroyed(&surface.wl_surface().id());
+    }
+
+    fn client_pong(&mut self, client: smithay::wayland::shell::xdg::ShellClient) {
+        self.app_ponged(&client);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {

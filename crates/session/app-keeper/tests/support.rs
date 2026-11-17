@@ -261,6 +261,10 @@ pub struct Heard {
     pub keyboard_entered: bool,
     pub pointer_entered: bool,
     pub buffers_released: usize,
+    /// Whether the app answers a ping when it reads one.
+    pub answers_pings: bool,
+    /// The serials of the pings it read.
+    pub pings: Vec<u32>,
     pending_size: Option<(i32, i32, Vec<u32>)>,
 }
 
@@ -282,10 +286,14 @@ impl App {
         let connection = Connection::from_socket(stream).expect("connection");
         let queue = connection.new_event_queue();
         connection.display().get_registry(&queue.handle(), ());
+        let heard = Heard {
+            answers_pings: true,
+            ..Heard::default()
+        };
         let mut app = Self {
             connection,
             queue,
-            heard: Heard::default(),
+            heard,
             surface: None,
             xdg: None,
             toplevel: None,
@@ -386,6 +394,13 @@ impl App {
             pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
         pool.destroy();
         buffer
+    }
+
+    /// Answer the last ping the app read, as a client does when it gets to its event loop.
+    pub fn pong(&self) {
+        if let (Some(wm_base), Some(serial)) = (&self.heard.wm_base, self.heard.pings.last()) {
+            wm_base.pong(*serial);
+        }
     }
 
     /// Ask for the next frame callback on the window.
@@ -567,7 +582,7 @@ impl Dispatch<WlOutput, u32> for Heard {
 
 impl Dispatch<XdgWmBase, ()> for Heard {
     fn event(
-        _: &mut Self,
+        heard: &mut Self,
         wm_base: &XdgWmBase,
         event: xdg_wm_base::Event,
         (): &(),
@@ -575,7 +590,10 @@ impl Dispatch<XdgWmBase, ()> for Heard {
         _: &QueueHandle<Self>,
     ) {
         if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
+            heard.pings.push(serial);
+            if heard.answers_pings {
+                wm_base.pong(serial);
+            }
         }
     }
 }

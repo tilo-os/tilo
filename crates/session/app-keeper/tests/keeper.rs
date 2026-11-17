@@ -417,3 +417,138 @@ fn frames_through_the_keeper_hold_descriptors_not_pixels() {
     );
     assert!(!app.broken);
 }
+
+#[test]
+fn an_app_that_stops_answering_pings_looks_hung_to_the_desktop() {
+    use std::time::{Duration, Instant};
+    use tilo_compositor::app_liveness::UNANSWERED;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Hung", Some("hung"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let window = rig.desktop().windows()[0].0.id;
+
+    // The app stops reading: it neither pongs nor draws from here on.
+    app.heard.answers_pings = false;
+    rig.desktop()
+        .input(InputEvent::Key {
+            keycode: 30,
+            pressed: true,
+        })
+        .unwrap();
+    rig.pump(&mut [&mut app], |_, apps| !apps[0].heard.pings.is_empty());
+    rig.settle(&mut [&mut app]);
+    let later = Instant::now() + UNANSWERED + Duration::from_millis(10);
+    rig.desktop().advance_app_liveness_at(later);
+    assert_eq!(
+        rig.desktop().not_responding_windows(),
+        [window],
+        "the desktop's ping reached the app, and its silence reached the desktop"
+    );
+
+    // The app answers the ping it already read: the desktop hears it and stops calling it hung.
+    app.pong();
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().advance_app_liveness_at(Instant::now());
+        rig.desktop().not_responding_windows().is_empty()
+    });
+}
+
+#[test]
+fn thousands_of_commits_while_away_keep_one_callback_and_bounded_memory() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Busy", Some("busy"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+
+    let surface = app.surface.clone().unwrap();
+    let buffer = app.buffer((100, 80), RED);
+    let done_before = app.heard.frames_done;
+    let fds = open_fds();
+    let resident = resident_bytes();
+    for frame in 0..3000 {
+        let _ = app.request_frame();
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, 100, 80);
+        surface.commit();
+        if frame % 50 == 0 {
+            rig.settle(&mut [&mut app]);
+        }
+    }
+    rig.settle(&mut [&mut app]);
+    let done = app.heard.frames_done - done_before;
+    assert!(
+        done >= 2900,
+        "callbacks that can never be shown are completed while away: {done} of 3000"
+    );
+    assert!(
+        open_fds() <= fds + 8,
+        "descriptors grew with the commits: {fds} then {}",
+        open_fds()
+    );
+    let grown = resident_bytes().saturating_sub(resident);
+    assert!(
+        grown < 64 << 20,
+        "memory grew by {grown} bytes over 3000 commits while away"
+    );
+    assert!(!app.broken);
+
+    // The one callback kept wakes the app once a desktop shows the last frame.
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, apps| {
+        rig.desktop().render().unwrap();
+        apps[0].heard.frames_done > done_before + done
+    });
+    let (_, _, (x, y, _, _)) = rig.windows()[0];
+    assert_eq!(rig.pixel((x + 50) as u32, (y + 40) as u32), RED);
+}
+
+#[test]
+fn subsurfaces_stack_as_the_app_places_them_and_one_destroyed_leaves() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Stacked", Some("stacked"));
+    app.show(&mut rig, (100, 80), RED);
+    let parent = app.surface.clone().unwrap();
+    let (first, first_sub) = app.subsurface((10, 10), (20, 20), BLUE);
+    let (_second, second_sub) = app.subsurface((10, 10), (20, 20), GREEN);
+    let overlap = |rig: &mut Rig| {
+        let (_, _, (x, y, _, _)) = rig.windows()[0];
+        rig.pixel((x + 15) as u32, (y + 15) as u32)
+    };
+    rig.pump(&mut [&mut app], |rig, _| overlap(rig) == GREEN);
+
+    // Below the parent: the red parent covers it, and the blue one stays above.
+    second_sub.place_below(&parent);
+    parent.commit();
+    rig.pump(&mut [&mut app], |rig, _| overlap(rig) == BLUE);
+
+    // Above its sibling again.
+    second_sub.place_above(&first);
+    parent.commit();
+    rig.pump(&mut [&mut app], |rig, _| overlap(rig) == GREEN);
+
+    // Only the wl_subsurface goes; its twin must go at the parent's next commit.
+    second_sub.destroy();
+    parent.commit();
+    rig.pump(&mut [&mut app], |rig, _| overlap(rig) == BLUE);
+    assert_eq!(rig.keeper.describe().fault, None);
+    assert!(!app.broken);
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    let (_, _, (x, y, _, _)) = rig.windows()[0];
+    assert_eq!(
+        rig.pixel((x + 15) as u32, (y + 15) as u32),
+        BLUE,
+        "stacking survives the restart"
+    );
+    assert_eq!(rig.pixel((x + 60) as u32, (y + 60) as u32), RED);
+    assert_eq!(rig.keeper.describe().fault, None);
+    let _ = first_sub;
+}

@@ -431,16 +431,16 @@ impl State {
 
 impl Dispatch<cx::xdg_wm_base::XdgWmBase, ()> for State {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         wm_base: &cx::xdg_wm_base::XdgWmBase,
         event: cx::xdg_wm_base::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // The keeper answers for itself: it is alive whatever the app does.
+        // Answered for the app, never by the keeper alone: an app that hangs must look hung.
         if let cx::xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
+            state.desktop_ping(wm_base, serial);
         }
     }
 }
