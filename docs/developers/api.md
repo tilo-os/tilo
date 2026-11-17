@@ -63,7 +63,9 @@ when there are any. The HTTP status follows the code:
 Every mutating call (`POST`, `PUT`, `DELETE`) takes an `Idempotency-Key` header (1–255
 printable characters; the SDKs always send one). The same key with the same request answers the
 first answer again (`Idempotent-Replayed: true`) and never runs anything twice; the same key with
-another request is `409 idempotency_conflict`. An action's invocation is derived from the key,
+another request is `409 idempotency_conflict`. Asked again while the first is still running,
+the same key and request answer `503 unavailable` with a `Retry-After`; the SDKs ask again and
+get the first answer once it lands. An action's invocation is derived from the key,
 so the host itself never runs it twice, also across API server restarts. A call still pending
 (waiting for a person) is not stored: retrying it with its key asks about the same invocation
 again, which is how a client awaits it. Keys are remembered for 24 hours per key holder.

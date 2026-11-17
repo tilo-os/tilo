@@ -31,6 +31,13 @@ impl ApiError {
         self
     }
 
+    /// Say how long to wait before the same call works.
+    #[must_use]
+    pub fn retry_after_ms(mut self, wait: u64) -> Self {
+        self.body.retry_after_ms = Some(wait);
+        self
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new("invalid_request", message)
     }

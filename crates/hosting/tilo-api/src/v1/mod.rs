@@ -228,6 +228,15 @@ async fn answer(
             );
             replayed
         }
+        // The caller gave up waiting on the first and asked again: it is busy, not refused, and
+        // the same call answers the first's answer once it lands.
+        Begun::Running => refusal(
+            &ApiError::new(
+                "unavailable",
+                "a request with this Idempotency-Key is still running: ask again with the same key",
+            )
+            .retry_after_ms(RUNNING_RETRY_MS),
+        ),
         Begun::Conflict(why) => refusal(&ApiError::new("idempotency_conflict", why)),
         Begun::Fresh => {
             let answered = caller.with_idempotency(key).handle(operation).await;
@@ -1537,6 +1546,9 @@ fn json_reply(status: StatusCode, body: &Value, location: Option<&str>) -> Reply
     }
     reply
 }
+
+/// How long a retry that came while its first request still ran waits before asking again.
+const RUNNING_RETRY_MS: u64 = 500;
 
 pub(crate) fn refusal(refused: &ApiError) -> Reply {
     let mut reply = crate::json_reply(refused.status, &refused.json());

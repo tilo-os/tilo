@@ -36,7 +36,10 @@ pub enum Begun {
     Fresh,
     /// It ran: answer this again.
     Replay(Stored),
-    /// The key came with another request, or with this one still running.
+    /// The same request under this key is still running: a retry that came before its answer,
+    /// which asks again and is answered it once it lands.
+    Running,
+    /// The key came with another request.
     Conflict(&'static str),
 }
 
@@ -103,10 +106,7 @@ impl Remembered {
                 if entry.request != request {
                     return Begun::Conflict("this Idempotency-Key was sent with another request");
                 }
-                return entry.answer.clone().map_or(
-                    Begun::Conflict("a request with this Idempotency-Key is still running"),
-                    Begun::Replay,
-                );
+                return entry.answer.clone().map_or(Begun::Running, Begun::Replay);
             }
             _ => {}
         }
@@ -156,10 +156,8 @@ mod tests {
         let remembered = Remembered::default();
         let request = request_digest("POST", "/v1/workspaces", b"{\"name\":\"a\"}");
         assert_eq!(remembered.begin("g", "k", request), Begun::Fresh);
-        assert!(matches!(
-            remembered.begin("g", "k", request),
-            Begun::Conflict(_)
-        ));
+        // Asked again before its answer: still running, not another request.
+        assert_eq!(remembered.begin("g", "k", request), Begun::Running);
         let stored = Stored {
             status: 201,
             body: json!({"id": "w"}),
