@@ -23,15 +23,16 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
+use provider_settings_ui::person_models::{
+    ModelBindings, ModelChoice, PersonModels, PersonModelsEffect,
+};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
+use ui::framework::{ActionControl, Actions, EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_actions::remote::{
     InvokeArgument, person_accounts,
     person_accounts::{MailAccount, MailAccounts},
-    person_models,
-    person_models::{ModelProviders, Protocol, ProviderView},
 };
-use ui::tilo_resource;
+use ui::tilo_resource::{self, Binds};
 use ui::widget::{Button, ButtonRole, Element, Row, Spacer, TextInput, TextInputKind};
 
 use crate::area::AreaContext;
@@ -44,8 +45,11 @@ use provider_settings_ui::widgets::{
 };
 
 crate::effects::effect_family!(PersonSettingsEffect => answer);
+// The model providers' requests are the shared piece's own, which every
+// window that shows a person's providers offers.
+crate::effects::effect_family!(PersonModelsEffect => answer_models);
 
-/// What a page asks of the host about the person's accounts and providers.
+/// What a page asks of the host about the person's mail accounts.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum PersonSettingsEffect {
@@ -59,33 +63,6 @@ pub enum PersonSettingsEffect {
         #[param("The account's id, as the list names it")]
         account: String,
     },
-    /// Add the provider the form names.
-    #[effect(job)]
-    AddProvider,
-    /// Show the field that takes one provider's key.
-    #[effect(view)]
-    AskProviderKey {
-        #[param("The provider's id, as the list names it")]
-        provider: String,
-    },
-    /// Keep the key typed under one provider.
-    #[effect(job)]
-    SaveProviderKey {
-        #[param("The provider's id, as the list names it")]
-        provider: String,
-    },
-    /// Remove a provider's key.
-    #[effect(job, destructive)]
-    RemoveProviderKey {
-        #[param("The provider's id, as the list names it")]
-        provider: String,
-    },
-    /// Remove a provider and its key.
-    #[effect(job, destructive)]
-    RemoveProvider {
-        #[param("The provider's id, as the list names it")]
-        provider: String,
-    },
 }
 
 pub(crate) fn answer(
@@ -93,25 +70,57 @@ pub(crate) fn answer(
     effect: PersonSettingsEffect,
     _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    if let Some(area) = app.areas().find::<AccountsArea>()
-        && matches!(
-            effect,
-            PersonSettingsEffect::AddMailAccount | PersonSettingsEffect::RemoveMailAccount { .. }
-        )
-    {
-        area.model().borrow_mut().apply(effect)?;
-        return Ok(Effected::done());
-    }
+    let area = app
+        .areas()
+        .find::<AccountsArea>()
+        .ok_or_else(crate::area::missing)?;
+    area.model().borrow_mut().apply(effect)?;
+    Ok(Effected::done())
+}
+
+pub(crate) fn answer_models(
+    app: &SettingsApp,
+    effect: PersonModelsEffect,
+    _cx: &mut EffectCx<Settings>,
+) -> EffectAnswer {
     let area = app
         .areas()
         .find::<ProvidersArea>()
         .ok_or_else(crate::area::missing)?;
-    if let PersonSettingsEffect::AskProviderKey { provider } = &effect {
-        area.model().borrow_mut().ask_key(provider);
-        return Ok(Effected::done());
-    }
     area.model().borrow_mut().apply(effect)?;
+    // What the request opened (a key's field, a form) shows at once.
+    area.shown.set(area.shown.get().wrapping_add(1));
     Ok(Effected::done())
+}
+
+/// The shared piece's controls, offered as Settings' own effects.
+struct Offered(Actions<Settings>);
+
+impl ModelBindings for Offered {
+    fn invoking<C: ActionControl<()>>(&self, control: C, effect: PersonModelsEffect) -> C {
+        self.0
+            .bind_effect_invocation(control, &SettingsEffect::from(effect))
+    }
+
+    fn choosing<C: ActionControl<String>>(&self, control: C, choice: ModelChoice) -> C {
+        self.0.bind_effect(control, Chosen(choice))
+    }
+}
+
+/// A model chooser's choice, as the effect of Settings it is.
+struct Chosen(ModelChoice);
+
+impl Binds<SettingsEffect, String> for Chosen {
+    fn action_id(&self) -> &'static str {
+        Binds::<PersonModelsEffect, String>::action_id(&self.0)
+    }
+
+    fn arguments(
+        &self,
+        input: String,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        Binds::<PersonModelsEffect, String>::arguments(&self.0, input)
+    }
 }
 
 crate::area::pane_area! {
@@ -182,7 +191,7 @@ impl AccountsArea {
 
 pub struct ProvidersArea {
     remote: ui::RemoteActions,
-    model: OnceCell<Rc<RefCell<ProvidersModel>>>,
+    model: OnceCell<Rc<RefCell<PersonModels>>>,
     shown: LocalState<u64>,
 }
 
@@ -195,9 +204,9 @@ impl ProvidersArea {
         }
     }
 
-    pub fn model(&self) -> &Rc<RefCell<ProvidersModel>> {
+    pub fn model(&self) -> &Rc<RefCell<PersonModels>> {
         self.model
-            .get_or_init(|| Rc::new(RefCell::new(ProvidersModel::new(self.remote.clone()))))
+            .get_or_init(|| Rc::new(RefCell::new(PersonModels::new(self.remote.clone()))))
     }
 
     fn poll(&self) {
@@ -294,7 +303,6 @@ impl AccountsModel {
                 ));
                 Ok(())
             }
-            _ => Err("that is not an accounts request".into()),
         }
     }
 
@@ -491,379 +499,6 @@ impl AccountsModel {
     }
 }
 
-/// The model providers the workspace keeps, and the form that adds one.
-pub struct ProvidersModel {
-    remote: ui::RemoteActions,
-    listing: Option<ui::InvocationCall>,
-    seen: Cell<u64>,
-    providers: Vec<ProviderView>,
-    error: Option<String>,
-    notice: Option<String>,
-    adding: Option<ui::InvocationCall>,
-    form_name: LocalState<String>,
-    form_endpoint: LocalState<String>,
-    form_protocol: LocalState<String>,
-    /// The provider whose key is being typed, and the key itself.
-    key_for: Option<String>,
-    form_key: LocalState<String>,
-    saving_key: Option<(String, ui::InvocationCall)>,
-    removing_key: Option<(String, ui::InvocationCall)>,
-    removing: Option<(String, ui::InvocationCall)>,
-}
-
-impl ProvidersModel {
-    fn new(remote: ui::RemoteActions) -> Self {
-        let listing = Some(remote.invoke(
-            person_models::target(person_models::LIST),
-            InvokeArgument::None,
-            None,
-        ));
-        Self {
-            remote,
-            listing,
-            seen: Cell::new(0),
-            providers: Vec::new(),
-            error: None,
-            notice: None,
-            adding: None,
-            form_name: LocalState::new(String::new()),
-            form_endpoint: LocalState::new(String::new()),
-            form_protocol: LocalState::new(String::new()),
-            key_for: None,
-            form_key: LocalState::new(String::new()),
-            saving_key: None,
-            removing_key: None,
-            removing: None,
-        }
-    }
-
-    fn busy(&self) -> bool {
-        self.adding.is_some()
-            || self.saving_key.is_some()
-            || self.removing_key.is_some()
-            || self.removing.is_some()
-    }
-
-    fn ask_key(&mut self, provider: &str) {
-        self.key_for = Some(provider.to_owned());
-        self.form_key.set(String::new());
-    }
-
-    fn apply(&mut self, effect: PersonSettingsEffect) -> Result<(), String> {
-        match effect {
-            PersonSettingsEffect::AddProvider => {
-                let protocol = match self.form_protocol.get().as_str() {
-                    "anthropic" => Protocol::Anthropic,
-                    _ => Protocol::OpenAiCompatible,
-                };
-                let adding = person_models::AddProvider {
-                    name: self.form_name.get(),
-                    protocol,
-                    endpoint: self.form_endpoint.get(),
-                };
-                self.adding = Some(self.remote.invoke(
-                    person_models::target(person_models::ADD_PROVIDER),
-                    json_argument(&adding)?,
-                    None,
-                ));
-                Ok(())
-            }
-            PersonSettingsEffect::SaveProviderKey { provider } => {
-                let setting = person_models::SetKey {
-                    provider: provider.clone(),
-                    key: self.form_key.get(),
-                };
-                self.saving_key = Some((
-                    provider,
-                    self.remote.invoke(
-                        person_models::target(person_models::SET_KEY),
-                        json_argument(&setting)?,
-                        None,
-                    ),
-                ));
-                Ok(())
-            }
-            PersonSettingsEffect::RemoveProviderKey { provider } => {
-                self.removing_key = Some((
-                    provider.clone(),
-                    self.remote.invoke(
-                        person_models::target(person_models::REMOVE_KEY),
-                        json_argument(&serde_json::json!({ "provider": provider }))?,
-                        None,
-                    ),
-                ));
-                Ok(())
-            }
-            PersonSettingsEffect::RemoveProvider { provider } => {
-                self.removing = Some((
-                    provider.clone(),
-                    self.remote.invoke(
-                        person_models::target(person_models::REMOVE_PROVIDER),
-                        json_argument(&serde_json::json!({ "provider": provider }))?,
-                        None,
-                    ),
-                ));
-                Ok(())
-            }
-            _ => Err("that is not a providers request".into()),
-        }
-    }
-
-    fn poll(&mut self) -> bool {
-        let mut changed = false;
-        if let Some(call) = &self.listing {
-            let revision = call.revision();
-            if revision != self.seen.get() {
-                self.seen.set(revision);
-                match settled(call) {
-                    Some(Ok(value)) => match serde_json::from_value::<ModelProviders>(value) {
-                        Ok(listed) => {
-                            self.providers = listed.providers;
-                            self.error = None;
-                        }
-                        Err(_) => self.error = Some(t("settings-web-providers-unreadable")),
-                    },
-                    Some(Err(reason)) => self.error = Some(reason),
-                    None => {}
-                }
-                changed = true;
-            }
-        }
-        if let Some(adding) = &self.adding
-            && let Some(outcome) = settled(adding)
-        {
-            self.adding = None;
-            match outcome {
-                Ok(value) => match serde_json::from_value::<ProviderView>(value) {
-                    Ok(provider) => {
-                        self.notice = Some(translated(
-                            "settings-web-providers-added",
-                            &[("name", provider.name.into())],
-                        ));
-                        self.form_name.set(String::new());
-                        self.form_endpoint.set(String::new());
-                        self.key_for = Some(provider.id);
-                        self.reread();
-                    }
-                    Err(_) => self.error = Some(t("settings-web-providers-unreadable")),
-                },
-                Err(reason) => self.error = Some(reason),
-            }
-            changed = true;
-        }
-        if let Some((provider, saving)) = &self.saving_key
-            && let Some(outcome) = settled(saving)
-        {
-            let provider = provider.clone();
-            self.saving_key = None;
-            match outcome {
-                // The provider's row says its key is saved.
-                Ok(_) => {
-                    self.notice = None;
-                    self.key_for = None;
-                    self.form_key.set(String::new());
-                    let _ = provider;
-                    self.reread();
-                }
-                Err(reason) => self.error = Some(reason),
-            }
-            changed = true;
-        }
-        if let Some((provider, removing)) = &self.removing_key
-            && let Some(outcome) = settled(removing)
-        {
-            let provider = provider.clone();
-            self.removing_key = None;
-            match outcome {
-                Ok(_) => {
-                    self.notice = Some(translated(
-                        "settings-web-providers-key-removed",
-                        &[("name", provider.into())],
-                    ));
-                    self.reread();
-                }
-                Err(reason) => self.error = Some(reason),
-            }
-            changed = true;
-        }
-        if let Some((provider, removing)) = &self.removing
-            && let Some(outcome) = settled(removing)
-        {
-            let provider = provider.clone();
-            self.removing = None;
-            match outcome {
-                Ok(value) => match serde_json::from_value::<ModelProviders>(value) {
-                    Ok(listed) => {
-                        self.providers = listed.providers;
-                        self.notice = Some(translated(
-                            "settings-web-providers-removed",
-                            &[("name", provider.into())],
-                        ));
-                    }
-                    Err(_) => self.error = Some(t("settings-web-providers-unreadable")),
-                },
-                Err(reason) => self.error = Some(reason),
-            }
-            changed = true;
-        }
-        changed
-    }
-
-    /// Ask the host for the list again. The new request counts its
-    /// revisions from the start, so what was seen of the last one is
-    /// forgotten: else its answer reads as already taken.
-    fn reread(&mut self) {
-        self.listing = Some(self.remote.invoke(
-            person_models::target(person_models::LIST),
-            InvokeArgument::None,
-            None,
-        ));
-        self.seen.set(u64::MAX);
-    }
-
-    fn page(&self, cx: &ViewCx<Settings>) -> Element {
-        page(vec![
-            self.list_section(cx),
-            self.add_section(cx),
-            section(
-                &t("settings-web-local-models"),
-                rows(vec![note(&t("settings-web-local-models-elsewhere"))]),
-            ),
-        ])
-    }
-
-    /// The providers the host keeps, each with its key's state.
-    fn list_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
-        let mut items = Vec::new();
-        for provider in &self.providers {
-            items.extend(self.provider_rows(cx, provider));
-        }
-        if items.is_empty() {
-            items.push(note(&t("settings-web-providers-none")));
-        }
-        if let Some(line) = self.error.as_ref().or(self.notice.as_ref()) {
-            items.push(note(line));
-        }
-        section(&t("settings-web-providers-list"), rows(items))
-    }
-
-    /// One provider's row, and under it the field taking its key while it is
-    /// being typed.
-    fn provider_rows(&self, cx: &ViewCx<Settings>, provider: &ProviderView) -> Vec<Item> {
-        let status = if provider.configured {
-            t("settings-web-providers-key-kept")
-        } else {
-            t("settings-web-providers-no-key")
-        };
-        let mut details = vec![status, provider.endpoint.clone()];
-        if !provider.models.is_empty() {
-            details.push(
-                provider
-                    .models
-                    .iter()
-                    .map(|model| model.label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-        }
-        let mut trailing = Row::new();
-        if provider.configured {
-            trailing = trailing.push(Box::new(cx.actions().bind_effect_invocation(
-                Button::new(
-                    &format!("settings.web.providers.remove-key.{}", provider.id),
-                    &t("settings-web-providers-remove-key"),
-                ),
-                &SettingsEffect::from(PersonSettingsEffect::RemoveProviderKey {
-                    provider: provider.id.clone(),
-                }),
-            )));
-        } else {
-            trailing = trailing.push(Box::new(cx.actions().bind_effect_invocation(
-                Button::new(
-                    &format!("settings.web.providers.add-key.{}", provider.id),
-                    &t("settings-web-providers-add-key"),
-                ),
-                &SettingsEffect::from(PersonSettingsEffect::AskProviderKey {
-                    provider: provider.id.clone(),
-                }),
-            )));
-        }
-        trailing = trailing.push(Box::new(cx.actions().bind_effect_invocation(
-            Button::new(
-                &format!("settings.web.providers.remove.{}", provider.id),
-                &t("settings-web-providers-remove"),
-            ),
-            &SettingsEffect::from(PersonSettingsEffect::RemoveProvider {
-                provider: provider.id.clone(),
-            }),
-        )));
-        let mut rows_ = vec![row(Box::new(thing_row(
-            &format!("settings.web.providers.{}", provider.id),
-            &provider.name,
-            &details,
-            Some(Box::new(trailing)),
-        )))];
-        if self.key_for.as_deref() == Some(provider.id.as_str()) {
-            let save = cx.actions().bind_effect_invocation(
-                Button::new(
-                    &format!("settings.web.providers.save-key.{}", provider.id),
-                    &t("settings-web-providers-save-key"),
-                )
-                .role(ButtonRole::Primary),
-                &SettingsEffect::from(PersonSettingsEffect::SaveProviderKey {
-                    provider: provider.id.clone(),
-                }),
-            );
-            rows_.push(labelled_field(
-                &t("settings-web-providers-key"),
-                TextInput::from_state(&self.form_key)
-                    .with_kind(TextInputKind::Password)
-                    .with_secret(true)
-                    .with_id(&format!("settings.web.providers.key.{}", provider.id)),
-            ));
-            rows_.push(row(Box::new(
-                Row::new()
-                    .push(Box::new(save))
-                    .push(Box::new(Spacer::new())),
-            )));
-        }
-        rows_
-    }
-
-    /// The form that adds a provider.
-    fn add_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
-        let add = cx.actions().bind_effect_invocation(
-            Button::new(
-                "settings.web.providers.add",
-                &t("settings-web-providers-add"),
-            )
-            .role(ButtonRole::Primary),
-            &SettingsEffect::from(PersonSettingsEffect::AddProvider),
-        );
-        section(
-            &t("settings-web-providers-add-title"),
-            rows(vec![
-                labelled_field(
-                    &t("settings-web-providers-name"),
-                    TextInput::from_state(&self.form_name)
-                        .with_kind(TextInputKind::Name)
-                        .with_id("settings.web.providers.name"),
-                ),
-                labelled_field(
-                    &t("settings-web-providers-endpoint"),
-                    TextInput::from_state(&self.form_endpoint)
-                        .with_kind(TextInputKind::Url)
-                        .with_id("settings.web.providers.endpoint"),
-                ),
-                note(&t("settings-web-providers-endpoint-hint")),
-                row(Box::new(
-                    Row::new().push(Box::new(add)).push(Box::new(Spacer::new())),
-                )),
-            ]),
-        )
-    }
-}
-
 /// `input` under its label, which also names it to assistive technology.
 fn labelled_field(label: &str, input: TextInput) -> Item {
     field_row(label, Box::new(input.with_accessible_name(label)))
@@ -912,11 +547,20 @@ pub(crate) fn accounts_view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Opt
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
+/// The person's model providers: the piece every window shows them with,
+/// and where the models that run on a computer are.
 pub(crate) fn providers_view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = providers_area(app)?;
     let model = Rc::clone(held.model());
     model.borrow_mut().poll();
-    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
+    Some(cx.switch(&held.shown, move |cx, _| {
+        let mut sections: Vec<SettingsSection> = model.borrow().sections(&Offered(cx.actions()));
+        sections.push(section(
+            &t("settings-web-local-models"),
+            rows(vec![note(&t("settings-web-local-models-elsewhere"))]),
+        ));
+        page(sections)
+    }))
 }
 
 #[cfg(test)]
@@ -929,7 +573,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use ui::tilo_actions::remote::{Caller, InvokeRequest, ReceiptStatus, TestHost};
+    use ui::tilo_actions::remote::{Caller, ReceiptStatus, TestHost};
 
     use super::*;
 
@@ -950,40 +594,17 @@ mod tests {
         }
     }
 
-    fn provider() -> ProviderView {
-        ProviderView {
-            id: "openai".into(),
-            name: "OpenAI".into(),
-            protocol: Protocol::OpenAiCompatible,
-            endpoint: "https://api.openai.com/v1".into(),
-            configured: true,
-            models: Vec::new(),
-            default_model: None,
-        }
-    }
-
-    /// A host that keeps one account and one provider, and answers every
-    /// change with the value it names.
+    /// A host that keeps one account and answers every change with the
+    /// value it names.
     fn host() -> Arc<TestHost> {
         Arc::new(TestHost::new().answering(|_, request| {
-            let providers = request.target.provider == person_models::PROVIDER;
-            let value = match (providers, request.target.address.action.as_str()) {
-                (false, person_accounts::LIST) => serde_json::to_value(MailAccounts {
+            let value = match request.target.address.action.as_str() {
+                person_accounts::LIST => serde_json::to_value(MailAccounts {
                     accounts: vec![account()],
                     ..MailAccounts::default()
                 }),
-                (false, person_accounts::ADD_MAIL) => serde_json::to_value(account()),
-                (false, person_accounts::REMOVE) => serde_json::to_value(MailAccounts::default()),
-                (true, person_models::LIST) => serde_json::to_value(ModelProviders {
-                    providers: vec![provider()],
-                    ..ModelProviders::default()
-                }),
-                (true, person_models::ADD_PROVIDER) => serde_json::to_value(provider()),
-                (true, person_models::SET_KEY) => serde_json::to_value(provider()),
-                (true, person_models::REMOVE_KEY) => serde_json::to_value(provider()),
-                (true, person_models::REMOVE_PROVIDER) => {
-                    serde_json::to_value(ModelProviders::default())
-                }
+                person_accounts::ADD_MAIL => serde_json::to_value(account()),
+                person_accounts::REMOVE => serde_json::to_value(MailAccounts::default()),
                 _ => serde_json::to_value(serde_json::Value::Null),
             }
             .expect("the test host's answer");
@@ -1022,19 +643,6 @@ mod tests {
             PersonSettingsEffect::RemoveMailAccount {
                 account: "ada@example.test".into(),
             },
-            PersonSettingsEffect::AddProvider,
-            PersonSettingsEffect::AskProviderKey {
-                provider: "openai".into(),
-            },
-            PersonSettingsEffect::SaveProviderKey {
-                provider: "openai".into(),
-            },
-            PersonSettingsEffect::RemoveProviderKey {
-                provider: "openai".into(),
-            },
-            PersonSettingsEffect::RemoveProvider {
-                provider: "openai".into(),
-            },
         ] {
             assert!(
                 offered.iter().any(|id| id == effect.id()),
@@ -1044,20 +652,72 @@ mod tests {
         }
     }
 
-    /// The page shows the accounts and providers the host answered, and
-    /// never a secret: the reading has no field for one.
+    /// The page shows the accounts the host answered, and never a secret:
+    /// the reading has no field for one.
     #[test]
-    fn the_panes_show_what_the_host_keeps() {
+    fn the_pane_shows_what_the_host_keeps() {
         en();
         let host = host();
         let mut accounts = AccountsModel::new(remote(&host));
         assert!(accounts.poll());
         assert_eq!(accounts.accounts, vec![account()]);
+    }
 
-        let mut providers = ProvidersModel::new(remote(&host));
-        assert!(providers.poll());
-        assert_eq!(providers.providers, vec![provider()]);
-        assert!(providers.providers[0].configured);
+    /// Every request of the shared providers piece is one Settings takes as
+    /// its own effect and reads back unchanged, and a chooser's choice is
+    /// offered as the effect that records it.
+    #[test]
+    fn the_providers_requests_are_settings_own() {
+        use ui::tilo_resource::Effect as _;
+        for effect in [
+            PersonModelsEffect::ReadProviders,
+            PersonModelsEffect::LinkProvider {
+                preset: "gemini".into(),
+            },
+            PersonModelsEffect::EnterProviderKey {
+                provider: "gemini".into(),
+            },
+            PersonModelsEffect::UnlinkProvider {
+                provider: "gemini".into(),
+            },
+            PersonModelsEffect::ChooseDefaultModel {
+                provider: "gemini".into(),
+                model: "large".into(),
+            },
+            PersonModelsEffect::ChooseWorkModel {
+                work: "main-thread".into(),
+                provider: None,
+                model: None,
+            },
+        ] {
+            let settings = SettingsEffect::from(effect.clone());
+            assert_eq!(
+                PersonModelsEffect::decode(settings.id(), &settings.arguments()).ok(),
+                Some(effect)
+            );
+        }
+        let chosen = Chosen(ModelChoice(None));
+        let arguments = chosen
+            .arguments("gemini\u{1}large".to_owned())
+            .expect("a choice names a provider and its model");
+        assert_eq!(
+            PersonModelsEffect::decode(chosen.action_id(), &arguments).ok(),
+            Some(PersonModelsEffect::ChooseDefaultModel {
+                provider: "gemini".into(),
+                model: "large".into(),
+            })
+        );
+    }
+
+    /// The link a window shows a person's model with opens this pane, as
+    /// every other link to a page of Settings does.
+    #[test]
+    fn the_models_link_opens_this_pane() {
+        let opened =
+            crate::resource::parse_settings_uri(provider_settings_ui::person_models::SETTINGS_LINK)
+                .expect("the link names a page of Settings");
+        let pane = crate::effects::open_pane(crate::categories::Category::AgentModels);
+        assert_eq!(opened, pane);
     }
 
     /// Adding a mail account is a request to the host carrying exactly what
@@ -1103,40 +763,6 @@ mod tests {
             vec![account()],
             "the list is read again after an account is added"
         );
-    }
-
-    /// A provider's key goes to the host and is never asked back: the pane
-    /// reads only whether one is kept.
-    #[test]
-    fn a_provider_key_is_sent_and_never_read_back() {
-        en();
-        let host = host();
-        let mut providers = ProvidersModel::new(remote(&host));
-        providers.poll();
-        providers.ask_key("openai");
-        providers.form_key.set("sk-live-secret".into());
-        providers
-            .apply(PersonSettingsEffect::SaveProviderKey {
-                provider: "openai".into(),
-            })
-            .unwrap();
-
-        let requests: Vec<InvokeRequest> = host.asked();
-        let setting = requests
-            .iter()
-            .find(|request| request.target.address.action == person_models::SET_KEY)
-            .expect("the page asked the host to keep the key");
-        let InvokeArgument::Json(argument) = &setting.argument else {
-            panic!("the key travels as JSON");
-        };
-        assert_eq!(argument["key"], serde_json::json!("sk-live-secret"));
-        // The list asks for nothing: no key can travel back on it.
-        for request in requests
-            .iter()
-            .filter(|request| request.target.address.action == person_models::LIST)
-        {
-            assert!(matches!(request.argument, InvokeArgument::None));
-        }
     }
 
     /// The local-model section is a statement, not a control: a page cannot

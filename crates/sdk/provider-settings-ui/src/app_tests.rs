@@ -108,15 +108,21 @@ fn assert_private(app: &mut TestApp<ProviderSettingsApp>) {
 fn standalone_without_authority_starts_empty_and_rejects_mutation() {
     let mut app = TestApp::<ProviderSettingsApp>::for_person("provider-administrator").unwrap();
     app.settle();
-    assert!(config(&mut app).profiles.is_empty());
+    // Nothing administers providers here, so no panel holds any: its
+    // requests are not offered, and the window says who sets providers up.
+    assert!(app.with_widget::<ProviderSurface, _>(|_| ()).is_none());
     assert!(
         app.effect(&ProviderEffect::AddProvider {
             preset: "anthropic".into()
         })
         .is_err()
     );
-    assert!(config(&mut app).profiles.is_empty());
-    assert_private(&mut app);
+    let tree = app.harness().inspection_json().unwrap();
+    assert!(
+        tree.contains("Model providers are set up by an administrator"),
+        "{tree}"
+    );
+    assert!(!tree.contains("private-key-draft"));
     assert_eq!(definition().app_id(), "so.tilo.model-providers");
 }
 #[test]

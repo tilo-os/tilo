@@ -26,6 +26,7 @@ mod app_tests;
 pub mod bound;
 mod catalogue;
 pub mod i18n;
+pub mod person_models;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};
 pub trait PanelBindings: Clone + 'static {

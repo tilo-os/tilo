@@ -281,7 +281,7 @@ impl Config {
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
         match &self.provider_management {
             Some(granted) => granted.connect().map_err(error),
-            None => Ok(crate::host_services::page_provider_admin()),
+            None => Ok(crate::host_services::provider_admin(self.peer.is_some())),
         }
     }
 

@@ -120,7 +120,15 @@ pub(crate) fn page_models() -> ui::models::Models {
 }
 
 /// Model Providers' administration of the page's own model service.
-pub(crate) fn page_provider_admin() -> ui::models::ProviderAdministration {
+///
+/// A person whose workspace runs on a host (`hosted`) keeps their providers
+/// and keys there, which Settings and Model Providers both show. Such a
+/// page lends its own key store only while it still holds a provider from
+/// before: nobody else is shown a second place to keep a key.
+pub(crate) fn provider_admin(hosted: bool) -> ui::models::ProviderAdministration {
+    if hosted && !page_models_set_up() {
+        return ui::models::ProviderAdministration::default();
+    }
     ui::models::ProviderAdministration::new(Arc::new(LazyAdministration {
         service: Service::Page,
         client: std::sync::OnceLock::new(),
