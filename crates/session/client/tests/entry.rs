@@ -28,7 +28,7 @@ use tilo_server_protocol::entering::{
 };
 use tilo_server_protocol::transport::{ALPN, Envelope};
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, Held, HostRefusal, entered, entry_request};
+use tilo_session_client::device::{DeviceRefusal, Entering, Held, entered, entry_request};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
@@ -465,7 +465,7 @@ async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_fro
             .unwrap_err();
         assert_eq!(
             refused.code,
-            HostRefusal::NO_CERTIFICATE,
+            DeviceRefusal::NO_CERTIFICATE,
             "{row}: {refused:?}"
         );
     }

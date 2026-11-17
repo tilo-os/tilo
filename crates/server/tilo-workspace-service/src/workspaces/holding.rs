@@ -168,7 +168,7 @@ const NOT_A_HOLDER: &str =
 /// workspace's holders, by the address it signed.
 fn names_holder(peer: &StatePeer, caller: &DeviceCert) -> bool {
     peer.governance()
-        .workspace_hosts()
+        .keeping_devices()
         .iter()
         .any(|hint| hint.host.device_public_key == caller.device_public_key)
 }
@@ -327,7 +327,7 @@ impl Workspaces {
         let mut named: Vec<WorkspaceDeviceHintV1> = governed
             .peer()
             .governance()
-            .workspace_hosts()
+            .keeping_devices()
             .iter()
             .filter_map(|hint| WorkspaceDeviceHintV1::from_transport_hint(hint).ok())
             .collect();

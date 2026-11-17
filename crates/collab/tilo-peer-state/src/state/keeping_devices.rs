@@ -13,14 +13,16 @@ use collab_types::signer::DeviceSigner;
 
 /// Key of the workspace's hosts in its governance document: a map from each
 /// host's device key (hex) to its signed address (JSON).
-pub const WORKSPACE_HOSTS_KEY: &str = "hosts_v1";
+pub const WORKSPACE_KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
 
 /// The hosts `doc` names, ordered by device key. An entry this build cannot
 /// read, or one its host did not sign, is left out: whoever wrote the list,
 /// only a host's own signature names where it answers.
 #[must_use]
-pub fn workspace_hosts_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
-    let Ok(Some((Value::Object(ObjType::Map), hosts))) = doc.get(ROOT, WORKSPACE_HOSTS_KEY) else {
+pub fn keeping_devices_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
+    let Ok(Some((Value::Object(ObjType::Map), hosts))) =
+        doc.get(ROOT, WORKSPACE_KEEPING_DEVICES_KEY)
+    else {
         return Vec::new();
     };
     doc.keys(&hosts)
@@ -43,12 +45,12 @@ impl PeerGovernance<'_> {
     /// The hosts serving the workspace beside its governor, as its governance
     /// names them.
     #[must_use]
-    pub fn workspace_hosts(self) -> Vec<TransportHint> {
+    pub fn keeping_devices(self) -> Vec<TransportHint> {
         self.peer
             .core
             .workspace_doc
             .as_deref()
-            .map_or_else(Vec::new, workspace_hosts_of)
+            .map_or_else(Vec::new, keeping_devices_of)
     }
 }
 
@@ -57,22 +59,22 @@ impl PeerGovernanceMut<'_> {
     /// by `key`; it replaces the host's earlier address. Naming it as it is
     /// named changes nothing, and an address its host did not sign is
     /// refused. Returns whether it changed the workspace.
-    pub fn author_workspace_host(
+    pub fn author_keeping_device(
         self,
         hint: &TransportHint,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         tilo_workspace_join::verify_transport_hint(hint)?;
-        if self.peer.governance().workspace_hosts().contains(hint) {
+        if self.peer.governance().keeping_devices().contains(hint) {
             return Ok(false);
         }
         let json = serde_json::to_string(hint).map_err(|error| error.to_string())?;
         self.write(key, now, |doc| {
-            let hosts = match doc.get(ROOT, WORKSPACE_HOSTS_KEY).map_err(err)? {
+            let hosts = match doc.get(ROOT, WORKSPACE_KEEPING_DEVICES_KEY).map_err(err)? {
                 Some((Value::Object(ObjType::Map), hosts)) => hosts,
                 _ => doc
-                    .put_object(ROOT, WORKSPACE_HOSTS_KEY, ObjType::Map)
+                    .put_object(ROOT, WORKSPACE_KEEPING_DEVICES_KEY, ObjType::Map)
                     .map_err(err)?,
             };
             doc.put(
@@ -86,7 +88,7 @@ impl PeerGovernanceMut<'_> {
 
     /// Name the host `device` among the workspace's hosts no more, authored by
     /// the governor `key`. Returns whether it changed the workspace.
-    pub fn author_workspace_host_removed(
+    pub fn author_keeping_device_removed(
         self,
         device: &[u8; 32],
         key: &dyn DeviceSigner,
@@ -95,7 +97,7 @@ impl PeerGovernanceMut<'_> {
         if !self
             .peer
             .governance()
-            .workspace_hosts()
+            .keeping_devices()
             .iter()
             .any(|hint| &hint.host.device_public_key == device)
         {
@@ -103,7 +105,7 @@ impl PeerGovernanceMut<'_> {
         }
         self.write(key, now, |doc| {
             let Some((Value::Object(ObjType::Map), hosts)) =
-                doc.get(ROOT, WORKSPACE_HOSTS_KEY).map_err(err)?
+                doc.get(ROOT, WORKSPACE_KEEPING_DEVICES_KEY).map_err(err)?
             else {
                 return Ok(());
             };
@@ -157,7 +159,7 @@ mod tests {
     )]
     fn the_governor_names_the_workspaces_hosts() -> TestResult {
         let (mut peer, governor, nas_key, nas, now) = crate::admission_tests::seeded();
-        assert!(peer.governance().workspace_hosts().is_empty());
+        assert!(peer.governance().keeping_devices().is_empty());
         let first = hint(&nas, &nas_key, "first")?;
         let forged = TransportHint {
             opaque_json: "elsewhere".into(),
@@ -165,32 +167,32 @@ mod tests {
         };
         assert!(
             peer.governance_mut()
-                .author_workspace_host(&forged, &governor, now)
+                .author_keeping_device(&forged, &governor, now)
                 .is_err(),
             "only the host signs where it answers"
         );
         assert!(
             peer.governance_mut()
-                .author_workspace_host(&first, &governor, now)?
+                .author_keeping_device(&first, &governor, now)?
         );
         assert!(
             !peer
                 .governance_mut()
-                .author_workspace_host(&first, &governor, now)?,
+                .author_keeping_device(&first, &governor, now)?,
             "naming it as it is named changes nothing"
         );
         let moved = hint(&nas, &nas_key, "moved")?;
         assert!(
             peer.governance_mut()
-                .author_workspace_host(&moved, &governor, now)?
+                .author_keeping_device(&moved, &governor, now)?
         );
-        assert_eq!(peer.governance().workspace_hosts(), [moved]);
-        assert!(peer.governance_mut().author_workspace_host_removed(
+        assert_eq!(peer.governance().keeping_devices(), [moved]);
+        assert!(peer.governance_mut().author_keeping_device_removed(
             &nas.device_public_key,
             &governor,
             now
         )?);
-        assert!(peer.governance().workspace_hosts().is_empty());
+        assert!(peer.governance().keeping_devices().is_empty());
         Ok(())
     }
 
@@ -219,11 +221,11 @@ mod tests {
                 .clone();
             let before = doc.get_heads();
             doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-            let hosts = match doc.get(automerge::ROOT, super::WORKSPACE_HOSTS_KEY)? {
+            let hosts = match doc.get(automerge::ROOT, super::WORKSPACE_KEEPING_DEVICES_KEY)? {
                 Some((automerge::Value::Object(automerge::ObjType::Map), hosts)) => hosts,
                 _ => doc.put_object(
                     automerge::ROOT,
-                    super::WORKSPACE_HOSTS_KEY,
+                    super::WORKSPACE_KEEPING_DEVICES_KEY,
                     automerge::ObjType::Map,
                 )?,
             };
@@ -244,7 +246,7 @@ mod tests {
                 crate::NeighbourMsg::SyncResp { changes, workspace },
                 now,
             )?;
-            assert_eq!(peer.governance().workspace_hosts().len(), named);
+            assert_eq!(peer.governance().keeping_devices().len(), named);
         }
         Ok(())
     }

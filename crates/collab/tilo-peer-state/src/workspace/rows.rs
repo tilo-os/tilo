@@ -11,7 +11,7 @@ use tilo_action_policy::roles::governance;
 /// The document key holding the media policy.
 const MEDIA_KEY: &str = "media_policy_v1";
 /// The document key holding the hosts serving a workspace.
-const HOSTS_KEY: &str = "hosts_v1";
+const KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
 /// The document key holding the app versions a workspace runs.
 const VERSIONS_KEY: &str = "app_versions_v1";
 /// The document keys holding the bots a workspace runs and those it was asked for.
@@ -113,7 +113,7 @@ impl GovernanceRow {
             Self::Versions => &[VERSIONS_KEY],
             Self::Bots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
-            Self::Hosts => &[HOSTS_KEY],
+            Self::Hosts => &[KEEPING_DEVICES_KEY],
             Self::Removals => &[crate::removals::FIELD_V1],
             Self::Log => &[],
         }

@@ -1443,7 +1443,7 @@ fn mount_search(
             woken.store(true, std::sync::atomic::Ordering::Release);
             let _ = shell.send_event(id);
         });
-        Some(crate::page_search::WorkspaceHost {
+        Some(crate::page_search::KeepingDevice {
             search,
             workspace: config.workspace.clone(),
             wake,

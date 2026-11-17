@@ -25,9 +25,9 @@ const deviceKeyOf = (calls, created) => async profile => {
   return deviceKey;
 };
 
-/** An entry's refusal as the shared entry reads it (`HostRefusal`, peer.mjs):
+/** An entry's refusal as the shared entry reads it (`DeviceRefusal`, peer.mjs):
  * the entry's code (`EntryRefusalCode`) and the wait it asked for. */
-const entryRefusal = ({code, error = code, retryAfter}) => Object.assign(new Error(error), {name: 'HostRefusal', code, retryAfter});
+const entryRefusal = ({code, error = code, retryAfter}) => Object.assign(new Error(error), {name: 'DeviceRefusal', code, retryAfter});
 
 /** The entry as the shared entry goes through it (`entryRequest`, on the session): each
  * join through `entry` asks it once for the person, and `answers` says what it

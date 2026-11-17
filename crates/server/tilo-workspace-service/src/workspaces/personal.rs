@@ -37,8 +37,8 @@ use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
 use tilo_server_session::workspaces::{
-    MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalDevice, PersonalList,
-    PersonalWorkspace, WorkspaceHostAddress,
+    KeepingDeviceAddress, MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser,
+    PersonalDevice, PersonalList, PersonalWorkspace,
 };
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert};
@@ -682,7 +682,7 @@ impl Workspaces {
         for listed in here {
             // The reader reached this host to ask: it names itself, and signs
             // no address a person with hundreds of workspaces here would wait on.
-            let host = Some(WorkspaceHostAddress {
+            let host = Some(KeepingDeviceAddress {
                 name: name.clone(),
                 hint: None,
             });

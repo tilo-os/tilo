@@ -843,7 +843,7 @@ impl Personal {
             .map(|meta| {
                 let workspace = meta.id;
                 let host = hint(&workspace.to_string()).and_then(|hint| {
-                    tilo_server_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
+                    tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(&hint)
                 });
                 tilo_server_session::workspaces::PersonalWorkspace {
                     name: meta.name,

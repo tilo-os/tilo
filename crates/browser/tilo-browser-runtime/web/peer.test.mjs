@@ -309,7 +309,7 @@ test('an entry is entered on the session itself: its first connect asks, and the
 test('an entry that refuses on the session says so in its own code, and a workspace refusal is a refused join', async () => {
   for (const [entry, check] of [
     [{outcome: 'refused', code: 'full', message: 'come back later', retryAfterSecs: 30},
-      error => error.name === 'HostRefusal' && error.code === 'full' && error.retryAfter === 30],
+      error => error.name === 'DeviceRefusal' && error.code === 'full' && error.retryAfter === 30],
     [{outcome: 'refused', code: 'not-admitted', message: 'key known under another certificate'},
       error => error.name === 'AdmissionError' && error.code === 'refused' && error.message === REFUSED_JOIN],
   ]) {

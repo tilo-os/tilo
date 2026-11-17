@@ -3,7 +3,7 @@
 //! own person, or another person's host whose operator takes that work.
 //!
 //! Each host signs its own address. The workspace's governance names the hosts
-//! serving it beside the governor ([`tilo_peer_state::WORKSPACE_HOSTS_KEY`]), so
+//! serving it beside the governor ([`tilo_peer_state::WORKSPACE_KEEPING_DEVICES_KEY`]), so
 //! every member learns of each as it learns any change to the workspace, and the
 //! workspace's join answers carry them all, governor first: a member reaches the
 //! workspace wherever it is served. Being named there is what admits a host
@@ -58,7 +58,7 @@ impl Workspaces {
             governed
                 .peer()
                 .governance()
-                .workspace_hosts()
+                .keeping_devices()
                 .into_iter()
                 .filter(|hint| hint.host.device_public_key != own.host.device_public_key),
         );
@@ -76,7 +76,7 @@ impl Workspaces {
         governed
             .peer()
             .governance()
-            .workspace_hosts()
+            .keeping_devices()
             .iter()
             .any(|hint| host_device(hint) == device)
     }
@@ -102,7 +102,7 @@ impl Workspaces {
         let mut candidate = governed.peer().clone();
         if candidate
             .governance_mut()
-            .author_workspace_host(&hint, &host.key, now)?
+            .author_keeping_device(&hint, &host.key, now)?
         {
             governed.commit(candidate, &host.key, now, |record, _| {
                 Ok(record.collaboration.clone())
@@ -228,7 +228,7 @@ impl Workspaces {
             );
         }
         self.name_host(workspace, |governance, key, now| {
-            governance.author_workspace_host(&hint, key, now)
+            governance.author_keeping_device(&hint, key, now)
         })
         .await?;
         tracing::info!(%workspace, host = %hex::encode(device), person = %hex::encode(member.user_public_key), "another host holds the workspace");
@@ -329,7 +329,7 @@ impl Workspaces {
             governed
                 .peer()
                 .governance()
-                .workspace_hosts()
+                .keeping_devices()
                 .iter()
                 .find(|known| host_device(known) == device)
                 .map(|known| {
@@ -339,7 +339,7 @@ impl Workspaces {
                 .and_then(Result::ok)
         };
         self.name_host(workspace, |governance, key, now| {
-            governance.author_workspace_host_removed(&device, key, now)
+            governance.author_keeping_device_removed(&device, key, now)
         })
         .await?;
         let _ = self.inner.changes.send(workspace.to_owned());
@@ -387,7 +387,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// The workspace is not held here.
-    pub async fn host_list(&self, workspace: &str) -> Result<Vec<WorkspaceHost>, String> {
+    pub async fn keeping_devices(&self, workspace: &str) -> Result<Vec<KeepingDevice>, String> {
         let hosts = self
             .hosts(workspace)
             .await
@@ -395,7 +395,7 @@ impl Workspaces {
         Ok(hosts
             .iter()
             .enumerate()
-            .map(|(at, hint)| WorkspaceHost {
+            .map(|(at, hint)| KeepingDevice {
                 device: hex::encode(hint.host.device_public_key),
                 person: hex::encode(hint.host.user_public_key),
                 governs: at == 0,
@@ -430,7 +430,7 @@ impl Workspaces {
     }
 
     /// Stop having the holder `named` hold `workspace`: named by its site's
-    /// origin, or by its device key (64 hex) as [`Self::host_list`] names it.
+    /// origin, or by its device key (64 hex) as [`Self::keeping_devices`] names it.
     /// Answers whether the holder confirmed it let the workspace go
     /// ([`Self::detach_host`]).
     ///
@@ -548,9 +548,9 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// One host of a workspace, as its owners list them ([`Workspaces::host_list`]).
+/// One host of a workspace, as its owners list them ([`Workspaces::keeping_devices`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct WorkspaceHost {
+pub struct KeepingDevice {
     /// The host's device key, hex: what removing it may name it by.
     pub device: String,
     /// The person the host runs for, by their user public key, hex.

@@ -222,7 +222,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
 /// host's name as its person gave it, whether this computer is the host, and whether it still
 /// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
 /// workspace, and nothing of a locked session but through a development socket.
-pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
+pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
     let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked {
         Vec::new()
     } else {

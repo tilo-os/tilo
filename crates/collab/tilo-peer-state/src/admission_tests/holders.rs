@@ -116,7 +116,7 @@ fn a_holder_that_is_no_member_writes_redemptions_and_nothing_else() {
     .unwrap();
     assert!(
         peer.governance_mut()
-            .author_workspace_host(&hint, &authority_key, now)
+            .author_keeping_device(&hint, &authority_key, now)
             .unwrap()
     );
     let redeemed = written(&peer, &|copy| {

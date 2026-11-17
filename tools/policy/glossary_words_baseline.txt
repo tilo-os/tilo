@@ -11,5 +11,4 @@ seat 1445
 record 56948
 slot 11556
 plane 15
-lane 3
 seam 7

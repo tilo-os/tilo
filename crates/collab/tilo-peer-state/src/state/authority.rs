@@ -729,7 +729,7 @@ impl StatePeer {
     /// ([`crate::workspace::SenderAccess::Holder`]).
     pub(super) fn holder_certificate(&self, source: &[u8; 32]) -> Option<DeviceCert> {
         let doc = self.core.workspace_doc.as_deref()?;
-        crate::state::workspace_hosts_of(doc)
+        crate::state::keeping_devices_of(doc)
             .into_iter()
             .find(|hint| hint.host.device_public_key == *source)
             .map(|hint| hint.host)

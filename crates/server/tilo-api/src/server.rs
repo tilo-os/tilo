@@ -23,7 +23,7 @@ use tilo_server_client::CertifyError;
 use tilo_server_client::https::{self, Origin};
 use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
-use tilo_session_client::device::{Device, HostRefusal};
+use tilo_session_client::device::{Device, DeviceRefusal};
 
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
@@ -55,7 +55,7 @@ pub struct Workspace {
     pub unattended: bool,
     /// Where its host is reached, as the person's list says.
     #[serde(skip)]
-    pub address: Option<tilo_server_session::workspaces::WorkspaceHostAddress>,
+    pub address: Option<tilo_server_session::workspaces::KeepingDeviceAddress>,
 }
 
 /// Why the server did not answer what was asked.
@@ -141,8 +141,8 @@ impl From<CertifyError> for ServerError {
     }
 }
 
-impl From<HostRefusal> for ServerError {
-    fn from(refusal: HostRefusal) -> Self {
+impl From<DeviceRefusal> for ServerError {
+    fn from(refusal: DeviceRefusal) -> Self {
         // A workspace operation of the server's own answers a typed refusal;
         // the host's other refusals are read as they were.
         if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {

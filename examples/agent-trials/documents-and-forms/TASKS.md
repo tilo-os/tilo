@@ -68,7 +68,7 @@ its fields and they hold:
 | `current_address`, `town`, `postcode` | 14 Larkspur Row, Northvale, NV4 7QD |
 | `moved_in` | 03/2024 |
 | `lived_here_three_years` | clear: she moved in under three years ago |
-| `previous_address` | 3 Tannery Lane, Eastmere, EM2 5HB |
+| `previous_address` | 3 Tannery Street, Eastmere, EM2 5HB |
 | `currently_employed` | ticked |
 | `employer_name`, `job_title` | Halberd & Finch Joinery Ltd, Workshop Supervisor |
 | `employment_start` | 13/01/2020 |
@@ -142,7 +142,7 @@ identity scan (under any name) and of the utility bill. The expired card's scan 
 to the checker as `--reference-code`) names an application the portal saved, whose details and
 address the portal accepts and match the documents: the current card (number NVC-5521-8830,
 expiry 31/01/2033), postcode NV4 7QD, moved in 03/2024, the box for three years or more left clear,
-and the previous address 3 Tannery Lane, Eastmere, EM2 5HB, from 05/2019 to 02/2024.
+and the previous address 3 Tannery Street, Eastmere, EM2 5HB, from 05/2019 to 02/2024.
 
 The portal expects dates as DD/MM/YYYY and months as MM/YYYY. Typing dates as the card prints them
 ("17 APR 1988") or entering the expired card is refused with an error message to read and fix.

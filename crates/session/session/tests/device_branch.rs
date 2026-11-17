@@ -445,10 +445,10 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     );
 }
 
-/// What `device` says of the workspace `site` serves (`workspace_hosts`): who hosts it, and
+/// What `device` says of the workspace `site` serves (`keeping_devices`): who hosts it, and
 /// whether its host took `device` in yet. `Null` while `device` does not hold it.
 fn held_row(device: &Device, site: &Site) -> serde_json::Value {
-    device.ask(&serde_json::json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+    device.ask(&serde_json::json!({"op": "keeping_devices"}))["answer"]["workspaces"]
         .as_array()
         .and_then(|held| {
             held.iter()
@@ -572,7 +572,7 @@ fn titles_in(device: &Device, workspace: &str) -> Vec<String> {
 
 /// What `device` holds of its workspaces' hosts and logged of joining and syncing them.
 fn syncing(device: &Device) -> String {
-    let hosts = device.ask(&json!({"op": "workspace_hosts"}));
+    let hosts = device.ask(&json!({"op": "keeping_devices"}));
     let log = device.log();
     let said: Vec<&str> = log
         .lines()
@@ -620,7 +620,7 @@ fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
     copy.start();
     let until = tilo_test_env::hang_deadline();
     loop {
-        let rows = copy.ask(&json!({"op": "workspace_hosts"}));
+        let rows = copy.ask(&json!({"op": "keeping_devices"}));
         let admitted = rows["answer"]["workspaces"].as_array().is_some_and(|held| {
             held.iter().any(|row| {
                 row["workspace"].as_str() == Some(hosted) && row["awaiting_host"] == false

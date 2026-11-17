@@ -1147,7 +1147,7 @@ fn a_busy_server_answers_rate_limited_with_its_wait() {
     let busy = tilo_actions::remote::ActionCallError::Busy {
         retry_after_ms: 480,
     };
-    let server = server::ServerError::from(tilo_session_client::device::HostRefusal::of(&busy));
+    let server = server::ServerError::from(tilo_session_client::device::DeviceRefusal::of(&busy));
     assert_eq!(
         server,
         server::ServerError::RateLimited {
@@ -1171,7 +1171,7 @@ fn a_workspace_refusal_is_read_by_its_case() {
         let error = tilo_actions::remote::ActionCallError::Refused {
             reason: refusal.to_reason(),
         };
-        server::ServerError::from(tilo_session_client::device::HostRefusal::of(&error))
+        server::ServerError::from(tilo_session_client::device::DeviceRefusal::of(&error))
     };
     assert_eq!(
         refused(Refusal::NotYourOwn),

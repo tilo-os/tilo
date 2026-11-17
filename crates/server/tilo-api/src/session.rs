@@ -563,7 +563,7 @@ impl Session {
     async fn device_address(
         &self,
         workspace: &str,
-    ) -> Option<tilo_server_session::workspaces::WorkspaceHostAddress> {
+    ) -> Option<tilo_server_session::workspaces::KeepingDeviceAddress> {
         let address = self.workspace(workspace).await.ok()??.address?;
         // A listed address with a hint is a device's own, never the answering device's.
         address.address().ok()?;

@@ -42,7 +42,7 @@ use crate::account::{Outcome, answer, failed, refused};
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
-use tilo_session_client::device::HostRefusal;
+use tilo_session_client::device::DeviceRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
@@ -162,9 +162,9 @@ impl Session {
             .ask_host(id, target, arguments)
             .await
             .map_err(|error| {
-                if error.code == HostRefusal::RATE_LIMITED {
+                if error.code == DeviceRefusal::RATE_LIMITED {
                     refused(&error.into())
-                } else if error.code == HostRefusal::UNANSWERED {
+                } else if error.code == DeviceRefusal::UNANSWERED {
                     failed("unavailable", error.message, "try again shortly")
                 } else {
                     failed(

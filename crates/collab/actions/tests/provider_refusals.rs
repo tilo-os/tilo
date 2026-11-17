@@ -1,6 +1,6 @@
 //! The refusals a provider sends, as they travel: `provider_refusals.json` holds
 //! each `ActionCallError` as JSON carries it, with its code and the words it
-//! says, and every caller's reading of them (`tilo-session-client`'s `HostRefusal`) is
+//! says, and every caller's reading of them (`tilo-session-client`'s `DeviceRefusal`) is
 //! tested against the same file.
 
 use serde_json::Value;
@@ -15,7 +15,8 @@ fn refusals() -> Vec<ActionCallError> {
             limit: 1,
             existing: vec!["6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned()],
         },
-        message: "You already have a workspace of your own on this host; use that one.".to_owned(),
+        message: "You already have a workspace of your own on this server; use that one."
+            .to_owned(),
         next: vec![NextStep {
             kind: NextStepKind::UseExisting,
             url: None,

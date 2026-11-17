@@ -558,7 +558,7 @@ async fn enters(
     name: &str,
 ) -> (
     tilo_session_client::Link,
-    Result<tilo_server_client::login::Admission, tilo_session_client::device::HostRefusal>,
+    Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal>,
 ) {
     let held = tilo_session_client::device::Held {
         cert: cert.clone(),

@@ -287,9 +287,9 @@ impl Device {
         &self,
         workspace: &str,
         shown_as: &str,
-    ) -> Result<WorkspaceId, HostRefusal> {
+    ) -> Result<WorkspaceId, DeviceRefusal> {
         let id = WorkspaceId::parse(workspace)
-            .ok_or_else(|| HostRefusal::malformed(format!("{workspace} names no workspace")))?;
+            .ok_or_else(|| DeviceRefusal::malformed(format!("{workspace} names no workspace")))?;
         if self.peer.status().workspaces.get(&id) == Some(&true) {
             return Ok(id);
         }
@@ -300,7 +300,7 @@ impl Device {
                 self.redeem(&invitation, shown_as).await?;
                 None
             }
-            Ok(_) => Some(HostRefusal::malformed(
+            Ok(_) => Some(DeviceRefusal::malformed(
                 "The host answered another workspace than the one asked for.".to_owned(),
             )),
             Err(refusal) => Some(refusal),
@@ -316,21 +316,21 @@ impl Device {
     ///
     /// # Errors
     /// The host refused the session, or it did not connect in time.
-    pub async fn connected(&self) -> Result<(), HostRefusal> {
+    pub async fn connected(&self) -> Result<(), DeviceRefusal> {
         self.peer
             .until(ADMITTING, |status| match status.phase {
                 TransportPhase::Connected => Some(Ok(())),
                 TransportPhase::Failed | TransportPhase::Closed => {
                     Some(Err(Box::new(status.failures.last().map_or_else(
-                        || HostRefusal::unanswered("the session with the host ended"),
-                        |failure| HostRefusal::failed(&failure.message),
+                        || DeviceRefusal::unanswered("the session with the host ended"),
+                        |failure| DeviceRefusal::failed(&failure.message),
                     ))))
                 }
                 _ => None,
             })
             .await
             .unwrap_or_else(|| {
-                Err(Box::new(HostRefusal::unanswered(
+                Err(Box::new(DeviceRefusal::unanswered(
                     "the workspace's host did not take the session in time",
                 )))
             })
@@ -345,10 +345,10 @@ impl Device {
     pub async fn own_workspace(
         &self,
         arguments: Map<String, Value>,
-    ) -> Result<(WorkspaceListing, Vec<u8>), HostRefusal> {
+    ) -> Result<(WorkspaceListing, Vec<u8>), DeviceRefusal> {
         let output = self.host_action(CREATE_OWN_WORKSPACE, arguments).await?;
         let malformed = |why: String| {
-            HostRefusal::malformed(format!(
+            DeviceRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
             ))
         };
@@ -378,7 +378,7 @@ impl Device {
         name: Option<&str>,
         shown_as: &str,
         entered: impl FnOnce(&str) -> bool,
-    ) -> Result<WorkspaceListing, HostRefusal> {
+    ) -> Result<WorkspaceListing, DeviceRefusal> {
         let mut arguments = Map::new();
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
             arguments.insert("name".to_owned(), Value::String(name.to_owned()));
@@ -389,7 +389,7 @@ impl Device {
         if !entered(&listing.workspace) {
             self.redeem(&invitation, shown_as)
                 .await
-                .map_err(HostRefusal::from)?;
+                .map_err(DeviceRefusal::from)?;
         }
         Ok(listing)
     }
@@ -406,7 +406,7 @@ impl Device {
         &self,
         labels: &WorkspaceLabels,
         workspace: Option<&str>,
-    ) -> Result<PersonalList, HostRefusal> {
+    ) -> Result<PersonalList, DeviceRefusal> {
         let mut arguments = Map::new();
         if let Some(workspace) = workspace {
             arguments.insert("workspace".to_owned(), serde_json::Value::from(workspace));
@@ -415,12 +415,12 @@ impl Device {
             arguments.insert(
                 "labels".to_owned(),
                 serde_json::to_value(labels)
-                    .map_err(|error| HostRefusal::malformed(error.to_string()))?,
+                    .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
             );
         }
         let listed = self.host_action(LIST_PERSONAL, arguments).await?;
         serde_json::from_value(listed).map_err(|error| {
-            HostRefusal::malformed(format!("The host answered no workspace list: {error}"))
+            DeviceRefusal::malformed(format!("The host answered no workspace list: {error}"))
         })
     }
 
@@ -429,12 +429,12 @@ impl Device {
     ///
     /// # Errors
     /// The host did not answer or refused.
-    pub async fn keep_personal(&self, list: &PersonalList) -> Result<(), HostRefusal> {
+    pub async fn keep_personal(&self, list: &PersonalList) -> Result<(), DeviceRefusal> {
         let mut arguments = Map::new();
         arguments.insert(
             "list".to_owned(),
             serde_json::to_value(list)
-                .map_err(|error| HostRefusal::malformed(error.to_string()))?,
+                .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
         );
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
@@ -448,7 +448,7 @@ impl Device {
         &self,
         action: &str,
         arguments: Map<String, Value>,
-    ) -> Result<Value, HostRefusal> {
+    ) -> Result<Value, DeviceRefusal> {
         let target = RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
@@ -467,7 +467,7 @@ impl Device {
         workspace_id: WorkspaceId,
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
-    ) -> Result<Value, HostRefusal> {
+    ) -> Result<Value, DeviceRefusal> {
         let actions = self.actions(workspace_id);
         let caller = self.caller();
         let receipt = actions
@@ -486,13 +486,14 @@ impl Device {
                 },
             )
             .await
-            .ok_or_else(|| HostRefusal::unanswered("the host did not answer"))?
-            .map_err(|error| HostRefusal::of(&error))?;
-        let unfinished = || HostRefusal::unanswered("the host did not finish what was asked of it");
+            .ok_or_else(|| DeviceRefusal::unanswered("the host did not answer"))?
+            .map_err(|error| DeviceRefusal::of(&error))?;
+        let unfinished =
+            || DeviceRefusal::unanswered("the host did not finish what was asked of it");
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => Err(HostRefusal::failed(&error.message)),
-            ReceiptStatus::Rejected { error } => Err(HostRefusal::of(&error)),
+            ReceiptStatus::Failed { error } => Err(DeviceRefusal::failed(&error.message)),
+            ReceiptStatus::Rejected { error } => Err(DeviceRefusal::of(&error)),
             ReceiptStatus::Cancelled { .. } => Err(unfinished()),
             // Still running when the wait for its answer ran out (a host
             // making hundreds of workspaces at once): followed until it ends.
@@ -514,7 +515,7 @@ impl Device {
                         Ok(output.value.unwrap_or_default())
                     }
                     InvocationUpdate::Failed { error, .. } => {
-                        Err(HostRefusal::failed(&error.message))
+                        Err(DeviceRefusal::failed(&error.message))
                     }
                     _ => Err(unfinished()),
                 }
@@ -642,7 +643,7 @@ pub fn reconnecting(
 /// and never with another device's.
 ///
 /// # Errors
-/// Nothing held serves and no root is at hand ([`HostRefusal::NO_CERTIFICATE`]), or the root did
+/// Nothing held serves and no root is at hand ([`DeviceRefusal::NO_CERTIFICATE`]), or the root did
 /// not sign.
 pub async fn entering_certificate(
     held: Option<&Held>,
@@ -651,7 +652,7 @@ pub async fn entering_certificate(
     root: Option<&dyn DeviceSigner>,
     label: &str,
     now_ns: u64,
-) -> Result<DeviceCert, HostRefusal> {
+) -> Result<DeviceCert, DeviceRefusal> {
     let serves = |held: &&Held| {
         let same_host = held
             .host_cert
@@ -667,8 +668,8 @@ pub async fn entering_certificate(
         return Ok(held.cert.clone());
     }
     let Some(root) = root else {
-        return Err(HostRefusal {
-            code: HostRefusal::NO_CERTIFICATE.to_owned(),
+        return Err(DeviceRefusal {
+            code: DeviceRefusal::NO_CERTIFICATE.to_owned(),
             message: "This device holds no certificate of this host's for its key, and no root \
                       to certify it with."
                 .to_owned(),
@@ -679,8 +680,8 @@ pub async fn entering_certificate(
     };
     tilo_server_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
         .await
-        .map_err(|error| HostRefusal {
-            code: HostRefusal::NO_CERTIFICATE.to_owned(),
+        .map_err(|error| DeviceRefusal {
+            code: DeviceRefusal::NO_CERTIFICATE.to_owned(),
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
@@ -714,11 +715,11 @@ pub async fn invitation_entry(
     invitation: &[u8],
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), HostRefusal> {
+) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), DeviceRefusal> {
     let entry =
         invitation_entering(invitation, entering.name, entering.token).map_err(|message| {
-            HostRefusal {
-                code: HostRefusal::NOT_ADMITTED.to_owned(),
+            DeviceRefusal {
+                code: DeviceRefusal::NOT_ADMITTED.to_owned(),
                 message,
                 refusal: None,
                 retry_after_ms: None,
@@ -796,7 +797,7 @@ pub async fn entry_request(
     workspace: &str,
     device: &dyn DeviceSigner,
     entering: Entering<'_>,
-) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), HostRefusal> {
+) -> Result<(DeviceCert, tilo_server_protocol::entering::Entering), DeviceRefusal> {
     let cert = entering_certificate(
         entering.held,
         host,
@@ -823,7 +824,7 @@ pub async fn entry_request(
 /// # Errors
 /// The entry or the workspace refused (the entry's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
-pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
+pub async fn entered(peer: &Link) -> Result<Admission, DeviceRefusal> {
     let waits = ADMITTING.max(tilo_server_protocol::entering::ENTERING_DEADLINE);
     peer.until(waits, |status| {
         match &status.entry {
@@ -846,7 +847,7 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
                 retry_after_secs,
                 entry,
             }) => {
-                return Some(Err(Box::new(HostRefusal {
+                return Some(Err(Box::new(DeviceRefusal {
                     code: (*code).to_owned(),
                     message: message.clone(),
                     refusal: None,
@@ -860,11 +861,11 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
             .failures
             .iter()
             .find(|_| status.phase == TransportPhase::Failed)
-            .map(|failure| Err(Box::new(HostRefusal::failed(&failure.message))))
+            .map(|failure| Err(Box::new(DeviceRefusal::failed(&failure.message))))
     })
     .await
     .unwrap_or_else(|| {
-        Err(Box::new(HostRefusal::unanswered(
+        Err(Box::new(DeviceRefusal::unanswered(
             "the workspace's host did not answer the entry in time",
         )))
     })
@@ -874,11 +875,11 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
 /// caller (the CLI, the API server, the page) reads and shows, never a sentence to parse.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct HostRefusal {
+pub struct DeviceRefusal {
     /// What kind of answer it was: an [`ActionCallError::code`] when the host refused,
-    /// [`HostRefusal::FAILED`] when the operation ran and failed, [`HostRefusal::UNANSWERED`] when
-    /// no answer came, [`HostRefusal::MALFORMED`] when the answer was not what the operation
-    /// answers, and [`HostRefusal::NOT_ADMITTED`] when a workspace did not let the device in.
+    /// [`DeviceRefusal::FAILED`] when the operation ran and failed, [`DeviceRefusal::UNANSWERED`] when
+    /// no answer came, [`DeviceRefusal::MALFORMED`] when the answer was not what the operation
+    /// answers, and [`DeviceRefusal::NOT_ADMITTED`] when a workspace did not let the device in.
     pub code: String,
     /// What happened, in plain words for whoever asked.
     pub message: String,
@@ -893,7 +894,7 @@ pub struct HostRefusal {
     pub entry: Option<tilo_server_protocol::directory::EntryRefused>,
 }
 
-impl HostRefusal {
+impl DeviceRefusal {
     /// The operation ran on the host and failed.
     pub const FAILED: &'static str = "failed";
     /// The host did not answer, or did not finish.
@@ -997,17 +998,17 @@ impl HostRefusal {
     }
 }
 
-impl std::fmt::Display for HostRefusal {
+impl std::fmt::Display for DeviceRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for HostRefusal {}
+impl std::error::Error for DeviceRefusal {}
 
 /// A device's entry failed: a workspace that did not admit it was refused; anything else was not
 /// answered.
-impl From<CertifyError> for HostRefusal {
+impl From<CertifyError> for DeviceRefusal {
     fn from(error: CertifyError) -> Self {
         match error {
             CertifyError::Denied(why) => Self {
@@ -1024,11 +1025,11 @@ impl From<CertifyError> for HostRefusal {
 }
 
 /// What a computer's entry reports: a refusal is the host's denial, no answer a failed request.
-impl From<HostRefusal> for CertifyError {
-    fn from(refusal: HostRefusal) -> Self {
-        if refusal.code == HostRefusal::UNANSWERED {
+impl From<DeviceRefusal> for CertifyError {
+    fn from(refusal: DeviceRefusal) -> Self {
+        if refusal.code == DeviceRefusal::UNANSWERED {
             Self::Request(refusal.message)
-        } else if refusal.code == HostRefusal::RATE_LIMITED {
+        } else if refusal.code == DeviceRefusal::RATE_LIMITED {
             Self::RateLimited {
                 retry_after_ms: refusal.retry_after_ms.unwrap_or(1000),
             }
@@ -1079,23 +1080,23 @@ mod tests {
 
         phase a_hosts_typed_refusal_reads_typed_with_its_own_words;
         {
-            let refused = HostRefusal::of(&ActionCallError::Refused {
+            let refused = DeviceRefusal::of(&ActionCallError::Refused {
                 reason: too_many().to_reason(),
             });
             assert_eq!(refused.code, "refused");
             assert_eq!(refused.message, too_many().message);
             assert_eq!(refused.refusal, Some(too_many()));
             // An operation that ran and failed with one reads the same way.
-            let failed = HostRefusal::failed(&too_many().to_reason());
-            assert_eq!(failed.code, HostRefusal::FAILED);
+            let failed = DeviceRefusal::failed(&too_many().to_reason());
+            assert_eq!(failed.code, DeviceRefusal::FAILED);
             assert_eq!(failed.refusal, Some(too_many()));
         }
 
         phase a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry;
         {
             let busy = ActionCallError::Busy { retry_after_ms: 480 };
-            let refused = HostRefusal::of(&busy);
-            assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
+            let refused = DeviceRefusal::of(&busy);
+            assert_eq!(refused.code, DeviceRefusal::RATE_LIMITED);
             assert_eq!(refused.retry_after_ms, Some(480));
             // Through an entry's certification error and back, it stays what it is.
             let entry = CertifyError::from(refused.clone());
@@ -1108,9 +1109,9 @@ mod tests {
                 ),
                 "{entry}"
             );
-            assert_eq!(HostRefusal::from(entry), refused);
+            assert_eq!(DeviceRefusal::from(entry), refused);
             // Any other unavailability stays as it was.
-            let offline = HostRefusal::of(&ActionCallError::Unavailable {
+            let offline = DeviceRefusal::of(&ActionCallError::Unavailable {
                 reason: "offline: the device left".into(),
             });
             assert_eq!(offline.code, "remote_actions_unavailable");
@@ -1127,7 +1128,7 @@ mod tests {
             .unwrap();
             for entry in file {
                 let wire: ActionCallError = serde_json::from_value(entry["wire"].clone()).unwrap();
-                let read = HostRefusal::of(&wire);
+                let read = DeviceRefusal::of(&wire);
                 assert_eq!(read.code, entry["code"], "{entry}");
                 match (&wire, &read.refusal) {
                     (_, Some(typed)) => assert_eq!(read.message, typed.message),
@@ -1139,16 +1140,16 @@ mod tests {
 
         phase a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code;
         {
-            let refused = HostRefusal::of(&ActionCallError::Refused {
+            let refused = DeviceRefusal::of(&ActionCallError::Refused {
                 reason: "that workspace is not one of your own".into(),
             });
             assert_eq!(refused.message, "that workspace is not one of your own");
             assert_eq!(refused.refusal, None);
-            let unknown = HostRefusal::of(&ActionCallError::UnknownAction);
+            let unknown = DeviceRefusal::of(&ActionCallError::UnknownAction);
             assert_eq!(unknown.code, "unknown_action");
             assert_eq!(unknown.message, "no such action is offered");
             assert_eq!(
-                HostRefusal::of(&ActionCallError::StaleRevision).code,
+                DeviceRefusal::of(&ActionCallError::StaleRevision).code,
                 "stale_revision"
             );
         }
@@ -1156,15 +1157,15 @@ mod tests {
         phase a_computers_entry_reports_no_answer_as_a_request_and_a_refusal_as_a_denial;
         {
             assert!(matches!(
-                CertifyError::from(HostRefusal::unanswered("the host did not answer")),
+                CertifyError::from(DeviceRefusal::unanswered("the host did not answer")),
                 CertifyError::Request(_)
             ));
             assert!(matches!(
-                CertifyError::from(HostRefusal::of(&ActionCallError::NotPermitted)),
+                CertifyError::from(DeviceRefusal::of(&ActionCallError::NotPermitted)),
                 CertifyError::Denied(_)
             ));
-            let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
-            assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
+            let admitted = DeviceRefusal::from(CertifyError::Denied("not in".into()));
+            assert_eq!(admitted.code, DeviceRefusal::NOT_ADMITTED);
         }
 
         phase a_host_refusing_a_person_never_let_in_answers_the_entry_refusal;
@@ -1179,10 +1180,10 @@ mod tests {
                 contact: Some("hello@tilo.test".into()),
                 mail: true,
             };
-            let refusal = HostRefusal::of(&ActionCallError::Refused {
+            let refusal = DeviceRefusal::of(&ActionCallError::Refused {
                 reason: entry.to_reason(),
             });
-            assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
+            assert_eq!(refusal.code, DeviceRefusal::NOT_ADMITTED);
             assert_eq!(refusal.message, entry.error);
             assert_eq!(refusal.entry.as_ref(), Some(&entry));
             assert!(matches!(
@@ -1190,7 +1191,7 @@ mod tests {
                 CertifyError::Denied(why) if why == entry.error
             ));
             // A host account's typed refusal is not the entry's.
-            let plain = HostRefusal::of(&ActionCallError::Refused {
+            let plain = DeviceRefusal::of(&ActionCallError::Refused {
                 reason: "no such workspace".into(),
             });
             assert_eq!(plain.entry, None);

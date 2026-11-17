@@ -318,11 +318,11 @@ tilo_test_env::scenario! {
         let held = crate::members::ops(peer.admitted_workspace().unwrap()).len();
         assert!(
             peer.governance_mut()
-                .author_workspace_host(&hint, &editor_key, now)
+                .author_keeping_device(&hint, &editor_key, now)
                 .is_err(),
             "an editor holds no governance grant"
         );
-        assert!(peer.governance().workspace_hosts().is_empty());
+        assert!(peer.governance().keeping_devices().is_empty());
         assert_eq!(
             crate::members::ops(peer.admitted_workspace().unwrap()).len(),
             held,
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
         let heads = peer.admitted_workspace().unwrap().clone().get_heads();
         assert!(
             peer.governance_mut()
-                .author_workspace_host(&hint, &editor_key, now)
+                .author_keeping_device(&hint, &editor_key, now)
                 .unwrap()
         );
         let named = crate::members::ops(peer.admitted_workspace().unwrap())
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         assert_eq!(
-            receiver.governance().workspace_hosts(),
+            receiver.governance().keeping_devices(),
             [hint],
             "a receiver takes the member's governance change as it takes the owner's"
         );

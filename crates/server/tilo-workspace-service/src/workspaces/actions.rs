@@ -1938,7 +1938,7 @@ impl Workspaces {
             _ => None,
         };
         let hosts = self
-            .host_list(workspace)
+            .keeping_devices(workspace)
             .await
             .map_err(|error| refused(&error))?;
         let mut answered = json!({ "workspace": workspace, "hosts": hosts });

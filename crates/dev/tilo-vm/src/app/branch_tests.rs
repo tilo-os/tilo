@@ -1102,7 +1102,7 @@ tilo_test_env::scenario! {
         assert!(registry.vms["a"].awaits_host.is_none() && registry.vms["b"].awaits_host.is_none());
     }
 
-    phase a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait;
+    phase a_sessions_keeping_devices_say_who_keeps_them_and_whether_they_wait;
     {
         let answer = json!({"answer": {"workspaces": [
             {"workspace": "workspace-shell", "name": "Shell", "host": "dev", "hosted_here": false, "awaiting_host": true},

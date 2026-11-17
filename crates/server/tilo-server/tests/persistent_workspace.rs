@@ -560,7 +560,7 @@ async fn enter_through_entry(
     workspace: &str,
     device: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
-) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::HostRefusal> {
+) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal> {
     enter_through_entry_as(plain, workspace, device, name, device.1.device_public_key).await
 }
 
@@ -572,7 +572,7 @@ async fn enter_through_entry_as(
     (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
     request_id: [u8; 32],
-) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::HostRefusal> {
+) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal> {
     let info = tilo_server_client::https::host_info(&Plain(plain))
         .await
         .unwrap();

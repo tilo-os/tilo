@@ -66,7 +66,7 @@ mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
-pub use hosts::WorkspaceHost;
+pub use hosts::KeepingDevice;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
 pub use tilo_endpoint_reachability::await_relay;

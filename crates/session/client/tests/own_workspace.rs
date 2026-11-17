@@ -21,7 +21,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
 use tilo_server::workspaces::OwnWorkspaceOffer;
 use tilo_server_client::invite::guest_certificate;
-use tilo_session_client::device::{Device, HostRefusal};
+use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
@@ -277,7 +277,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let refused = device.own_workspace(not_his).await.unwrap_err();
     assert_eq!(refused.code, "refused", "{refused:?}");
     assert!(!refused.message.is_empty());
-    assert_ne!(refused.code, HostRefusal::UNANSWERED);
+    assert_ne!(refused.code, DeviceRefusal::UNANSWERED);
 
     // A key Bob made for that one workspace enters it straight from its session with the host, in
     // no other workspace first: the host invites it in on the session and it redeems there.

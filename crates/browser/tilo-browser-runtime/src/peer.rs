@@ -37,7 +37,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::device::{Device, HostRefusal};
+use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
@@ -52,11 +52,11 @@ pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
 }
 
-/// `refusal` as the page reads it: an `Error` named `HostRefusal`, with the refusal's `code` and,
+/// `refusal` as the page reads it: an `Error` named `DeviceRefusal`, with the refusal's `code` and,
 /// where the host gave one, its typed `refusal` (`{reason, message, next}`).
-pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
+pub(crate) fn refusal_error(refusal: &DeviceRefusal) -> JsValue {
     let error = js_sys::Error::new(&refusal.message);
-    error.set_name("HostRefusal");
+    error.set_name("DeviceRefusal");
     let _ = Reflect::set(&error, &"code".into(), &refusal.code.as_str().into());
     if let Some(typed) = refusal
         .refusal
@@ -78,7 +78,7 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
 }
 
 /// A refusal of a workspace's host, `wire` as it travels (an `ActionCallError`'s JSON), read as
-/// every caller reads it ([`HostRefusal::of`]): `{code, message, refusal}` JSON, `refusal` the
+/// every caller reads it ([`DeviceRefusal::of`]): `{code, message, refusal}` JSON, `refusal` the
 /// host's typed refusal where it gave one.
 ///
 /// # Errors
@@ -88,7 +88,7 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
 pub fn host_refusal(wire: &str) -> Result<String, JsError> {
     let error: tilo_actions::remote::ActionCallError =
         serde_json::from_str(wire).map_err(js_error)?;
-    serde_json::to_string(&HostRefusal::of(&error)).map_err(js_error)
+    serde_json::to_string(&DeviceRefusal::of(&error)).map_err(js_error)
 }
 
 /// The page store without a surface; a desktop surface; its asset.
@@ -835,7 +835,7 @@ struct Accepting {
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`, or
+/// Rejects with an `Error` named `DeviceRefusal` whose `code` is `no_certificate`, or
 /// `not_admitted` for an invitation that names no workspace.
 #[wasm_bindgen(js_name = invitationEntry)]
 pub async fn invitation_entry(
@@ -891,7 +891,7 @@ pub async fn invitation_entry(
 ///
 /// # Errors
 ///
-/// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`.
+/// Rejects with an `Error` named `DeviceRefusal` whose `code` is `no_certificate`.
 #[wasm_bindgen(js_name = entryRequest)]
 pub async fn entry_request(
     host_cert: String,
@@ -2802,8 +2802,8 @@ impl WasmPeer {
     ///
     /// # Errors
     ///
-    /// Rejects with an `Error` named `HostRefusal` whose `code` says how the host refused
-    /// ([`HostRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
+    /// Rejects with an `Error` named `DeviceRefusal` whose `code` says how the host refused
+    /// ([`DeviceRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
     /// whose `refusal` is the host's typed refusal where it gave one.
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(

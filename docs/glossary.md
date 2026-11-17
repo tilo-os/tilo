@@ -13,7 +13,9 @@ used in code.
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy
   mode, free resources).
 - **Server**: a device that serves workspaces for people other than its owner. It stores their
-  ciphertext, and holds a workspace's keys only where it was made a member. tilo.coffee runs one.
+  ciphertext, and holds a workspace's keys only where it was made a member. A server a workspace's
+  owner names to keep that workspace is made a member of it, and holds its keys. tilo.coffee runs
+  one.
 - **Agent**: a model-driven member. It does what members ask, in the workspace, like a person. A
   person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
 - **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude
@@ -82,8 +84,9 @@ the graph may make it.
 ## Not used
 
 Old names: room, desk, space, channel (except Chat's channels), principal, subject,
-collaborator, participant, host (for where an app runs), relay (except iroh's NAT and packet
-relay, and the device relaying a live session), run, seat, arrangement, record, slot.
+collaborator, participant, host (except a network host name, the verb, and the machine running a
+VM), relay (except iroh's NAT and packet relay, and the device relaying a live session), run, seat,
+arrangement, record, slot.
 
 Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
 
