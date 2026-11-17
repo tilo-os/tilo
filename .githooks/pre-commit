@@ -189,12 +189,58 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
     fi
     if [ -n "$sdk_gen" ]; then
       sdk_done=$sdk_gen
+      # A generator found in target/ can be older than this tree: built before a
+      # rebase, or copied from another worktree. What it knows of the API itself is
+      # compiled into it, so its whole output would take out of
+      # docs/api/openapi.json whatever main gained since it was built. So only what
+      # the surfaces changed is taken from it: it writes the files once from HEAD's
+      # surfaces and once from this tree's, and what differs between the two is
+      # merged into the files as they stand. A generator as new as the tree, on
+      # files that were current, changes them exactly as its whole output would.
+      sdk_scratch=$(mktemp -d)
+      mkdir -p "$sdk_scratch/head" "$sdk_scratch/was" "$sdk_scratch/now"
+      sdk_failed=""
+      # All a generator reads from a checkout: each app's surface and manifest.
+      sdk_inputs=$(git ls-tree -r --name-only HEAD -- apps 2>/dev/null \
+        | grep -E '^apps/[^/]+/(surface|tilo-app)\.toml$' || true)
+      if [ -n "$sdk_inputs" ]; then
+        # shellcheck disable=SC2086
+        git archive HEAD -- $sdk_inputs | tar -x -C "$sdk_scratch/head" || sdk_failed=1
+      fi
       for spec in $sdk_langs; do
-        (cd "$root" && "$sdk_gen" sdk gen --lang "${spec%%:*}" --out "${spec#*:}") >/dev/null || {
-          note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
-          fail=1
-        }
+        sdk_lang=${spec%%:*}
+        sdk_out=${spec#*:}
+        mkdir -p "$sdk_scratch/was/$sdk_out" "$sdk_scratch/now/$sdk_out"
+        if [ -n "$sdk_inputs" ]; then
+          (cd "$sdk_scratch/head" \
+            && "$sdk_gen" sdk gen --lang "$sdk_lang" --out "$sdk_scratch/was/$sdk_out") \
+            >/dev/null 2>&1 || sdk_failed=1
+        fi
+        (cd "$root" && "$sdk_gen" sdk gen --lang "$sdk_lang" --out "$sdk_scratch/now/$sdk_out") \
+          >/dev/null || sdk_failed=1
       done
+      if [ -z "$sdk_failed" ]; then
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          if [ ! -e "$sdk_scratch/was/$f" ] || [ ! -e "$root/$f" ]; then
+            mkdir -p "$(dirname "$root/$f")"
+            cp "$sdk_scratch/now/$f" "$root/$f"
+          elif ! cmp -s "$sdk_scratch/was/$f" "$sdk_scratch/now/$f"; then
+            if git merge-file -p "$root/$f" "$sdk_scratch/was/$f" "$sdk_scratch/now/$f" \
+              >"$sdk_scratch/merged" 2>/dev/null; then
+              cat "$sdk_scratch/merged" >"$root/$f"
+            else
+              note "sdk: $f changed on both sides of this surface change"
+              sdk_failed=1
+            fi
+          fi
+        done < <(cd "$sdk_scratch/now" && find . -type f | sed 's|^\./||' | sort)
+      fi
+      rm -rf "$sdk_scratch"
+      if [ -n "$sdk_failed" ]; then
+        note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
+        fail=1
+      fi
     fi
   fi
   if [ -n "$sdk_done" ]; then
