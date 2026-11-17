@@ -298,68 +298,150 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Rewrite the sheet for one inserted or deleted row or column: the formulas pointing past it,
-/// and the charts and comments it cuts into.
-fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, Refusal> {
-    let sheet = book.sheet_mut(id)?;
-    let layout = sheet.layout();
-    let cells: Vec<(Id, Id, String)> = sheet
-        .cells
-        .cells()
-        .filter(|(_, _, cell)| cell.raw.0.starts_with('='))
-        .map(|(row, column, cell)| (row, column, cell.raw.0.clone()))
-        .collect();
-    for (row, column, raw) in cells {
-        let moved = crate::refs::remap_refs(&raw, edit);
-        if moved != raw
-            && let Some(cell) = sheet.cells.cell_mut(&row, &column)
-        {
-            cell.raw = Atom(moved);
+/// Rewrite every formula of the workbook that names a sheet through `rewrite`.
+fn rewrite_naming(book: &mut Workbook, rewrite: impl Fn(&str) -> String) -> Result<(), Refusal> {
+    let ids: Vec<Id> = book.sheets.ids().cloned().collect();
+    for id in &ids {
+        let Some(held) = book.sheet(id) else {
+            continue;
+        };
+        let formulas: Vec<(Id, Id, String)> = held
+            .cells
+            .cells()
+            .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && cell.raw.0.contains('!'))
+            .filter_map(|(row, column, cell)| {
+                let rewritten = rewrite(&cell.raw.0);
+                (rewritten != cell.raw.0).then_some((row, column, rewritten))
+            })
+            .collect();
+        if formulas.is_empty() {
+            continue;
+        }
+        let target = book.sheet_mut(id)?;
+        for (row, column, raw) in formulas {
+            if let Some(cell) = target.cells.cell_mut(&row, &column) {
+                cell.raw = Atom(raw);
+            }
         }
     }
-    if !matches!(edit, GridEdit::DeleteRow(_) | GridEdit::DeleteColumn(_)) {
-        return Ok(layout);
+    Ok(())
+}
+
+/// The formulas a structural change of one sheet may move, found once for the whole action:
+/// every formula of that sheet, and on the other sheets those that name a sheet.
+struct Reshape {
+    sheet: Id,
+    /// The name formulas reach the sheet by.
+    named: Option<String>,
+    formulas: Vec<(Id, Vec<(Id, Id)>)>,
+}
+
+impl Reshape {
+    fn of(book: &Workbook, sheet: &Id) -> Self {
+        let named = book.name_reaching(sheet);
+        let formulas = book
+            .sheets
+            .iter()
+            .filter(|(id, _)| *id == sheet || named.is_some())
+            .map(|(id, other)| {
+                let own = id == sheet;
+                let cells: Vec<(Id, Id)> = other
+                    .cells
+                    .cells()
+                    .filter(|(_, _, cell)| {
+                        cell.raw.0.starts_with('=') && (own || cell.raw.0.contains('!'))
+                    })
+                    .map(|(row, column, _)| (row, column))
+                    .collect();
+                (id.clone(), cells)
+            })
+            .filter(|(_, cells)| !cells.is_empty())
+            .collect();
+        Self {
+            sheet: sheet.clone(),
+            named,
+            formulas,
+        }
     }
-    let charts: Vec<Id> = sheet.charts.ids().cloned().collect();
-    for chart in charts {
-        let moved = sheet
-            .charts
-            .get(&chart)
-            .and_then(|it| reanchored(&layout, edit, &it.area));
-        match moved {
-            Some(area) => {
-                if let Some(it) = sheet.charts.get_mut(&chart) {
-                    it.area = area;
+
+    /// Rewrite the workbook for one inserted or deleted row or column of the sheet: the formulas
+    /// pointing past it, on the sheet and on every sheet that reads it, and the charts and
+    /// comments it cuts into. Answers the sheet's layout before the change.
+    fn apply(&self, book: &mut Workbook, edit: GridEdit) -> Result<Layout, Refusal> {
+        for (id, cells) in &self.formulas {
+            let own = *id == self.sheet;
+            let Some(held) = book.sheet(id) else {
+                continue;
+            };
+            let moved: Vec<(&Id, &Id, String)> = cells
+                .iter()
+                .filter_map(|(row, column)| {
+                    let raw = &held.cells.cell(row, column)?.raw.0;
+                    let moved =
+                        crate::refs::remap_sheet_refs(raw, edit, own, self.named.as_deref());
+                    (moved != *raw).then_some((row, column, moved))
+                })
+                .collect();
+            if moved.is_empty() {
+                continue;
+            }
+            let target = book.sheet_mut(id)?;
+            for (row, column, raw) in moved {
+                if let Some(cell) = target.cells.cell_mut(row, column) {
+                    cell.raw = Atom(raw);
                 }
             }
-            None => {
-                sheet.charts.remove(&chart);
+        }
+        let id = &self.sheet;
+        let layout = book
+            .sheet(id)
+            .ok_or_else(|| Refusal::new("no such sheet"))?
+            .layout();
+        if !matches!(edit, GridEdit::DeleteRow(_) | GridEdit::DeleteColumn(_)) {
+            return Ok(layout);
+        }
+        let sheet = book.sheet_mut(id)?;
+        let charts: Vec<Id> = sheet.charts.ids().cloned().collect();
+        for chart in charts {
+            let moved = sheet
+                .charts
+                .get(&chart)
+                .and_then(|it| reanchored(&layout, edit, &it.area));
+            match moved {
+                Some(area) => {
+                    if let Some(it) = sheet.charts.get_mut(&chart) {
+                        it.area = area;
+                    }
+                }
+                None => {
+                    sheet.charts.remove(&chart);
+                }
             }
         }
-    }
-    let comments: Vec<Id> = book
-        .comments
-        .iter()
-        .filter(|(_, comment)| comment.anchor.sheet == *id)
-        .map(|(comment, _)| comment.clone())
-        .collect();
-    for comment in comments {
-        let moved = book
+        let comments: Vec<Id> = book
             .comments
-            .get(&comment)
-            .and_then(|it| reanchored(&layout, edit, &it.anchor.area));
-        match moved {
-            Some(area) => {
-                if let Some(it) = book.comments.get_mut(&comment) {
-                    it.anchor.area = area;
+            .iter()
+            .filter(|(_, comment)| comment.anchor.sheet == *id)
+            .map(|(comment, _)| comment.clone())
+            .collect();
+        for comment in comments {
+            let moved = book
+                .comments
+                .get(&comment)
+                .and_then(|it| reanchored(&layout, edit, &it.anchor.area));
+            match moved {
+                Some(area) => {
+                    if let Some(it) = book.comments.get_mut(&comment) {
+                        it.anchor.area = area;
+                    }
+                }
+                None => {
+                    book.comments.remove(&comment);
                 }
             }
-            None => {
-                book.comments.remove(&comment);
-            }
         }
+        Ok(layout)
     }
-    Ok(layout)
 }
 
 /// Where `area` is after deleting a line, by the ids of the lines at its corners; `None` when
@@ -591,9 +673,15 @@ impl Workbook {
     #[action(destructive, writes = comments, item = sheets)]
     pub fn delete_sheet(&mut self, sheet: &Id) -> Result<(), Refusal> {
         let sheet = &self.sheet_key(sheet)?;
+        let named = self.name_reaching(sheet);
         self.sheets
             .remove(sheet)
             .ok_or_else(|| Refusal::new("no such sheet"))?;
+        if let Some(named) = named {
+            // What read the sheet reads `#REF!` from now on: a sheet that later takes its name
+            // is not the one those formulas meant.
+            rewrite_naming(self, |raw| crate::refs::unsheet_refs(raw, &named))?;
+        }
         let gone: Vec<Id> = self
             .comments
             .iter()
@@ -709,8 +797,9 @@ impl Workbook {
             .ok_or_else(|| Refusal::new("rows are numbered from 1"))?;
         let count = count.unwrap_or(1).clamp(1, 1000);
         self.sheet_mut(sheet)?.reach((0, at));
+        let reshape = Reshape::of(self, sheet);
         for _ in 0..count {
-            rewrite_for(self, sheet, GridEdit::InsertRow(at))?;
+            reshape.apply(self, GridEdit::InsertRow(at))?;
             let id = cx.id();
             self.sheet_mut(sheet)?.cells.insert_row(at as usize, id);
         }
@@ -737,6 +826,7 @@ impl Workbook {
         }
         rows.sort_unstable();
         rows.dedup();
+        let reshape = Reshape::of(self, sheet);
         for at in rows.into_iter().rev() {
             if self
                 .sheet_mut(sheet)?
@@ -747,7 +837,7 @@ impl Workbook {
             {
                 continue;
             }
-            let layout = rewrite_for(self, sheet, GridEdit::DeleteRow(at))?;
+            let layout = reshape.apply(self, GridEdit::DeleteRow(at))?;
             if let Some(id) = layout.rows().get(at as usize) {
                 self.sheet_mut(sheet)?.cells.remove_row(id);
             }
@@ -770,8 +860,9 @@ impl Workbook {
             .ok_or_else(|| Refusal::new("name a column by its letter, e.g. C"))?;
         let count = count.unwrap_or(1).clamp(1, 1000);
         self.sheet_mut(sheet)?.reach((at, 0));
+        let reshape = Reshape::of(self, sheet);
         for _ in 0..count {
-            rewrite_for(self, sheet, GridEdit::InsertColumn(at))?;
+            reshape.apply(self, GridEdit::InsertColumn(at))?;
             let id = cx.id();
             self.sheet_mut(sheet)?.cells.insert_column(at as usize, id);
         }
@@ -799,6 +890,7 @@ impl Workbook {
         }
         columns.sort_unstable();
         columns.dedup();
+        let reshape = Reshape::of(self, sheet);
         for at in columns.into_iter().rev() {
             if self
                 .sheet_mut(sheet)?
@@ -809,7 +901,7 @@ impl Workbook {
             {
                 continue;
             }
-            let layout = rewrite_for(self, sheet, GridEdit::DeleteColumn(at))?;
+            let layout = reshape.apply(self, GridEdit::DeleteColumn(at))?;
             if let Some(id) = layout.columns().get(at as usize) {
                 self.sheet_mut(sheet)?.cells.remove_column(id);
             }
@@ -951,35 +1043,14 @@ impl Workbook {
         use crate::refs::{fold_sheet, rename_sheets};
         let sheet = &self.sheet_key(sheet)?;
         let name = name.as_str();
-        let old = fold_sheet(&self.sheet_mut(sheet)?.name.0);
         // References reach the first sheet of a name: when that is another
         // one, no formula reads this sheet by name.
-        let reached = self
-            .sheets
-            .iter()
-            .find(|(_, other)| fold_sheet(&other.name.0) == old)
-            .is_some_and(|(id, _)| id == sheet);
-        if reached {
-            let ids: Vec<Id> = self.sheets.ids().cloned().collect();
-            for id in &ids {
-                let target = self.sheet_mut(id)?;
-                let formulas: Vec<(Id, Id, String)> = target
-                    .cells
-                    .cells()
-                    .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && cell.raw.0.contains('!'))
-                    .map(|(row, column, cell)| (row, column, cell.raw.0.clone()))
-                    .collect();
-                for (row, column, raw) in formulas {
-                    let renamed = rename_sheets(&raw, |written| {
-                        (fold_sheet(written) == old).then(|| name.to_owned())
-                    });
-                    if renamed != raw
-                        && let Some(cell) = target.cells.cell_mut(&row, &column)
-                    {
-                        cell.raw = Atom(renamed);
-                    }
-                }
-            }
+        if let Some(old) = self.name_reaching(sheet) {
+            rewrite_naming(self, |raw| {
+                rename_sheets(raw, |written| {
+                    (fold_sheet(written) == old).then(|| name.to_owned())
+                })
+            })?;
         }
         self.sheet_mut(sheet)?.name = Atom(name.to_owned());
         Ok(())
@@ -1573,6 +1644,9 @@ mod tests;
 
 #[cfg(test)]
 mod agent_tests;
+
+#[cfg(test)]
+mod reference_tests;
 
 ui::reach_tests!(SheetsShell);
 

@@ -130,6 +130,7 @@ sheets-effect-export-xlsx = Excel-Arbeitsmappe exportieren
 sheets-effect-export-ods = OpenDocument-Tabelle exportieren
 sheets-effect-import-xlsx-content = Arbeitsmappeninhalt importieren
 sheets-effect-export-xlsx-content = Arbeitsmappeninhalt exportieren
+sheets-effect-export-csv-content = Blatt als CSV-Inhalt exportieren
 sheets-effect-read-file = Tabellendatei lesen
 sheets-effect-read-content = Tabelleninhalt lesen
 sheets-effect-commands = Befehlspalette öffnen

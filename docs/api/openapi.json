@@ -23268,6 +23268,14 @@
         "required": [],
         "description": ""
       },
+      "sheets.workbook.export-csv-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "sheet": {}
+        },
+        "required": [],
+        "description": ""
+      },
       "sheets.workbook.read-file.Arguments": {
         "type": "object",
         "properties": {
@@ -23294,6 +23302,19 @@
         "required": [
           "content",
           "name"
+        ],
+        "description": ""
+      },
+      "sheets.workbook.read-cells.Arguments": {
+        "type": "object",
+        "properties": {
+          "sheet": {},
+          "range": {},
+          "from": {},
+          "shown": {}
+        },
+        "required": [
+          "sheet"
         ],
         "description": ""
       },
@@ -32677,6 +32698,12 @@
     {
       "app": "so.tilo.sheets",
       "resource": "sheets.workbook",
+      "action": "export-csv-content",
+      "arguments": "#/components/schemas/sheets.workbook.export-csv-content.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
       "action": "read-file",
       "arguments": "#/components/schemas/sheets.workbook.read-file.Arguments"
     },
@@ -32685,6 +32712,12 @@
       "resource": "sheets.workbook",
       "action": "read-content",
       "arguments": "#/components/schemas/sheets.workbook.read-content.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-cells",
+      "arguments": "#/components/schemas/sheets.workbook.read-cells.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",

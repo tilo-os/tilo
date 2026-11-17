@@ -1,6 +1,7 @@
 //! Cell references inside formula text: where they are, for tinting, and how they move when a
-//! formula is copied or rows, columns or sheet names change. Everything works on the raw text,
-//! so a formula keeps its spelling through every rewrite.
+//! formula is copied or rows, columns or sheets change, on the formula's own sheet or on one it
+//! names. Everything works on the raw text, so a formula keeps its spelling through every
+//! rewrite.
 
 use std::collections::HashMap;
 
@@ -157,57 +158,109 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
     if dcol == 0 && drow == 0 {
         return raw.to_string();
     }
-    let shift = |token: RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, true, |reference| match reference {
-        Ref::Cell(first) => shift(first),
-        Ref::Range(first, sep, second) => format!("{}{sep}{}", shift(first), shift(second)),
-        Ref::Lines(first, sep, second) => {
-            let by = if first.rows { drow } else { dcol };
-            format!(
-                "{}{sep}{}",
-                first.render(first.offset(by)),
-                second.render(second.offset(by))
-            )
-        }
+    let shift = |token: &RefToken| token.render(token.offset(dcol, drow));
+    rewrite_refs(raw, |_, reference| {
+        Moved::To(match reference {
+            Ref::Cell(first) => shift(first),
+            Ref::Range(first, sep, second) => format!("{}{sep}{}", shift(first), shift(second)),
+            Ref::Lines(first, sep, second) => {
+                let by = if first.rows { drow } else { dcol };
+                format!(
+                    "{}{sep}{}",
+                    first.render(first.offset(by)),
+                    second.render(second.offset(by))
+                )
+            }
+        })
     })
 }
 
-/// A formula rewritten through a structural grid change: unlike a copy, inserting or deleting a
-/// row or column moves anchored references too, a deleted target becomes `#REF!`, and a range
-/// moves as a unit, shrinking when its first or last line goes.
+/// A formula rewritten through a structural change of its own sheet: unlike a copy, inserting or
+/// deleting a row or column moves anchored references too, a deleted target becomes `#REF!`, and
+/// a range moves as a unit, shrinking when its first or last line goes. A reference that names a
+/// sheet stays as written: [`remap_sheet_refs`] moves those.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    rewrite_refs(raw, false, |reference| {
+    remap_sheet_refs(raw, edit, true, None)
+}
+
+/// [`remap_refs`] for any formula of the workbook, through a structural change of one sheet.
+/// `own` says the formula is on that sheet, so its bare references move; `named` is the name
+/// formulas reach that sheet by, folded as [`fold_sheet`] does, and a reference naming it moves
+/// wherever it is written. A deleted target becomes `#REF!` in place of the name too: the
+/// engine reads no error after a sheet's name. A reference the change does not move keeps its
+/// spelling.
+pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str>) -> String {
+    rewrite_refs(raw, |sheet, reference| {
+        let on_changed_sheet = match sheet {
+            None => own,
+            Some(written) => named.is_some_and(|named| fold_sheet(written) == named),
+        };
+        if !on_changed_sheet {
+            return Moved::Kept;
+        }
         let moved = match reference {
-            Ref::Cell(first) => edit.map_addr(first.addr).map(|addr| first.render(addr)),
-            Ref::Range(first, sep, second) => edit
-                .map_range(first.addr, second.addr)
-                .map(|(a, b)| format!("{}{sep}{}", first.render(a), second.render(b))),
+            Ref::Cell(first) => match edit.map_addr(first.addr) {
+                Some(addr) if addr == first.addr => return Moved::Kept,
+                Some(addr) => Some(first.render(addr)),
+                None => None,
+            },
+            Ref::Range(first, sep, second) => match edit.map_range(first.addr, second.addr) {
+                Some((a, b)) if a == first.addr && b == second.addr => return Moved::Kept,
+                Some((a, b)) => Some(format!("{}{sep}{}", first.render(a), second.render(b))),
+                None => None,
+            },
             Ref::Lines(first, sep, second) => {
                 let rows_edit = matches!(edit, GridEdit::InsertRow(_) | GridEdit::DeleteRow(_));
-                if first.rows == rows_edit {
+                if first.rows != rows_edit {
                     // Whole rows move only with rows, whole columns only with columns.
-                    let corner = |line: Line| {
-                        if line.rows {
-                            (0, line.at)
-                        } else {
-                            (line.at, 0)
-                        }
-                    };
-                    let along = |(col, row): Addr| if first.rows { row } else { col };
-                    edit.map_range(corner(first), corner(second)).map(|(a, b)| {
-                        format!("{}{sep}{}", first.render(along(a)), second.render(along(b)))
-                    })
-                } else {
-                    Some(format!(
+                    return Moved::Kept;
+                }
+                let corner = |line: &Line| {
+                    if line.rows {
+                        (0, line.at)
+                    } else {
+                        (line.at, 0)
+                    }
+                };
+                let along = |(col, row): Addr| if first.rows { row } else { col };
+                match edit.map_range(corner(first), corner(second)) {
+                    Some((a, b)) if along(a) == first.at && along(b) == second.at => {
+                        return Moved::Kept;
+                    }
+                    Some((a, b)) => Some(format!(
                         "{}{sep}{}",
-                        first.render(first.at),
-                        second.render(second.at)
-                    ))
+                        first.render(along(a)),
+                        second.render(along(b))
+                    )),
+                    None => None,
                 }
             }
         };
-        moved.unwrap_or_else(|| "#REF!".into())
+        moved.map_or(Moved::Gone, Moved::To)
     })
+}
+
+/// A formula with every reference naming the sheet `named` (folded as [`fold_sheet`] does)
+/// turned into `#REF!`, as when that sheet is deleted: a later sheet of its name is not the one
+/// the formula read.
+pub fn unsheet_refs(raw: &str, named: &str) -> String {
+    if !raw.contains('!') {
+        return raw.to_owned();
+    }
+    rewrite_refs(raw, |sheet, _| match sheet {
+        Some(written) if fold_sheet(written) == named => Moved::Gone,
+        _ => Moved::Kept,
+    })
+}
+
+/// Each reference of a formula: the sheet it names as written (`None` for the formula's own)
+/// and the corners of what it reads. Whole rows and columns reach the last column and row.
+pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)) {
+    drop(rewrite_refs(raw, |sheet, reference| {
+        let (start, end) = reference.corners();
+        visit(sheet, start, end);
+        Moved::Kept
+    }));
 }
 
 /// A formula with each reference to another sheet renamed by `rename`, which gets the name as
@@ -262,17 +315,55 @@ pub fn fold_sheet(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// One reference the rewrite hands its callback: a cell, a range, or whole rows or columns.
-enum Ref<'a> {
+/// One reference the rewrite hands its callback: a cell, a range, or whole rows or columns, the
+/// last two with what is written between their ends.
+enum Ref {
     Cell(RefToken),
-    Range(RefToken, &'a str, RefToken),
-    Lines(Line, &'a str, Line),
+    Range(RefToken, String, RefToken),
+    Lines(Line, String, Line),
 }
 
-/// Every reference in a formula rewritten through `rewrite`; literals, sheet names, function
-/// names and exponents are copied verbatim. A foreign reference is rewritten only when asked,
-/// since rows inserted on this sheet do not move it.
-fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> String) -> String {
+impl Ref {
+    /// The top-left and bottom-right cells it reads.
+    fn corners(&self) -> (Addr, Addr) {
+        match self {
+            Self::Cell(cell) => (cell.addr, cell.addr),
+            Self::Range(first, _, second) => (
+                (
+                    first.addr.0.min(second.addr.0),
+                    first.addr.1.min(second.addr.1),
+                ),
+                (
+                    first.addr.0.max(second.addr.0),
+                    first.addr.1.max(second.addr.1),
+                ),
+            ),
+            Self::Lines(first, _, second) => {
+                let (low, high) = (first.at.min(second.at), first.at.max(second.at));
+                if first.rows {
+                    ((0, low), (u32::MAX, high))
+                } else {
+                    ((low, 0), (high, u32::MAX))
+                }
+            }
+        }
+    }
+}
+
+/// What a rewrite does with one reference.
+enum Moved {
+    /// As written, with the sheet it names.
+    Kept,
+    /// Written anew, after the sheet it names.
+    To(String),
+    /// `#REF!` in its place and in the place of the sheet it names.
+    Gone,
+}
+
+/// Every reference in a formula rewritten through `rewrite`, which gets the sheet the reference
+/// names as written (`None` for the formula's own sheet); literals, function names and
+/// exponents are copied verbatim.
+fn rewrite_refs(raw: &str, mut rewrite: impl FnMut(Option<&str>, &Ref) -> Moved) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
     };
@@ -289,55 +380,73 @@ fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> St
             out.push_str(&scan.text_from(start));
             continue;
         }
-        if let Some(sheet) = sheet_prefix(&mut scan) {
-            out.push_str(&sheet);
-            if !foreign {
-                let start = scan.pos();
-                skip_reference(&mut scan);
+        let start = scan.pos();
+        let prefix = sheet_prefix(&mut scan);
+        let (reference, after) = reference_at(scan);
+        let Some(reference) = reference else {
+            if after.pos() == start {
+                out.push(ch);
+                scan.bump();
+            } else {
+                // A sheet's name or a word that is no reference, as written.
+                scan = after;
                 out.push_str(&scan.text_from(start));
             }
             continue;
-        }
-        if let Some((first, sep, second, after)) = line_range(scan) {
-            scan = after;
-            out.push_str(&rewrite(Ref::Lines(first, &sep, second)));
-            continue;
-        }
-        if ch != '$' && !ch.is_ascii_alphabetic() {
-            out.push(ch);
-            scan.bump();
-            continue;
-        }
-        let start = scan.pos();
-        scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
-        let token = scan.text_from(start);
-        // A run right after a digit/dot is an exponent (`1e3`), not a ref.
-        let prev_numish = scan
-            .before(start)
-            .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
-        // A name followed by `(` is a function.
-        let mut ahead = scan;
-        ahead.skip_while(char::is_whitespace);
-        let is_call = ahead.peek() == Some('(');
-        let Some(first) = RefToken::parse(&token).filter(|_| !prev_numish && !is_call) else {
-            out.push_str(&token);
-            continue;
         };
-        if ahead.peek() == Some(':') {
-            ahead.bump();
-            ahead.skip_while(char::is_whitespace);
-            let sep = ahead.text_from(scan.pos());
-            let end_start = ahead.pos();
-            ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
-            if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
-                scan = ahead;
-                out.push_str(&rewrite(Ref::Range(first, &sep, second)));
-                continue;
+        scan = after;
+        let sheet = prefix.as_deref().map(written_sheet);
+        match rewrite(sheet.as_deref(), &reference) {
+            Moved::Kept => out.push_str(&scan.text_from(start)),
+            Moved::To(text) => {
+                out.push_str(prefix.as_deref().unwrap_or_default());
+                out.push_str(&text);
             }
+            Moved::Gone => out.push_str("#REF!"),
         }
-        out.push_str(&rewrite(Ref::Cell(first)));
     }
     out
+}
+
+/// The reference at the scan, and the scan past it: whole rows or columns, a range or a cell.
+/// A function's name, a bare word and a number's exponent are no reference, and the scan is past
+/// that word.
+fn reference_at(scan: Scan<'_>) -> (Option<Ref>, Scan<'_>) {
+    if let Some((first, sep, second, after)) = line_range(scan) {
+        return (Some(Ref::Lines(first, sep, second)), after);
+    }
+    if !scan
+        .peek()
+        .is_some_and(|c| c == '$' || c.is_ascii_alphabetic())
+    {
+        return (None, scan);
+    }
+    let start = scan.pos();
+    let mut scan = scan;
+    scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+    // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+    let prev_numish = scan
+        .before(start)
+        .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
+    // A name followed by `(` is a function.
+    let mut ahead = scan;
+    ahead.skip_while(char::is_whitespace);
+    let is_call = ahead.peek() == Some('(');
+    let Some(first) = RefToken::parse(&scan.text_from(start)).filter(|_| !prev_numish && !is_call)
+    else {
+        return (None, scan);
+    };
+    if ahead.peek() == Some(':') {
+        ahead.bump();
+        ahead.skip_while(char::is_whitespace);
+        let sep = ahead.text_from(scan.pos());
+        let end_start = ahead.pos();
+        ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
+            return (Some(Ref::Range(first, sep, second)), ahead);
+        }
+    }
+    (Some(Ref::Cell(first)), scan)
 }
 
 /// A sheet name and its `!`, with the scan moved past both.
@@ -733,6 +842,63 @@ mod tests {
                 "='Q3 rates'!A1+'Q3 rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"
             );
             assert_eq!(renamed("Rates!A1"), "Rates!A1", "no formula");
+        }
+
+        phase references_naming_the_changed_sheet_move_wherever_they_are_written;
+        {
+            let elsewhere = |raw, edit| remap_sheet_refs(raw, edit, false, Some("q 3"));
+            assert_eq!(
+                elsewhere(
+                    "=A2+'Q 3'!A2+SUM('q 3'!B2:B4)+Rates!A2+\"'Q 3'!A2\"",
+                    GridEdit::InsertRow(0)
+                ),
+                "=A2+'Q 3'!A3+SUM('q 3'!B3:B5)+Rates!A2+\"'Q 3'!A2\"",
+                "only what names the changed sheet moves"
+            );
+            assert_eq!(
+                elsewhere(
+                    "='Q 3'!A2+SUM('Q 3'!B2:B4)+SUM('Q 3'!2:2)+'Q 3'!$A$9",
+                    GridEdit::DeleteRow(1)
+                ),
+                "=#REF!+SUM('Q 3'!B2:B3)+SUM(#REF!)+'Q 3'!$A$8",
+                "a deleted target is the error alone, without the name"
+            );
+            assert_eq!(
+                elsewhere("=SUM('Q 3'!B:C)+'Q 3'!b1", GridEdit::InsertColumn(0)),
+                "=SUM('Q 3'!C:D)+'Q 3'!C1"
+            );
+            assert_eq!(
+                elsewhere("=SUM('Q 3'!b:c)+'Q 3'!b1", GridEdit::InsertRow(4)),
+                "=SUM('Q 3'!b:c)+'Q 3'!b1",
+                "what does not move keeps its spelling"
+            );
+            let own = |raw| remap_sheet_refs(raw, GridEdit::InsertRow(0), true, Some("data"));
+            assert_eq!(own("=A2+Data!A2+Rates!A2"), "=A3+Data!A3+Rates!A2");
+            assert_eq!(
+                remap_sheet_refs("=A2+Data!A2", GridEdit::InsertRow(0), true, None),
+                "=A3+Data!A2",
+                "a sheet no name reaches moves only its bare references"
+            );
+            assert_eq!(
+                unsheet_refs(
+                    "=A1+Data!A2+SUM('data'!B:B)+Rates!A1+\"Data!A1\"+Data!Total",
+                    "data"
+                ),
+                "=A1+#REF!+SUM(#REF!)+Rates!A1+\"Data!A1\"+Data!Total"
+            );
+            let mut read = Vec::new();
+            each_reference("=A2+SUM(Data!B2:C4)+SUM('Q 3'!2:3)+SUM(D:D)", |sheet, start, end| {
+                read.push((sheet.map(str::to_owned), start, end));
+            });
+            assert_eq!(
+                read,
+                [
+                    (None, (0, 1), (0, 1)),
+                    (Some("Data".to_owned()), (1, 1), (2, 3)),
+                    (Some("Q 3".to_owned()), (0, 1), (u32::MAX, 2)),
+                    (None, (3, 0), (3, u32::MAX)),
+                ]
+            );
         }
     }
 }
