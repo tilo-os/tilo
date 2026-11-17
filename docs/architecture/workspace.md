@@ -776,6 +776,18 @@ app writes none of them:
   agent hands the record it mounts the newest part of each of its chains and
   every part the chain then asks for, from what the workspace holds, and
   keeps each current with the changes after it.
+- **Beside a person's own record.** An app that keeps one record per member
+  (Mail) keeps the parts beside that person's record
+  (`Chained::chain_beside`), never beside the workspace's, so a mailbox's
+  parts are as private as the mailbox.
+- **Places over everything the chain holds.** What the app derives from all
+  of it — a book's groups, its favorites, its likely duplicates — the chain
+  publishes as its own children (`Chained::places`), and what search finds
+  beyond the items (`Chained::search_over`), so derived resources do not
+  need the record to hold the items.
+- **A group as one step.** Several actions invoked as one (a saved form's
+  field edits) land as one change in each part they touch, so they stay one
+  undo step and one version.
 
 What one app record holds at the size of a small company's workspace (101 wiki
 pages, about 2,500 issues, a 19,513-file repository), and what a change costs
