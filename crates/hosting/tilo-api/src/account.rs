@@ -585,10 +585,7 @@ impl Server {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one match arm per account action, each a few lines of arguments and its answer"
-    )]
+    /// Do the account action `path` names, as `key`, with `args`.
     async fn account_do(
         &self,
         grant: &Grant,
@@ -596,12 +593,6 @@ impl Server {
         path: &str,
         args: &Value,
     ) -> Outcome {
-        let field = |name: &str| {
-            args.get(name)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        };
         match path {
             "account/workspaces#list" => match labels_of(args) {
                 Ok(labels) => self.account_workspaces_labelled(key, &labels).await,
@@ -609,101 +600,11 @@ impl Server {
             },
             "account/workspaces#create" => self.create_workspace(key, args).await,
             "account/workspaces#branch" => self.branch_workspace(grant, key, args).await,
-            "account/workspaces#delete" => {
-                let Some(workspace) = field("workspace") else {
-                    return failed(
-                        "invalid_arguments",
-                        "`workspace` is required",
-                        "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
-                    );
-                };
-                if let Err(error) = key.relay().delete(key, workspace).await {
-                    return refused(&error);
-                }
-                // Every key that reached only that workspace goes with it.
-                let revoked = self.revoke_keys_for(&grant.person, workspace).await;
-                Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
-            }
+            "account/workspaces#delete" => self.delete_workspace(grant, key, args).await,
             "account/keys#list" => self.account_keys(grant, key).await,
-            "account/keys#create" => {
-                let asked = crate::keys::expires_in_of(args.get("expires_in"))
-                    .and_then(|expires_in| {
-                        crate::keys::browser_pages_of(args.get("browser_pages"))
-                            .map(|browser_pages| (expires_in, browser_pages))
-                    })
-                    .and_then(|(expires_in, browser_pages)| {
-                        self.ask_for_key(
-                            field("name"),
-                            field("workspace"),
-                            expires_in,
-                            browser_pages,
-                        )
-                    });
-                match asked {
-                    Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
-                    Err(why) => failed(
-                        "invalid_arguments",
-                        why,
-                        "pass args {name, workspace?, expires_in?, browser_pages?}",
-                    ),
-                }
-            }
+            "account/keys#create" => self.create_key(args),
             "account/keys#mint" => self.mint(grant, key, args).await,
-            "account/keys#revoke" => {
-                let Some(id) = field("grant") else {
-                    return failed(
-                        "invalid_arguments",
-                        "`grant` is required",
-                        "account/keys#list names them",
-                    );
-                };
-                let own = id == grant.id
-                    || self
-                        .store
-                        .grant(id)
-                        .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
-                if !own {
-                    return failed(
-                        "not_found",
-                        "no such key of this key",
-                        "account/keys#list names them",
-                    );
-                }
-                // Where the key is recorded: the workspace it reaches, or the
-                // workspace the calling key itself reaches.
-                let scope = self
-                    .store
-                    .grant(id)
-                    .map_or_else(|| grant.scope.clone(), |found| found.scope);
-                let workspace = match scope {
-                    Scope::Workspace(workspace) => Some(workspace),
-                    Scope::Account => None,
-                };
-                match self.revoke_grant(&grant.person, id).await {
-                    Ok(_) => {
-                        // The workspace records the revocation, so every
-                        // holder and API server refuses the key, not only this
-                        // one.
-                        if let Some(workspace) = workspace
-                            && let Err(outcome) =
-                                crate::session::keys::revoke_in(key, &workspace, id).await
-                        {
-                            tracing::warn!(
-                                workspace,
-                                grant = id,
-                                "the workspace did not record a key's revocation"
-                            );
-                            return outcome;
-                        }
-                        Outcome::Ok(json!({"revoked": id}))
-                    }
-                    Err(_) => failed(
-                        "unavailable",
-                        "revocation is unavailable",
-                        "try again shortly",
-                    ),
-                }
-            }
+            "account/keys#revoke" => self.revoke_key(grant, key, args).await,
             other => failed(
                 "not_found",
                 format!("the account has no action {other}"),
@@ -712,15 +613,109 @@ impl Server {
         }
     }
 
+    /// Delete the workspace `args` names, and every key that reached only it.
+    async fn delete_workspace(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
+        let Some(workspace) = field(args, "workspace") else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` is required",
+                "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
+            );
+        };
+        if let Err(error) = key.relay().delete(key, workspace).await {
+            return refused(&error);
+        }
+        // Every key that reached only that workspace goes with it.
+        let revoked = self.revoke_keys_for(&grant.person, workspace).await;
+        Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
+    }
+
+    /// Ask for the key `args` names (`name`, and optionally `workspace`,
+    /// `expires_in` and `browser_pages`), for the person to approve.
+    fn create_key(&self, args: &Value) -> Outcome {
+        let asked = crate::keys::expires_in_of(args.get("expires_in"))
+            .and_then(|expires_in| {
+                crate::keys::browser_pages_of(args.get("browser_pages"))
+                    .map(|browser_pages| (expires_in, browser_pages))
+            })
+            .and_then(|(expires_in, browser_pages)| {
+                self.ask_for_key(
+                    field(args, "name"),
+                    field(args, "workspace"),
+                    expires_in,
+                    browser_pages,
+                )
+            });
+        match asked {
+            Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
+            Err(why) => failed(
+                "invalid_arguments",
+                why,
+                "pass args {name, workspace?, expires_in?, browser_pages?}",
+            ),
+        }
+    }
+
+    /// Revoke the key `args` names, and have the workspace it reached keep the
+    /// revocation too.
+    async fn revoke_key(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
+        let Some(id) = field(args, "grant") else {
+            return failed(
+                "invalid_arguments",
+                "`grant` is required",
+                "account/keys#list names them",
+            );
+        };
+        let own = id == grant.id
+            || self
+                .store
+                .grant(id)
+                .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
+        if !own {
+            return failed(
+                "not_found",
+                "no such key of this key",
+                "account/keys#list names them",
+            );
+        }
+        // Where the key is recorded: the workspace it reaches, or the
+        // workspace the calling key itself reaches.
+        let scope = self
+            .store
+            .grant(id)
+            .map_or_else(|| grant.scope.clone(), |found| found.scope);
+        let workspace = match scope {
+            Scope::Workspace(workspace) => Some(workspace),
+            Scope::Account => None,
+        };
+        match self.revoke_grant(&grant.person, id).await {
+            Ok(_) => {
+                // The workspace keeps the revocation, so every holder and API
+                // server refuses the key, not only this one.
+                if let Some(workspace) = workspace
+                    && let Err(outcome) = crate::session::keys::revoke_in(key, &workspace, id).await
+                {
+                    tracing::warn!(
+                        workspace,
+                        grant = id,
+                        "the workspace did not record a key's revocation"
+                    );
+                    return outcome;
+                }
+                Outcome::Ok(json!({"revoked": id}))
+            }
+            Err(_) => failed(
+                "unavailable",
+                "revocation is unavailable",
+                "try again shortly",
+            ),
+        }
+    }
+
     /// Make the workspace `args` names (`name`, and `id` when the caller chose
     /// one) as `key`.
     async fn create_workspace(&self, key: &Connection, args: &Value) -> Outcome {
-        let Some(name) = args
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        else {
+        let Some(name) = field(args, "name") else {
             return failed(
                 "invalid_arguments",
                 "`name` is required",
@@ -752,20 +747,14 @@ impl Server {
                 "to create or list workspaces, ask the person for a key for all their workspaces",
             );
         }
-        let field = |name: &str| {
-            args.get(name)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        };
-        let Some(source) = field("workspace") else {
+        let Some(source) = field(args, "workspace") else {
             return failed(
                 "invalid_arguments",
                 "`workspace` is required",
                 "pass args {workspace: \"<id>\", name}; account/workspaces#list names them",
             );
         };
-        let Some(name) = field("name") else {
+        let Some(name) = field(args, "name") else {
             return failed(
                 "invalid_arguments",
                 "`name` is required",
@@ -1012,6 +1001,14 @@ pub(crate) fn labelled(workspace: &crate::relay::Workspace, labels: &WorkspaceLa
     labels
         .iter()
         .all(|(name, value)| workspace.labels.get(name) == Some(value))
+}
+
+/// The argument `args` names, trimmed, when it holds text.
+fn field<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// The labels `args` names (`labels`, names to text values): none when it
