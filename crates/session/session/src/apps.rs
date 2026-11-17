@@ -687,15 +687,7 @@ impl Apps {
     /// when nothing is known about what is in view.
     pub fn windows_in_view(&self) -> Option<Vec<u64>> {
         let desktop = self.desktop.borrow().clone()?;
-        let layout = desktop.with_policy(|policy| policy.placement());
-        Some(
-            layout
-                .shown
-                .into_iter()
-                .chain(layout.floating)
-                .map(|(window, _)| window)
-                .collect(),
-        )
+        Some(desktop.with_policy(|policy| policy.in_view()))
     }
 
     /// Put every cgroup a launch of this session runs in in its tier: `on_screen` is the process of

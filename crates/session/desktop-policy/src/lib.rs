@@ -1713,6 +1713,33 @@ impl DesktopPolicy {
         }
     }
 
+    /// The windows the person can see: each shown window that stands at least partly on a display,
+    /// and each dialog floating over one. A strip lays out every window group on it, so the ones
+    /// scrolled past are shown windows that stand off every display; they are not in view. With
+    /// no display known yet, every shown window is.
+    #[must_use]
+    pub fn in_view(&self) -> Vec<u64> {
+        let placement = self.placement();
+        let views: Vec<Rect> = self
+            .displays
+            .iter()
+            .map(tilo_desktop_surface::display_rect)
+            .collect();
+        placement
+            .shown
+            .into_iter()
+            .chain(placement.floating)
+            .filter(|(_, rect)| {
+                views.is_empty()
+                    || views.iter().any(|view| {
+                        let on = view.intersect(*rect);
+                        on.width() > 0.0 && on.height() > 0.0
+                    })
+            })
+            .map(|(window, _)| window)
+            .collect()
+    }
+
     /// Each window floating over the shell, and the rect the shell draws over the windows under
     /// it for that window: the whole of its bar and body, which it paints opaque, in surface
     /// coordinates. What lies under it there is drawn around it.
