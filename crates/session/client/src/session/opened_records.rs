@@ -27,7 +27,7 @@ impl Task {
             self.open_channel(&route);
         }
         let own = self.own_channel(&route);
-        self.opened_records.insert(channel, (workspace_id, route));
+        self.opened_records.insert((workspace_id, channel), route);
         client.is_none_or(|client| {
             client
                 .send(Envelope::OpenDocument {
@@ -49,7 +49,7 @@ impl Task {
         client: Option<&RelayClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-        if self.opened_records.contains_key(&channel)
+        if self.opened_records.contains_key(&(workspace_id, channel))
             || (route.app_id == tilo_desktop_model::ownership::DESKTOP_APP
                 && route.record == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
         {
@@ -96,7 +96,7 @@ impl Task {
     /// Returns `false` when the session could not take the requests.
     pub(super) fn reopen_records(&self, client: &RelayClient) -> bool {
         let mut sent_ok = true;
-        for (channel, (workspace_id, route)) in &self.opened_records {
+        for ((workspace_id, channel), route) in &self.opened_records {
             sent_ok &= client
                 .send(Envelope::OpenDocument {
                     workspace_id: *workspace_id,
@@ -118,7 +118,7 @@ impl Task {
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
-        if let Some((_, route)) = self.opened_records.get(&channel) {
+        if let Some(route) = self.opened_records.get(&(workspace_id, channel)) {
             self.reports.emit(&crate::Event::DocumentOpened {
                 ws: workspace_id,
                 channel,

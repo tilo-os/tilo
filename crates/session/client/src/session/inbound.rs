@@ -122,6 +122,10 @@ impl Task {
         self.workspaces.remove(&workspace_id);
         self.planes_due.remove(&workspace_id);
         self.placing.remove(&workspace_id);
+        // Its records are opened on no later subscription: the host holds
+        // nothing of it to answer with.
+        self.opened_records
+            .retain(|(workspace, _), _| *workspace != workspace_id);
         self.fail(WORKSPACE_DELETED.0, WORKSPACE_DELETED.1);
         let nothing_left = self.workspaces.is_empty();
         self.emptied = nothing_left;
