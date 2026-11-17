@@ -26,6 +26,7 @@ __all__ = [
     "AdoptedThread",
     "AnnoKind",
     "Annotation",
+    "Author",
     "ClipAttr",
     "ClipBlock",
     "Comment",
@@ -117,10 +118,13 @@ class Annotation(TypedDict):
     page_id: str
     mark: Any
     color: Any
-    author: str
+    author: Author
     chars: list[int] | None
     created_ms: int
     space: GeomSpace
+
+Author = dict[str, Any]
+"""One of member, named: an object whose case the app tags it with."""
 
 ClipAttr = dict[str, Any]
 """One of bool, int, str: an object whose case the app tags it with."""
@@ -136,7 +140,7 @@ class ClipBlock(TypedDict):
 
 class Comment(TypedDict):
     anchor: PdfAnchor
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
@@ -228,7 +232,7 @@ class PtRect(TypedDict):
     h: float
 
 class Reply(TypedDict):
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
@@ -394,7 +398,7 @@ SetStrokesArgs = TypedDict("SetStrokesArgs", {
 
 class Document(Resource):
     """PDF — `pdf.document`."""
-    __surface__ = "so.tilo.pdf-viewer@ff95f35fbe75b49f"
+    __surface__ = "so.tilo.pdf-viewer@9bf89e040983260a"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -674,7 +678,7 @@ class Document(Resource):
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
-    __surface__ = "so.tilo.pdf-viewer@ff95f35fbe75b49f"
+    __surface__ = "so.tilo.pdf-viewer@9bf89e040983260a"
     signer: str
     strokes: list[Stroke]
 

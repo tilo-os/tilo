@@ -22555,20 +22555,12 @@
             "additionalProperties": false,
             "properties": {
               "background": {
-                "oneOf": [
-                  {
-                    "const": "surface",
-                    "type": "string"
-                  },
-                  {
-                    "const": "accent",
-                    "type": "string"
-                  },
-                  {
-                    "const": "deep",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "surface",
+                  "accent",
+                  "deep"
+                ],
+                "type": "string"
               },
               "elements": {
                 "items": {
@@ -23259,16 +23251,11 @@
                 "type": "null"
               },
               {
-                "oneOf": [
-                  {
-                    "const": "light",
-                    "type": "string"
-                  },
-                  {
-                    "const": "dark",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "light",
+                  "dark"
+                ],
+                "type": "string"
               }
             ]
           },
@@ -23277,20 +23264,12 @@
               "additionalProperties": false,
               "properties": {
                 "background": {
-                  "oneOf": [
-                    {
-                      "const": "surface",
-                      "type": "string"
-                    },
-                    {
-                      "const": "accent",
-                      "type": "string"
-                    },
-                    {
-                      "const": "deep",
-                      "type": "string"
-                    }
-                  ]
+                  "enum": [
+                    "surface",
+                    "accent",
+                    "deep"
+                  ],
+                  "type": "string"
                 },
                 "elements": {
                   "items": {

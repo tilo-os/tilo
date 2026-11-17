@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@ff95f35fbe75b49f";
+export const SURFACE = "so.tilo.pdf-viewer@9bf89e040983260a";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -67,11 +67,14 @@ export interface Annotation {
   page_id: string;
   mark: unknown;
   color: unknown;
-  author: string;
+  author: Author;
   chars: number[] | null;
   created_ms: number;
   space: GeomSpace;
 }
+
+/** One of member, named: an object whose case the app tags it with. */
+export type Author = Record<string, unknown>;
 
 /** One of bool, int, str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
@@ -88,7 +91,7 @@ export interface ClipBlock {
 
 export interface Comment {
   anchor: PdfAnchor;
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];
@@ -194,7 +197,7 @@ export interface PtRect {
 }
 
 export interface Reply {
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];

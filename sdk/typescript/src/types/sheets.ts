@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@be9693405e43cb95";
+export const SURFACE = "so.tilo.sheets@e50c2e87f6121f0e";
 
 export interface Area {
   top: string;
@@ -30,6 +30,9 @@ export interface Area {
   bottom: string;
   right: string;
 }
+
+/** One of member, named: an object whose case the app tags it with. */
+export type Author = Record<string, unknown>;
 
 export interface CellWrite {
   cell: string;
@@ -62,7 +65,7 @@ export interface ClipBlock {
 
 export interface Comment {
   anchor: CommentCells;
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];
@@ -104,7 +107,7 @@ export interface MarkSpan {
 export type MarkValue = Record<string, unknown>;
 
 export interface Reply {
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];
