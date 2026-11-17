@@ -10,7 +10,7 @@
 1 crates/dev/tilo-vm/src/scenario/console.rs
 2 crates/dev/tilo-vmd/src/input.rs
 1 crates/dev/tilo-vmd/src/systemd.rs
-2 crates/hosting/tilo-server/src/environment_guest.rs
+2 crates/server/tilo-server/src/environment_guest.rs
 1 crates/lang/tilolang-cli/src/repl/api.rs
 1 crates/packaging/launcher/examples/dbus_proxy_startup.rs
 1 crates/packaging/launcher/src/main.rs

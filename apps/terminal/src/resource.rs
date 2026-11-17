@@ -177,7 +177,7 @@ pub struct CommandAnswer {
     pub exit: Option<i32>,
     /// Why the command's host refused it, with the steps that would let it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refusal: Option<ui::tilo_actions::remote::host_account::Refusal>,
+    pub refusal: Option<ui::tilo_actions::remote::server_account::Refusal>,
 }
 
 /// What a finished command recorded, as the Terminal that ran it hands it in.

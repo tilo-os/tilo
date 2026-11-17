@@ -31,7 +31,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. The groups are `fs`,
-`footprint` (app and OS image sizes), `agent`, `render`, `search`, `hosting` and
+`footprint` (app and OS image sizes), `agent`, `render`, `search`, `server` and
 `browser`; `tools/ci/perf-scheduled.sh <group>` measures one from your tree, except
 `browser`, which measures a clean checkout of a commit. `render` also holds the session's
 own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
@@ -107,7 +107,7 @@ module's encoded size either way, which is what a page pays before it can
 present anything. Such a run is a different series too, so the nightly stays on
 loopback and names the module's size from the bytes it served.
 
-The `hosting` group measures the server's cost per member-hour
+The `server` group measures the server's cost per member-hour
 (`server_load`, workspaces of four): fan-out latency and the priced capacity of a server VM.
 
 Input-to-presentation latency and idle wakeups of an installed desktop are
@@ -158,10 +158,10 @@ measured 15.9 and 31.2 CPU-seconds per member-hour). To claim a gain,
 or to show there is no regression, run an A/B from a clean checkout on Linux:
 
 ```bash
-python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate <commit> --rounds 8 --out target/perf-ab
+python3 tools/perf/ab.py run --groups server --base origin/main --candidate <commit> --rounds 8 --out target/perf-ab
 ```
 
-For each group in `--groups` (`hosting`, `render`, `agent`, `fs`, `browser`;
+For each group in `--groups` (`server`, `render`, `agent`, `fs`, `browser`;
 `footprint` is bytes of published artifacts and `search` is a test's own budget,
 so neither has an A/B)
 builds the base and the candidate in one checkout, one after the other, and

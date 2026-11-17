@@ -329,7 +329,7 @@ tilo_test_env::scenario! {
             .publish_governed_revocations(&[revocation], &key, now)
             .unwrap();
         // The server's historical retention proof refuses the same candidate; that
-        // half lives beside the proof, in `tilo_workspace_host::payloads`.
+        // half lives beside the proof, in `tilo_workspace_service::payloads`.
         let mut current = peer.admitted_workspace().unwrap().clone();
         let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         // Every owner device's row carries the owner's revocations: clear them all.

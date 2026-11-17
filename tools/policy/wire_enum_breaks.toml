@@ -179,12 +179,12 @@ enum = "PublicationKind"
 reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image wire; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/operator.rs"
+file = "crates/server/tilo-server-protocol/src/operator.rs"
 enum = "OperatorCommand"
 reason = "one JSON line per command between the workspace service and the workspace process it starts from the same image; the line names its command (`tag = \"op\"`), so the pre-admission and spectator commands go by name, and the protocol version (announced in `Started`, refused when it is another) is bumped from 4 to 5 with them, so neither side reads a line written by the other; the Discord sign-in command went the same way when the host that signs in began answering Discord's callback itself"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/operator.rs"
+file = "crates/server/tilo-server-protocol/src/operator.rs"
 enum = "OperatorEvent"
 reason = "one JSON line per event on the same one-image operator pipe, tagged by name (`tag = \"event\"`); the pre-admission and spectator events went with the commands that asked for them, and the protocol version is bumped from 4 to 5 in the same commit, so no reader of either version decodes the other's streams"
 
@@ -209,12 +209,12 @@ enum = "VmSize"
 reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
 reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the server serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesReply"
 reason = "the answers to those requests, live on the same session and kept nowhere, so the retired placeholder takes the meaning its position always had"
 
@@ -224,7 +224,7 @@ enum = "Kind"
 reason = "a layout check's finding kinds are written only into the report of the run that found them and read back by nobody: `sidebar-header-on-reveal` becomes `header-on-reveal`, now held for every column, beside the new `offered-twice`"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/workspaces.rs"
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
 enum = "JoinReply"
 reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"
 
@@ -289,7 +289,7 @@ enum = "Response"
 reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/transport.rs"
+file = "crates/server/tilo-server-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "`ChannelReader` is renamed `KeyFollower` at the same index: postcard writes no names, so the bytes read the same"
 
@@ -329,12 +329,12 @@ enum = "VerifiedActor"
 reason = "the task-run actors went with the task-run path; the variants left keep their names in the JSON evidence, and evidence naming a task run is refused as unsupported"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/entering.rs"
+file = "crates/server/tilo-server-protocol/src/entering.rs"
 enum = "EnterRefusal"
 reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/entering.rs"
+file = "crates/server/tilo-server-protocol/src/entering.rs"
 enum = "Through"
 reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
 
@@ -428,16 +428,16 @@ enum = "Kind"
 reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/transport.rs"
+file = "crates/server/tilo-server-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "the content-refused envelope goes with the content budget it reported, and content is no longer budgeted; it is a live frame on a device's session, never stored, and the peer protocol version is bumped from 52 to 53 with its removal, so a device at another version admits nothing from this one"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/refusal.rs"
+file = "crates/server/tilo-server-protocol/src/refusal.rs"
 enum = "Refusal"
 reason = "the refusal a spent content budget sent goes with that budget; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 52 to 53 with the removal, so a device at another version reads none of these bytes"
 
 [[break]]
-file = "crates/hosting/tilo-server-protocol/src/refusal.rs"
+file = "crates/server/tilo-server-protocol/src/refusal.rs"
 enum = "Refusal"
 reason = "the refusal a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 53 to 54 with the removal, so a device at another version reads none of these bytes"

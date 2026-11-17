@@ -56,10 +56,10 @@ paths = [
     "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
     "crates/dev/test-server/Cargo.toml",
     "crates/dev/test-server/src/lib.rs",
-    "crates/hosting/tilo-server/src/agents.rs",
-    "crates/hosting/tilo-server/src/daemon.rs",
-    "crates/hosting/tilo-server/src/web/mod.rs",
-    "crates/hosting/tilo-workspace-host/Cargo.toml",
+    "crates/server/tilo-server/src/agents.rs",
+    "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/src/web/mod.rs",
+    "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
     "crates/session/session/src/sync/client/mod.rs",
@@ -96,10 +96,10 @@ paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
-    "crates/hosting/tilo-workspace-host/src/workspaces/mail_watch.rs",
-    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings.rs",
-    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/sending.rs",
-    "crates/hosting/tilo-workspace-host/src/workspaces/actions/host/mail_assistant_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
 
 [[allow]]
@@ -149,7 +149,7 @@ paths = [
     "crates/platform/migration-sources/src/destination_security/*",
     "apps/imager/src/setup/internal_cache/windows.rs",
     "crates/system/tilo-dav/*",
-    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/calendars/fake_caldav.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
     "apps/calendar/src/setup/tests.rs",
     "apps/settings/tests/accounts_calendar_loop.rs",
     "apps/mail/tests/oauth_credentials.rs",
@@ -280,7 +280,7 @@ paths = [
     "apps/windows/src/lib.rs",
     "apps/windows/src/provider.rs",
     "crates/agent/model-gateway/src/service.rs",
-    "crates/hosting/tilo-server/README.md",
+    "crates/server/tilo-server/README.md",
     "crates/sdk/ui-core/tests/support/mod.rs",
     "crates/windows/windows-vm/src/https_guest.rs",
 ]
@@ -373,8 +373,8 @@ reason = "HTTP's Host header, by its own name and inside X-Forwarded-Host, as a 
 words = ["host"]
 identifiers = ["host", "Host"]
 paths = [
-    "crates/hosting/tilo-workspace-host/src/workspaces/hosted_use/web_call.rs",
-    "crates/hosting/tilo-workspace-host/src/workspaces/actions/host/web_call_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/hosted_use/web_call.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/web_call_tests.rs",
     "crates/system/accounts/src/vault_items/key_in.rs",
 ]
 

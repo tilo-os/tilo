@@ -465,7 +465,7 @@ struct CommandState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
-    pub(crate) refusal: ui::tilo_actions::remote::host_account::Refusal,
+    pub(crate) refusal: ui::tilo_actions::remote::server_account::Refusal,
     /// An agent asked for the run: the shell does not wait, the agent has
     /// the refusal, and the prompt is the person's to act on or dismiss.
     pub(crate) agent: bool,
@@ -5613,7 +5613,7 @@ impl TopBanner {
 
     /// The prompt of a run its host holds.
     fn held(held: &Held) -> Self {
-        use ui::tilo_actions::remote::host_account::Reason;
+        use ui::tilo_actions::remote::server_account::Reason;
         let (title, message) = match held.refusal.reason {
             Reason::NoPaymentMethod => (
                 t("terminal-held-title"),
@@ -5643,7 +5643,7 @@ impl TopBanner {
 impl Held {
     /// The provider's page to add a card on: only a secure web page.
     pub(crate) fn add_card_url(&self) -> Option<&str> {
-        use ui::tilo_actions::remote::host_account::NextStepKind;
+        use ui::tilo_actions::remote::server_account::NextStepKind;
         self.refusal
             .step(NextStepKind::AddPaymentMethod)
             .and_then(|step| step.url.as_deref())

@@ -19730,20 +19730,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-host-account"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "legacy-vm",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-files",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-host-search"
 version = "0.1.0"
 dependencies = [
@@ -20493,7 +20479,7 @@ dependencies = [
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-window-share",
- "tilo-workspace-host",
+ "tilo-workspace-service",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -21436,7 +21422,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
- "tilo-workspace-host",
+ "tilo-workspace-service",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -21713,7 +21699,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-fs",
- "tilo-host-account",
+ "tilo-server-account",
  "tilo-identity",
  "tilo-live",
  "tilo-lock",
@@ -21739,7 +21725,7 @@ dependencies = [
  "tilo-web-search",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
- "tilo-workspace-host",
+ "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
@@ -21750,6 +21736,20 @@ dependencies = [
  "workspace-hack",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "tilo-server-account"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "legacy-vm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-files",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -21986,7 +21986,7 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
- "tilo-host-account",
+ "tilo-server-account",
  "tilo-identity",
  "tilo-identity-authority",
  "tilo-live",
@@ -23362,7 +23362,52 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-workspace-host"
+name = "tilo-workspace-join"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-files",
+ "tilo-seal",
+ "tilo-user-identity",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-workspace-keys"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "key-group",
+ "neighbour-wire",
+ "pollster",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-files",
+ "tilo-identity",
+ "tilo-identity-client",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-workspace-service"
 version = "0.1.0"
 dependencies = [
  "accounts",
@@ -23428,51 +23473,6 @@ dependencies = [
  "uuid",
  "web-time",
  "workspace-hack",
-]
-
-[[package]]
-name = "tilo-workspace-join"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "postcard",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror 2.0.21",
- "tilo-files",
- "tilo-seal",
- "tilo-user-identity",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-workspace-keys"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "ed25519-dalek 3.0.0",
- "key-group",
- "neighbour-wire",
- "pollster",
- "postcard",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-clock",
- "tilo-desktop-model",
- "tilo-files",
- "tilo-identity",
- "tilo-identity-client",
- "tilo-test-env",
- "tokio",
- "tracing",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -25191,7 +25191,7 @@ dependencies = [
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
- "tilo-host-account",
+ "tilo-server-account",
  "tilo-oci-images",
  "tilo-paths",
  "tilo-process",
@@ -29117,7 +29117,7 @@ dependencies = [
  "tilo-highlight",
  "tilo-highlight-grammars",
  "tilo-history",
- "tilo-host-account",
+ "tilo-server-account",
  "tilo-host-search",
  "tilo-identity",
  "tilo-identity-authority",
@@ -29268,7 +29268,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-directory",
  "tilo-workspace-emoji",
- "tilo-workspace-host",
+ "tilo-workspace-service",
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tilo-written-view",

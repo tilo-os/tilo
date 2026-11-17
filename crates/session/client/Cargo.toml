@@ -33,18 +33,18 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # How a workspace numbers itself on the peer network.
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # The identity layer's device side: certification, invitations and the link to a person's host,
 # over iroh natively and over the browser's WebTransport in a page.
-tilo-server-client = { path = "../../hosting/tilo-server-client" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
 # The session client every device reaches its host with, over its link.
-tilo-server-session = { path = "../../hosting/tilo-server-session" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../../collab/actions" }
 # Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
 tilo-sort = { path = "../../platform/tilo-sort" }
 # The signed hint a workspace's governance keeps of its host's address.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # A live session's WebTransport session: the browser's own in a page.
 tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
 # `moq-lite` itself: a session's live session is a publisher and a subscriber.
@@ -119,7 +119,7 @@ tilo-automerge-isolate.workspace = true
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../dev/test-http" }
-tilo-server = { path = "../../hosting/tilo-server", features = ["web", "test-support"] }
+tilo-server = { path = "../../server/tilo-server", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 # A server listener on loopback, as the live session's acceptance test drives it.

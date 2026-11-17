@@ -52,7 +52,7 @@ serde_json.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # The `tracing` target the session log keeps whatever `RUST_LOG` says, under
 # which every certificate renewal a join depends on is reported.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }

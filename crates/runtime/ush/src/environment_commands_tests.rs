@@ -550,7 +550,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
 #[test]
 fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
     use legacy_vm::hosted::control::{Reply, Request};
-    use tilo_actions::remote::host_account::{Reason, Refusal};
+    use tilo_actions::remote::server_account::{Reason, Refusal};
     let dir = tempfile::tempdir().unwrap();
     // The hosted-VM service reads its plans file for the account the request
     // names, and finds no card for it.

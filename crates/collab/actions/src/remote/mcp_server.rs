@@ -8,7 +8,7 @@
 //! it makes there is attributed to it in the workspace's history
 //! ([`super::workspace_activity`]), where its work is read and undone.
 //!
-//! The model is the API server's (`crates/hosting/tilo-api`): a
+//! The model is the API server's (`crates/server/tilo-api`): a
 //! grant reaches every workspace of the person or exactly one, and each MCP
 //! session through it is one agent session, named for the person ("Claude
 //! Code #2") as History names it. Whoever serves the server serves

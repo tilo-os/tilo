@@ -108,7 +108,7 @@ fn ns(at: SystemTime) -> u64 {
 /// `starting`, a host or a relay starting on one of these fixtures'
 /// endpoints, awaited past its wait for a relay. Each starts only after its
 /// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
-/// (`tilo_workspace_host::workspaces::Workspaces::open`, `tilo_server`'s start), and
+/// (`tilo_workspace_service::workspaces::Workspaces::open`, `tilo_server`'s start), and
 /// these endpoints have none to reach. A test on a runtime whose clock it can
 /// hold holds it over the start: the same whole wait runs on that clock, which
 /// passes it when nothing else can run instead of five seconds later. The
@@ -180,20 +180,22 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = past_the_server_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
-            tilo_workspace_host::host::HostConfig::new(
-                directory.path().join("workspace-host"),
-                tilo_server_protocol::WorkSetting::none(),
+        let host = past_the_server_wait(Box::pin(
+            tilo_workspace_service::service::WorkspaceService::open(
+                tilo_workspace_service::service::HostConfig::new(
+                    directory.path().join("workspace-host"),
+                    tilo_server_protocol::WorkSetting::none(),
+                ),
+                tilo_workspace_service::service::HostIdentity {
+                    user_public_key: joined.identity.device_cert.user_public_key,
+                    device_signing_key: native_key(&joined.identity),
+                    device_cert: joined.identity.device_cert.clone(),
+                    revocations: RevocationList::new(),
+                },
+                joined.endpoint(),
+                None,
             ),
-            tilo_workspace_host::host::HostIdentity {
-                user_public_key: joined.identity.device_cert.user_public_key,
-                device_signing_key: native_key(&joined.identity),
-                device_cert: joined.identity.device_cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            joined.endpoint(),
-            None,
-        )))
+        ))
         .await
         .unwrap();
         joined

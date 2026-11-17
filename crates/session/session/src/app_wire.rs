@@ -1363,7 +1363,7 @@ fn broker_services(
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,
                     // followed as the host's plans change.
-                    crate::host_account::HostAccountApi::session(),
+                    crate::server_account::ServerAccountApi::session(),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in.
@@ -2277,7 +2277,7 @@ mod tests {
                 "a turn's agent arranges the screen",
             ),
             (
-                tilo_actions::remote::host_account::PROVIDER,
+                tilo_actions::remote::server_account::PROVIDER,
                 "Settings' Billing reads the person's account with their host",
             ),
         ] {

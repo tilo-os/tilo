@@ -224,8 +224,6 @@ mod governance;
 mod held;
 mod here;
 #[cfg(target_os = "linux")]
-mod host_account;
-#[cfg(target_os = "linux")]
 mod host_shell;
 #[cfg(target_os = "linux")]
 pub mod hosted_browser;
@@ -346,6 +344,8 @@ pub mod run;
 pub mod seeded_apps;
 #[cfg(target_os = "linux")]
 mod send_to;
+#[cfg(target_os = "linux")]
+mod server_account;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 #[cfg(target_os = "linux")]

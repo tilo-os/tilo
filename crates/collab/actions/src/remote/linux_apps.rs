@@ -57,7 +57,7 @@ pub const UP_PROVIDER: &str = "linux";
 /// The argument of `app.so.tilo.linux#open` naming the app's desktop file.
 pub const APP_ARGUMENT: &str = "app";
 /// The failure code of an open the account's plan refused: its details are
-/// the plans' typed refusal ([`super::host_account::Refusal`]), which says
+/// the plans' typed refusal ([`super::server_account::Refusal`]), which says
 /// what would let it through.
 pub const REFUSED: &str = "refused";
 

@@ -25,7 +25,7 @@ use legacy_agent_protocol::{
 use legacy_vm::hosted::control::{FRAMING, Reply, Request};
 use legacy_vm::hosted::plan::{Plan, Plans, Sells, admit};
 use legacy_vm::hosted::size::VmSize;
-use tilo_actions::remote::host_account::{Limits, PlanOffer};
+use tilo_actions::remote::server_account::{Limits, PlanOffer};
 
 use super::HostedTarget;
 

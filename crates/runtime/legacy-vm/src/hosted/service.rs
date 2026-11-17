@@ -28,7 +28,7 @@ use super::size::VmSize;
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
 use crate::lifecycle::Phase;
-use tilo_actions::remote::host_account;
+use tilo_actions::remote::server_account;
 
 /// How often awake VMs are asked what runs in them.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -165,7 +165,7 @@ pub enum BrowserError {
     NotOffered,
     Invalid(String),
     /// The account's plan does not allow it: a Linux app is a Linux action.
-    Refused(host_account::Refusal),
+    Refused(server_account::Refusal),
     /// Not now: every machine is full ([`BUSY`]). The caller waits for
     /// room and asks again.
     Full(String),
@@ -203,7 +203,7 @@ impl std::fmt::Display for BrowserError {
 
 #[derive(Debug)]
 pub enum EnsureError {
-    Refused(host_account::Refusal),
+    Refused(server_account::Refusal),
     Invalid(String),
     Vm(VmError),
     /// The host is being taken back; the VM continues on another one.
@@ -1973,7 +1973,7 @@ mod tests {
         }) else {
             panic!("a Linux action without a card is refused");
         };
-        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+        assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
         assert_eq!(
             service.status().len(),
             1,
@@ -2008,12 +2008,12 @@ mod tests {
         }) else {
             panic!("a Linux app without a card is refused");
         };
-        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+        assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
         assert!(
             refusal
                 .next
                 .iter()
-                .any(|next| next.kind == host_account::NextStepKind::AddPaymentMethod),
+                .any(|next| next.kind == server_account::NextStepKind::AddPaymentMethod),
             "the refusal says what lets it through: {refusal:?}"
         );
         assert!(
@@ -2370,7 +2370,7 @@ mod tests {
         };
         assert_eq!(
             refusal.reason,
-            host_account::Reason::TooManyVms {
+            server_account::Reason::TooManyVms {
                 limit: 2,
                 existing: 2
             }
@@ -2389,7 +2389,7 @@ mod tests {
         };
         assert!(matches!(
             refusal.reason,
-            host_account::Reason::SizeNotInPlan { .. }
+            server_account::Reason::SizeNotInPlan { .. }
         ));
 
         assert_eq!(delete(&service, "ws2"), Reply::Done);

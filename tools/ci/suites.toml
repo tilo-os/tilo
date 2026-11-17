@@ -513,8 +513,8 @@ inputs = [
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
   # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
-  # ... and the hosting-load KPI ids equal to the server load bench's.
-  "crates/hosting/tilo-server/examples/server_load/main.rs",
+  # ... and the server-load KPI ids equal to the server load bench's.
+  "crates/server/tilo-server/examples/server_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
@@ -957,7 +957,7 @@ package = "calendar"
 # holder's own tests start, from its source, so both writers are judged by
 # one reading of the standard's tables.
 inputs = [
-  "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/calendars/fake_caldav.rs",
+  "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
 ]
 readers = ["apps/calendar/src/lib.rs"]
 
@@ -983,8 +983,8 @@ package = "tilo-server"
 # ships, the import it plans resuming after the workspace refused part of a run.
 inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
-  "crates/hosting/tilo-server/src/workspace_bots/tests.rs",
-  "crates/hosting/tilo-server/tests/governed_workspaces/app_push.rs",
+  "crates/server/tilo-server/src/workspace_bots/tests.rs",
+  "crates/server/tilo-server/tests/governed_workspaces/app_push.rs",
 ]
 
 [[cargo]]

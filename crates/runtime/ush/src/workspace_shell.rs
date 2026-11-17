@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
 use tilo_actions::remote::environment_commands::CommandOutput;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
 use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Programs, TiloHost};

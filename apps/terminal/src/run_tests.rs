@@ -933,8 +933,8 @@ fn an_agents_run_gets_the_agent_rendering() {
     );
 }
 
-fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
-    use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+fn no_card() -> ui::tilo_actions::remote::server_account::Refusal {
+    use ui::tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
     Refusal {
         reason: Reason::NoPaymentMethod,
         message: "This needs a Linux machine.".into(),
@@ -945,7 +945,7 @@ fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
     }
 }
 
-fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::host_account::Refusal) -> String {
+fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::server_account::Refusal) -> String {
     format!(
         "\x1b]133;W;k={KEY};a={};r={}\x07",
         u8::from(agent),

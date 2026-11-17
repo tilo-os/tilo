@@ -67,12 +67,12 @@ Each adapter reads what a benchmark already prints and emits records through
   `open`) becomes `render.notes_latency.<workload>.to_frame_ms` and
   `.to_raster_ms`, every input (or input-free frame) a sample. A run without
   raster timings (no GPU) fails.
-- `hosting-load REPORT_JSON`: the server load bench's `hosting-load.json`
-  (`crates/hosting/tilo-server/examples/server_load`). Each KPI it measured
+- `server-load REPORT_JSON`: the server load bench's `server-load.json`
+  (`crates/server/tilo-server/examples/server_load`). Each KPI it measured
   becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
-  `tools/perf/prices.toml` adds `hosting.server.cost_usd_per_collab_hour.<provider>`
-  and `hosting.server.cost_usd_per_user_month.<provider>`, priced per minute.
+  `tools/perf/prices.toml` adds `server.cost_usd_per_collab_hour.<provider>`
+  and `server.cost_usd_per_user_month.<provider>`, priced per minute.
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
@@ -93,7 +93,7 @@ Usage:
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
-    python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
+    python3 tools/perf/adapters.py server-load --env-json env.json server-load.json >> results.jsonl
     python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -374,22 +374,22 @@ def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
 
 PRICES = Path(__file__).resolve().parent / "prices.toml"
 # The server load bench's per-minute KPIs, as `server_load` names them.
-HOSTING_KPIS = {
-    "hosting.server.cpu_s_per_collab_hour": "s",
-    "hosting.server.rss_mib_per_collab": "MiB",
-    "hosting.server.egress_bytes_per_collab_hour": "bytes",
-    "hosting.server.frame_bytes_per_collab_hour": "bytes",
-    "hosting.server.client_packets_per_collab_hour": "count",
-    "hosting.server.client_data_packets_per_collab_hour": "count",
-    "hosting.server.datagrams_per_collab_hour": "count",
-    "hosting.server.ack_only_datagrams_per_collab_hour": "count",
-    "hosting.server.fanout_ms": "ms",
-    "hosting.relay.presence_pointer_ms": "ms",
-    "hosting.relay.presence_caret_ms": "ms",
-    "hosting.server.store_fsyncs_per_edit": "count",
-    "hosting.server.store_listed_entries_per_edit": "count",
-    "hosting.server.compaction_cpu_ms_per_collab_hour": "ms",
-    "hosting.server.compaction_signature_checks_per_edit": "count",
+SERVER_KPIS = {
+    "server.cpu_s_per_collab_hour": "s",
+    "server.rss_mib_per_collab": "MiB",
+    "server.egress_bytes_per_collab_hour": "bytes",
+    "server.frame_bytes_per_collab_hour": "bytes",
+    "server.client_packets_per_collab_hour": "count",
+    "server.client_data_packets_per_collab_hour": "count",
+    "server.datagrams_per_collab_hour": "count",
+    "server.ack_only_datagrams_per_collab_hour": "count",
+    "server.fanout_ms": "ms",
+    "server.relay.presence_pointer_ms": "ms",
+    "server.relay.presence_caret_ms": "ms",
+    "server.store_fsyncs_per_edit": "count",
+    "server.store_listed_entries_per_edit": "count",
+    "server.compaction_cpu_ms_per_collab_hour": "ms",
+    "server.compaction_signature_checks_per_edit": "count",
 }
 
 
@@ -414,11 +414,11 @@ def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: flo
 
 
 # What pricing needs: a report without these cannot be priced at all.
-HOSTING_PRICED_KPIS = ("hosting.server.cpu_s_per_collab_hour", "hosting.server.rss_mib_per_collab",
-                       "hosting.server.egress_bytes_per_collab_hour")
+SERVER_PRICED_KPIS = ("server.cpu_s_per_collab_hour", "server.rss_mib_per_collab",
+                       "server.egress_bytes_per_collab_hour")
 
 
-def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any],
+def server_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any],
                  require_all: bool = True) -> list[record.Record]:
     """Records for one server load bench run, priced with `prices`.
 
@@ -429,12 +429,12 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     members = int(report["members"])
     variant = f"n{members}"
     kpis = report.get("kpis", {})
-    if require_all and set(kpis) != set(HOSTING_KPIS):
-        raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(HOSTING_KPIS)}")
-    missing = [kpi for kpi in HOSTING_PRICED_KPIS if kpi not in kpis]
+    if require_all and set(kpis) != set(SERVER_KPIS):
+        raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(SERVER_KPIS)}")
+    missing = [kpi for kpi in SERVER_PRICED_KPIS if kpi not in kpis]
     if missing:
         raise ValueError(f"the bench reported {sorted(kpis)}, without {missing}")
-    present = {kpi: unit for kpi, unit in HOSTING_KPIS.items() if kpi in kpis}
+    present = {kpi: unit for kpi, unit in SERVER_KPIS.items() if kpi in kpis}
     for kpi, unit in present.items():
         if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
             raise ValueError(f"{kpi}: expected samples in {unit}")
@@ -449,9 +449,9 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     base = {name: value for name, value in env.items() if name != "meta"}
     records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
                for kpi, unit in present.items()]
-    minutes = list(zip(kpis["hosting.server.cpu_s_per_collab_hour"]["samples"],
-                       kpis["hosting.server.rss_mib_per_collab"]["samples"],
-                       kpis["hosting.server.egress_bytes_per_collab_hour"]["samples"], strict=True))
+    minutes = list(zip(kpis["server.cpu_s_per_collab_hour"]["samples"],
+                       kpis["server.rss_mib_per_collab"]["samples"],
+                       kpis["server.egress_bytes_per_collab_hour"]["samples"], strict=True))
     idle = float(report["server_idle_rss_mib"])
     for name, provider in sorted(prices["provider"].items()):
         priced = [collab_hour_usd(provider, prices, *minute, idle) for minute in minutes]
@@ -460,10 +460,10 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
         bindings = sorted({binding for _, _, binding in priced})
         provider_meta = {**meta, "provider": provider["description"],
                          "members_per_vm": f"{capacity:.0f}", "binding": ",".join(bindings)}
-        records.append(record.from_samples(f"hosting.server.cost_usd_per_collab_hour.{name}.{variant}", "usd",
+        records.append(record.from_samples(f"server.cost_usd_per_collab_hour.{name}.{variant}", "usd",
                                            hourly, meta=provider_meta, **base))
         monthly = [usd * float(prices["active_hours_per_user_month"]) for usd in hourly]
-        records.append(record.from_samples(f"hosting.server.cost_usd_per_user_month.{name}.{variant}", "usd",
+        records.append(record.from_samples(f"server.cost_usd_per_user_month.{name}.{variant}", "usd",
                                            monthly, meta=provider_meta, **base))
     return records
 
@@ -576,10 +576,10 @@ def main(argv: list[str] | None = None) -> int:
     notes = commands.add_parser("notes-latency", help="records from notes-latency's NOTES-LATENCY line")
     notes.add_argument("--env-json", required=True, type=Path)
     notes.add_argument("logs", nargs="+", type=Path)
-    hosting = commands.add_parser("hosting-load", help="records from the server load bench's hosting-load.json")
-    hosting.add_argument("--env-json", required=True, type=Path)
-    hosting.add_argument("--prices", type=Path, default=PRICES)
-    hosting.add_argument("report", type=Path)
+    load = commands.add_parser("server-load", help="records from the server load bench's server-load.json")
+    load.add_argument("--env-json", required=True, type=Path)
+    load.add_argument("--prices", type=Path, default=PRICES)
+    load.add_argument("report", type=Path)
     browser = commands.add_parser("browser-qualification",
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
@@ -589,8 +589,8 @@ def main(argv: list[str] | None = None) -> int:
         env = record.load_env(args.env_json)
         if args.command == "browser-qualification":
             records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
-        elif args.command == "hosting-load":
-            records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
+        elif args.command == "server-load":
+            records = server_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
             for item in records:
                 if item.unit == "usd":

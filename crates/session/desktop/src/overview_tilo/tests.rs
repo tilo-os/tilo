@@ -1,8 +1,8 @@
-use tilo_actions::remote::host_account::{
+use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
+use tilo_actions::remote::server_account::{
     Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Subscription, Usage,
     WorkspaceUsage,
 };
-use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 
 use super::*;
 
@@ -34,9 +34,9 @@ fn captions(rows: &[TiloRow]) -> Vec<&str> {
 
 /// Tilo Cloud selling Pro, with the account on it and a workspace's VMs
 /// having run an hour.
-fn tilo_cloud() -> HostAccount {
-    HostAccount {
-        host: "Tilo Cloud".into(),
+fn tilo_cloud() -> ServerAccount {
+    ServerAccount {
+        server: "Tilo Cloud".into(),
         kind: HostKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            hosts: vec![HostAccount::sells_nothing("ada-laptop", HostKind::Device)],
+            hosts: vec![ServerAccount::sells_nothing("ada-laptop", HostKind::Device)],
             ..TiloOverview::default()
         };
         assert!(!hosting_relevant(&shell.hosts));
@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            hosts: vec![HostAccount::sells_nothing(
+            hosts: vec![ServerAccount::sells_nothing(
                 "Ada's server",
                 HostKind::SelfHosted,
             )],

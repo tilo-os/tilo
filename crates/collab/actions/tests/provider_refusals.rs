@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
-use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
 
 /// One refusal of each kind, in the file's order — and one that states what
 /// waits for the person, which only a page action's own run reaches.

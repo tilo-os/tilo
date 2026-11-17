@@ -84,7 +84,7 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the broker core declares the boundary a host's owner answers for its commits, so a broker and the host holding the owner name that owner in a signature; it holds no engine state and reads none"
 
   [[rule.allow]]
-  package = "tilo-workspace-host"
+  package = "tilo-workspace-service"
   why = "the workspace host is the store node: it holds and governs a workspace's retained state"
 
   [[rule.allow]]

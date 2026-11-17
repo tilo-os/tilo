@@ -55,9 +55,9 @@ registry-types = { path = "../../packaging/registry-types" }
 # Document frames are sealed and opened with a route's channel content keys.
 key-group = { path = "../key-group" }
 # The server's workspace a peer syncs through, and a frame's retained entry id.
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 parking_lot.workspace = true
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
@@ -98,7 +98,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true
 # The governed-workspace acceptance test runs against a real server.
-tilo-server = { path = "../../hosting/tilo-server" }
+tilo-server = { path = "../../server/tilo-server" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../dev/test-env" }

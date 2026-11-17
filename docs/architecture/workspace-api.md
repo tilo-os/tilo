@@ -158,7 +158,7 @@ agent window, `tilo agent check`) connects to it over a socket only that
 account can open. Each connection is its own agent run over that one session.
 The holder leaves the workspace ten seconds after its last connection ends.
 
-The server admits an agent's grant (`tilo_workspace_host::workspace_access`) as
+The server admits an agent's grant (`tilo_workspace_service::workspace_access`) as
 its person's agent, iff
 
 - its scope reaches the workspace;

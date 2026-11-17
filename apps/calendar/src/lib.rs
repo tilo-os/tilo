@@ -37,7 +37,7 @@ mod event_popovers;
 /// writer makes a server send is judged by the same reading of the standard's tables (RFC 6638,
 /// 3.2) as what the holder's writer does.
 #[cfg(all(test, feature = "live"))]
-#[path = "../../../crates/hosting/tilo-workspace-host/src/workspaces/person_settings/calendars/fake_caldav.rs"]
+#[path = "../../../crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs"]
 #[allow(
     dead_code,
     reason = "this app's tests ask the server less than the holder's tests do"

@@ -1222,11 +1222,11 @@ mod tests {
         // workspaces keep one text column: the agent's name starts where a host's does, on a
         // shell and on a phone, and where the list row itself puts it.
         {
-            use tilo_actions::remote::host_account::{HostAccount, HostKind};
+            use tilo_actions::remote::server_account::{ServerAccount, HostKind};
             ui::i18n::I18nManager::init("en-US");
             let theme = Theme::dark();
             let mut shell = shell_with_an_agent();
-            shell.tilo.hosts = vec![HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted)];
+            shell.tilo.hosts = vec![ServerAccount::sells_nothing("Ada's server", HostKind::SelfHosted)];
             for area in [TALL, PHONE] {
                 let panel = drawn(area, shell.clone());
                 let index = |key: &str| {
@@ -1338,13 +1338,13 @@ mod tests {
         // Below the workspaces, the person's Tilo Cloud account: its row says the plan and what it
         // used, and its Manage billing opens the provider's page and leaves the overview up.
         {
-            use tilo_actions::remote::host_account::{
-                HostAccount, HostKind, PaymentMethod, PlanOffer, Subscription,
+            use tilo_actions::remote::server_account::{
+                ServerAccount, HostKind, PaymentMethod, PlanOffer, Subscription,
             };
             ui::i18n::I18nManager::init("en-US");
             let mut with_host = shell();
-            with_host.tilo.hosts = vec![HostAccount {
-                host: "Tilo Cloud".into(),
+            with_host.tilo.hosts = vec![ServerAccount {
+                server: "Tilo Cloud".into(),
                 kind: HostKind::Provider,
                 plans: vec![PlanOffer {
                     id: "pro".into(),

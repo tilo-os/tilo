@@ -107,10 +107,10 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's entry and directory answer.
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # A browser environment's session asks its server to enter the workspace it was handed, the way a
 # member device does.
-tilo-server-session = { path = "../../hosting/tilo-server-session" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 toml.workspace = true
 url.workspace = true
@@ -198,7 +198,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time"] }
 # Tilo's API, which the session serves its own person's programs on this computer.
-tilo-api = { path = "../../hosting/tilo-api" }
+tilo-api = { path = "../../server/tilo-api" }
 # A Rust app's views and resources, published in a development session only
 # (`dev-rust-views`): the sample catalogue, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }
@@ -235,9 +235,9 @@ tilo-onboarding-session = { path = "../onboarding-session" }
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 # The address an invitation names, signed: this device's own endpoint, for a
 # link it makes into a workspace it holds.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The person's account with the host the session runs on, read live.
-tilo-host-account = { path = "../../hosting/tilo-host-account" }
+tilo-server-account = { path = "../../server/tilo-server-account" }
 # The session asks the model gateway as Activity, the way an app it starts
 # does, for the history's descriptions and group names.
 tilo-model-client = { path = "../../agent/model-client", features = ["runtime-client"] }
@@ -246,10 +246,10 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-network-actor = { path = "../network-actor" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
-tilo-server-client = { path = "../../hosting/tilo-server-client" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
 # The person's workspace list, as their keys read it and the hosts of their
 # workspaces keep it.
-tilo-server-session = { path = "../../hosting/tilo-server-session" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
@@ -481,7 +481,7 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # A site's workspace as a site runs it: the host on this machine that
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.
-tilo-server = { path = "../../hosting/tilo-server", features = ["web"] }
+tilo-server = { path = "../../server/tilo-server", features = ["web"] }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route

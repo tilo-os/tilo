@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
@@ -1059,7 +1059,7 @@ pub async fn session_as_agent(peer: &Link, label: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::remote::host_account::{Reason, Refusal};
+    use tilo_actions::remote::server_account::{Reason, Refusal};
 
     use super::*;
 

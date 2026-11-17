@@ -1573,7 +1573,7 @@ def sign_in_to_desktop(ctx, res):
 # device:
 # the one way to add one on a single VM, having the person's home relay host the workspace
 # too (Settings, Devices & Sync), is a switch bound to its row that the action catalogue
-# does not offer, and its `tilo.hosting` step answers only callers confined to a workspace.
+# does not offer, and its `tilo.server` step answers only callers confined to a workspace.
 SHARED_WORKSPACE = "Acceptance shared"
 # Two apps that read their records through the broker: their reads are what the broker
 # holds a wait for.

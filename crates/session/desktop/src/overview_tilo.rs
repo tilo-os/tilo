@@ -5,7 +5,7 @@
 //!
 //! Hosting is not a dashboard of its own. A host is a place a workspace
 //! runs; what a host offers the person's account, and what it used, is its
-//! answer to [`tilo_actions::remote::host_account::ACCOUNT`] ([`HostAccount`]); a plan, its card and
+//! answer to [`tilo_actions::remote::server_account::ACCOUNT`] ([`ServerAccount`]); a plan, its card and
 //! its invoices are the person's account with a hosting provider, whose own
 //! pages manage them. The overview says the plan, what was used and the credit as separate facts;
 //! invoices are Settings' Billing page's. The overview shows that answer only once it means
@@ -30,8 +30,8 @@ pub mod api;
 
 use std::time::Duration;
 
-use tilo_actions::remote::host_account::{HostAccount, HostKind};
 use tilo_actions::remote::mcp_server::{self, Reach};
+use tilo_actions::remote::server_account::{HostKind, ServerAccount};
 use ui::icons::Icon;
 use ui::tokens::PresenceHue;
 use ui::widget::{Fact, Tone};
@@ -46,8 +46,8 @@ pub struct TiloOverview {
     /// going to one is the host's action `id`.
     pub elsewhere: Vec<(String, String)>,
     /// Each host's answer for the person's account
-    /// ([`tilo_actions::remote::host_account::ACCOUNT`]).
-    pub hosts: Vec<HostAccount>,
+    /// ([`tilo_actions::remote::server_account::ACCOUNT`]).
+    pub hosts: Vec<ServerAccount>,
     /// The MCP server's answer, when one answers ([`mcp_server::SERVER`]).
     pub server: Option<mcp_server::Server>,
 }
@@ -128,7 +128,7 @@ pub struct Confirm {
 /// Whether hosting means anything to the person yet: a host that is not one
 /// of their devices, a host that sells something, or usage recorded.
 #[must_use]
-pub fn hosting_relevant(hosts: &[HostAccount]) -> bool {
+pub fn hosting_relevant(hosts: &[ServerAccount]) -> bool {
     hosts.iter().any(|host| {
         host.kind != HostKind::Device
             || host.sells()
@@ -156,35 +156,35 @@ fn vm_time(seconds: u64) -> String {
 /// host meters it, its VM time this period. `None` when no host the person
 /// has hosting for runs it.
 #[must_use]
-pub fn usage_line(hosts: &[HostAccount], workspace: &str) -> Option<String> {
+pub fn usage_line(hosts: &[ServerAccount], workspace: &str) -> Option<String> {
     if !hosting_relevant(hosts) {
         return None;
     }
-    hosts.iter().find_map(|host| {
-        let usage = host.subscription.as_ref()?.usage.of(workspace)?;
+    hosts.iter().find_map(|account| {
+        let usage = account.subscription.as_ref()?.usage.of(workspace)?;
         Some(if usage.vm_seconds > 0 {
             t_args(
                 "overview-tilo-workspace-usage",
                 &[
-                    ("host", host.host.clone().into()),
+                    ("server", account.server.clone().into()),
                     ("time", vm_time(usage.vm_seconds).into()),
                 ],
             )
         } else {
-            host.host.clone()
+            account.server.clone()
         })
     })
 }
 
 /// A host's row: what it is, its plan and what it used.
-fn host_row(index: usize, host: &HostAccount) -> TiloItem {
-    let icon = match host.kind {
+fn host_row(index: usize, account: &ServerAccount) -> TiloItem {
+    let icon = match account.kind {
         HostKind::Device => Icon::Monitor,
         HostKind::SelfHosted => Icon::HardDrive,
         HostKind::Provider => Icon::Cloud,
     };
     let mut facts: Vec<Fact> = Vec::new();
-    match (&host.subscription, host.plan()) {
+    match (&account.subscription, account.plan()) {
         (Some(subscription), Some(plan)) => {
             let used = subscription.usage.vm_seconds();
             let included = subscription
@@ -211,13 +211,13 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
             facts.push(Fact::text(t("overview-tilo-no-card")));
         }
         (Some(_), None) => facts.push(Fact::text(t("overview-tilo-no-plan"))),
-        (None, _) => facts.push(Fact::text(t(match host.kind {
+        (None, _) => facts.push(Fact::text(t(match account.kind {
             HostKind::Device => "overview-tilo-host-device",
             HostKind::SelfHosted => "overview-tilo-host-self",
             HostKind::Provider => "overview-tilo-host-provider",
         }))),
     }
-    if let Some(credit) = host.subscription.as_ref().and_then(|s| s.credit.clone()) {
+    if let Some(credit) = account.subscription.as_ref().and_then(|s| s.credit.clone()) {
         facts.push(Fact::text(t_args(
             "overview-tilo-credit",
             &[("amount", credit.into())],
@@ -226,10 +226,10 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
     TiloItem {
         key: format!("overview-host:{index}"),
         mark: Some(TiloMark::Icon(icon)),
-        title: host.host.clone(),
+        title: account.server.clone(),
         facts,
         press: None,
-        action: host.manage_billing.clone().map(|url| {
+        action: account.manage_billing.clone().map(|url| {
             (
                 t("overview-tilo-manage-billing"),
                 OverviewPick::OpenPage(url),

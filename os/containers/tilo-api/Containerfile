@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The Tilo API server (crates/hosting/tilo-api): the MCP
+# The Tilo API server (crates/server/tilo-api): the MCP
 # endpoint an agent adds with `claude mcp add --transport http tilo
 # https://mcp.tilo.sh`. It runs beside the server, behind the server's Caddy,
 # which terminates TLS; the server itself serves plain HTTP.

@@ -40,7 +40,7 @@ min_delta = 0.0
 # The scheduled run (tools/ci/perf-scheduled.sh): one t check per group,
 # perf-<group>; perf-scheduled compares them with the default job.
 [jobs.perf-scheduled]
-groups = ["fs", "footprint", "agent", "render", "hosting", "browser"]
+groups = ["fs", "footprint", "agent", "render", "server", "browser"]
 
 # VM acceptance (t's vm-acceptance, tools/ci/vm-acceptance.sh): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -1188,9 +1188,9 @@ p99 = 33.4
 min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
-# Server hosting cost: crates/hosting/tilo-server/examples/server_load,
+# Server cost: crates/server/tilo-server/examples/server_load,
 # 100 members in workspaces of four, ten measured minutes, one sample per
-# minute; tools/perf/adapters.py hosting-load prices them with
+# minute; tools/perf/adapters.py server-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per
 # active member-hour.
 #
@@ -1208,11 +1208,11 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # commit (Perf / scheduled 97584) measured 13.9 s CPU per member-hour at
 # four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
 # idle workers woken to steal work, more queueing. The first two-CPU run
-# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# (Perf / scheduled on main, kpis=server, accept=all) starts the new
 # baseline, so neither series is compared with the other; the ceilings below
 # hold for both.
 
-[kpi."hosting.server.cpu_s_per_collab_hour.n100"]
+[kpi."server.cpu_s_per_collab_hour.n100"]
 unit = "s"
 p50 = 62.0
 enforce = true
@@ -1221,7 +1221,7 @@ p99_tolerance = 2.0
 min_delta = 3.0
 source = "server_load: server process CPU-seconds per active member-hour"
 
-[kpi."hosting.server.rss_mib_per_collab.n100"]
+[kpi."server.rss_mib_per_collab.n100"]
 unit = "MiB"
 p50 = 2.0
 enforce = true
@@ -1230,13 +1230,13 @@ p99_tolerance = 2.0
 min_delta = 0.2
 source = "server_load: server resident memory per connected member, above the idle server"
 
-[kpi."hosting.server.egress_bytes_per_collab_hour.n100"]
+[kpi."server.egress_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 12700000.0
 enforce = true
 source = "server_load: UDP bytes the relay's endpoint sent per active member-hour"
 
-[kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
+[kpi."server.relay.frame_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 10900000.0
 enforce = true
@@ -1258,31 +1258,31 @@ source = "server_load: framed bytes written to peer sessions per active member-h
 # above. Run 97792's base, the bench on the commit before client pointer
 # pacing, measured 27,753 client packets, 9,086 data packets and 10,995
 # ACK-only datagrams: undoing that pacing fails three of the four at once.
-[kpi."hosting.server.client_packets_per_collab_hour.n100"]
+[kpi."server.client_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 27500.0
 enforce = true
 source = "server_load: UDP datagrams the members sent the relay per active member-hour"
 
-[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+[kpi."server.relay.client_data_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 7150.0
 enforce = true
 source = "server_load: member datagrams carrying stream data per active member-hour"
 
-[kpi."hosting.server.datagrams_per_collab_hour.n100"]
+[kpi."server.datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 30700.0
 enforce = true
 source = "server_load: UDP datagrams the relay sent the members per active member-hour"
 
-[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+[kpi."server.relay.ack_only_datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 9700.0
 enforce = true
 source = "server_load: server datagrams carrying only acknowledgements per active member-hour"
 
-[kpi."hosting.server.fanout_ms.n100"]
+[kpi."server.fanout_ms.n100"]
 unit = "ms"
 p50 = 30.0
 p99 = 500.0
@@ -1300,7 +1300,7 @@ source = "server_load: one edit, publish to receipt by each other member of the 
 # 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
 # bound the issue set; the rest sit about twice the measurement, with the
 # fan-out's tolerances for the shared runner.
-[kpi."hosting.relay.presence_pointer_ms.n100"]
+[kpi."server.relay.presence_pointer_ms.n100"]
 unit = "ms"
 p50 = 40.0
 p99 = 100.0
@@ -1310,7 +1310,7 @@ p99_tolerance = 2.0
 min_delta = 10.0
 source = "server_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
 
-[kpi."hosting.relay.presence_caret_ms.n100"]
+[kpi."server.relay.presence_caret_ms.n100"]
 unit = "ms"
 p50 = 25.0
 p99 = 80.0
@@ -1325,7 +1325,7 @@ source = "server_load: one forwarded caret, publish to receipt by each other mem
 # 2.82 before #4047 (Perf / scheduled run 91348) and 2.10 after (run 91404),
 # within 0.4 % per window, so the ceiling sits about 15 % above: a reservation
 # renewed per commit or a resynced ancestor fails at once.
-[kpi."hosting.server.store_fsyncs_per_edit.n100"]
+[kpi."server.store_fsyncs_per_edit.n100"]
 unit = "count"
 p50 = 2.4
 enforce = true
@@ -1337,7 +1337,7 @@ source = "server_load: workspace-store fsyncs per committed delta (store::fsyncs
 # (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
 # every window after (run 92278). It is deterministic, so the ceiling sits
 # just above zero: an edit that lists its history again fails at once.
-[kpi."hosting.server.store_listed_entries_per_edit.n100"]
+[kpi."server.store_listed_entries_per_edit.n100"]
 unit = "count"
 p50 = 1.0
 enforce = true
@@ -1351,13 +1351,13 @@ source = "server_load: directory entries retention listed per committed delta (s
 # deterministic, so their ceiling sits about 35 % above: a round verifying
 # its whole channel again fails at once. CPU shares the runner and gets the
 # server CPU's tolerances, at about twice the measurement.
-[kpi."hosting.server.compaction_signature_checks_per_edit.n100"]
+[kpi."server.compaction_signature_checks_per_edit.n100"]
 unit = "count"
 p50 = 1.5
 enforce = true
 source = "server_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
 
-[kpi."hosting.server.compaction_cpu_ms_per_collab_hour.n100"]
+[kpi."server.compaction_cpu_ms_per_collab_hour.n100"]
 unit = "ms"
 p50 = 700.0
 enforce = true
@@ -1367,12 +1367,12 @@ min_delta = 100.0
 source = "server_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
 
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
-[kpi."hosting.server.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+[kpi."server.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
 p50 = 0.001
 source = "KPI: Server cost per active member-hour"
 
-[kpi."hosting.server.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+[kpi."server.cost_usd_per_collab_hour.hetzner-cx22.n100"]
 unit = "usd"
 p50 = 0.001
 enforce = true

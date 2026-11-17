@@ -1,7 +1,7 @@
 use super::*;
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
-use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason};
+use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason};
 
 fn text(run: &ShellRun) -> String {
     String::from_utf8_lossy(&run.output).into_owned()

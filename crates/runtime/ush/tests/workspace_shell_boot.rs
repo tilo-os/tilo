@@ -28,7 +28,7 @@ use legacy_vm::hosted::plan::{Plan, Plans, Sells};
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::size::VmSize;
 use legacy_vm::hosted::vm::{Settings, system_clock};
-use tilo_actions::remote::host_account::{NextStepKind, Reason};
+use tilo_actions::remote::server_account::{NextStepKind, Reason};
 use ush::hosted_vm::HostedTarget;
 use ush::workspace_shell::WorkspaceShells;
 

@@ -351,7 +351,7 @@ test-group = "agent-sessions"
 # bound already, so this bound only has to catch a run that stopped; it starts
 # with the longest tests.
 [[profile.default.overrides]]
-filter = 'package(tilo-server) and binary(it) and test(=hosting_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
+filter = 'package(tilo-server) and binary(it) and test(=server_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
 priority = 50
 slow-timeout = { period = "30s", terminate-after = 40 }
 

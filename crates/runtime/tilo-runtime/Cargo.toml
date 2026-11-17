@@ -113,7 +113,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
 # The apps' store: the device content store when the launcher handed one over.
@@ -121,15 +121,15 @@ tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
 # The server session a joined workspace syncs through.
-tilo-server-session = { path = "../../hosting/tilo-server-session" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
 # A workspace host's signed address, which a key enters a workspace at.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tilo-server-client = { path = "../../hosting/tilo-server-client" }
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # The offload route a session's action API places offloadable actions
 # through: the compute session with the home relay, placement and the
 # workspace-scoped route (`tilo_server::offload`). Its tests also start real relays.
-tilo-server = { path = "../../hosting/tilo-server" }
+tilo-server = { path = "../../server/tilo-server" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
@@ -172,7 +172,7 @@ runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins workspaces over.
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.

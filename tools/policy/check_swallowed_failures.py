@@ -77,7 +77,7 @@ DECODE_ONLY = (
     Path("crates/platform/tilolang-process"),
     Path("crates/platform/tilolang-tilo"),
     Path("crates/platform/tilo-app-window"),
-    Path("crates/hosting/tilo-workspace-host"),
+    Path("crates/server/tilo-workspace-service"),
     Path("crates/runtime/runtime-portal"),
     Path("apps/tilolang"),
 )

@@ -409,7 +409,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
 - **Plans:** an account's plan bounds its running VMs, its VMs kept and the
   sizes it may use. A refused program says why in plain words, and what to
   do, and the refusal is typed
-  (`tilo_actions::remote::host_account::Refusal`: a reason and the next
+  (`tilo_actions::remote::server_account::Refusal`: a reason and the next
   steps, each with the provider's page).
 - **Selling VMs:** a host that sells them says so in its plans file
   (`sells`: its name, the plans it offers, the pages where a card is added,
@@ -422,10 +422,10 @@ that workspace environment's own, never in a guest sharing the host's kernel
   prices, credit, rate limits, fraud checks) is the provider's: it only
   writes the plans file and answers its pages.
 - **The account, live:** the session serves the person's account with its
-  host (`tilo.hosting`, `host.account/account`) as a live read: the plans
+  server (`tilo.server`, `server.account/account`) as a live read: the plans
   offered, the account's access, usage per workspace, limits, credit,
   invoices and where billing is managed, sent again whenever the plans file
-  changes (`crates/hosting/tilo-host-account`). A host that sells nothing
+  changes (`crates/server/tilo-server-account`). A host that sells nothing
   answers no plans and no access.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
@@ -487,7 +487,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   endpoint gives is bounded on the host, where the person and their limits
   are known. The host's side is `ush::served_runs`; a coding agent is the
   first program run this way
-  ([`coding_agents.rs`](../../crates/hosting/tilo-server/src/coding_agents.rs)).
+  ([`coding_agents.rs`](../../crates/server/tilo-server/src/coding_agents.rs)).
 
 ## Members that take work
 
@@ -509,7 +509,7 @@ server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, placing `<workspace>/browser` first
-(`crates/hosting/tilo-server/src/placed_browsers.rs`). The first time the server
+(`crates/server/tilo-server/src/placed_browsers.rs`). The first time the server
 asks about a workspace it placed on the member, the member enters it: it asks
 the server's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The server decides
@@ -525,7 +525,7 @@ and where the workspace's machine is on a VM host the server cannot start it
 beside itself. So it asks that VM host's member to start the program in the
 machine, paid for by the account the server names, and the member holds it for
 the server (`crates/runtime/ush/src/environment_programs.rs`,
-`crates/hosting/tilo-server/src/placed_programs.rs`): what the program sends
+`crates/server/tilo-server/src/placed_programs.rs`): what the program sends
 is kept, numbered, until the server says it has taken it, and what the server
 sends is handed to the program in order, each frame once. Only the workspace's
 server may ask, as a device of the member's own operator, and only as the

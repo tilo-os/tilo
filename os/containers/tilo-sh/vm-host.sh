@@ -399,7 +399,7 @@ TILO_HOSTED_MEMBERS=$server_secrets/vm-host-members.json
 TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$server_secrets/vm-host-plans.json
-TILO_HOSTED_BROWSER_ACTIONS=$server_workspaces/lounge/server/browser-actions.jsonl
+TILO_SERVER_BROWSER_ACTIONS=$server_workspaces/lounge/server/browser-actions.jsonl
 TILO_HOSTED_BROWSER_SERVER=$server_endpoint@$server_iroh
 ENV
 }

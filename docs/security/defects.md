@@ -891,10 +891,10 @@ removal holds a change the others never take.
 a server that was away and tried again, and a page that had not got in yet showed "Can't reach …"
 for as long as it stayed open. Now a server that refuses a hello for the removal alone answers it
 with that one reason, signed for that hello
-(`crates/hosting/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
+(`crates/server/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
 `say_refusal` in the server's own `handshake.rs`). The device checks it as it
 checks that server's acknowledgement and stops with `device-revoked`
-(`crates/hosting/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
+(`crates/server/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
 browser was removed from your devices". A device built before reads the refusal as it did, and a
 server built before sends none, which reads as it did too. Held by
 `crates/session/client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
@@ -903,7 +903,7 @@ that handshake's own tests (`a_removed_device_is_told_so_before_its_hello_is_clo
 `a_hello_refused_for_anything_else_is_closed_with_nothing_said`,
 `a_removed_device_at_an_entry_is_told_only_once_it_proved_its_key`,
 `a_refusal_that_says_why_is_held_until_its_device_let_go_of_the_stream`), and
-`crates/hosting/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
+`crates/server/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
 
 **Not built.** Every other refusal at the handshake is still closed with nothing said: a person
 the server no longer admits, and a certificate that expired or does not verify. Such a device

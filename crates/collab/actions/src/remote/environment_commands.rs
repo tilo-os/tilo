@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
-use super::host_account::Refusal;
+use super::server_account::Refusal;
 use crate::api::ActionAddress;
 
 /// The provider the taking member answers runs under.

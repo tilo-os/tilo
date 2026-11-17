@@ -30,7 +30,7 @@ fnv.workspace = true
 # endpoint address it names the server by: one type the server and this host
 # both build against.
 iroh-base.workspace = true
-tilo-server-protocol = { version = "0.1.0", path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true
 serde.workspace = true

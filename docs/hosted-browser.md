@@ -123,7 +123,7 @@ command.
   200 Mbit/s each way.
 - **The session's device reaches one record and one page.** A page may hold
   the device's key, so the server confines it to what its window is: the one
-  Browser record the open made (`tilo_workspace_host::environment`), decided where
+  Browser record the open made (`tilo_workspace_service::environment`), decided where
   the server certifies the device. In the state protocol it is replayed and
   handed only that record's channel and may write no other; on the live
   session it publishes its own device namespace (its presence, its
@@ -161,7 +161,7 @@ command.
 ## Placement and routing
 
 The server places a workspace's Browser where its shells run
-([`placed_shells.rs`](../crates/hosting/tilo-server/src/placed_shells.rs)):
+([`placed_shells.rs`](../crates/server/tilo-server/src/placed_shells.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
    key calling `app.so.tilo.browser#open`. The workspace lists Browser among
@@ -358,7 +358,7 @@ A host that places workspaces (`tilo-server workspace … --workspace-documents`
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_SERVER` (`KEY@HOST:PORT`, the public address sessions
-reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action log) and
+reach it at), `TILO_SERVER_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
 stand-in from it at start (`workspace --root-file`), and keeps it in its state.
 A VM host serves Browser in its VMs when `TILO_VM_SERVER_ENDPOINT` is set; it

@@ -345,7 +345,7 @@ The workspace has no other member device, so R09 does not cover what a second me
 brings (announcements arriving from another device, the host serving a live peer). On one VM
 the way to add one is having the person's home relay host the workspace as well (Settings,
 Sync between devices): that switch is bound to its row, which the action catalogue does not offer,
-and its `tilo.hosting` step answers only callers confined to a workspace, which the admin
+and its `tilo.server` step answers only callers confined to a workspace, which the admin
 control socket is not.
 
 It then opens Notes and Files there (R02's opener) and, over the idle window, sums the

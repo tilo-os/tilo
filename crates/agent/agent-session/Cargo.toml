@@ -93,11 +93,11 @@ word-processor = { path = "../../../apps/word-processor" }
 # on it.
 tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
-tilo-server-client = { path = "../../hosting/tilo-server-client" }
+tilo-server-client = { path = "../../server/tilo-server-client" }
 # A device on the live session is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
-tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
@@ -190,9 +190,9 @@ tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
-tilo-server = { path = "../../hosting/tilo-server", features = ["agents", "test-support"] }
+tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
 # The API server, driven through its HTTP routes against the relay.
-tilo-api = { path = "../../hosting/tilo-api" }
+tilo-api = { path = "../../server/tilo-api" }
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
 test-server = { path = "../../dev/test-server" }
 test-http = { path = "../../dev/test-http" }

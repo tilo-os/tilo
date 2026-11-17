@@ -473,7 +473,7 @@ final class EngineTests: XCTestCase {
         // With the engine's own pass: what the device could ask its host, and the engine does not.
         let refused = try await engine.view.callAsyncJavaScript(#"""
             const said = [];
-            for (const provider of ['tilo.environment', 'tilo.mcp-server', 'tilo.device-pairing', 'tilo.accounts', 'tilo.hosting',
+            for (const provider of ['tilo.environment', 'tilo.mcp-server', 'tilo.device-pairing', 'tilo.accounts', 'tilo.server',
                                     'workspace.permissions:ws-1', 'record:so.tilo.chat:x', 'tilo.models ', 'TILO.MODELS', '']) {
               said.push(JSON.parse(await __tiloLive.person(pass, provider, 'models', 'list', null, null)).error?.code ?? 'answered');
             }

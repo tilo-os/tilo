@@ -161,7 +161,7 @@ pub enum Reply {
     },
     /// The account's plan does not allow it: why, in words for whoever
     /// ran it, and what would let it through.
-    Refused(tilo_actions::remote::host_account::Refusal),
+    Refused(tilo_actions::remote::server_account::Refusal),
     Done,
     Status {
         vms: Vec<VmStatus>,

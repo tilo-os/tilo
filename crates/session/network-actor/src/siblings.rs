@@ -9,8 +9,8 @@ use iroh::EndpointAddr;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::mpsc;
 
-use crate::local_host::workspace_host::{HostConfig, WorkspaceHost};
-use crate::local_host::{LocalHost, workspace_host};
+use crate::local_host::workspace_service::{HostConfig, WorkspaceService};
+use crate::local_host::{LocalHost, workspace_service};
 use crate::{Actor, HostIdentity, Hosting, NetCmd};
 
 /// One of the person's devices, running.
@@ -86,12 +86,12 @@ pub(crate) async fn spawn_ticking(
         }),
         Vec::new(),
     );
-    let host = WorkspaceHost::open(
+    let host = WorkspaceService::open(
         HostConfig::new(
-            state.join("workspace-host"),
+            state.join("workspace-service"),
             tilo_server_protocol::WorkSetting::none(),
         ),
-        workspace_host::HostIdentity {
+        workspace_service::HostIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key,
             device_cert: cert.clone(),

@@ -79,7 +79,7 @@ pub enum Mark {
     History(HistoryAsk),
     Held {
         agent: bool,
-        refusal: Box<ui::tilo_actions::remote::host_account::Refusal>,
+        refusal: Box<ui::tilo_actions::remote::server_account::Refusal>,
     },
     Released,
 }
@@ -289,7 +289,7 @@ pub struct FinishedCommand {
     pub output: Vec<u8>,
     pub truncated: bool,
     pub job: Option<u32>,
-    pub refusal: Option<Box<ui::tilo_actions::remote::host_account::Refusal>>,
+    pub refusal: Option<Box<ui::tilo_actions::remote::server_account::Refusal>>,
 }
 
 impl FinishedCommand {

@@ -7,7 +7,7 @@
 //! addressed to the host's own device. A server answers them with its app
 //! workers; a person's device answers them with its own action broker, which
 //! is what [`KeySessions`] puts behind the host
-//! ([`HostConfig::apps`](tilo_workspace_host::host::HostConfig::apps)).
+//! ([`HostConfig::apps`](tilo_workspace_service::service::HostConfig::apps)).
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
 //! admits an agent at the device's MCP server ([`Sessions::open`]). Before every
@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_host::app_serving::AppActionServer;
+use tilo_workspace_service::app_serving::AppActionServer;
 
 use collab_types::WorkspaceId;
 use tilo_mcp::devices::PersonsDevices;
@@ -50,7 +50,7 @@ pub trait Sessions: Send + Sync {
 
 /// The record actions of the workspaces a device hosts, answered for its
 /// person's keys by its own broker: the device's
-/// [`AppActionServer`](tilo_workspace_host::app_serving::AppActionServer).
+/// [`AppActionServer`](tilo_workspace_service::app_serving::AppActionServer).
 pub struct KeySessions {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.

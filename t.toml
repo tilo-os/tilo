@@ -1158,7 +1158,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-privileged"
-run = "cd crates/hosting/tilo-server\n/target/vm/tilo-server-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
+run = "cd crates/server/tilo-server\n/target/vm/tilo-server-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
 needs = ["real-fuse-privileged-build"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -1574,13 +1574,13 @@ timeout_secs = 7200
 on = ["dispatch"]
 
 [[check]]
-name = "perf-hosting"
+name = "perf-server"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/perf-scheduled.sh hosting"
+run = "bash tools/ci/perf-scheduled.sh server"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
-outputs = ["/target/perf/hosting/**"]
+outputs = ["/target/perf/server/**"]
 timeout_secs = 7200
 on = ["dispatch"]
 
@@ -1601,7 +1601,7 @@ name = "perf-scheduled"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-hosting", "perf-browser"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server", "perf-browser"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf/compare/**"]
 cache = false
@@ -1612,7 +1612,7 @@ name = "perf-publish"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-compare.sh /target/perf-publish"
-needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-hosting", "perf-browser"]
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footprint", "perf-footprint-image", "perf-render", "perf-search", "perf-server", "perf-browser"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf-publish/**"]
 cache = false
@@ -1624,7 +1624,7 @@ dispatch_inputs = { accept = "", synthetic_series = "", synthetic_factor = "1.0"
 name = "perf-ab"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "[[ -n $T_INPUT_GROUPS ]] || { echo \"perf-ab needs --input groups=...\" >&2; exit 2; }\n[[ $T_INPUT_ROUNDS =~ ^[0-9]+$ && $T_INPUT_ROUNDS -ge 6 ]] || { echo \"rounds must be a number of at least 6\" >&2; exit 2; }\nif [[ ,$T_INPUT_GROUPS, == *,browser,* ]]; then\n  bash tools/ci/ensure-browser-dependencies.sh\n  npx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\n  export CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfi\nrm -rf /target/perf-ab\npython3 tools/perf/ab.py run --groups \"$T_INPUT_GROUPS\" --base \"$T_INPUT_BASE\" --candidate \"${T_INPUT_CANDIDATE:-${T_COMMIT:-HEAD}}\" --rounds \"$T_INPUT_ROUNDS\" --out /target/perf-ab --hosting-server-cpus \"${T_INPUT_SERVER_CPUS:-0}\" --virtualization kvm --runner t\n"
+run = "[[ -n $T_INPUT_GROUPS ]] || { echo \"perf-ab needs --input groups=...\" >&2; exit 2; }\n[[ $T_INPUT_ROUNDS =~ ^[0-9]+$ && $T_INPUT_ROUNDS -ge 6 ]] || { echo \"rounds must be a number of at least 6\" >&2; exit 2; }\nif [[ ,$T_INPUT_GROUPS, == *,browser,* ]]; then\n  bash tools/ci/ensure-browser-dependencies.sh\n  npx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\n  export CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfi\nrm -rf /target/perf-ab\npython3 tools/perf/ab.py run --groups \"$T_INPUT_GROUPS\" --base \"$T_INPUT_BASE\" --candidate \"${T_INPUT_CANDIDATE:-${T_COMMIT:-HEAD}}\" --rounds \"$T_INPUT_ROUNDS\" --out /target/perf-ab --server-cpus \"${T_INPUT_SERVER_CPUS:-0}\" --virtualization kvm --runner t\n"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 outputs = ["/target/perf-ab/**"]

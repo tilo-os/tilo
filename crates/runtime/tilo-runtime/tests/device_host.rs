@@ -34,7 +34,7 @@ use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-use tilo_workspace_host::host::{HostConfig, HostIdentity, WorkspaceHost};
+use tilo_workspace_service::service::{HostConfig, HostIdentity, WorkspaceService};
 
 /// The app the device runs, which a key lists and acts on.
 const NOTES: &str = "so.tilo.notes";
@@ -227,7 +227,7 @@ impl Sessions for DeviceRuns {
 
 /// The person's device, hosting a workspace for them on its endpoint.
 struct Box_ {
-    host: Arc<WorkspaceHost>,
+    host: Arc<WorkspaceService>,
     cert: DeviceCert,
     endpoint: Endpoint,
     workspace: String,
@@ -242,7 +242,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let state = tempfile::tempdir().unwrap();
     let key_sessions = KeySessions::new();
     // A host opens only after its endpoint had its whole wait to reach a server
-    // (`tilo_workspace_host::workspaces::Workspaces::open`), and this endpoint has
+    // (`tilo_workspace_service::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
     // the open: the same wait runs on that clock, which passes it when nothing
     // else can run instead of five seconds later.
@@ -254,10 +254,10 @@ async fn device_host(root: &SigningKey) -> Box_ {
         tokio::time::pause();
     }
     let host = Arc::new(
-        WorkspaceHost::open(
+        WorkspaceService::open(
             HostConfig {
                 apps: Some(Arc::clone(&key_sessions)
-                    as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
+                    as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
                 ..HostConfig::new(
                     state.path().join("workspace-host"),
                     tilo_server_protocol::WorkSetting::none(),

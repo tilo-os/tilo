@@ -1049,7 +1049,7 @@ struct PersonalServing<'a> {
     take_work: Option<ActionService>,
     /// The workspace host this device runs, when it governs the profile's
     /// workspace: the person's keys open their sessions with it here.
-    host: Option<&'a tilo_workspace_host::host::WorkspaceHost>,
+    host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
 }
 
 /// The person's own store, and what serves it to their other devices.
@@ -1103,7 +1103,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         // A member that takes its server's work answers the device action service with
         // that work's action service instead, registered after it.
         for (alpn, handler) in host
-            .map(tilo_workspace_host::host::WorkspaceHost::protocols)
+            .map(tilo_workspace_service::service::WorkspaceService::protocols)
             .unwrap_or_default()
         {
             router = router.accept(alpn, handler);
@@ -1330,7 +1330,7 @@ fn place_own_workspace(
     keys: &tilo_action_broker::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
-    Arc<tilo_workspace_host::host::WorkspaceHost>,
+    Arc<tilo_workspace_service::service::WorkspaceService>,
     Arc<crate::key_sessions::KeySessions>,
 )> {
     let workspace_id = workspace.workspace();
@@ -1341,16 +1341,16 @@ fn place_own_workspace(
     let host = Arc::new(
         tilo_rt::app()
             .handle()
-            .block_on(tilo_workspace_host::host::WorkspaceHost::open(
-                tilo_workspace_host::host::HostConfig {
+            .block_on(tilo_workspace_service::service::WorkspaceService::open(
+                tilo_workspace_service::service::HostConfig {
                     apps: Some(Arc::clone(&key_sessions)
-                        as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
-                    ..tilo_workspace_host::host::HostConfig::new(
+                        as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
+                    ..tilo_workspace_service::service::HostConfig::new(
                         profile.join(HOST_STORE),
                         tilo_server_protocol::WorkSetting::none(),
                     )
                 },
-                tilo_workspace_host::host::HostIdentity {
+                tilo_workspace_service::service::HostIdentity {
                     user_public_key: cert.user_public_key,
                     device_signing_key: key,
                     device_cert: cert,

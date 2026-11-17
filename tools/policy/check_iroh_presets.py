@@ -46,10 +46,10 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
     # The server's own diagnostic probes.
-    "crates/hosting/tilo-server/src/files_probe.rs": "server diagnostic probe",
-    "crates/hosting/tilo-server/src/admin.rs": "server admin client",
+    "crates/server/tilo-server/src/files_probe.rs": "server diagnostic probe",
+    "crates/server/tilo-server/src/admin.rs": "server admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
-    "crates/hosting/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
+    "crates/server/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
     "crates/dev/tilo-device-admin/src/net.rs": "device-admin client",
     # The initrd's sibling unlock: it asks the siblings named in a token that
@@ -58,7 +58,7 @@ EXEMPT = {
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The server daemon's own endpoint, which is what devices dial.
-    "crates/hosting/tilo-server/src/daemon.rs": "server daemon",
+    "crates/server/tilo-server/src/daemon.rs": "server daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

@@ -46,7 +46,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # The person's record on their host: the devices Settings lists.
-tilo-server-session = { version = "0.1.0", path = "../../hosting/tilo-server-session" }
+tilo-server-session = { version = "0.1.0", path = "../../server/tilo-server-session" }
 # The content windows' records reference (pictures, attachments), kept in
 # the profile's app files — which outlive the page, so an upload a draft names
 # is still here when the draft is sent — and asked of the workspace when
@@ -100,7 +100,7 @@ web-sys = { version = "=0.3.85", features = [
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: certification, pairing, the sign-in proof.
-tilo-server-client = { version = "0.1.0", path = "../../hosting/tilo-server-client", features = ["dial"] }
+tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client", features = ["dial"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # The channel engine's vault namespace: the page keeps its channel vault key
 # in the same secret store the session's own vault uses.
@@ -111,7 +111,7 @@ tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["l
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 # The browser's decoder for another device's window pictures (src/window_pictures.rs).
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media" }
-tilo-server-protocol = { version = "0.1.0", path = "../../hosting/tilo-server-protocol" }
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true

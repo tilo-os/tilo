@@ -1,0 +1,704 @@
+//! A governing holder and the devices around it, for the tests of workspaces and of
+//! the app action servers embedders build on them.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a fixture failing is its test failing"
+)]
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use ed25519_dalek::SigningKey;
+use iroh::protocol::Router;
+use key_group::{ContentKeys, KeyGroup, MemberKey};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+
+use super::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, PreAdmitRequest, Workspaces};
+use crate::service::{HostConfig, HostIdentity, WorkspaceService};
+
+/// What a test that stands in for the mail servers of the accounts people keep here is made
+/// of ([`Workspaces::carry_mail_through`]): the session's trait with what its calls carry, a
+/// message as an inbox holds one, and a message as a send begins one.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mail {
+    pub use tilo_mail_session::{
+        Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,
+    };
+
+    pub use super::super::mail_watch::{begun_message, held_message};
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use tilo_actions::remote::person_accounts::{
+        FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
+        SendMail, SentMail,
+    };
+    use tilo_lock::MutexRecover as _;
+
+    /// Mail servers a test stands in for that only say what arrives: every
+    /// watch the holder starts is kept, so a test tells what reaches an
+    /// inbox, and whatever else is asked of them is refused.
+    #[derive(Default)]
+    pub struct Inboxes {
+        watches: Mutex<Vec<Watched>>,
+    }
+
+    /// One watch the holder started.
+    struct Watched {
+        account: String,
+        heard: Arc<dyn InboxHeard>,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl Inboxes {
+        /// What the watch of `account` that still goes on tells its holder;
+        /// none where that inbox is not watched.
+        #[must_use]
+        pub fn heard(&self, account: &str) -> Option<Arc<dyn InboxHeard>> {
+            self.watches
+                .lock_recover()
+                .iter()
+                .rev()
+                .find(|watch| watch.account == account && !watch.stopped.load(Ordering::SeqCst))
+                .map(|watch| Arc::clone(&watch.heard))
+        }
+
+        /// The accounts whose inboxes are watched now, in the order their
+        /// watches started.
+        #[must_use]
+        pub fn watched(&self) -> Vec<String> {
+            self.watches
+                .lock_recover()
+                .iter()
+                .filter(|watch| !watch.stopped.load(Ordering::SeqCst))
+                .map(|watch| watch.account.clone())
+                .collect()
+        }
+    }
+
+    const UNASKED: &str = "this test asks no mail server for that";
+
+    impl MailSession for Inboxes {
+        fn fetch(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &FetchMail,
+        ) -> Result<FetchedMail, String> {
+            Err(UNASKED.into())
+        }
+
+        fn read(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &ReadMail,
+        ) -> Result<FetchedMessage, String> {
+            Err(UNASKED.into())
+        }
+
+        fn search(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &SearchMail,
+        ) -> Result<FoundMail, String> {
+            Err(UNASKED.into())
+        }
+
+        fn save_draft(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &SendMail,
+            _: &[Attachment],
+            _: Option<&str>,
+        ) -> Result<(), String> {
+            Err(UNASKED.into())
+        }
+
+        fn send(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &Leaving,
+            _: &[Attachment],
+            _: Option<&str>,
+        ) -> Result<SentMail, String> {
+            Err(UNASKED.into())
+        }
+
+        fn mark(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: &MarkMail,
+        ) -> Result<(), String> {
+            Err(UNASKED.into())
+        }
+
+        fn watch(
+            &self,
+            account: &accounts::Account,
+            _: &accounts::Secret,
+            _: Option<InboxSeen>,
+            heard: Arc<dyn InboxHeard>,
+        ) -> Result<Watching, String> {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let stop = Arc::clone(&stopped);
+            self.watches.lock_recover().push(Watched {
+                account: account.id.to_string(),
+                heard,
+                stopped,
+            });
+            Ok(Watching::new(move || stop.store(true, Ordering::SeqCst)))
+        }
+    }
+}
+
+/// A holder certified only to keep workspaces: it governs them without taking part in
+/// their channels.
+#[must_use]
+pub fn governor() -> (SigningKey, DeviceCert) {
+    governor_with(DeviceCapabilities::member())
+}
+
+/// A holder's device of the person whose root is `[1; 32]`, certified with
+/// `capabilities`.
+///
+/// # Panics
+///
+/// The certificate cannot be signed.
+#[must_use]
+pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let key = SigningKey::from_bytes(&rand::random());
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "home".into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).expect("a fixture certificate signs");
+    (key, cert)
+}
+
+/// A certified workspace service on its own endpoint, routed as an embedder routes
+/// it.
+pub struct TestHost {
+    host: WorkspaceService,
+    router: Router,
+    /// The relay its endpoint took as its home ([`reached_through`]), closed
+    /// after the endpoint that reaches it.
+    #[cfg(test)]
+    _home: tilo_test_env::relay::Relay,
+}
+
+impl TestHost {
+    /// The workspaces it governs.
+    #[must_use]
+    pub const fn workspaces(&self) -> &Workspaces {
+        self.host.workspaces()
+    }
+
+    /// The host itself.
+    #[must_use]
+    pub const fn host(&self) -> &WorkspaceService {
+        &self.host
+    }
+
+    /// The durable records of its workspaces.
+    #[must_use]
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.host.workspace_documents()
+    }
+
+    /// What a member dials.
+    #[must_use]
+    pub fn node_addr(&self) -> iroh_base::EndpointAddr {
+        self.host.node_addr()
+    }
+
+    /// The compactor of its workspaces.
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) fn compactor(&self) -> &crate::compaction::Compactor {
+        self.host.compactor()
+    }
+
+    /// Stop the host, then its router and endpoint.
+    pub async fn shutdown(self) {
+        self.host.shutdown().await;
+        let _closed = self.router.shutdown().await;
+    }
+}
+
+/// The channel service of a device that takes part in its workspaces' channels:
+/// it opens a channel's keys the first time something starts the channel's
+/// record, as the channel service of the device a page or a bot runs on does,
+/// and answers with the same keys every time after.
+#[derive(Default)]
+pub struct TestGroupKeys {
+    held: Mutex<BTreeMap<String, ContentKeys>>,
+}
+
+impl GroupKeys for TestGroupKeys {
+    fn group_keys<'a>(&'a self, workspace: &'a str, create: bool) -> GroupKeysAnswerFuture<'a> {
+        Box::pin(async move {
+            let held = {
+                let keys = self.held.lock().expect("the fixture's keys");
+                keys.get(workspace).cloned()
+            };
+            if let Some(keys) = held {
+                return Some(Ok(keys));
+            }
+            if !create {
+                return Some(Err("this channel has no keys yet".into()));
+            }
+            let keys = KeyGroup::create(
+                collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+                MemberKey::generate(workspace).expect("a fixture member key"),
+            )
+            .expect("a fixture channel opens")
+            .content_keys()
+            .expect("a fresh channel holds its epoch's keys");
+            self.held
+                .lock()
+                .expect("the fixture's keys")
+                .insert(workspace.to_owned(), keys.clone());
+            Some(Ok(keys))
+        })
+    }
+}
+
+/// A certified host of `cert`'s device keeping its state under `state_root`.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
+    test_host_with_grants(state_root, key, cert, None).await
+}
+
+/// The same host, keeping `grants` pre-admissions per workspace
+/// ([`crate::service::HostConfig::max_workspace_grants`]).
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the server cannot open.
+pub async fn test_host_with_grants(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    grants: Option<usize>,
+) -> TestHost {
+    host_on(state_root, key, cert, None, grants, None).await
+}
+
+/// The same server, told to keep the keys of people's sealed stores under
+/// `keys`, apart from `state_root`: it does when `keys` is a folder that is
+/// there, and makes none.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the server cannot open.
+pub async fn test_server_keeping_keys_apart(
+    state_root: &Path,
+    keys: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> TestHost {
+    host_on(state_root, key, cert, None, None, Some(keys)).await
+}
+
+/// The same host, run on a device that takes part in its workspaces' channels,
+/// as a server whose device owns workspaces does: what its members seal it opens,
+/// and what it writes itself it seals.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_taking_part(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> TestHost {
+    test_host_holding(state_root, key, cert, Arc::default()).await
+}
+
+/// [`test_host_taking_part`] whose device holds `keys`: the same keys open
+/// what a host before it on the same state sealed, as a device's channel
+/// service keeps its keys across a restart.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_holding(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestGroupKeys>,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        Some(DeviceKeyGroups { keys, sink: None }),
+        None,
+        None,
+    )
+    .await
+}
+
+/// `cert`'s device hosting under `state_root`, taking part in the workspaces'
+/// channels through `channels` when it is given.
+async fn host_on(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    channels: Option<DeviceKeyGroups>,
+    grants: Option<usize>,
+    people_keys: Option<&Path>,
+) -> TestHost {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    #[cfg(test)]
+    let home = tilo_test_env::relay::relay().await;
+    #[cfg(test)]
+    let endpoint = endpoint.relay_mode(iroh::RelayMode::Custom(home.relays()));
+    let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
+    #[cfg(test)]
+    reached_through(&endpoint, &home).await;
+    let host = WorkspaceService::open(
+        HostConfig {
+            max_workspace_grants: grants,
+            people_keys: people_keys.map(Path::to_owned),
+            // A server of other people's workspaces takes their work in them.
+            ..HostConfig::new(
+                state_root.to_owned(),
+                tilo_server_protocol::WorkSetting {
+                    from: tilo_server_protocol::WorkFrom::Anyone,
+                    ..tilo_server_protocol::WorkSetting::own_person()
+                },
+            )
+        },
+        HostIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        endpoint.clone(),
+        channels,
+    )
+    .await
+    .expect("the host opens");
+    let mut router = Router::builder(endpoint);
+    for (alpn, handler) in host.protocols() {
+        router = router.accept(alpn, handler);
+    }
+    TestHost {
+        host,
+        router: router.spawn(),
+        #[cfg(test)]
+        _home: home,
+    }
+}
+
+/// Wait until `endpoint` names `home` as the relay it is reached through.
+///
+/// A host waits at its opening for its endpoint to name a relay
+/// ([`super::await_relay`]), so no workspace learns an address the host must
+/// rename, and gives up after iroh's net report timeout. An endpoint that has
+/// no relay to reach waits that whole bound out: five seconds for every host a
+/// test opens. This package's tests give the fixture's endpoint a server on this
+/// machine's loopback instead, as a host on a network has one, and the host
+/// opens as soon as its endpoint names it. An embedder's tests reach this
+/// fixture without that server, which is a development dependency here, and
+/// wait as before.
+#[cfg(test)]
+async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_env::relay::Relay) {
+    use iroh::Watcher as _;
+    tilo_test_env::within("the fixture host's endpoint names its relay", async {
+        let mut watch = endpoint.watch_addr();
+        let mut addr = watch.get();
+        while !addr.relay_urls().any(|url| url == home.url()) {
+            let Ok(next) = watch.updated().await else {
+                panic!("the endpoint closed before it named its relay");
+            };
+            addr = next;
+        }
+    })
+    .await;
+}
+
+/// Admit `member` to `workspace` as a reader, as the governor `key` decides it.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or refuses the certificate.
+pub async fn admit_view_reader(
+    workspaces: &Workspaces,
+    workspace: &str,
+    key: &SigningKey,
+    member: &DeviceCert,
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    let mut workspace = state.lock().await;
+    let now = tilo_clock::wall();
+    let mut candidate = workspace.peer().clone();
+    candidate
+        .admit_certificate(member.clone(), key, now)
+        .expect("the workspace admits the certificate");
+    let collaboration = workspace.collaboration().clone();
+    workspace
+        .commit(candidate, key, now, |_, _| Ok(collaboration))
+        .expect("the admission commits");
+}
+
+/// Project `workspace`'s members onto the server's own runtime for it, as a
+/// settled decision does: what a member's change is decided against on its way
+/// in, before the workspace's governance reaches the server by its own path.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance does not read.
+pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    let (device_access, workspace_id) = {
+        let governed = state.lock().await;
+        let device_access = governed
+            .peer()
+            .governance()
+            .governed_device_access(tilo_clock::wall())
+            .expect("the workspace's device_access");
+        (device_access, governed.workspace_id())
+    };
+    workspaces
+        .inner
+        .host
+        .access
+        .replace_access(workspace_id, true, device_access)
+        .await
+        .expect("the server projects the workspace's device_access");
+}
+
+/// Until when `workspace` restricts `person`, as `host` reads its policy.
+///
+/// # Panics
+///
+/// The workspace is not governed here.
+pub async fn restricted_until(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host: &DeviceCert,
+    person: [u8; 32],
+) -> Option<u64> {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    let now = tilo_clock::wall();
+    let permissions = state
+        .lock()
+        .await
+        .peer()
+        .permissions(host.device_public_key, now)
+        .expect("the host's permissions");
+    permissions.policy.restricted_until(
+        &hex::encode(person),
+        &tilo_action_policy::Context::at_time(now),
+    )
+}
+
+/// A pre-admission of person "Ada" to `workspace` as an editor for `token`,
+/// signed by the owner whose root is `[1; 32]`.
+///
+/// # Panics
+///
+/// The grant cannot be digested.
+#[must_use]
+pub fn signed_pre_admission(
+    workspace: &str,
+    token: &[u8],
+) -> tilo_server_protocol::workspaces::PreAdmission {
+    signed_pre_admission_as(
+        workspace,
+        token,
+        tilo_server_protocol::workspaces::Role::Editor,
+    )
+}
+
+/// A pre-admission of person "Ada" to `workspace` with `role` for `token`, signed
+/// by the owner whose root is `[1; 32]`.
+///
+/// # Panics
+///
+/// The grant cannot be digested.
+#[must_use]
+pub fn signed_pre_admission_as(
+    workspace: &str,
+    token: &[u8],
+    role: tilo_server_protocol::workspaces::Role,
+) -> tilo_server_protocol::workspaces::PreAdmission {
+    use ed25519_dalek::Signer as _;
+    use sha2::Digest as _;
+    let owner = SigningKey::from_bytes(&[1; 32]);
+    let mut grant = tilo_server_protocol::workspaces::PreAdmission {
+        workspace: workspace.to_owned(),
+        role,
+        token_sha256: sha2::Sha256::digest(token).into(),
+        label: "Ada".into(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        owner_user_public_key: owner.verifying_key().to_bytes(),
+        signature: [0; 64],
+    };
+    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
+    grant
+}
+
+/// One person's device joining `workspace` through its entry, as a Tilo computer
+/// does: the entry's invitation, the challenge it answers, then the Complete,
+/// which admits it. Answers the Complete it sent and the host's answer.
+///
+/// # Panics
+///
+/// The entry does not admit the device.
+pub async fn entry_join(
+    workspaces: &Workspaces,
+    host: &DeviceCert,
+    workspace: &str,
+    (device, device_cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+) -> (
+    tilo_peer_state::join::JoinTransportRequest,
+    tilo_peer_state::join::JoinTransportResponse,
+) {
+    let role = tilo_server_protocol::workspaces::Role::Editor;
+    entry_join_as(
+        workspaces,
+        host,
+        workspace,
+        (device, device_cert),
+        seed,
+        role,
+    )
+    .await
+}
+
+/// One person's device joining `workspace` through its entry with `role`, as a Tilo
+/// computer does: the entry's invitation, the challenge it answers, then the
+/// Complete, which admits it. Answers the Complete it sent and the host's
+/// answer.
+///
+/// # Panics
+///
+/// The entry does not admit the device.
+pub async fn entry_join_as(
+    workspaces: &Workspaces,
+    host: &DeviceCert,
+    workspace: &str,
+    (device, device_cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+    role: tilo_server_protocol::workspaces::Role,
+) -> (
+    tilo_peer_state::join::JoinTransportRequest,
+    tilo_peer_state::join::JoinTransportResponse,
+) {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
+        sign_join_proof,
+    };
+    let token = [seed; 8];
+    let issued = workspaces
+        .pre_admit(
+            host,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission_as(workspace, &token, role),
+                recipient_user_public_key: Some(device_cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = workspaces.join_service();
+    let endpoint = device_cert.device_public_key;
+    let JoinTransportResponse::Challenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: device_cert.clone(),
+                request_id: [seed.wrapping_add(100); 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no challenge");
+    };
+    let proof = sign_join_proof(answer.challenge, device).unwrap();
+    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
+    let response = service.handle(endpoint, complete.clone()).await;
+    drop(service);
+    (complete, response)
+}
+
+/// `peer`'s device joins `call` in `workspace` as the workspace's voice entry joins
+/// it, renewing `participation` when it names one; its grants come on
+/// `outbound`.
+///
+/// # Errors
+///
+/// The workspace refuses the device the call.
+pub async fn voice_join(
+    workspaces: &Workspaces,
+    workspace: &str,
+    peer: &tilo_server_protocol::AuthenticatedPeer,
+    call: [u8; 32],
+    participation: Option<[u8; 32]>,
+    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
+) -> Result<tilo_server_protocol::voice::VoiceGrant, String> {
+    workspaces
+        .voice_join(workspace, peer, call, participation, outbound)
+        .await
+}
+
+/// `workspace`'s calls as `peer`'s device lists them through the voice entry; the
+/// list's changes come on `outbound`.
+///
+/// # Errors
+///
+/// The workspace refuses the device its calls.
+pub async fn voice_calls(
+    workspaces: &Workspaces,
+    workspace: &str,
+    peer: &tilo_server_protocol::AuthenticatedPeer,
+    outbound: tokio::sync::mpsc::Sender<tilo_server_protocol::Envelope>,
+) -> Result<Vec<tilo_server_protocol::voice::CallSummary>, String> {
+    workspaces.voice_calls(workspace, peer, outbound).await
+}
+
+/// `peer`'s device ends `participation` in `call`, as the voice entry ends it.
+pub fn voice_leave(
+    workspaces: &Workspaces,
+    peer: &tilo_server_protocol::AuthenticatedPeer,
+    call: [u8; 32],
+    participation: [u8; 32],
+) {
+    workspaces.voice_leave(peer, call, participation);
+}

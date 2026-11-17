@@ -238,8 +238,8 @@ cd "$repo"
 # A host whose system clang lacks WebAssembly compiles the C dependencies
 # (zstd, ring) with Zig's clang instead.
 if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
-  export CC_wasm32_unknown_unknown="$repo/crates/hosting/tilo-server/scripts/wasm-cc.sh"
-  export AR_wasm32_unknown_unknown="$repo/crates/hosting/tilo-server/scripts/wasm-ar.sh"
+  export CC_wasm32_unknown_unknown="$repo/crates/server/tilo-server/scripts/wasm-cc.sh"
+  export AR_wasm32_unknown_unknown="$repo/crates/server/tilo-server/scripts/wasm-ar.sh"
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
 # Each step's time, on stderr: what a slow bundle spent its minutes on.

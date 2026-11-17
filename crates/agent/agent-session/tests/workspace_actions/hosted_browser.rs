@@ -9,7 +9,7 @@
 use super::*;
 use serde_json::json;
 use std::sync::Mutex;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{CataloguePage, CatalogueQuery};
 use tilo_mcp::{McpServer, Surface};
 use tilo_server::hosted_browser::{

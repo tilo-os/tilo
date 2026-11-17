@@ -6,7 +6,7 @@
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
 //!   key dials that device's MCP server ([`crate::devices`]), which admits
-//!   it as the person's server does (`tilo_workspace_host::workspace_access`): a
+//!   it as the person's server does (`tilo_workspace_service::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
 //!   device asks it. The device serves the agent's MCP itself, with its own

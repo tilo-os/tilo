@@ -42,7 +42,7 @@ use std::time::Instant;
 use serde_json::{Map, Value, json};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::environment_commands::CommandOutput;
-use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{Caller, InvocationReceipt, InvocationState, InvokeRequest};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -706,7 +706,7 @@ mod tests {
             exit: 126,
             output: b"ush: cargo: no card. Ask the person to add a card".to_vec(),
             refusal: Some(Refusal {
-                reason: tilo_actions::remote::host_account::Reason::NoPaymentMethod,
+                reason: tilo_actions::remote::server_account::Reason::NoPaymentMethod,
                 message: "no card".into(),
                 next: Vec::new(),
             }),
