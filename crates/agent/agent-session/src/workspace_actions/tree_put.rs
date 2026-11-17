@@ -276,22 +276,11 @@ impl Worker {
         let store = self
             .workspace_content(workspace_id)
             .ok_or_else(|| refused("this workspace keeps no files on its host"))?;
-        // Sealed content keeps its length only in its seal: it is read whole.
-        let size = match store.read_range(&putting.hash, 0, 1) {
-            Ok((size, _)) => size,
-            Err(_) => match store.read(&putting.hash) {
-                Some(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                None => {
-                    return Err(refused(format!(
-                        "this workspace holds no {}",
-                        putting.content
-                    )));
-                }
-            },
-        };
+        let size = size_of(&store, &putting.hash)
+            .ok_or_else(|| refused(format!("this workspace holds no {}", putting.content)))?;
         // A file of the tree is named by its content manifest, as a mounted
         // computer names one, so every member reads it the same way.
-        let manifest = manifest_of(&store, &putting.hash).map_err(refused)?;
+        let manifest = manifest_of(&store, &putting.hash, size).map_err(refused)?;
         // The tree of a governed workspace is sealed: its keys are what
         // reading it and writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
@@ -322,36 +311,77 @@ impl Worker {
     }
 }
 
-/// Keep the content `hash` names as a file of the tree is kept: chunked, each
-/// chunk and the manifest listing them under their own BLAKE3 address in
-/// `store`, the manifest's address answered. A mounted computer, a page and
-/// the workspace's host read a file of the tree from its manifest's chunks.
+/// The length of the content `hash` names: what the store knows of it, or,
+/// for sealed content, whose length only its seal keeps, counted as it is
+/// read through, a piece at a time.
+fn size_of(store: &tilo_content::ContentStore, hash: &str) -> Option<u64> {
+    if let Some(size) = store.size(hash) {
+        return Some(size);
+    }
+    let mut reader = store.open(hash)?;
+    std::io::copy(&mut reader, &mut std::io::sink()).ok()
+}
+
+/// Keep the content `hash` names, `size` bytes long, as a file of the tree is
+/// kept: chunked, each chunk and the manifest listing them under their own
+/// BLAKE3 address in `store`, the manifest's address answered. A mounted
+/// computer, a page and the workspace's host read a file of the tree from its
+/// manifest's chunks.
+///
+/// The bytes are read and chunked a piece at a time, each chunk kept as soon
+/// as its end is known: a file of a gigabyte costs what one chunk does in
+/// memory, not the file.
 ///
 /// # Errors
-/// The content is not in `store`, or what was kept is not at the address the
-/// manifest names.
-fn manifest_of(store: &tilo_content::ContentStore, hash: &str) -> Result<String, String> {
-    let bytes = store
-        .read(hash)
+/// The content is not in `store`, is not `size` bytes long, or what was kept
+/// is not at the address the manifest names.
+fn manifest_of(
+    store: &tilo_content::ContentStore,
+    hash: &str,
+    size: u64,
+) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut reader = store
+        .open(hash)
         .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
-    let (manifest, _) = fs_content::build(&bytes, None);
-    let mut at = 0_usize;
-    for chunk in manifest.chunks() {
-        let len = usize::try_from(chunk.len).unwrap_or(usize::MAX);
-        let piece = bytes
-            .get(at..at.saturating_add(len))
-            .ok_or("the file's chunks run past its end")?;
-        at = at.saturating_add(len);
+    let mut failed: Option<String> = None;
+    let mut keep = |chunk: &fs_content::ChunkRef, bytes: &[u8]| {
+        if failed.is_some() {
+            return;
+        }
         let address = hex::encode(chunk.hash);
         if store.has(&address) {
-            continue;
+            return;
         }
-        let kept = store.put_public(piece).map_err(|error| error.to_string())?;
-        if kept != address {
-            return Err(format!("a chunk was kept at {kept}, not at {address}"));
+        match store.put_public(bytes) {
+            Ok(kept) if kept == address => {}
+            Ok(kept) => failed = Some(format!("a chunk was kept at {kept}, not at {address}")),
+            Err(error) => failed = Some(error.to_string()),
         }
+    };
+    let mut stream = fs_content::Streamed::new(size, None);
+    let mut piece = vec![0_u8; PIECE];
+    loop {
+        let read = match reader.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        stream
+            .push(piece.get(..read).unwrap_or_default(), &mut keep)
+            .map_err(|error| error.to_string())?;
+    }
+    let (manifest, _) = stream
+        .finish(&mut keep)
+        .map_err(|error| error.to_string())?;
+    if let Some(failed) = failed {
+        return Err(failed);
     }
     store
         .put_public(&manifest.encode())
         .map_err(|error| error.to_string())
 }
+
+/// How much of a file [`manifest_of`] reads at a time.
+const PIECE: usize = 1024 * 1024;
