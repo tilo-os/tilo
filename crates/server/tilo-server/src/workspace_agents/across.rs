@@ -182,12 +182,13 @@ impl TurnElsewhere {
     }
 
     /// The device of `person`'s own that a read for them in the workspace `there` acts as:
-    /// the one that workspace admits them on now. None where that is this server's own device
-    /// or one this server placed itself, and none where this server was not told what it
-    /// placed.
+    /// the newest that workspace admits them on now that is neither this server's own device
+    /// nor one this server placed itself ([`Workspaces::persons_own_device`]). None where they
+    /// have no such device there, and none where these agents were not told what this server
+    /// placed. What the agents were told is asked once more here.
     async fn device_there(&self, there: WorkspaceId, person: [u8; 32]) -> Option<[u8; 32]> {
         let placed = self.placed.as_ref()?;
-        let device = self.workspaces.person_device(there, person).await?;
+        let device = self.workspaces.persons_own_device(there, person).await?;
         let theirs = device != self.workspaces.governor().device_public_key
             && placed.of(&device, tilo_clock::unix_now_ns()).is_none();
         theirs.then_some(device)

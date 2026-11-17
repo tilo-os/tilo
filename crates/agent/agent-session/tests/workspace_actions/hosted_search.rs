@@ -154,8 +154,18 @@ mod chat_read_direct;
 impl Served {
     /// A server with `count` workspaces on it, Ada's page open on each.
     async fn start(count: usize) -> Self {
+        Self::start_certified(count, 1).await
+    }
+
+    /// [`Self::start`], the server's own device certified at `issued_at_ns`. Every other device
+    /// of the fixture is certified at one early moment, so a later one makes the server's own
+    /// device the newest Ada has.
+    async fn start_certified(count: usize, issued_at_ns: u64) -> Self {
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let server = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
+        let mut server = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
+        server.cert.issued_at_ns = issued_at_ns;
+        tilo_user_identity::sign_device_cert(&mut server.cert, &ada)
+            .expect("her root certifies the server's own device");
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
         let (served, actions) = crate::harness::hosted::serving_records_with_actions(

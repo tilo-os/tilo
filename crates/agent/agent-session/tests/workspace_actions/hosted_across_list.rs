@@ -329,6 +329,63 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
     }
 }
 
+/// On a person's own server the server's own device is a device of that person too, and it is a
+/// member of every workspace the server governs. Where it is the newest device of theirs a
+/// workspace admits, a turn of theirs there acts as it, and their assistant still never reads
+/// in another workspace as it: the device a read acts as is the newest of their own that the
+/// workspace admits, here the one their page is on. A workspace no device of their own ever
+/// joined has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn where_the_servers_own_device_is_a_persons_newest_the_assistant_reads_as_their_next_one() {
+    // The server's own device is certified now, later than every device the fixture gives Ada.
+    let mut served = Served::start_certified(2, tilo_clock::unix_now_ns()).await;
+    let (own, own_page, _) = served.workspace(|_| Vec::new()).await;
+    let (other, other_page) = served.opened.pop().expect("a second workspace");
+    // A workspace no device of Ada's own ever joined: the server's device is all she has there.
+    let bare = served.workspaces.create("Depot").await.unwrap().workspace;
+    let ada = served.ada.verifying_key().to_bytes();
+    let hers = (&served.ada, &served.devices.1);
+    let placed = server_of(&served).environments();
+    assert!(
+        served.devices.0.cert.issued_at_ns > served.devices.1.cert.issued_at_ns,
+        "the server's own device is the newest she has"
+    );
+    let other_id = WorkspaceId::parse(&other).unwrap();
+    assert_eq!(
+        served
+            .workspaces
+            .person_device(other_id, ada)
+            .await
+            .map(hex::encode),
+        Some(hex::encode(served.devices.0.cert.device_public_key)),
+        "the device a turn of hers acts as in her other workspace is the server's own"
+    );
+
+    let calls = everything_then_the_list();
+    let shown = asked_by(
+        &served,
+        &own,
+        hers,
+        ("Which other workspaces am I in?", &calls),
+        Some(&placed),
+    )
+    .await;
+    assert_eq!(shown.len(), 2, "two tool calls were answered: {shown:?}");
+    let listed = listed_in(&shown[1]);
+    assert_eq!(
+        (
+            listed.get(&other).map(String::as_str),
+            listed.get(&bare).map(String::as_str)
+        ),
+        (Some("not_asked"), Some("no_device")),
+        "where her page is, its device is the one a read acts as; the server's own never is: {}",
+        shown[1]
+    );
+    for page in [own_page, other_page] {
+        page.peer.close();
+    }
+}
+
 /// The same list on a server that keeps people's own workspaces.
 #[path = "hosted_across_kept.rs"]
 mod kept;
