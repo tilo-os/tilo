@@ -388,7 +388,7 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         backend
             .send(
                 hyper::Method::DELETE,
-                &format!("/v1/keys/{}", minted["grant"]),
+                &format!("/v1/keys/{}", minted["grant"].as_str().unwrap()),
                 b"",
                 &[("idempotency-key", "revoke-jane")],
             )
