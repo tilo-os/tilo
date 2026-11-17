@@ -2,14 +2,9 @@
 
 use tilo_actions::{ActionError, ActionInvoker};
 
-use super::{Chain, ChainState, Chained, Opened, PartEdit, Write};
+use std::any::Any;
 
-/// Whether `action` is a step someone takes, which Undo may take back, rather
-/// than housekeeping or content arriving from outside (fetched mail, a
-/// server's confirmation).
-pub(super) fn is_step<P: Chained>(action: &P::Action) -> bool {
-    tilo_actions::Action::change_kind(action).is_step()
-}
+use super::{Chain, ChainState, Chained, Opened, PartEdit, Write};
 
 /// The parts one step wrote into, in the order written: one, or each part a
 /// verb over items of several parts changed ([`Chained::split`]).
@@ -27,19 +22,19 @@ impl Written {
     }
 }
 
-impl<P: Chained> ChainState<P> {
+impl ChainState {
     /// Write the shares of a verb over items of several parts
     /// ([`Chained::split`]), each into its part, as one step. Nothing is
     /// written while a part a share changes is on its way.
     pub(super) fn write_shares(
         &self,
-        mut shares: Vec<(u64, P::Action)>,
+        mut shares: Vec<(u64, Box<dyn Any>)>,
         invoker: &ActionInvoker,
         place: Option<&str>,
     ) -> Result<Write, ActionError> {
         shares.sort_by_key(|(index, _)| *index);
         for (_, share) in &shares {
-            self.may(share)?;
+            self.may(&**share)?;
         }
         let head = self.core.parts.borrow().keys().next_back().copied();
         for (index, _) in &shares {
@@ -58,14 +53,8 @@ impl<P: Chained> ChainState<P> {
             if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
                 self.carry(previous, index, invoker)?;
             }
-            let encoded = tilo_resource::encode::<P>(&share)?;
-            created.extend(self.write(
-                index,
-                &share,
-                encoded,
-                invoker,
-                place.map(str::to_owned),
-            )?);
+            let (share, encoded) = (self.part().written)(&*share)?;
+            created.extend(self.write(index, share, encoded, invoker, place.map(str::to_owned))?);
             written.push(index);
         }
         if written.is_empty() {

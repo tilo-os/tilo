@@ -268,7 +268,7 @@ impl<R: Resource> ResourceEnv<R> {
     /// actions as the window's person.
     fn chain_of<P: super::Chained>(
         &self,
-        state: Rc<super::chain::ChainState<P>>,
+        state: Rc<super::chain::ChainState>,
     ) -> Option<super::Chain<P>> {
         let me = self.dispatch.me()?.clone();
         // A role that may only view the workspace views the parts too; a

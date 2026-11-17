@@ -3,11 +3,12 @@
 //! page ended, and one item read whole from the part keeping it, at a
 //! version of that part when asked.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use tilo_actions::OperationKind;
 
-use super::{CHAIN_READ_TYPE, ChainState, Chained, PartType, READ_PAGE, READ_PAGE_MAX, listing};
+use super::{CHAIN_READ_TYPE, ChainState, PartType, READ_PAGE, READ_PAGE_MAX, listing};
 
 /// Offer the chain's read on every resource under an item that its part's
 /// table reads (an item's rich-text body), bound to that resource.
@@ -173,7 +174,7 @@ pub(super) fn parse_read_cursor(cursor: &str) -> Option<(u64, usize)> {
     Some((part.parse().ok()?, taken.parse().ok()?))
 }
 
-impl<P: Chained> ChainState<P> {
+impl ChainState {
     /// One item of a part this device holds, as the read of it answers:
     /// what the part's resource reads of it ([`Resource::read_content`]: a
     /// note as its Markdown and blocks), else its fields; at `version`, a
@@ -182,11 +183,12 @@ impl<P: Chained> ChainState<P> {
     pub(super) fn read_item(
         &self,
         table: &'static tilo_resource::table::ModelTable,
-        parts: &[(u64, Rc<P::State>)],
+        parts: &[(u64, Rc<dyn Any>)],
         hidden: &std::collections::HashSet<String>,
         item: &str,
         version: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        let part = self.part();
         if hidden.iter().any(|gone| {
             item == gone
                 || item
@@ -196,7 +198,7 @@ impl<P: Chained> ChainState<P> {
             return Err(format!("{item} is not there"));
         }
         for (index, state) in parts.iter().rev() {
-            if tilo_resource::table::item_json(table, &**state, P::KIND, item).is_err() {
+            if tilo_resource::table::item_json(table, &**state, part.kind, item).is_err() {
                 continue;
             }
             return self
@@ -213,19 +215,16 @@ impl<P: Chained> ChainState<P> {
                             doc,
                             &payload,
                             |_| Err("a version is read".to_owned()),
-                            |frozen, item| {
-                                let past = P::read(frozen).map_err(|error| error.to_string())?;
-                                tilo_resource::read::content::<P>(&past, frozen, item)
-                            },
+                            part.content_at,
                         )
                     }
-                    None => tilo_resource::read::content::<P>(state, doc, Some(item)),
+                    None => (part.content)(&**state, doc, Some(item)),
                 })
                 .ok_or_else(|| "the part is not open here".to_owned())?;
         }
         Err(format!(
             "{item} is in a part of these {} this device does not hold",
-            P::LABEL.to_lowercase()
+            part.label.to_lowercase()
         ))
     }
 }

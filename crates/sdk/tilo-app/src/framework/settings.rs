@@ -251,7 +251,7 @@ impl ViewStorage {
         &self,
         record: Option<&ui_core::resource::DocumentId>,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
-    ) -> Option<Rc<super::chain::ChainState<P>>> {
+    ) -> Option<Rc<super::chain::ChainState>> {
         super::controls::opened_resource::<P>();
         self.chains.open::<P>(self.records.as_ref(), record, base)
     }
@@ -263,7 +263,7 @@ impl ViewStorage {
         &self,
         base: &ui_core::resource::DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
-    ) -> Option<Rc<super::chain::ChainState<P>>> {
+    ) -> Option<Rc<super::chain::ChainState>> {
         super::controls::opened_resource::<P>();
         self.chains
             .open_beside::<P>(self.records.as_ref(), base, base_state)
