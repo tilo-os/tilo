@@ -2205,6 +2205,7 @@ mod tests {
                     )
                 },
             ],
+            surface: None,
         }]);
         let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.authority()),

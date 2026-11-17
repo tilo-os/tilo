@@ -14,6 +14,7 @@ impl crate::services::LauncherServices for CertifiedLaunchCatalog {
             display_name: "Word Processor".into(),
             unconfined: false,
             offers: Vec::new(),
+            surface: None,
         }]
     }
 

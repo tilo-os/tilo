@@ -153,6 +153,7 @@ impl Launcher {
                 display_name: package_id.into(),
                 unconfined: false,
                 offers: Vec::new(),
+                surface: None,
             })
             .collect()
     }

@@ -209,6 +209,7 @@ fn launchable(
             display_name: app.display_name.clone(),
             unconfined: false,
             offers: app.offers.clone(),
+            surface: None,
         })
         .chain(
             entries
@@ -221,6 +222,7 @@ fn launchable(
                     display_name: entry.name.clone(),
                     unconfined: true,
                     offers: Vec::new(),
+                    surface: None,
                 }),
         )
         .collect()

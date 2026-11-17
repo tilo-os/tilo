@@ -29,6 +29,7 @@ impl crate::services::LauncherServices for Installed {
                 display_name: app.rsplit('.').next().unwrap_or(app).into(),
                 unconfined: false,
                 offers: Vec::new(),
+                surface: None,
             })
             .collect()
     }

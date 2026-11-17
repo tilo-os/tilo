@@ -253,6 +253,7 @@ mod tests {
                 display_name: "Writer".into(),
                 unconfined: false,
                 offers: Vec::new(),
+                surface: None,
             }]
         }
         fn launch(

@@ -360,6 +360,9 @@ impl LauncherServices for Apps {
         apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         apps.into_iter()
             .map(|app| LaunchableApplication {
+                surface: self
+                    .installed_surface(&app.app_id)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
                 capabilities: Vec::new(),
                 package_id: app.app_id.to_string(),
                 display_name: app.display_name,

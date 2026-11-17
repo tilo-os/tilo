@@ -21,6 +21,7 @@ fn app() -> LaunchableApplication {
         display_name: "Notes".into(),
         unconfined: false,
         offers: Vec::new(),
+        surface: None,
     }
 }
 

@@ -210,6 +210,9 @@ pub struct LaunchableApplication {
     /// The host capabilities its signed manifest declares (`[capabilities]`) that the host
     /// decides grants on (`settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`).
     pub capabilities: Vec<String>,
+    /// What its signed package publishes (`surface.toml`), when the host can read it: the
+    /// types an agent generates for the app before it ever opens.
+    pub surface: Option<String>,
 }
 /// The application a launcher-authenticated connection belongs to, and its workspace: launch
 /// content is read only through this scope, since holding a hash is not access.

@@ -620,6 +620,7 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
                 } else {
                     Vec::new()
                 },
+                surface: None,
             })
             .collect(),
         ..AppLists::default()

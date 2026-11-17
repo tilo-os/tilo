@@ -38,6 +38,7 @@ impl crate::services::LauncherServices for PressedOpens {
             display_name: app.into(),
             unconfined: false,
             offers: Vec::new(),
+            surface: None,
         })
         .collect()
     }

@@ -399,6 +399,7 @@ pub(super) fn app_start_descriptor(package_id: &str, display_name: &str) -> Acti
         unconfined: false,
         offers: Vec::new(),
         capabilities: Vec::new(),
+        surface: None,
     });
     descriptor.address.action = tilo_actions::remote::APPLICATION_START_ACTION.into();
     descriptor.action_label = format!("Start {display_name}");
@@ -1369,22 +1370,27 @@ impl AppBrokerState {
             }
             if let Some(added) = rows.get_mut(first..) {
                 Self::mark_asks(&workspace, &policy, now, added);
+                for row in added.iter_mut() {
+                    let Some(app) = row.resource.id.strip_prefix(APPLICATION_RESOURCE_PREFIX)
+                    else {
+                        continue;
+                    };
+                    row.surface = applications
+                        .as_ref()
+                        .and_then(|(installed, _)| {
+                            installed
+                                .iter()
+                                .find(|candidate| candidate.package_id == app)
+                                .and_then(|candidate| candidate.surface.clone())
+                        })
+                        .or_else(|| {
+                            ui::app_surface::bytes_of(app)
+                                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                        });
+                }
             }
         }
-        // An application's row carries what its signed package publishes, so
-        // an agent generates the typed client for it without opening it.
-        for row in &mut rows {
-            let Some(app) = row
-                .resource
-                .id
-                .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            row.surface = ui::app_surface::bytes_of(&app)
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-        }
+
         (rows, providers)
     }
 
@@ -3453,6 +3459,7 @@ mod app_close_tests {
                 display_name: "Writer".into(),
                 unconfined: false,
                 offers: Vec::new(),
+                surface: None,
             }]
         }
         fn launch(
