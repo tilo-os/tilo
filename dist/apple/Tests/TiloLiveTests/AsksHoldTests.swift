@@ -1,4 +1,5 @@
 #if os(macOS)
+import AssistantClosed
 import AssistantCore
 @testable import AssistantTilo
 import ShellCore
@@ -25,12 +26,13 @@ final class AsksHoldTests: XCTestCase {
     private var pageWords = 0
     private var listening: [Task<Void, Never>] = []
 
-    private func start(_ mainChat: TiloSource.MainChat = .assistant, livesInOwn: Bool = false) async throws {
+    private func start(_ mainChat: TiloSource.MainChat = .assistant, livesInOwn: Bool = false,
+                       closedKeys: (any ClosedKeyStore)? = nil) async throws {
         suite = "so.tilo.assistant.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         let engine = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
         engine.loads = { _ in }
-        source = TiloSource(engine: engine, mainChat: mainChat, livesInOwn: livesInOwn, defaults: defaults)
+        source = TiloSource(engine: engine, mainChat: mainChat, livesInOwn: livesInOwn, defaults: defaults, closedKeys: closedKeys)
         let source = source!
         listening = [
             Task { for await session in source.session() { self.sessions.append(session) } },
@@ -77,6 +79,7 @@ final class AsksHoldTests: XCTestCase {
       const noSuch = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
       window.messages = []; window.sent = []; window.asks = []; window.told = []; window.acknowledged = [];
       window.agents = null; window.linked = true; window.published = true; window.plan = {};
+      window.registered = []; window.unregistered = 0;
       const next = kind => (window.plan[kind] ?? []).shift();
       // An ask that is never answered: its answer stays owed. (The system itself ends an ask
       // whose answer nothing could give any more; her server's is owed for as long as the page lives.)
@@ -147,6 +150,14 @@ final class AsksHoldTests: XCTestCase {
                 if (!newer().length && argument?.waitMs) await new Promise(moved => { window.logMoved = moved; setTimeout(moved, argument.waitMs); });
                 return done({told: newer(), newest: Math.max(0, ...window.told.map(one => one.seq))});
               }
+              // The address a device hands her server to be reached at while its app is closed,
+              // kept by what it is for, and how often one took its address back. A server that
+              // takes no address does not know the ask (`pushless`).
+              case 'tilo.telling register':
+                if (window.pushless) noSuch();
+                window.registered.push(argument.topic);
+                return done({addresses: []});
+              case 'tilo.telling unregister': window.unregistered += 1; return done({addresses: []});
               case 'tilo.telling acknowledge':
                 window.acknowledged.push(argument.told + ' ' + argument.by);
                 return done(null);
@@ -259,6 +270,22 @@ final class AsksHoldTests: XCTestCase {
     }
 
     private static let assistant = TiloSource.MainChat.agent(id: "assistant", name: "Assistant")
+
+    /// An address as Apple's service would give one. It is made up, as is everything here.
+    private static let madeUpAddress = PushAddress(use: .notices, token: Data(repeating: 0xab, count: 32), service: .development,
+                                                   app: "so.tilo.assistant")
+
+    /// The way in is over once her server holds the ask that follows what it tells her: it is
+    /// the last thing the way in begins.
+    private func wayInIsOver() async throws {
+        try await until("the way in is over") { ((try? await self.asked("tilo.telling list")) ?? 0) >= 2 }
+    }
+
+    /// Whether Tilo's page still stands in the engine's view.
+    private func pageStands() async -> Bool {
+        ((try? await source.engine.view.callAsyncJavaScript("return typeof window.enter", arguments: [:], in: nil, contentWorld: .page)) as? String)
+            == "function"
+    }
 
     /// Her reminder comes due: what her server tells the assistant then, the assistant's answer
     /// to that, and what her server tells her of it.
@@ -713,6 +740,83 @@ final class AsksHoldTests: XCTestCase {
         }
         let sent = try await page("return JSON.stringify(window.sent)")
         XCTAssertEqual(sent, #"["Done."]"#, "what she pressed was done once")
+    }
+
+    func testAHandOverOfTheDevicesAddressThatGoesUnansweredOrFailsIsMadeAgainByItselfUntilHerServerHasIt() async throws {
+        try await start(Self.assistant, closedKeys: MemoryClosedKeys())
+        source.firstPause = .milliseconds(150)
+        try await enter("window.plan = {'tilo.telling register': ['lost', 'failed']}")
+        try await signedIn()
+        try await wayInIsOver()
+        await source.register(Self.madeUpAddress)
+        try await until("her server has the address") {
+            (try? await self.page("return JSON.stringify(window.registered)")) == #"["so.tilo.assistant"]"#
+        }
+        let asks = try await asked("tilo.telling register")
+        XCTAssertEqual(asks, 3)
+    }
+
+    func testAServerThatTakesNoAddressIsAskedForItOnceAndNotAgainAndAgain() async throws {
+        try await start(Self.assistant, closedKeys: MemoryClosedKeys())
+        source.firstPause = .milliseconds(100)
+        try await enter("window.pushless = true")
+        try await signedIn()
+        try await wayInIsOver()
+        await source.register(Self.madeUpAddress)
+        try await Task.sleep(for: .milliseconds(800))
+        let asks = try await asked("tilo.telling register")
+        XCTAssertEqual(asks, 1)
+    }
+
+    func testSigningOutDoesNotWaitForHerServerToForgetTheAddressAndAsksItAllTheSame() async throws {
+        let keys = MemoryClosedKeys()
+        try await start(Self.assistant, closedKeys: keys)
+        source.engine.askPatience = .seconds(4)
+        try await enter("window.plan = {'tilo.telling unregister': ['never']}")
+        try await signedIn()
+        try await wayInIsOver()
+        await source.register(Self.madeUpAddress)
+        XCTAssertNotNil(keys.read())
+        let began = ContinuousClock.now
+        await source.signOut()
+        XCTAssertLessThan(ContinuousClock.now - began, .seconds(1), "signing out waited for an answer that never comes")
+        try await until("the app is signed out") { self.sessions.last == .signedOut }
+        XCTAssertNil(keys.read(), "the key outlived its person's sign-out")
+        // Her server was asked to forget the address, by the page as it stood.
+        let asks = try await asked("tilo.telling unregister")
+        XCTAssertEqual(asks, 1)
+    }
+
+    func testAtASignOutThePageStaysUntilHerServerAnsweredAndIsPutAwayThen() async throws {
+        try await start(Self.assistant, closedKeys: MemoryClosedKeys())
+        source.engine.askPatience = .seconds(8)
+        try await enter("window.plan = {'tilo.telling unregister': [{late: 400}]}")
+        try await signedIn()
+        try await wayInIsOver()
+        await source.register(Self.madeUpAddress)
+        await source.signOut()
+        // The ask is out, and the page that carries it still stands.
+        let asks = try await asked("tilo.telling unregister")
+        XCTAssertEqual(asks, 1)
+        // Her server answers: the page is put away, long before the engine's patience with an ask is over.
+        try await until("the page is put away", within: .seconds(4)) { await self.pageStands() == false }
+    }
+
+    func testASignInThatBeginsWhileASignOutsLastAskIsStillOutIsNotPutAwayForIt() async throws {
+        try await start(Self.assistant, closedKeys: MemoryClosedKeys())
+        source.engine.askPatience = .milliseconds(500)
+        try await enter("window.plan = {'tilo.telling unregister': ['never']}")
+        try await signedIn()
+        try await wayInIsOver()
+        await source.register(Self.madeUpAddress)
+        await source.signOut()
+        // She signs in again at once. This test fetches nothing, so the page in the view stays as it is.
+        try source.engine.open(route: "/w/ws-1")
+        try await Task.sleep(for: .milliseconds(1100))
+        // The patience with the sign-out's last ask is long over: what stands in the view now was not put away for it.
+        let stands = await pageStands()
+        XCTAssertTrue(stands, "the page of the new sign-in was put away for the last ask of the sign-out before it")
+        if case .arriving = source.engine.state {} else { XCTFail("the engine is not on its way in") }
     }
 }
 #endif

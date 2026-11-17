@@ -159,4 +159,12 @@ extension TiloEngine {
     public func unregisterAddress() async throws {
         try await ask(.telling, "unregister", of: "addresses")
     }
+
+    /// Put the page away, and have the person's server forget this device's address on the way
+    /// out. Nobody waits for its answer: the engine stands away at once (`leave(asking:)`).
+    public func leaveForgettingAddress() {
+        leave(asking: (script: "return globalThis.__tiloLive.person(given, provider, resource, action, argument, hidden)",
+                       arguments: ["given": pass, "provider": PersonProvider.telling.rawValue, "resource": "addresses",
+                                   "action": "unregister", "argument": [String: Any](), "hidden": NSNull()]))
+    }
 }

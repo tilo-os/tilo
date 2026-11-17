@@ -159,6 +159,8 @@ public final class TiloSource: AssistantSource {
     /// server has it. An address that comes before the device is in waits until it is.
     private var address: PushAddress?
     private var addressHanded = false
+    /// The hand-over of the address, made again where it went unanswered.
+    private let handing = Again()
 
     /// - Parameters:
     ///   - store: the name of the store the device's key is kept in, the same at every launch.
@@ -243,8 +245,11 @@ public final class TiloSource: AssistantSource {
     /// device, and a store in use cannot be removed.
     public func signOut() async {
         // Their server pushes to this device no more, and the key that opened its pushes goes:
-        // whoever signs in here next is handed nothing of this person's.
-        if person != nil { await unregister() }
+        // whoever signs in here next is handed nothing of this person's. Their server is asked
+        // to forget the address as the page is put away, below: signing out waits for no answer.
+        let forgets = person != nil && closedKeys != nil
+        address = nil
+        handing.settle()
         forgetClosedKey()
         defaults.removeObject(forKey: TiloSource.routeKey)
         defaults.removeObject(forKey: TiloSource.personKey)
@@ -287,7 +292,7 @@ public final class TiloSource: AssistantSource {
         automationList.set([])
         supervisionNow.set(Supervision())
         choices = []
-        engine.leave()
+        if forgets { engine.leaveForgettingAddress() } else { engine.leave() }
         tell()
     }
 
@@ -1082,6 +1087,7 @@ public final class TiloSource: AssistantSource {
     public func unregister() async {
         address = nil
         addressHanded = false
+        handing.settle()
         guard closedKeys != nil else { return }
         try? await engine.unregisterAddress()
     }
@@ -1105,10 +1111,20 @@ public final class TiloSource: AssistantSource {
             try await engine.registerAddress(token: address.token, service: address.service.rawValue, app: address.app,
                                              p256dh: handed.p256dh, auth: handed.auth)
             addressHanded = true
+            handing.settle()
             // The pieces already told now carry the names a push gives them.
             await look()
+        } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+            // A server that takes no address is asked again when the device is in anew.
+            handing.settle()
+        } catch TiloEngine.Problem.notOpen {
+            // The page is on its way in again: the address is handed over when it is in.
+            handing.settle()
         } catch {
-            // Asked again when the device is in anew.
+            // Not answered, or their server failed at it this time. Until it has the address it
+            // pushes nothing to this app while it is closed: the hand-over is made again by
+            // itself, after a pause that grows.
+            handing.later(first: firstPause) { [weak self] in await self?.handAddress() }
         }
     }
 
