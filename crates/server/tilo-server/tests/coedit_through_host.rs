@@ -389,12 +389,16 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     .await
     .expect("connect");
     let session = ServerCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), session.recv())
-            .await
-            .expect("Ready timeout"),
-        Some(Inbound::Ready { .. })
-    ));
+    // A held workspace sends its own state before it is ready.
+    tilo_test_env::within("Ready timeout", async {
+        loop {
+            match session.recv().await.expect("the session stays open") {
+                Inbound::Ready { .. } => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(session.silent_for() >= Duration::from_secs(1));

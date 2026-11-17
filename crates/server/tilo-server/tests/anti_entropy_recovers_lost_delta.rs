@@ -223,10 +223,11 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     );
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("recover-me"));
-    assert_eq!(
-        doc_b.get_heads(),
-        doc_a.get_heads(),
-        "anti-entropy reconciles B to convergence despite the drained-and-lost delta"
+    // The server's materialized document also carries the workspace's own
+    // state, so B now holds A's change and more: it holds every change A has.
+    assert!(
+        doc_b.get_changes(&doc_a.get_heads()).is_empty(),
+        "anti-entropy gives B every change A holds despite the drained-and-lost delta"
     );
 
     drop(a_client);
