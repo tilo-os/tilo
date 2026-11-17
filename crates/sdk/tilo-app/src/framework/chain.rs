@@ -168,6 +168,12 @@ pub trait Chained: Resource {
         Ok(())
     }
 
+    /// Whether the chain exists only beside the window's own record, never
+    /// beside the app's record of the workspace: the parts of an app that
+    /// keeps a record per member (Mail) are that person's, so a window that
+    /// does not show their record holds no chain at all.
+    const BESIDE_RECORD: bool = false;
+
     /// Whether a window holds every part of the chain rather than its head
     /// and what a reader scrolled back to: for a chain whose views list all
     /// of it (a tracker's issues), where a part is a bound on what one
@@ -2616,7 +2622,11 @@ impl<P: Chained> Chain<P> {
             app_id,
             app_title: app_id,
         };
-        let chain = record.map_or_else(P::chain, P::chain_beside);
+        let chain = match record {
+            Some(record) => P::chain_beside(record),
+            None if P::BESIDE_RECORD => return None,
+            None => P::chain(),
+        };
         let state = Rc::new(ChainState::<P>::open_at(workspace, Rc::new(base), chain)?);
         let dispatch = detached_dispatch(app_id, &state, me);
         Some(Self { state, dispatch })
@@ -2794,7 +2804,11 @@ impl Chains {
     ) -> Option<Rc<ChainState<P>>> {
         // Beside the record the window shows: the app's own record of the
         // workspace, or the one per member where the app keeps those.
-        let chain = record.map_or_else(P::chain, P::chain_beside);
+        let chain = match record {
+            Some(record) => P::chain_beside(record),
+            None if P::BESIDE_RECORD => return None,
+            None => P::chain(),
+        };
         if let Some(held) = self.opened::<P>(&chain) {
             return Some(held);
         }
