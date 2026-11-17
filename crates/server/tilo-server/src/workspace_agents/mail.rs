@@ -208,7 +208,7 @@ impl TurnProvider for TurnMail {
 /// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
 /// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
 /// for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
+pub(super) fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
     (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 

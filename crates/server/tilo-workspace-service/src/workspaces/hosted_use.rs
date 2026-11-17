@@ -89,6 +89,11 @@ mod web_call;
 /// word on which agent of theirs may use which account ([`Workspaces::mail_for_turn`]).
 pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
 
+/// A person's calendars as such a turn reads them ([`Workspaces::calendars_for_turn`]): the
+/// resource they are asked under, and the read whose answer holds what other people wrote.
+#[cfg(feature = "agents")]
+pub use super::person_settings::calendars::{ENTRIES as CALENDAR_ENTRIES, RESOURCE as CALENDARS};
+
 /// Where a person's asks are kept, under their own root.
 const ASKS_DIR: &str = "vault-asks";
 /// The most asks that wait for one person at a time: an agent that goes on

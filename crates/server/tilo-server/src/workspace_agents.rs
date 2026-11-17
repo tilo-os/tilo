@@ -73,6 +73,7 @@ use turn_provider::TurnProvider;
 mod across;
 mod answers;
 mod asks;
+mod calendars;
 mod coding;
 mod going;
 mod issue_work;
@@ -1082,7 +1083,14 @@ impl HostAgents {
         scope.provider = scope.provider.answering(own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(uses).answering(mail);
+        // What its person's calendars hold, to read, under the bound their mail is under.
+        let calendars =
+            calendars::TurnCalendars::for_turn(&self.workspaces, turn, &scope.reply(turn)).await;
+        scope.provider = scope
+            .provider
+            .answering(uses)
+            .answering(mail)
+            .answering(calendars);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));

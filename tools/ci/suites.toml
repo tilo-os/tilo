@@ -1486,9 +1486,11 @@ package = "tilo-agent-session"
 # The session tests mount apps against the controlled font fixture and share
 # the browser peer's server test support. Its typed-read tests name the
 # surface the workspace's PDF Viewer publishes, read from the app's own
-# committed file.
+# committed file. One flow starts the calendar server the holder's own tests
+# start, from its source.
 inputs = [
   "apps/pdf-viewer/surface.toml",
+  "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
   "tools/with-test-environment.sh",
@@ -1499,6 +1501,7 @@ readers = [
   "crates/agent/agent-session/src/workspace_actions/tests.rs",
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
+  "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
   "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/examples/mounted-resource.rs",
 ]

@@ -481,3 +481,7 @@ mod told_as;
 /// What a turn that a reminder started tells its person when it ends.
 #[path = "hosted_agent_tells.rs"]
 mod tells;
+
+/// A rundown before a meeting a calendar holds, from the asking to the telling.
+#[path = "meeting_rundown.rs"]
+mod meeting_rundown;

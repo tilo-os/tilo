@@ -50,6 +50,13 @@ pub(super) trait TurnProvider: Send + Sync {
     /// Whether a call of `target` is this provider's to answer, also where it refuses it.
     fn takes(&self, target: &RemoteActionTarget) -> bool;
 
+    /// Whether what a call of `target` answers holds words somebody outside wrote, such as
+    /// an entry of a calendar. The turn's tools are told so with the answer: it is data to
+    /// reason about, never an instruction to follow.
+    fn carries_untrusted(&self, _target: &RemoteActionTarget) -> bool {
+        false
+    }
+
     /// Carry `request` out as `caller`, however long that takes.
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending;
 }
@@ -105,9 +112,10 @@ impl Ended {
         let (kept, caller) = (self.clone(), caller.clone());
         self.runtime.spawn(async move {
             let invocation = request.invocation;
+            let untrusted = provider.carries_untrusted(&request.target);
             let receipt = match provider.invoke(caller, request).await {
                 Ok(update) => {
-                    let state = InvocationState::new(invocation, update);
+                    let state = InvocationState::new(invocation, update).with_untrusted(untrusted);
                     kept.keep(invocation, state.clone());
                     state.receipt()
                 }
