@@ -1,11 +1,8 @@
-//! The REPL at the session's MCP server, on the headless session with the tilolang shell as the
-//! whole screen: `tilolang repl --api` asks to act as the person, the person admits it, and the
-//! lines it sends are the agent's own calls (`tilo_ls`, `tilo`), run as the person.
-//!
-//! The person admits it either on the sheet the server's question opens, pressed as they press it,
-//! or ahead of time, by naming the program when they start the session (`--admit-repl`). A note
-//! placed on the layout by a `tilo` program stands on the shell's screen, read from what the
-//! shell lays out for assistive technology, and is the person's step, which `undo` takes back.
+//! The person's REPL at the session's API (`tilolang repl --session`), on the headless session with
+//! the tilolang shell as the whole screen: the API lists what the session publishes and runs the
+//! REPL's programs as the person. A note placed on the layout by a program stands on the shell's
+//! screen, read from what the shell lays out for assistive technology, and is the person's step,
+//! which `undo` takes back.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -20,39 +17,29 @@
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_service::{Questions, Started};
-use tilo_session::{AppSocket, Options, Session};
-use tilo_sheets::portal::PortalEffect;
-use tilolang_tilo::resource_service::ResourceService;
+use tilo_service::Started;
+use tilo_session::{Options, Session};
 
 use crate::common::{
-    CANVAS, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen, place_the_inbox,
-    placed, placed_resources, press_sheet, private_home, repl_session, seeded_session, show_preset,
-    until,
+    Api, CANVAS, MAIL, NOTE_TITLE, NOTES, PERSON, SUBJECT, api_options, control, on_screen,
+    place_the_inbox, placed, placed_resources, private_home, seeded_session, show_preset, until,
 };
 
-/// A notebook kept by the notes app, published as the session publishes a workspace's records,
-/// and one note in it titled [`NOTE_TITLE`], made through the app's own actions.
-fn notebook() -> (ResourceService, String) {
-    let (service, notes) = crate::common::notebook(&[NOTE_TITLE]);
-    (service, notes.into_iter().next().expect("a note"))
-}
-
-/// The headless session with the shell as the screen, the notebook published, its MCP server at
-/// `root` , admitting the programs `admit_repl` to act as the person.
-fn session(
-    root: &std::path::Path,
-    questions: &Questions,
-    admit_repl: Vec<std::path::PathBuf>,
-) -> (Session, String) {
-    let (notebook, note) = notebook();
-    let session = repl_session(root, questions, admit_repl, notebook);
-    (session, note)
+/// The headless session with the shell as the screen and a notebook kept by the notes app
+/// published, one note in it titled [`NOTE_TITLE`], made through the app's own actions; its sockets
+/// at `root` ([`api_options`]). Answers the session and the note.
+fn session(root: &std::path::Path) -> (Session, String) {
+    let (notebook, notes) = crate::common::notebook(&[NOTE_TITLE]);
+    let session = crate::common::headless(Options {
+        services: vec![Box::new(notebook)],
+        ..api_options(root)
+    });
+    (session, notes.into_iter().next().expect("a note"))
 }
 
 /// An action read as a value, rather than called: what it says of how it is called.
-fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Repl) {
-    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
+fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Api) {
+    let (named, failed) = repl.run(session, "session.overview");
     assert!(failed, "{named}");
     assert!(
         named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
@@ -60,20 +47,13 @@ fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Rep
     );
 }
 
-/// Lists the apps, places the note through a `tilo` program, sees it on the shell's screen as the
+/// Lists the apps, places the note through a program, sees it on the shell's screen as the
 /// person's step, and takes it back with `undo` .
-fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &str) {
-    let tools = repl.opened(session);
+fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Api, note: &str) {
+    // The apps, the session's own resources among them.
+    let apps = repl.ls(session, "");
     assert!(
-        tools.iter().any(|tool| tool == "tilo"),
-        "the server runs programs: {tools:?}"
-    );
-
-    // `ls` : the apps, the session's own resources among them.
-    let (apps, failed) = repl.call(session, "tilo_ls", &json!({}));
-    assert!(!failed, "{apps}");
-    assert!(
-        apps.lines().any(|line| line.starts_with("session")),
+        Api::rows(&apps).any(|row| row["name"] == "session"),
         "the session's own resources are listed: {apps}"
     );
     // The layout is found by its resource id, never by the label the person reads.
@@ -82,66 +62,35 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         .next()
         .expect("a resource key");
 
-    // `ls` lists each action as a program calls it, what it may go without included. The chrome by
-    // its key: a window's control reads under the window's name, and the shell's window is another
+    // Each action is listed with what it takes, and what it may go without. The chrome by its key:
+    // a window's control reads under the window's name, and the shell's window is another
     // `Desktop` .
-    let (chrome, failed) = repl.call(
-        session,
-        "tilo_ls",
-        &json!({"path": "session/desktop:chrome"}),
-    );
-    assert!(!failed, "{chrome}");
-    // The overview's name is the action's own, so the listing does not say it twice: the line is
-    // the call, with the parameter it may go without, and no label after it.
-    let overview = chrome
-        .lines()
-        .find(|line| line.starts_with("session.overview("))
-        .unwrap_or_else(|| panic!("the overview's action, as it is typed: {chrome}"));
-    assert_eq!(
-        overview, "session.overview(open: Option<Bool> = .none)",
-        "as it is typed: {chrome}"
-    );
-    let (placing, failed) = repl.call(
-        session,
-        "tilo_ls",
-        &json!({"path": format!("session/{layout_key}")}),
-    );
-    assert!(!failed, "{placing}");
-    let place = placing
-        .lines()
-        .find(|line| line.starts_with("session.place("))
-        .unwrap_or_else(|| panic!("`place`, as it is typed: {placing}"));
+    let chrome = repl.ls(session, "session/desktop:chrome");
+    let overview = Api::action(&chrome, "overview")
+        .unwrap_or_else(|| panic!("the overview's action: {chrome}"));
+    let open = Api::param(&overview, "open");
     assert!(
-        place.contains("resource: host.Resource") && place.contains("x: Option<Int> = .none"),
+        open["ty"] == "boolean" && open["required"] == false,
+        "it may go without whether to open: {overview}"
+    );
+    let placing = repl.ls(session, &format!("session/{layout_key}"));
+    let place = Api::action(&placing, "place").unwrap_or_else(|| panic!("`place`: {placing}"));
+    let resource = Api::param(&place, "resource");
+    assert!(
+        resource["ty"] == "resource"
+            && resource["required"] == true
+            && Api::param(&place, "x")["required"] == false,
         "it takes the resource as a value, and may go without the rest: {place}"
     );
-    // A resource that is a value goes by a reference, as an answer's do. The notebook by its key:
-    // the launchpad's Notes card is another resource of that name.
-    let book = note
-        .split('/')
-        .next()
-        .and_then(|book| book.rsplit(':').next())
-        .unwrap();
-    let (notebook, failed) = repl.call(
-        session,
-        "tilo_ls",
-        &json!({"path": format!("session/{book}")}),
-    );
-    assert!(!failed, "{notebook}");
-    // The note's own line: a reference, then the name it goes by. The listing's first line is the
-    // path as it resolves, which names the notebook by the title it shares with its note.
-    let reference = notebook
+    // A resource that is a value goes by a reference, as a program's answers name it.
+    let (found, failed) = repl.run(session, "find(notes.Note)");
+    assert!(!failed, "{found}");
+    let reference = found
         .lines()
-        .find_map(|line| {
-            let mut words = line.split_whitespace();
-            let reference = words.next()?;
-            (words.next() == Some(NOTE_TITLE)
-                && reference.strip_prefix('n').is_some_and(|number| {
-                    !number.is_empty() && number.chars().all(|digit| digit.is_ascii_digit())
-                }))
-            .then(|| reference.to_owned())
-        })
-        .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"));
+        .find(|line| line.contains(&format!("\"{NOTE_TITLE}\"")))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the note goes by a reference: {found}"))
+        .to_owned();
     reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
@@ -151,10 +100,9 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     });
 
     // A `tilo` program places the note on the layout, as the person.
-    let (placed_it, failed) = repl.call(
+    let (placed_it, failed) = repl.run(
         session,
-        "tilo",
-        &json!({"program": format!("session.place(resource: {reference}, x: 80, y: 60)")}),
+        &format!("session.place(resource: {reference}, x: 80, y: 60)"),
     );
     assert!(!failed, "the program ran: {placed_it}");
     assert!(placed_it.contains("step 1"), "{placed_it}");
@@ -173,61 +121,31 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `undo` takes the step back.
-    let (undone, failed) = repl.call(session, "tilo", &json!({"program": "undo"}));
+    let (undone, failed) = repl.run(session, "undo");
     assert!(!failed, "{undone}");
     until(session, "the note off the canvas", |session| {
         placed(session, note) == 0 && on_screen(session, NOTE_TITLE).is_none()
     });
 }
 
-/// The person admits the REPL on the sheet the server's question opens.
+/// The person's REPL at the session's API works as them, and nobody is asked about it.
 #[test]
-fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
+fn the_persons_repl_at_the_api_works_as_them() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let (mut session, note) = session(root.path(), &questions, Vec::new());
+    let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    until(&mut session, "the question", |_| {
-        questions.pending().len() == 1
-    });
-    let shown = session
-        .portal()
-        .and_then(tilo_sheets::portal::PortalState::dialog)
-        .expect("the question stands on the portal's sheet");
-    // The shell keeps no name for a workspace nobody named: the question says the word for one.
-    assert_eq!(shown.title, "Act as you in “Workspace”", "what it asks");
+    let mut repl = Api::open(&mut session, root.path());
+    the_repl_works_as_the_person(&mut session, &mut repl, &note);
     assert!(
-        shown.heading.starts_with("tilolang repl ("),
-        "who asks: {}",
-        shown.heading
+        session
+            .portal()
+            .and_then(tilo_sheets::portal::PortalState::dialog)
+            .is_none(),
+        "nobody was asked"
     );
-    press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 0}));
-    press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
-
-    the_repl_works_as_the_person(&mut session, &mut repl, &note);
-}
-
-/// The person named the REPL when they started the session: it is admitted without a question.
-#[test]
-fn a_repl_named_when_the_session_starts_is_admitted_without_asking() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let questions = Questions::new();
-    // The REPL here is this test's own program: what the kernel names the client by.
-    let program = std::env::current_exe().expect("this test's program");
-    let (mut session, note) = session(root.path(), &questions, vec![program]);
-    until(&mut session, "the bar's controls", |session| {
-        on_screen(session, "Notifications").is_some()
-    });
-
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    the_repl_works_as_the_person(&mut session, &mut repl, &note);
-    assert!(questions.pending().is_empty(), "nobody was asked");
 }
 
 /// The shell package the session runs is one a program names, whether or not the app store holds
@@ -247,26 +165,13 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("TILO_APPS_DATA_DIR", store.path());
     // A session that runs no service of a seeded app's: an image's own, whose apps a person opens
-    // when they want one, so nothing but the shell itself publishes a package to the server.
+    // when they want one, so nothing but the shell itself publishes a package to the API.
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
-    let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
-        services: Vec::new(),
-        questions: Some(questions),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
-    });
+    let mut session = crate::common::headless(api_options(root.path()));
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     let (answer, failed) = repl.run(
         &mut session,
@@ -281,180 +186,132 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
     });
 }
 
-/// Placing what a text finds, twice, through the server: each place is the person's step, and the
-/// session keeps answering, the connection that asked and a new one alike.
+/// Placing what a text finds, twice, through the API: each place is the person's step, and the
+/// session keeps answering, the program session that asked and a new one alike.
 #[test]
 fn placing_what_text_finds_twice_keeps_the_session_answering() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
-    let (mut session, note) = session(root.path(), &questions, vec![program]);
+    let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     for placed_before in 0..2 {
-        let (answer, failed) = repl.call(
-            &mut session,
-            "tilo",
-            &json!({"program": format!(
+        let (answer, failed) = repl.run(&mut session, &format!(
                 "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some({}), y: .some(60))",
                 80 + placed_before * 400
-            )}),
-        );
+            ));
         assert!(!failed, "the program ran: {answer}");
         until(&mut session, "the note placed once more", |session| {
             placed(session, &note) == usize::try_from(placed_before).expect("a count") + 1
         });
     }
 
-    // The connection that asked is still answered.
-    let (apps, failed) = repl.call(&mut session, "tilo_ls", &json!({}));
-    assert!(!failed, "{apps}");
+    // The program session that asked is still answered.
+    let (answer, failed) = repl.run(&mut session, "catalogue");
+    assert!(!failed, "{answer}");
     // And so is a new one.
-    let mut second = Repl::connect(&root.path().join("agent.sock"));
-    let tools = second.opened(&mut session);
-    assert!(tools.iter().any(|tool| tool == "tilo"), "{tools:?}");
+    let (answer, failed) = Api::open(&mut session, root.path()).run(&mut session, "catalogue");
+    assert!(!failed, "{answer}");
 }
 
-/// What the session's services publish (the seeded apps' records) is listed through the server past
+/// What the session's services publish (the seeded apps' records) is listed through the API past
 /// the first page of the session's rows, page by page as its cursor reads on, and a note is found
 /// by its title.
 #[test]
 fn a_record_the_sessions_services_publish_is_found_through_the_server() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
         services: apps,
-        questions: Some(questions),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let repl = Api::open(&mut session, root.path());
 
-    let listed = every_page(&mut repl, &mut session);
+    let listed = every_page(&repl, &mut session);
     // The session's records are listed, each row naming its type the way a program types it
     // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
-    // program writes; an app's own row names the app itself (`Chat tl.so.tilo.lang.chat`), an id
+    // program writes; an app's own row names the app itself (`tl.so.tilo.lang.chat`), an id
     // whose last part is no capitalised type.
     assert!(
-        !listed.lines().any(|line| {
-            line.split("  ").map(str::trim).any(|column| {
-                column
-                    .strip_prefix("tl.")
-                    .and_then(|rest| rest.rsplit_once('.'))
-                    .is_some_and(|(_, ty)| ty.starts_with(|c: char| c.is_ascii_uppercase()))
-            })
+        !listed.iter().any(|row| {
+            row["kind"]
+                .as_str()
+                .and_then(|kind| kind.strip_prefix("tl."))
+                .and_then(|rest| rest.rsplit_once('.'))
+                .is_some_and(|(_, ty)| ty.starts_with(|c: char| c.is_ascii_uppercase()))
         }),
-        "no record is named by its published kind: {listed}"
+        "no record is named by its published kind: {listed:?}"
     );
     // The app's own record, at the session's top level, named by its type as a program types it.
-    let tasks = name_of(&row_of(&listed, "tasks.Tasks"));
-    // A record of the app's, a level down: listed the same way, and its name walks back to it.
-    let (inside, failed) = repl.call(
-        &mut session,
-        "tilo_ls",
-        &json!({"path": format!("session/{tasks}")}),
+    let tasks = path_of(&listed, "tasks.Tasks");
+    // A record of the app's, a level down: listed the same way, and its path walks back to it.
+    let inside = repl.ls(&mut session, &tasks);
+    let task = path_of(
+        &Api::rows(&inside).cloned().collect::<Vec<_>>(),
+        "tasks.Task",
     );
-    assert!(!failed, "tasks at session/{tasks}: {inside}");
-    let task = name_of(&row_of(&inside, "tasks.Task"));
-    let task_at_path = format!("session/{tasks}/{task}");
-    let (task_at, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": task_at_path}));
-    assert!(!failed, "tasks.Task at {task_at_path}: {task_at}");
-    assert!(
-        task_at
-            .lines()
-            .next()
-            .is_some_and(|header| header.ends_with("(tasks.Task)")),
-        "the row's own name reads back as its type: {task_at}"
+    let task_at = repl.ls(&mut session, &task);
+    assert_eq!(
+        task_at["kind"], "tasks.Task",
+        "the row's own path reads back as its type: {task_at}"
     );
     // The type name itself reads the records of that kind: a note, a channel and a mailbox,
-    // each under its app's record, resolve by what the listing prints.
+    // each under its app's record, resolve by what the listing names.
     for (form, under) in [
         ("notes.Note", "notes.Notebook"),
         ("chat.TextChannel", "chat.Conversations"),
         ("mail.Mailbox", "mail.Mail"),
     ] {
-        let root = name_of(&row_of(&listed, under));
-        let (record, failed) = repl.call(
-            &mut session,
-            "tilo_ls",
-            &json!({"path": format!("session/{root}/{form}")}),
-        );
+        let root = path_of(&listed, under);
+        let record = repl.listing(&mut session, &format!("{root}/{form}"), None);
         assert!(
-            !failed || !record.contains(&format!("no {form} in")),
-            "a type name read off a row resolves in a path: {record}"
+            record
+                .as_ref()
+                .err()
+                .is_none_or(|why| !why.contains(&format!("no {form} in"))),
+            "a type name read off a row resolves in a path: {record:?}"
         );
     }
 
-    let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": NOTE_TITLE}));
-    assert!(!failed, "{found}");
+    let found = repl.find(&mut session, NOTE_TITLE);
     assert!(
-        found.lines().any(|line| line.contains(NOTE_TITLE)),
-        "the note is found by its title: {found}"
+        found.iter().any(|hit| hit["label"] == NOTE_TITLE),
+        "the note is found by its title: {found:?}"
     );
 }
 
-/// Every page of the session's listing, as its cursors read on: each page a line, its cursor the
-/// next page's.
-fn every_page(repl: &mut Repl, session: &mut Session) -> String {
-    let mut listed = String::new();
-    let mut cursor = String::new();
+/// Every row of the session's listing, page by page as its cursors read on.
+fn every_page(repl: &Api, session: &mut Session) -> Vec<Value> {
+    let mut listed = Vec::new();
+    let mut cursor = None;
     for _ in 0..20 {
-        let (page, failed) = repl.call(
-            session,
-            "tilo_ls",
-            &json!({"path": "session", "cursor": cursor}),
-        );
-        assert!(!failed, "{page}");
-        listed.push_str(&page);
-        listed.push('\n');
-        let Some(next) = page
-            .rsplit_once("cursor \"")
-            .and_then(|(_, rest)| rest.split_once('"'))
-            .map(|(next, _)| next.to_owned())
-        else {
+        let page = repl
+            .listing(session, "session", cursor.as_deref())
+            .unwrap_or_else(|why| panic!("the session lists: {why}"));
+        listed.extend(Api::rows(&page).cloned());
+        let Some(next) = page["next_cursor"].as_str() else {
             break;
         };
-        cursor = next;
+        cursor = Some(next.to_owned());
     }
     listed
 }
 
-/// The listing's row whose type column is `form`.
-fn row_of(listed: &str, form: &str) -> String {
-    listed
-        .lines()
-        .find(|line| line.split("  ").any(|column| column.trim() == form))
-        .unwrap_or_else(|| panic!("the listing names {form}: {listed}"))
+/// The path of the row of `rows` whose type is `form`: what a program reads the record by.
+fn path_of(rows: &[Value], form: &str) -> String {
+    rows.iter()
+        .find(|row| row["kind"] == form)
+        .and_then(|row| row["path"].as_str())
+        .unwrap_or_else(|| panic!("the listing names {form}: {rows:?}"))
         .to_owned()
-}
-
-/// A row's name column: the reference a program passes the record by. A row's columns are two
-/// spaces apart, the reference first, then the name, then the type.
-fn name_of(row: &str) -> String {
-    row.split("  ")
-        .map(str::trim)
-        .nth(1)
-        .map(|name| name.trim_end_matches('/').to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| panic!("the row names its record: {row}"))
 }
 
 /// The resources `session` publishes, at any depth, as its action model holds them.
@@ -528,12 +385,10 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
 
     // Search matches the reader's words: the German plural finds the notebook on the shell, and the
     // English one finds nothing, because the shell's words are German.
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
-    let (answer, failed) = repl.call(
+    let mut repl = Api::open(&mut session, root.path());
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"notizbücher\", view: .none, x: .some(80), y: .some(60))"}),
+        "session.place_found(text: \"notizbücher\", view: .none, x: .some(80), y: .some(60))",
     );
     assert!(!failed, "the program ran: {answer}");
     until(
@@ -549,10 +404,9 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     // The English word finds nothing, because the shell's words are German: it is a sentence to the
     // agent rather than a found resource, so it places no second notebook — it asks (shell.md §8.1,
     // "Asking from the canvas").
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"notebooks\", view: .none, x: .some(80), y: .some(60))"}),
+        "session.place_found(text: \"notebooks\", view: .none, x: .some(80), y: .some(60))",
     );
     assert!(!failed, "the program ran: {answer}");
     assert_eq!(
@@ -586,16 +440,13 @@ fn noted(session: &Session) -> usize {
 fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
-    let (mut session, note) = session(root.path(), &questions, vec![program]);
+    let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     let mut run = |session: &mut Session, program: &str| {
-        let (answer, failed) = repl.call(session, "tilo", &json!({"program": program}));
+        let (answer, failed) = repl.run(session, program);
         (answer, failed)
     };
 
@@ -655,40 +506,29 @@ fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
     });
 }
 
-/// What the seeded apps keep, placed through the server, is drawn on the canvas by its own app's
+/// What the seeded apps keep, placed through the API, is drawn on the canvas by its own app's
 /// view, its content and not its title alone: a note found by its title shows its text. And a text
 /// finds the resource it names even where many actions name it too: "Inbox" places the inbox.
 #[test]
 fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
         services: apps,
-        questions: Some(questions),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": format!(
+        &format!(
             "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some(80), y: .some(60))"
-        )}),
+        ),
     );
     assert!(!failed, "the program ran: {answer}");
     until(&mut session, "the note's text on the canvas", |session| {
@@ -697,10 +537,9 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
 
     // A text naming a resource that many actions name too finds the resource: "Inbox" is the
     // mailbox, under every conversation's "Move to inbox".
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(640), y: .some(60))"}),
+        "session.place_found(text: \"Inbox\", view: .none, x: .some(640), y: .some(60))",
     );
     assert!(!failed, "the program ran: {answer}");
     let mailbox = |session: &Session| {
@@ -737,31 +576,20 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
 fn my_mails_on_the_canvas_places_mails_root() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
         services: apps,
-        questions: Some(questions),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))"}),
+        "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))",
     );
     assert!(!failed, "the program ran: {answer}");
     let placed = |session: &Session| {
@@ -826,7 +654,7 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
     pixels.iter().filter(|pixel| far(**pixel, *ground)).count()
 }
 
-/// The seeded inbox placed through the server, once, and what the session shows and does with it
+/// The seeded inbox placed through the API, once, and what the session shows and does with it
 /// from then on:
 ///
 /// - it stands on the canvas as the mail app's own view of it, and mail's package is loaded because
@@ -868,7 +696,7 @@ fn the_seeded_inbox_placed_through_the_server_fills_in_settles_is_drawn_and_rere
     });
 }
 
-/// The seeded inbox placed through the server stands on the canvas as the mail app's own view of it:
+/// The seeded inbox placed through the API stands on the canvas as the mail app's own view of it:
 /// a seeded conversation's subject is laid out in it, and drawn where it is laid out in the
 /// snapshot `tilo-control` takes. (That mail's package is loaded because the place shows it, and
 /// was not before, is read where the inbox is placed.)
@@ -1138,11 +966,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let apps = crate::common::seeded_apps();
-    let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
         // Every task's reading never comes: the window of the one placed has no record to draw.
         services: apps
             .into_iter()
@@ -1154,23 +978,17 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
                 }) as Box<dyn tilo_service::Service>
             })
             .collect(),
-        questions: Some(Questions::new()),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))"}),
+        "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))",
     );
     assert!(!failed, "the task is placed: {answer}");
     // The place stands with nothing to draw, and the shell refuses nothing: the reading it is
@@ -1185,10 +1003,9 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     );
 
     // The rest of the shell works: a note placed after it shows on the canvas.
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"Groceries\", view: .none, x: .some(600), y: .some(60))"}),
+        "session.place_found(text: \"Groceries\", view: .none, x: .some(600), y: .some(60))",
     );
     assert!(!failed, "the note is placed: {answer}");
     until(&mut session, "the note's title on the canvas", |session| {
@@ -1199,22 +1016,14 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     then_the_overview_opens_and_closes(&mut session, &mut repl);
 }
 
-/// The overview opens over the shell and closes again, through the server as an agent asks it.
-fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
-    let (answer, failed) = repl.call(
-        session,
-        "tilo",
-        &json!({"program": "session.overview(open: .some(true))"}),
-    );
+/// The overview opens over the shell and closes again, through the API as an agent asks it.
+fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Api) {
+    let (answer, failed) = repl.run(session, "session.overview(open: .some(true))");
     assert!(!failed, "the overview opens: {answer}");
     until(session, "the shell's overview", |session| {
         on_screen(session, "Overview").is_some()
     });
-    let (answer, failed) = repl.call(
-        session,
-        "tilo",
-        &json!({"program": "session.overview(open: .some(false))"}),
-    );
+    let (answer, failed) = repl.run(session, "session.overview(open: .some(false))");
     assert!(!failed, "the overview closes: {answer}");
     until(session, "the overview closed", |session| {
         on_screen(session, "Overview").is_none()
@@ -1229,27 +1038,16 @@ fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
 fn the_repl_finds_what_place_found_places() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let questions = Questions::new();
-    let program = std::env::current_exe().expect("this test's program");
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        state: Some(crate::common::device_state()),
-        shell: true,
-        collab: false,
         services: apps,
-        questions: Some(questions),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     // Each text, and a word the resource it names must carry (its kind, or the app it belongs to).
     for (text, wanted) in [
@@ -1260,12 +1058,11 @@ fn the_repl_finds_what_place_found_places() {
     ] {
         // What the canvas places for `text`: the one search's first result,
         // typed on the canvas as a person would.
-        let (answer, failed) = repl.call(
+        let (answer, failed) = repl.run(
             &mut session,
-            "tilo",
-            &json!({"program": format!(
+            &format!(
                 "session.place_found(text: {text:?}, view: .none, x: .some(80), y: .some(60))"
-            )}),
+            ),
         );
         assert!(!failed, "{text:?} is placed: {answer}");
         until(&mut session, &format!("{text:?} placed"), |session| {
@@ -1283,44 +1080,31 @@ fn the_repl_finds_what_place_found_places() {
         // row of the place the shell just made leads where the search puts it, and a row of the kind
         // the search sought stands among them. `find` walks the containers it can read, so a record
         // placed out of a notebook is reached through its notebook.
-        let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
-        assert!(!failed, "{text:?} answers: {found}");
-        let rows: Vec<&str> = found
-            .lines()
-            .filter(|line| !line.starts_with('…'))
-            .collect();
-        let first = rows
+        let found = repl.find(&mut session, text);
+        let first = found
             .first()
-            .unwrap_or_else(|| panic!("{text:?} finds nothing: {found}"));
-        let path = first
-            .split("  ")
-            .next()
-            .unwrap_or_default()
-            .split('#')
-            .next()
-            .unwrap_or_default();
+            .unwrap_or_else(|| panic!("{text:?} finds nothing: {found:?}"));
+        let path = first["path"].as_str().unwrap_or_default();
         let (parent, row) = path.rsplit_once('/').unwrap_or_default();
         assert!(
             !parent.is_empty() && !row.is_empty(),
             "{text:?}: find leads with a row of a directory: {first}"
         );
-        let (listed, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": parent}));
-        assert!(!failed, "{text:?}: {parent} lists: {listed}");
+        let listed = repl.ls(&mut session, parent);
         assert!(
-            listed.contains(row),
+            Api::rows(&listed).any(|listed| listed["path"] == path || listed["name"] == row),
             "{text:?}: find leads with {first}, and {parent} lists no row {row}: {listed}"
         );
         assert!(
-            rows.iter().any(|row| row
-                .split("  ")
-                .nth(1)
-                .is_some_and(|label| label.contains(wanted))),
-            "{text:?}: find names a row of a {wanted}, {shown:?}: {found}"
+            found.iter().any(|hit| hit["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.contains(wanted))),
+            "{text:?}: find names a row of a {wanted}, {shown:?}: {found:?}"
         );
 
         // Each `place_found` is a step of the person's: take it back, so the next text places on
         // its own.
-        let (undone, failed) = repl.call(&mut session, "tilo", &json!({"program": "undo"}));
+        let (undone, failed) = repl.run(&mut session, "undo");
         assert!(!failed, "{undone}");
         until(&mut session, "the canvas cleared", |session| {
             placed_resources(session).is_empty()
@@ -1336,23 +1120,14 @@ fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let root = private_home();
-    let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        shell: true,
-        collab: false,
-        questions: Some(Questions::new()),
-        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
-        ..Options::default()
+        ..api_options(root.path())
     });
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
-    let (listed, failed) = repl.call(&mut session, "tilo", &json!({"program": "catalogue"}));
+    let mut repl = Api::open(&mut session, root.path());
+    let (listed, failed) = repl.run(&mut session, "catalogue");
     assert!(!failed, "{listed}");
     let catalogue: Value = serde_json::from_str(&listed).expect("the catalogue is JSON");
     let notes = catalogue["notes"]["signatures"]

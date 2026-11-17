@@ -1,12 +1,12 @@
-//! A `find` over the MCP server never holds the desktop's loop.
+//! A search over Tilo's API never holds the desktop's loop.
 //!
-//! An outside client (an MCP `tilo_find` call) asks the session to search while its sources are
+//! An outside client (the person's program asking the API's search) asks the session to search while its sources are
 //! slow. The session carries the ask out on the loop's pass, so it must not wait for a source
 //! there: the sources work on their own threads, the frames keep being laid out while the find is
 //! in flight, and the find answers once the source does. A source that never answers is cut off at
 //! the find's own deadline with the rows that came, never at the loop's.
 //!
-//! Every step is the production path: the find is asked over the MCP server, and the frames are
+//! Every step is the production path: the find is asked over the session's API, and the frames are
 //! the session's own passes (`Session::step`). The pass count between the ask and the answer is
 //! what proves the loop never waited: the old code answered the ask with a `recv()` on the
 //! search's channel, so no pass ran until the source was done.
@@ -25,15 +25,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
 use tilo_desktop_search::model::{Hit, Source, Target};
 use tilo_desktop_search::{Held, ResourceKind};
-use tilo_service::Questions;
 use ui::search::system::MAX_PROVIDER_SCORE;
 
-use tilo_session::{AppSocket, Options, SearchOptions, Session};
+use tilo_session::{Options, SearchOptions, Session};
 
-use crate::common::{CANVAS, PERSON, Repl, on_screen, private_home, until};
+use crate::common::{Api, CANVAS, on_screen, private_home, until};
 
 /// The title a slow source answers with, and the needle that asks for it.
 const SLOW_TITLE: &str = "Quarterlyreport log";
@@ -96,20 +94,11 @@ fn slow_hit() -> Hit {
 }
 
 /// A headless session whose search mounts the slow source beside its own, its MCP server at
-/// `root`, this test's program admitted to act as the person, and the canvas in front.
-fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (Session, Repl) {
-    let program = std::env::current_exe().expect("this test's program");
+/// `root` ([`crate::common::api_options`]), the person's API open on it, and the canvas in front.
+fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (Session, Api) {
     let mut session = Session::headless(
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
             services: crate::common::seeded_apps(),
-            questions: Some(Questions::new()),
-            app_socket: AppSocket::At(root.join("app_wire.sock")),
-            mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             search: SearchOptions {
                 extra_sources: vec![Held::new(Slow {
                     started: Arc::clone(started),
@@ -118,7 +107,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
                 })],
                 ..SearchOptions::default()
             },
-            ..Options::default()
+            ..crate::common::api_options(root)
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
@@ -127,12 +116,11 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS).is_some()
     });
-    let mut repl = Repl::connect(&root.join("agent.sock"));
-    repl.opened(&mut session);
-    (session, repl)
+    let api = Api::open(&mut session, root);
+    (session, api)
 }
 
-/// A find asked over the MCP server answers once its source does, and no pass of the loop waits
+/// A find asked over the API answers once its source does, and no pass of the loop waits
 /// for the source: the ask is carried out on the loop's pass, so a pass that waited for the source
 /// would take as long as the source does, and the desktop would freeze as it did in the field. The
 /// old code answered the ask with a blocking `recv()` on the search's channel, so exactly one pass
@@ -148,16 +136,13 @@ fn a_find_answers_while_the_loop_keeps_running() {
         ended: Arc::clone(&ended),
         hits: vec![slow_hit()],
     };
-    let (mut session, mut repl) = session(root.path(), &slow, &started);
+    let (mut session, api) = session(root.path(), &slow, &started);
 
     // The ask goes out on the find's own thread; the test drives the loop, as `Session::run`
     // does. The answer is read after the source has ended, so what is measured is the passes the
     // loop ran while the find was in flight.
     let asked = Instant::now();
-    repl.send(
-        "tools/call",
-        &json!({"name": "tilo_find", "arguments": {"query": NEEDLE}}),
-    );
+    let find = api.send(&format!("search?q={NEEDLE}"), None);
     let mut passes = 0_usize;
     let mut longest = Duration::ZERO;
     let deadline = Instant::now()
@@ -189,15 +174,12 @@ fn a_find_answers_while_the_loop_keeps_running() {
 
     // And the find answers once the source does, and not before it: it is the source's answer the
     // caller hears, so it takes at least as long as the source did.
-    let reply = repl.answer(&mut session);
+    let found = find.answer(&mut session);
     assert!(
         asked.elapsed() >= SLOW_FOR,
         "the find answered only once the source did: it answered in {:?}, and the source takes \
          {SLOW_FOR:?}",
         asked.elapsed()
     );
-    let result = reply
-        .get("result")
-        .unwrap_or_else(|| panic!("tilo_find answered: {reply}"));
-    assert_eq!(result["isError"], false, "the find answers: {reply}");
+    assert!(found.is_ok(), "the find answers: {found:?}");
 }

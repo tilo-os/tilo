@@ -16,6 +16,8 @@ use std::time::Duration;
 use tilo_compositor::{KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
 
+use crate::common::Api;
+
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 const PERSON: &str = "Pat";
@@ -85,19 +87,12 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
-    // A session whose MCP server a REPL reaches: the API is how the switch runs its own action
+    // A session whose API a REPL reaches: the API is how the switch runs its own action
     // (`shell.show_style`), as a press in the bar's menu does.
     let root = crate::common::private_home();
-    let program = std::env::current_exe().expect("this test's program");
-    let questions = tilo_service::Questions::new();
     let mut session = crate::common::headless(Options {
-        collab: false,
-        app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
-        mcp_server: Some(root.path().join("agent.sock")),
-        admit_repl: vec![program],
         services: crate::common::seeded_apps(),
-        questions: Some(questions),
-        ..options()
+        ..crate::common::api_options(root.path())
     });
     crate::common::until(&mut session, "the shell draws its bar", |session| {
         session
@@ -107,8 +102,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     });
     // The API, connected before the build runs, so its state is up: the copy is switched to by
     // the shell's own action, as a press in the bar's menu runs it.
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     // The copy is made and installed, answering the package it went in as.
     let answer = style_action(
         &mut session,
@@ -260,39 +254,20 @@ fn the_repl_makes_a_style_with_the_same_call() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
-    // The session whose API this REPL reaches, admitting it to act as the person.
+    // The session whose API this REPL reaches.
     let root = crate::common::private_home();
-    let questions = tilo_service::Questions::new();
-    let apps = crate::common::seeded_apps();
-    let program = std::env::current_exe().expect("this test's program");
-    let mut session = tilo_session::Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: apps,
-            questions: Some(questions),
-            app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
-            mcp_server: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: crate::common::seeded_apps(),
+        ..crate::common::api_options(root.path())
+    });
     crate::common::until(&mut session, "the shell draws", |session| {
         !session.shell_parts().is_empty()
     });
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     // The command as a person types it: one call on the session's own resource.
-    let (answer, failed) = repl.call(
+    let (answer, failed) = repl.run(
         &mut session,
-        "tilo",
-        &serde_json::json!({
-            "program": "session.make_it_mine(style: \"so.tilo.shell:strips\")"
-        }),
+        "session.make_it_mine(style: \"so.tilo.shell:strips\")",
     );
     assert!(!failed, "the REPL made the style: {answer}");
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);

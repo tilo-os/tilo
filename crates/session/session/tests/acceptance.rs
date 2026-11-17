@@ -27,8 +27,8 @@ use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::OVERLAYS;
 
 use crate::common::{
-    CANVAS, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, preset_menu,
-    press, press_sheet, private_home, seeded_session, type_text, until,
+    Agent, Api, CANVAS, HEIGHT, MAIL, PERSON, SUBJECT, WIDTH, on_screen, placed_resources,
+    preset_menu, press, private_home, seeded_session, type_text, until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the top,
@@ -87,7 +87,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     });
 }
 
-/// Step 2: the REPL connects through the MCP server and lists the session's own resources, each
+/// Step 2: the REPL connects through Tilo's API and lists the session's own resources, each
 /// action as a program calls it.
 #[test]
 fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
@@ -97,68 +97,50 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
     until(&mut session, "the bar", |session| {
         on_screen(session, "Notifications").is_some()
     });
-
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    let tools = repl.opened(&mut session);
-    assert!(
-        tools.iter().any(|tool| tool == "tilo") && tools.iter().any(|tool| tool == "tilo_ls"),
-        "the REPL reaches the API's programs and its listing: {tools:?}"
-    );
+    let repl = Api::open(&mut session, root.path());
 
     // The apps, the session's own among them.
-    let (apps, failed) = repl.call(&mut session, "tilo_ls", &json!({}));
-    assert!(!failed, "{apps}");
+    let apps = repl.ls(&mut session, "");
     assert!(
-        apps.lines().any(|line| line.starts_with("session")),
+        Api::rows(&apps).any(|row| row["name"] == "session"),
         "the session's own resources are listed: {apps}"
     );
 
     // The session's own: the layout it arranges — listed by the word a person reads it by, with
     // its placing among its actions — and the session it shows.
-    let (listing, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session"}));
-    assert!(!failed, "{listing}");
+    let listing = repl.ls(&mut session, "session");
     assert!(
-        listing
-            .lines()
-            .any(|line| line.starts_with("Layout") && line.contains("session.place")),
+        Api::rows(&listing).any(|row| row["label"] == "Layout"
+            && row["actions"]
+                .as_array()
+                .is_some_and(|actions| actions.contains(&json!("place")))),
         "the layout is among them, with its placing: {listing}"
     );
     // A listing names the roots of what the session publishes: the session is a row of its own,
     // by the kind its resource is, and what it holds is read a level down.
     assert!(
-        listing.lines().any(|line| line.contains("  desktop  ")),
+        Api::rows(&listing).any(|row| row["kind"] == "desktop"),
         "the listing is: {listing}"
     );
 
-    // Each action as a program calls it, what it may go without included. The chrome by its key: a
-    // window's control reads under the window's name, and the session's window is another `Desktop` .
-    let (chrome, failed) = repl.call(
-        &mut session,
-        "tilo_ls",
-        &json!({"path": "session/desktop:chrome"}),
-    );
-    assert!(!failed, "{chrome}");
-    assert!(
-        chrome
-            .lines()
-            .any(|line| line.starts_with("session.overview(open: Option<Bool> = .none)")),
-        "the overview's action, as it is typed: {chrome}"
+    // Each action with what it takes. The chrome by its key: a window's control reads under the
+    // window's name, and the session's window is another `Desktop` .
+    let chrome = repl.ls(&mut session, "session/desktop:chrome");
+    let overview = Api::action(&chrome, "overview")
+        .unwrap_or_else(|| panic!("the overview's action: {chrome}"));
+    assert_eq!(
+        Api::param(&overview, "open")["required"],
+        false,
+        "{overview}"
     );
     let layout_key = tilo_actions::remote::session_actions::LAYOUT_RESOURCE
         .rsplit(':')
         .next()
         .expect("a resource key");
-    let (placing, failed) = repl.call(
-        &mut session,
-        "tilo_ls",
-        &json!({"path": format!("session/{layout_key}")}),
-    );
-    assert!(!failed, "{placing}");
+    let placing = repl.ls(&mut session, &format!("session/{layout_key}"));
     assert!(
-        placing
-            .lines()
-            .any(|line| line.starts_with("session.place(")),
-        "placing, as it is typed: {placing}"
+        Api::action(&placing, "place").is_some(),
+        "placing: {placing}"
     );
 }
 
@@ -172,8 +154,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     until(&mut session, "the bar", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     // The framed canvas first: the entry typed at stands, and no strip does.
     assert!(
@@ -210,8 +191,7 @@ fn step_4_my_mails_places_the_inbox_with_its_threads() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     let (answer, failed) = repl.run(
         &mut session,
@@ -250,8 +230,7 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
     let root = private_home();
     let mut session = seeded_session(root.path());
     let note = seeded_note(&session, "Groceries");
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     let (answer, failed) = repl.run(
         &mut session,
@@ -286,8 +265,8 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
     });
 }
 
-/// Step 7: what the REPL types runs the same as the agent's program — the same `tilo` call, the
-/// same result, whether the person typed it or an agent ran it.
+/// Step 7: what the REPL types runs the same as the agent's program: the same program finds the
+/// same, whether the person typed it or an agent ran it.
 #[test]
 fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     let _settled = ui::motion::testing::settled();
@@ -298,39 +277,22 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     });
 
     // The REPL, acting as the person.
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
 
     // An agent of theirs, admitted on the sheet the API opens.
-    let mut agent = Repl::asking(&root.path().join("agent.sock"), false);
-    until(&mut session, "the API's question", |session| {
-        session
-            .portal()
-            .and_then(tilo_sheets::portal::PortalState::dialog)
-            .is_some()
-    });
-    press_sheet(
-        &mut session,
-        tilo_sheets::portal::PortalEffect::SELECT.id,
-        &json!({"index": 0}),
-    );
-    press_sheet(
-        &mut session,
-        tilo_sheets::portal::PortalEffect::CONFIRM.id,
-        &json!({}),
-    );
-    agent.opened(&mut session);
+    let mut agent = Agent::admitted(&mut session, &root.path().join("agent.sock"));
 
     // The same program, printed by both: the workspace's notes saying "launch", found and described
-    // the same way.
+    // the same way. The agent is told first what it may not search on this device, which the person
+    // may.
     let program = "find(\"launch\").take(2)";
     let (typed, typed_failed) = repl.run(&mut session, program);
     let (ran, ran_failed) = agent.run(&mut session, program);
     assert!(!typed_failed, "the REPL's program ran: {typed}");
     assert!(!ran_failed, "the agent's program ran: {ran}");
-    assert_eq!(
-        typed, ran,
-        "the same program answers the same, typed and run"
+    assert!(
+        !typed.is_empty() && ran.ends_with(&typed),
+        "the same program finds the same, typed and run: {typed:?} and {ran:?}"
     );
 }
 
@@ -423,8 +385,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = Api::open(&mut session, root.path());
     let (answer, failed) = repl.run(
         &mut session,
         "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))",

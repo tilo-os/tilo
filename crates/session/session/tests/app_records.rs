@@ -27,7 +27,7 @@ use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 
-use crate::common::{PERSON, Repl, until, wait_for};
+use crate::common::{Api, PERSON, until, wait_for};
 
 /// The Tasks app, as its package names it.
 const TASKS: &str = "so.tilo.lang.tasks";
@@ -66,7 +66,6 @@ fn session_launching(
         tilo_identity_host::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
-    let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -77,7 +76,6 @@ fn session_launching(
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         api_server: Some(root.join("api.sock")),
-        admit_repl: vec![program],
         launches,
         ..Options::default()
     });
@@ -221,16 +219,11 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
     );
 
     // The person's REPL, at the session's API (`tilolang repl --session`).
+    let mut repl = Api::open(&mut session, root.path());
     until(&mut session, "the REPL's find", |session| {
-        let found = crate::common::api_program(
-            session,
-            &root.path().join("api.sock"),
-            &workspace,
-            "find(tasks.Task)",
-        );
-        assert_eq!(found["status"], "ok", "the REPL's find ran: {found}");
-        let text = found["text"].as_str().unwrap_or_default();
-        text.contains("Water the ferns") && text.contains(SEEDED_TASK)
+        let (found, failed) = repl.run(session, "find(tasks.Task)");
+        assert!(!failed, "the REPL's find ran: {found}");
+        found.contains("Water the ferns") && found.contains(SEEDED_TASK)
     });
 }
 
@@ -375,7 +368,6 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     let socket = root.path().join("app_wire.sock");
     let workspace_id = uuid::Uuid::parse_str(&workspace).expect("a workspace id");
     let done = std::sync::atomic::AtomicBool::new(false);
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
     // The kind of record Tasks keeps its resources in, as its window names it: its root type's.
     let kind = {
         use tilolang_tilo::meta::MetaExt as _;
@@ -445,7 +437,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
                 None => Ok(()),
             }
         });
-        repl.opened(&mut session);
+        let mut repl = Api::open(&mut session, root.path());
         let mut seen = String::new();
         let read = crate::common::reached(&mut session, |session| {
             if window.is_finished() {

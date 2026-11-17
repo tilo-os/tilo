@@ -36,7 +36,6 @@ const TYPED: &str = "looks good";
 /// A session with the shell as the whole screen and Chat's demo conversation published, its
 /// test hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(
         tilo_session::dev_rust_views::RustApps::new().unwrap(),
@@ -51,7 +50,6 @@ fn session(root: &std::path::Path) -> Session {
             questions: Some(tilo_service::Questions::new()),
             app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()
         },

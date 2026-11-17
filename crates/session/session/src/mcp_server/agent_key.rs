@@ -124,7 +124,7 @@ impl super::Loop {
             }
         };
         let (workspace, name) =
-            match super::where_it_works(handle, person, &facts, false, asked.as_deref()) {
+            match super::where_it_works(handle, person, &facts, asked.as_deref()) {
                 Ok(found) => found,
                 Err(reason) => {
                     let _ = decide.send(super::Consent::Refuse(reason));

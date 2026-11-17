@@ -5,10 +5,9 @@
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
-//! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. Acting
-//! as the person is a request, never authority: the person decides it on the sheet ([`crate::Options`]'s
-//! `admit_repl` decides it ahead of time for a test's own program). "Always allow" is kept in
-//! this account's private state.
+//! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. The
+//! person's own programs reach the desktop as them through Tilo's API ([`crate::api_server`]),
+//! never here. "Always allow" is kept in this account's private state.
 //!
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's
@@ -102,9 +101,6 @@ pub(crate) struct Admission {
     pub(crate) workspace: String,
     /// The agent it is admitted as.
     pub(crate) agent: String,
-    /// Whether it asks to act as the person themselves, not as an agent.
-    #[serde(default)]
-    pub(crate) as_person: bool,
 }
 
 /// What the kernel and the client's own `initialize` say about a connection.
@@ -191,8 +187,6 @@ impl Facts {
 /// One connection waiting for the person, handed to the loop.
 struct Request {
     facts: Facts,
-    /// It asks to act as the person.
-    as_person: bool,
     /// The workspace it asks to work in, by id; `None` for the one in front.
     workspace: Option<String>,
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
@@ -207,7 +201,6 @@ struct Request {
 /// A connection the person is being asked about.
 struct Waiting {
     facts: Facts,
-    as_person: bool,
     workspace: String,
     /// The workspace as the person reads it.
     workspace_name: String,
@@ -366,11 +359,6 @@ pub(crate) struct Loop {
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
     /// has to wake it.
     waker: Waker,
-    /// The programs the person named, when they started the session, as the ones they admit to act
-    /// as them: canonical executable paths.
-    admits: Vec<PathBuf>,
-    /// The clients the person let act as them for this session.
-    person_session: std::collections::HashSet<BindingKey>,
     /// What the connections ask of the session's own services, answered on the loop's pass.
     services: Arc<SessionServices>,
     /// The control protocol's socket, which a program inside an app this session started is served
@@ -453,7 +441,6 @@ pub(crate) fn mount_named(
         launches: Arc::clone(&options.launches),
         wake: options.wake.handle(),
         state: options.state.as_deref(),
-        admits: &options.admit_repl,
         agent_key: options.agent_key.as_deref(),
         services,
         control,
@@ -468,7 +455,7 @@ pub(crate) fn mount_named(
 }
 
 /// What the server binds with: where it listens, whose questions its clients are admitted by, the
-/// apps this session started, where "Always allow" is kept, the programs named to admit, the
+/// apps this session started, where "Always allow" is kept, the
 /// session's own services, the workspace governance it holds, and the control socket a program inside an
 /// app drives.
 pub(crate) struct Mounting<'a> {
@@ -477,7 +464,6 @@ pub(crate) struct Mounting<'a> {
     launches: Arc<Launches>,
     wake: Wake,
     state: Option<&'a Path>,
-    admits: &'a [PathBuf],
     /// The file holding the agent key the person started the session with.
     agent_key: Option<&'a Path>,
     services: Arc<SessionServices>,
@@ -498,7 +484,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         launches,
         wake,
         state,
-        admits,
         agent_key,
         services,
         control,
@@ -517,17 +502,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         .as_deref()
         .map_or_else(|| (HashMap::new(), Lost::default()), read_bindings);
     let (requests, asked) = std::sync::mpsc::channel();
-    // A program named by a path that does not resolve is admitted by none.
-    let admits = admits
-        .iter()
-        .filter_map(|program| match std::fs::canonicalize(program) {
-            Ok(program) => Some(program),
-            Err(error) => {
-                tracing::warn!(%error, program = %program.display(), "MCP server: the program named to admit is not there");
-                None
-            }
-        })
-        .collect();
     let server = Loop {
         questions,
         listener,
@@ -549,8 +523,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         room: Room::default(),
         // The loop polls its questions itself, each pass, so an answer needs no wakeup.
         waker: Waker::noop().clone(),
-        admits,
-        person_session: std::collections::HashSet::new(),
         services,
         control,
         sessions,
@@ -703,7 +675,6 @@ impl Loop {
     ) {
         let Request {
             facts,
-            as_person,
             workspace: asked,
             session,
             decide,
@@ -715,34 +686,14 @@ impl Loop {
             ));
             return;
         };
-        let (workspace, name) =
-            match where_it_works(handle, person, &facts, as_person, asked.as_deref()) {
-                Ok(found) => found,
-                Err(reason) => {
-                    let _ = decide.send(Consent::Refuse(reason));
-                    return;
-                }
-            };
-        let key = facts.key();
-        if as_person {
-            // The person named this program when they started the session, or let this client act
-            // as them earlier in it: their decision, made already.
-            let named = facts
-                .exe
-                .as_ref()
-                .is_some_and(|exe| self.admits.iter().any(|admitted| admitted == exe));
-            let earlier = key
-                .as_ref()
-                .is_some_and(|key| self.person_session.contains(key));
-            if named || earlier {
-                tracing::info!(client = %facts.client, pid = facts.pid, named, "MCP server: the person admitted this client to act as them");
-                let _ = decide.send(Consent::Person {
-                    workspace,
-                    person: person.to_owned(),
-                });
+        let (workspace, name) = match where_it_works(handle, person, &facts, asked.as_deref()) {
+            Ok(found) => found,
+            Err(reason) => {
+                let _ = decide.send(Consent::Refuse(reason));
                 return;
             }
-        }
+        };
+        let key = facts.key();
         let remembered = key
             .as_ref()
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
@@ -750,7 +701,7 @@ impl Loop {
         // What the person said ahead of time admits it as a connection of its own: an answer they
         // remembered for this client, or this device's setting that lets agents from their other
         // devices in without being asked.
-        let ahead = remembered.clone().filter(|_| !as_person).or_else(|| {
+        let ahead = remembered.clone().or_else(|| {
             (facts.origin.is_some() && DeviceAgents::accepts_own_devices())
                 .then(|| facts.proposed())
         });
@@ -763,15 +714,10 @@ impl Loop {
             return;
         }
         let agent = remembered.unwrap_or_else(|| facts.proposed());
-        let (proposed, shown) = if as_person {
-            (agent.clone(), facts.client.clone())
-        } else {
-            self.agent_of(&agent, &facts)
-        };
+        let (proposed, shown) = self.agent_of(&agent, &facts);
         let details = serde_json::to_value(Admission {
             workspace: name.clone(),
             agent: proposed.clone(),
-            as_person,
         })
         .unwrap_or_default();
         let label = facts.subject();
@@ -791,7 +737,6 @@ impl Loop {
         });
         self.waiting.push(Waiting {
             facts,
-            as_person,
             workspace,
             workspace_name: name,
             session,
@@ -878,20 +823,6 @@ impl Loop {
             tilo_portal::consent::ALLOW_ALWAYS => Memory::Always,
             _ => return Consent::Refuse(word("mcp-server-declined")),
         };
-        if waiting.as_person {
-            // Acting as the person makes no one a member: it is them. What they let it do for the
-            // session is remembered for the session only; a later session asks again unless they
-            // name the program when they start it.
-            if !matches!(remembered, Memory::Once)
-                && let Some(key) = waiting.facts.key()
-            {
-                self.person_session.insert(key);
-            }
-            return Consent::Person {
-                workspace: waiting.workspace.clone(),
-                person: person.to_owned(),
-            };
-        }
         let consent = as_member(
             members,
             &waiting.facts,
@@ -1007,23 +938,13 @@ fn as_member(
 
 /// Where the client `facts` describes works, by id and as the person reads it, when it may work
 /// here at all: the workspace its device asked for, its environment's, the one it asked for by id,
-/// or the one in front. The reason it may not, as it is told: only a program of this login, and
-/// none inside an environment, acts as the person (`as_person`).
+/// or the one in front. The reason it may not, as it is told.
 fn where_it_works(
     handle: &DesktopHandle,
     person: &str,
     facts: &Facts,
-    as_person: bool,
     asked: Option<&str>,
 ) -> Result<(String, String), String> {
-    if as_person && facts.origin.is_some() {
-        return Err(word("mcp-server-person-from-device"));
-    }
-    if as_person && matches!(facts.entrance, Origin::Environment(_)) {
-        // A confined environment's programs are agents: none acts as the person, whose authority
-        // reaches past the environment.
-        return Err(word("mcp-server-environment-as-person"));
-    }
     let found = match &facts.origin {
         Some(origin) => workspace_for(handle, origin.workspace.as_deref())
             .ok_or_else(|| word("mcp-server-no-workspace")),
@@ -2813,7 +2734,7 @@ fn serve_admitted(
                 connected,
                 agent_session.clone(),
             );
-            if let Consent::Admit { person, .. } | Consent::Person { person, .. } = &consent {
+            if let Consent::Admit { person, .. } = &consent {
                 admitted.set_person(Some(person));
             }
             if let Consent::Admit {
@@ -2871,7 +2792,6 @@ fn ask(
     let (decide, mut decided) = tokio::sync::oneshot::channel();
     let request = Request {
         facts,
-        as_person: hello.as_person,
         workspace: hello.workspace.clone(),
         key: hello.key.clone(),
         session,

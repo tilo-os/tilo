@@ -204,10 +204,6 @@ pub struct Hello {
     pub client_name: String,
     /// `clientInfo.version`, as bounded.
     pub client_version: Option<String>,
-    /// Whether the client asks to act as the person rather than as an agent of theirs
-    /// ([`ACTS_AS`]): a REPL, whose lines the person types. A request, shown to the person who
-    /// decides; it is never authority.
-    pub as_person: bool,
     /// The workspace the client asks to work in ([`WORKSPACE`]), by id: a request the person
     /// decides, admitted only for a workspace they may let an agent into. `None` asks for the
     /// workspace in front of them.
@@ -217,10 +213,6 @@ pub struct Hello {
     /// not hold, or one taken back, is refused. Kept out of [`Self::request`].
     pub key: Option<String>,
 }
-
-/// Where a client's `initialize` asks to act as the person (`"person"`) rather than as an
-/// agent: `params.capabilities.experimental["so.tilo"].actsAs`.
-pub const ACTS_AS: &str = "/params/capabilities/experimental/so.tilo/actsAs";
 
 /// Where a client's `initialize` names the workspace it asks to work in, by id:
 /// `params.capabilities.experimental["so.tilo"].workspace`. `--connect --workspace ID` writes it.
@@ -248,9 +240,6 @@ pub enum Consent {
         person: String,
         name: String,
     },
-    /// Serve it as `person` themselves, in `workspace`: a REPL the person admitted to act as
-    /// them. What its programs do is theirs, attributed to them, within their own authority.
-    Person { workspace: String, person: String },
     /// Refuse it, telling the client why.
     Refuse(String),
 }
@@ -326,7 +315,6 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
         client_name: bounded_text(info.and_then(|info| info.get("name")))
             .unwrap_or_else(|| "MCP client".to_owned()),
         client_version: bounded_text(info.and_then(|info| info.get("version"))),
-        as_person: request.pointer(ACTS_AS).and_then(serde_json::Value::as_str) == Some("person"),
         workspace: bounded_text(request.pointer(WORKSPACE)),
         request,
     })
@@ -577,15 +565,14 @@ where
         let stream = stream.try_clone()?;
         move || client_connected(&stream)
     };
-    // Who the connection acts as: an agent of the person's, or the person themselves.
-    let (workspace, agent, person) = match ask(&hello, &probe) {
+    // The agent of the person's the connection acts as.
+    let (workspace, agent, person, name) = match ask(&hello, &probe) {
         Consent::Admit {
             workspace,
             agent,
             person,
             name,
-        } => (workspace, Some((agent, name)), person),
-        Consent::Person { workspace, person } => (workspace, None, person),
+        } => (workspace, agent, person, name),
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
@@ -603,23 +590,11 @@ where
         }
     };
     // The connection is one task: its run, whose programs run in a tilolang host of the task's
-    // own (docs/designs/app-language/agents.md, "How a program runs"). Each program is run as
-    // whoever the connection acts as: the agent, or the person typing at a REPL.
+    // own (docs/designs/app-language/agents.md, "How a program runs"), each as the agent.
     let run = format!("server-{}", uuid::Uuid::new_v4().simple());
-    let server = match agent {
-        Some((agent, name)) => crate::McpServer::for_agent(provider, workspace, &agent, &person)
-            .agent_named(&name)
-            .with_agent_session(run, agent),
-        None => crate::McpServer::for_person(provider, workspace, &person).with_work_group(
-            tilo_actions::WorkGroup {
-                id: run,
-                label: "REPL".into(),
-                kind: "repl".into(),
-                title: None,
-                declared_id: None,
-            },
-        ),
-    };
+    let server = crate::McpServer::for_agent(provider, workspace, &agent, &person)
+        .agent_named(&name)
+        .with_agent_session(run, agent);
     let server = std::sync::Arc::new(server.with_task_hosts(tasks).with_devices(devices));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime

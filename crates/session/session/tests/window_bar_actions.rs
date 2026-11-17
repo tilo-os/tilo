@@ -20,7 +20,7 @@
 use serde_json::Value;
 use tilo_session::Session;
 
-use crate::common::{Repl, on_screen, until};
+use crate::common::{Api, on_screen, until};
 
 /// The pill at the trailing end of a window's bar: the window's own actions, width, focus and
 /// pin commands. The shell names it for what it opens, on every style's window bar.
@@ -59,8 +59,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
             .run_shell_action("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the shell shows {preset}: {why}"));
     } else {
-        let mut repl = Repl::connect(&root.join("agent.sock"));
-        repl.opened(session);
+        let mut repl = Api::open(session, root);
         let (answer, failed) = repl.run(
             session,
             &format!(
@@ -197,10 +196,9 @@ fn strip_of(session: &Session, record: &str) -> String {
 }
 
 /// Show the strip `strip` as the one in front, as a press on its window's "Bring to front" does:
-/// the shell's own `focus_strip`, through the MCP server.
+/// the shell's own `focus_strip`, through the API.
 fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
-    let mut repl = Repl::connect(&root.join("agent.sock"));
-    repl.opened(session);
+    let mut repl = Api::open(session, root);
     let (answer, failed) = repl.run(
         session,
         &format!(r#"shell.focus_strip(shell.viewing, strip: "{strip}")"#),

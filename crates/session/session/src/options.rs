@@ -164,11 +164,6 @@ pub struct Options {
     /// Where the session serves Tilo's API to its person's own programs on this computer, as them
     /// ([`crate::api_server`]): its login's `api.sock`. `None` : it serves none.
     pub api_server: Option<std::path::PathBuf>,
-    /// The programs admitted ahead of time to act as the person at the MCP server, without the
-    /// sheet: a test that drives the session as its person names its own executable. Only a
-    /// connection whose executable is one of these and that asks to act as the person is; any
-    /// other is asked about as before.
-    pub admit_repl: Vec<std::path::PathBuf>,
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
@@ -432,7 +427,6 @@ impl Default for Options {
             app_socket: AppSocket::default(),
             mcp_server: None,
             api_server: None,
-            admit_repl: Vec::new(),
             agent_key: None,
             test_control: None,
             admin_control: None,

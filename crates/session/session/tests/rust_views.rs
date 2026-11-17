@@ -103,7 +103,6 @@ impl Service for Channels {
 /// A session with the shell as the whole screen and the Tube channels published, its test hooks at
 /// `root` , the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(Channels::new()));
     let mut session = crate::common::headless_on(
@@ -120,7 +119,6 @@ fn session(root: &std::path::Path) -> Session {
             questions: Some(tilo_service::Questions::new()),
             app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()
         },

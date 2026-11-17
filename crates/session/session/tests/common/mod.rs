@@ -1,7 +1,7 @@
 //! What the headless-session tests share: a private home for a session's sockets, the frames a test
 //! runs until the shell has done what it asked, the shell's laid-out tree read as assistive
-//! technology hears it, a press on one of its controls, the REPL's end of the MCP server, and the
-//! test-control socket `tilo-control` drives a session over.
+//! technology hears it, a press on one of its controls, the person's programs at Tilo's API, an
+//! agent's end of the MCP server, and the test-control socket `tilo-control` drives a session over.
 //! Included once by `tests/it.rs` as `mod common`, as a directory is not a test target of its own:
 //! the same helpers serve the REPL's test, the shell screen's, the test-control socket's and the
 //! acceptance path's.
@@ -30,7 +30,6 @@ pub mod window;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use tilo_session_core::layout;
@@ -745,12 +744,19 @@ pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
 }
 
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
-/// tasks, chat and mail), its MCP server and test-control socket at `root`, admitting this
-/// test's program to act as the person, and the framed canvas in front. The apps are the ones
-/// installed in this run's app store ([`app_store`]).
+/// tasks, chat and mail), its sockets at `root` ([`api_options`]), and the framed canvas in front.
+/// The apps are the ones installed in this run's app store ([`app_store`]).
 pub fn seeded_session(root: &Path) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
-    seeded_session_at(root, vec![program], None)
+    let mut session = headless(Options {
+        services: seeded_apps(),
+        test_control: Some(root.join("test-control.sock")),
+        ..api_options(root)
+    });
+    // The shell shows the Frames canvas once it says so: what the canvas's own controls are called
+    // is the person's language's, so a fixture reads the style, not their words.
+    show_preset(&mut session, FRAMES);
+    until(&mut session, "the canvas", |session| canvas_shown(session));
+    session
 }
 
 /// Install the app `app` — named `name` — in `home` 's own app store: a package whose entrypoint is
@@ -887,64 +893,23 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     );
 }
 
-/// [`seeded_session`] with `apps` starting them (a stand-in launcher a test brought), and the
-/// programs named as admitted to act as the person ahead of time.
-pub fn seeded_session_at(
-    root: &Path,
-    admit_repl: Vec<std::path::PathBuf>,
-    apps: Option<Rc<dyn tilo_session::AppActions>>,
-) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: seeded_apps(),
-            questions: Some(Questions::new()),
-            app_socket: AppSocket::At(root.join("app_wire.sock")),
-            mcp_server: Some(root.join("agent.sock")),
-            admit_repl,
-            test_control: Some(root.join("test-control.sock")),
-            apps,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    // The shell shows the Frames canvas once it says so: what the canvas's own controls are called
-    // is the person's language's, so a fixture reads the style, not their words.
-    show_preset(&mut session, FRAMES);
-    until(&mut session, "the canvas", |session| canvas_shown(session));
-    session
-}
-
-/// A headless session with the shell as the whole screen, the notes [`notebook`] published, its
-/// MCP server and app wire at `root`, the questions the server's admission is asked through,
-/// and the programs named as admitted to act as the person ahead of time.
-pub fn repl_session(
-    root: &Path,
-    questions: &Questions,
-    admit_repl: Vec<std::path::PathBuf>,
-    notes: ResourceService,
-) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            state: Some(device_state()),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(notes)],
-            questions: Some(questions.clone()),
-            app_socket: AppSocket::At(root.join("app_wire.sock")),
-            mcp_server: Some(root.join("agent.sock")),
-            admit_repl,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+/// What a headless session the person drives from a program of theirs is started with: the shell
+/// as the whole screen on a device that holds its workspaces ([`device_state`]), and at `root` its
+/// app wire, the MCP server agents are admitted at, and Tilo's API for the person's own programs
+/// ([`Api`]).
+pub fn api_options(root: &Path) -> Options {
+    Options {
+        presentation: ui::headless::fixture_runner_inputs,
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        state: Some(device_state()),
+        questions: Some(Questions::new()),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
+        mcp_server: Some(root.join("agent.sock")),
+        api_server: Some(root.join("api.sock")),
+        ..Options::default()
+    }
 }
 
 /// The person's layout as a shell reads it: the shell as it stands now,
@@ -1013,51 +978,165 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The REPL's end of the MCP server, on a thread of its own so the session runs while it waits: it
-/// sends each request it is handed and hands back the answer to it.
-pub struct Repl {
+/// A program of the person's on this computer at the session's API (`tilolang repl --session`):
+/// it acts as the person in the workspace in front, and its programs run in one program session,
+/// as the REPL's lines do, so `undo` takes back the steps before it. Each request is answered on a
+/// thread of its own while the test runs the session's loop.
+pub struct Api {
+    socket: std::path::PathBuf,
+    workspace: String,
+    program_session: Option<String>,
+}
+
+/// A request to the API still out.
+pub struct Asked(std::sync::Arc<std::sync::OnceLock<Result<Value, String>>>);
+
+impl Asked {
+    /// The API's answer, or why it refused, running the session until it is in.
+    pub fn answer(&self, session: &mut Session) -> Result<Value, String> {
+        wait_for(session, "the API's answer", |_| self.0.get().cloned())
+    }
+}
+
+impl Api {
+    /// The API of the session whose sockets are at `root` ([`api_options`]), in the workspace in
+    /// front.
+    pub fn open(session: &mut Session, root: &Path) -> Self {
+        let workspace = wait_for(session, "the workspace in front", |session| {
+            session.handle().read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.id().to_string())
+            })
+        });
+        Self {
+            socket: root.join("api.sock"),
+            workspace,
+            program_session: None,
+        }
+    }
+
+    /// Ask the workspace's `route` (`resources?path=…`, `search?q=…`), posting `body` when there
+    /// is one, and answer nothing here: [`Asked::answer`] waits for it.
+    pub fn send(&self, route: &str, body: Option<Value>) -> Asked {
+        let socket = self.socket.clone();
+        let path = format!("/v1/workspaces/{}/{route}", self.workspace);
+        let answered = std::sync::Arc::new(std::sync::OnceLock::new());
+        let answer = std::sync::Arc::clone(&answered);
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let client = tilo_api::client::Client::session(&socket);
+            let asked = runtime.block_on(async {
+                match &body {
+                    Some(body) => client.post(&path, body).await,
+                    None => client.get(&path).await,
+                }
+            });
+            let _ = answer.set(asked.map_err(|error| format!("{error:#}")));
+        });
+        Asked(answered)
+    }
+
+    /// The listing of the resources under `path` (the apps at `""`), from `cursor` on: the API's
+    /// answer, or why it refused.
+    pub fn listing(
+        &self,
+        session: &mut Session,
+        path: &str,
+        cursor: Option<&str>,
+    ) -> Result<Value, String> {
+        let path = tilo_api::client::encode_query(path);
+        let route = match cursor {
+            Some(cursor) => format!(
+                "resources?path={path}&cursor={}",
+                tilo_api::client::encode_query(cursor)
+            ),
+            None => format!("resources?path={path}"),
+        };
+        self.send(&route, None).answer(session)
+    }
+
+    /// The listing of the resources under `path` (the apps at `""`).
+    ///
+    /// # Panics
+    /// The API refused it.
+    pub fn ls(&self, session: &mut Session, path: &str) -> Value {
+        self.listing(session, path, None)
+            .unwrap_or_else(|why| panic!("{path} lists: {why}"))
+    }
+
+    /// The rows of `listing`.
+    pub fn rows(listing: &Value) -> impl Iterator<Item = &Value> {
+        listing["rows"].as_array().into_iter().flatten()
+    }
+
+    /// The action `id` of the resource `listing` lists, with what it takes.
+    pub fn action(listing: &Value, id: &str) -> Option<Value> {
+        listing["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|action| action["id"] == id)
+            .cloned()
+    }
+
+    /// The parameter `name` of `action`.
+    ///
+    /// # Panics
+    /// The action takes no such parameter.
+    pub fn param(action: &Value, name: &str) -> Value {
+        action["params"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|param| param["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("it takes {name}: {action}"))
+    }
+
+    /// What search finds for `query`, best first.
+    pub fn find(&self, session: &mut Session, query: &str) -> Vec<Value> {
+        let route = format!("search?q={}", tilo_api::client::encode_query(query));
+        let found = self
+            .send(&route, None)
+            .answer(session)
+            .unwrap_or_else(|why| panic!("search for {query}: {why}"));
+        found["hits"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// Run `program` in this program session: what it says, and whether it failed.
+    pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
+        let mut body = json!({"program": program});
+        if let Some(running) = &self.program_session {
+            body["session"] = running.clone().into();
+        }
+        let answer = self
+            .send("programs", Some(body))
+            .answer(session)
+            .unwrap_or_else(|why| panic!("{program}: {why}"));
+        if let Some(running) = answer["session"].as_str() {
+            self.program_session = Some(running.to_owned());
+        }
+        (
+            answer["text"].as_str().unwrap_or_default().to_owned(),
+            answer["status"] == "failed",
+        )
+    }
+}
+
+/// An agent's end of the session's MCP server, on a thread of its own so the session runs while it
+/// waits: it sends each request it is handed and hands back the answer to it.
+pub struct Agent {
     asks: Sender<Value>,
     answers: Receiver<Value>,
     next: u64,
 }
 
-/// What `program` answers in `workspace` through Tilo's API at `socket`, as a program of the
-/// person's on this computer asks it (`tilolang repl --session`): asked on a thread of its own
-/// while the session's loop turns.
-///
-/// # Panics
-/// The API refused the program.
-pub fn api_program(session: &mut Session, socket: &Path, workspace: &str, program: &str) -> Value {
-    let socket = socket.to_path_buf();
-    let path = format!("/v1/workspaces/{workspace}/programs");
-    let body = json!({"program": program});
-    let answered = std::sync::Arc::new(std::sync::OnceLock::new());
-    let answer = std::sync::Arc::clone(&answered);
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        let client = tilo_api::client::Client::session(&socket);
-        let _ = answer.set(
-            runtime
-                .block_on(client.post(&path, &body))
-                .map_err(|error| format!("{error:#}")),
-        );
-    });
-    wait_for(session, "the API's answer", |_| answered.get().cloned())
-        .unwrap_or_else(|why| panic!("{program}: {why}"))
-}
-
-impl Repl {
-    /// Connect to the server at `socket`, asking to act as the person.
+impl Agent {
+    /// Connect to the server at `socket` as an agent of the person's, asking to be admitted.
     pub fn connect(socket: &Path) -> Self {
-        Self::asking(socket, true)
-    }
-
-    /// Connect to the server at `socket` , asking to act as the person (`as_person`) or as an agent
-    /// of theirs.
-    pub fn asking(socket: &Path, as_person: bool) -> Self {
         let socket = socket.to_path_buf();
         let (asks, asked) = std::sync::mpsc::channel::<Value>();
         let (answer, answers) = std::sync::mpsc::channel::<Value>();
@@ -1085,27 +1164,47 @@ impl Repl {
                 }
             }
         });
-        let repl = Self {
+        let agent = Self {
             asks,
             answers,
             next: 1,
         };
-        let capabilities = if as_person {
-            json!({"experimental": {"so.tilo": {"actsAs": "person"}}})
-        } else {
-            json!({})
-        };
-        repl.asks
+        agent
+            .asks
             .send(json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {
                     "protocolVersion": "2025-06-18",
-                    "capabilities": capabilities,
-                    "clientInfo": {"name": "tilolang repl", "version": "test"}
+                    "capabilities": {},
+                    "clientInfo": {"name": "an agent", "version": "test"}
                 }
             }))
             .unwrap();
-        repl
+        agent
+    }
+
+    /// An agent at the server at `socket`, admitted by the person on the sheet its question opens,
+    /// once it has opened.
+    pub fn admitted(session: &mut Session, socket: &Path) -> Self {
+        let mut agent = Self::connect(socket);
+        until(session, "the server's question", |session| {
+            session
+                .portal()
+                .and_then(tilo_sheets::portal::PortalState::dialog)
+                .is_some()
+        });
+        press_sheet(
+            session,
+            tilo_sheets::portal::PortalEffect::SELECT.id,
+            &json!({"index": 0}),
+        );
+        press_sheet(
+            session,
+            tilo_sheets::portal::PortalEffect::CONFIRM.id,
+            &json!({}),
+        );
+        agent.opened(session);
+        agent
     }
 
     /// The answer to the last request, running the session until it is in.
@@ -1117,45 +1216,19 @@ impl Repl {
 
     /// Send `method` with `params` and wait for its answer.
     pub fn ask(&mut self, session: &mut Session, method: &str, params: &Value) -> Value {
-        self.send(method, params);
-        self.answer(session)
-    }
-
-    /// Send `method` with `params`, and answer nothing here: the caller runs the session until it
-    /// likes, and reads the answer with [`Self::answer`] when it is in. What a test that drives
-    /// frames meanwhile, or counts them, needs: the server's thread works on while the loop passes.
-    pub fn send(&mut self, method: &str, params: &Value) {
         self.next = self.next.saturating_add(1);
         self.asks
             .send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}))
             .unwrap();
+        self.answer(session)
     }
 
-    /// Call the server's tool `name` : its text, and whether it is an error.
-    pub fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
-        let reply = self.ask(
-            session,
-            "tools/call",
-            &json!({"name": name, "arguments": arguments}),
-        );
-        let result = reply
-            .get("result")
-            .unwrap_or_else(|| panic!("{name} answered: {reply}"));
-        let text = result["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|part| part["text"].as_str())
-            .collect::<String>();
-        (text, result["isError"] == true)
-    }
-
-    /// Admitted, it says it is initialized and lists its tools, as the REPL does.
+    /// Admitted, it says it is initialized and lists its tools.
     pub fn opened(&mut self, session: &mut Session) -> Vec<String> {
         let initialized = self.answer(session);
         assert!(
             initialized.pointer("/result/serverInfo").is_some(),
-            "the REPL is admitted: {initialized}"
+            "the agent is admitted: {initialized}"
         );
         self.asks
             .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -1172,7 +1245,21 @@ impl Repl {
     /// Run the program `program` through the server's `tilo` tool: its answer, and whether it is an
     /// error.
     pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
-        self.call(session, "tilo", &json!({"program": program}))
+        let reply = self.ask(
+            session,
+            "tools/call",
+            &json!({"name": "tilo", "arguments": {"program": program}}),
+        );
+        let result = reply
+            .get("result")
+            .unwrap_or_else(|| panic!("{program} answered: {reply}"));
+        let text = result["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<String>();
+        (text, result["isError"] == true)
     }
 }
 
@@ -1299,15 +1386,12 @@ pub fn drawn_name(session: &Session, record: &str) -> String {
         )
 }
 
-/// Place what "Inbox" finds on the canvas through the server, as the REPL's program does, and wait
+/// Place what "Inbox" finds on the canvas through the API, as the person's program does, and wait
 /// until the place shows the seeded conversation.
 pub fn place_the_inbox(session: &mut Session, root: &Path) {
-    let mut repl = Repl::connect(&root.join("agent.sock"));
-    repl.opened(session);
-    let (answer, failed) = repl.call(
+    let (answer, failed) = Api::open(session, root).run(
         session,
-        "tilo",
-        &json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(80), y: .some(60))"}),
+        "session.place_found(text: \"Inbox\", view: .none, x: .some(80), y: .some(60))",
     );
     assert!(!failed, "the program ran: {answer}");
     until(

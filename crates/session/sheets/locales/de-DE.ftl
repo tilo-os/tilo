@@ -510,16 +510,12 @@ mcp-server-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
 mcp-server-client-in-environment = { $who } in der Umgebung „{ $environment }“
 mcp-server-workspace-refused = Von hier aus kannst du keinen Agenten in diesem Arbeitsbereich arbeiten lassen.
 mcp-server-environment-workspace = Ein Programm in einer Umgebung arbeitet nur im Arbeitsbereich dieser Umgebung.
-mcp-server-environment-as-person = Ein Programm in einer Umgebung arbeitet als Agent, nie als du.
 mcp-server-session = { $client } #{ $instance }
 mcp-server-session-in-environment = { $client } in { $environment } #{ $instance }
 mcp-server-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten wollte, existiert nicht mehr.
 mcp-server-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
 mcp-server-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.
 mcp-server-not-started = Die Arbeit dieses Agenten hier konnte nicht beginnen
-mcp-server-person-from-device = Nur ein Programm auf diesem Gerät kann als du handeln; ein Agent von einem anderen deiner Geräte arbeitet hier als Agent.
-mcp-server-admission-person = In „{ $workspace }“ als du handeln
-mcp-server-admission-person-detail = Alles, was es tut, ist deins: es führt aus, was du tippst, als du, dir zugeschrieben, mit allem, was du hier darfst. Erlaube das nur einem Programm, das du selbst gestartet hast, etwa einem Terminal.
 
 ## The shortcut catalogue on the action API: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.

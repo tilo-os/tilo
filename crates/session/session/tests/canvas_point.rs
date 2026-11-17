@@ -180,8 +180,7 @@ fn the_first_ask_after_switching_to_frames_is_typed_and_sent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
+    let mut repl = crate::common::Api::open(&mut session, root.path());
     let (answer, failed) = repl.run(
         &mut session,
         "shell.show_style(shell.viewing, style: \"so.tilo.shell:strips\")",

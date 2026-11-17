@@ -24,12 +24,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use tilo_compositor::OutputConfig;
-use tilo_service::Questions;
-use tilo_session::{AppSocket, Options, Session};
+use tilo_session::{Options, Session};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
-const PERSON: &str = "Pat";
 /// The note the test places on the canvas: a seeded one the notes app holds.
 const NOTE: &str = "Groceries";
 
@@ -48,26 +46,17 @@ fn person_dir() -> &'static Path {
 
 /// A headless session showing the shell over the seeded apps, on this device's own state — a device
 /// that holds its workspaces, as a person's own does (`state` is set up as one) — with its
-/// MCP server and the test's own program admitted to act as the person: two calls on one test are
+/// sockets at `root` ([`crate::common::api_options`]): two calls on one test are
 /// two sessions of the same device, as a restart is.
 fn session(root: &Path, state: &Path) -> Session {
     // The seeded apps a development session starts with: installed in this run's store, published
     // for the person (notes, tasks, chat, mail).
     let seeded = crate::common::seeded_apps();
-    let program = std::env::current_exe().expect("this test's program");
     let mut session = Session::headless(
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
             services: seeded,
-            questions: Some(Questions::new()),
-            app_socket: AppSocket::At(root.join("app_wire.sock")),
-            mcp_server: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
             state: Some(state.to_path_buf()),
-            ..Options::default()
+            ..crate::common::api_options(root)
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
@@ -169,8 +158,7 @@ fn the_shell_choices_survive_the_session_ending() {
         });
         // The desktop style, as the switch's own action chooses it: a view of the layout the
         // shell ships (`so.tilo.shell:desktop`).
-        let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-        repl.opened(&mut session);
+        let mut repl = crate::common::Api::open(&mut session, root.path());
         let (answer, failed) = repl.run(
             &mut session,
             "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
