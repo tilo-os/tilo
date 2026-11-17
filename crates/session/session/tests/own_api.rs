@@ -28,7 +28,7 @@ use crate::common::{PERSON, app_store, device_in, headless, seeded_apps, until};
 /// A session that holds its workspaces here, with the home it keeps them in: the home lives as
 /// long as the session, since nothing of the session's reads it after the home is gone.
 struct Desktop {
-    home: tilo_test_env::TestHome,
+    _home: tilo_test_env::TestHome,
     session: tilo_session::Session,
 }
 
@@ -55,7 +55,10 @@ fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
         api_server: Some(api.to_owned()),
         ..Options::default()
     });
-    Desktop { home, session }
+    Desktop {
+        _home: home,
+        session,
+    }
 }
 
 /// A client of the session's API at `api`, as `tilolang repl` and `tilo` make one: the socket
@@ -88,7 +91,7 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
-    let mut desktop = session_with_api(root.path(), &api);
+    let desktop = session_with_api(root.path(), &api);
     let mut session = desktop.session;
     served(&mut session, &api);
 
@@ -142,7 +145,7 @@ fn the_socket_is_all_its_directory_holds() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api").join("api.sock");
-    let mut desktop = session_with_api(root.path(), &api);
+    let desktop = session_with_api(root.path(), &api);
     let mut session = desktop.session;
     served(&mut session, &api);
 
