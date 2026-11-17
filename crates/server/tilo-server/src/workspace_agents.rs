@@ -18,6 +18,12 @@
 //! over, since its steps may have changed things already: its reply says it was interrupted,
 //! and asking again is the person's to do. One it had only taken runs, once.
 //!
+//! A look reads what a workspace owes first and acts on what it read a moment later, when a
+//! turn may have ended or gone on. So a turn begins only what the workspace still owes once it
+//! holds its place, and a turn that goes is handed only what was read since it began or last
+//! went on ([`going::Reading`]): no message is asked of a model twice, and none is left for an
+//! older one.
+//!
 //! An agent works inside a turn: the person's ask. It acts through the same agent tools an MCP
 //! client gets ([`McpServer::for_turn`]), over the host's own action service, as the person's
 //! device handing its session to the agent on that turn: everything it does is held to what the
@@ -103,6 +109,9 @@ const TASKS: &str = "so.tilo.tasks";
 /// The longest the server goes without looking at every workspace, whatever is written in
 /// between: what a missed wake costs.
 const IDLE: Duration = Duration::from_secs(60);
+/// The most times one look reads what a workspace owes: it reads again where a turn began or
+/// went on under what it read ([`going::Reading`]).
+const READINGS: usize = 3;
 /// The most model turns one ask takes before the agent stops and says so.
 const MOST_TURNS: usize = 24;
 /// How long one model turn may take.
@@ -639,12 +648,33 @@ impl HostAgents {
     /// written): the next write brings it up again, as ever, and it is never started over at
     /// once, which would ask its person's model again and again.
     async fn look_past(&self, workspace: &str, past: Option<&(String, Ask)>) -> Result<(), String> {
+        // What was read before a turn began or went on is not handed to that turn: the look
+        // reads again. A few times at most, since a turn that moves writes, and its write
+        // starts a look of its own.
+        for _ in 0..READINGS {
+            if Box::pin(self.look_reading(workspace, past)).await? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// One reading of [`Self::look_past`]: whether what it read was still current wherever it
+    /// was handed to a turn that goes.
+    async fn look_reading(
+        &self,
+        workspace: &str,
+        past: Option<&(String, Ask)>,
+    ) -> Result<bool, String> {
         // What its people answered about what its agents asked them first.
         self.settle_asks(workspace).await;
         // What a coding agent's harness said, and a stop for it, with no turn of it going.
         if self.codes_in(workspace) {
             Box::pin(self.settle_coding(workspace)).await;
         }
+        // Taken before anything is read: a turn that begins or goes on from here may answer
+        // something newer than what this look reads.
+        let reading = self.going.reading();
         let asks = self.asks(workspace).await?;
         // An answer wakes whoever asked: written once under the question's own key.
         self.wake_answered(workspace, asks.answered);
@@ -679,15 +709,20 @@ impl HostAgents {
                 }
             }
         }
+        let mut current = true;
         for turn in asks.turns {
             if is_past(&turn) {
                 continue;
             }
             match self.going.enter(workspace, &turn) {
                 // One turn at a time for an agent in a conversation: what its person wrote
-                // since reaches the turn that is going, at its next step.
+                // since reaches the turn that is going, at its next step. Not what was read
+                // before that turn began or last went on: it may be older than what the turn
+                // answers now, and the turn would leave its person's newer words for it.
                 going::Entered::Goes(going) => {
-                    going.reach(turn);
+                    if going.reach_read(turn, reading) == going::Handed::Stale {
+                        current = false;
+                    }
                 }
                 going::Entered::Began(held) => {
                     let agents = self.clone();
@@ -708,7 +743,7 @@ impl HostAgents {
             }
         }
         self.carry(workspace, asks.sub).await;
-        Ok(())
+        Ok(current)
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
@@ -981,7 +1016,8 @@ impl HostAgents {
 
     /// Answer `turn` in `workspace`: tell the person it is taken, work through the agent's tools
     /// until the model has its answer, and give the answer where the ask was made. A turn of
-    /// the same agent that goes in the same conversation already is left to go on.
+    /// the same agent that goes in the same conversation already is left to go on, and a
+    /// message that is owed no answer any more is not begun ([`Self::owed_now`]).
     ///
     /// # Errors
     /// The person is not admitted here on any device, or the answer could not be written.
@@ -1064,6 +1100,29 @@ impl HostAgents {
         }
     }
 
+    /// `turn` as `workspace` gives it now that its place is held, and none where it is owed no
+    /// longer. Whoever gave the turn read the workspace earlier, and a turn that held the place
+    /// then may have answered the message since, or its person stopped it, asked it again or
+    /// wrote something newer. Begun as it was read, it would ask its model a second time and
+    /// set a finished reply back to taken. What is owed instead begins at the next look, and a
+    /// turn that is still owed is told its conversation as it stands now, with the answer
+    /// before it.
+    ///
+    /// An issue's turn begins as it was read: whether it is owed depends on the time as well,
+    /// and whoever begins it says at what time ([`Self::turns_at`]).
+    ///
+    /// # Errors
+    /// What the workspace owes could not be read.
+    async fn owed_now(&self, workspace: &str, turn: &Turn) -> Result<Option<Turn>, String> {
+        if !matches!(turn.ask, Ask::Message { .. }) {
+            return Ok(Some(turn.clone()));
+        }
+        let owed = Box::pin(self.asks(workspace)).await?.turns;
+        Ok(owed
+            .into_iter()
+            .find(|now| now.agent.id.0 == turn.agent.id.0 && now.ask == turn.ask))
+    }
+
     /// [`Self::answer`], for the turn that holds its place as `going`: the ask it ended on,
     /// which is a later one when its person wrote again while it worked, and how it ended.
     async fn answer_going(
@@ -1072,6 +1131,14 @@ impl HostAgents {
         turn: &Turn,
         going: &going::Going,
     ) -> (Ask, Result<(), String>) {
+        // The place is this turn's own from here on, and nothing else answers in it: what the
+        // workspace owes now is what begins.
+        let turn = match self.owed_now(workspace, turn).await {
+            Ok(Some(owed)) => owed,
+            Ok(None) => return (turn.ask.clone(), Ok(())),
+            Err(error) => return (turn.ask.clone(), Err(error)),
+        };
+        let turn = &turn;
         let scope = match self.scope(workspace, turn).await {
             Ok(scope) => scope,
             Err(error) => return (turn.ask.clone(), Err(error)),
