@@ -863,8 +863,10 @@ pub(super) fn connect(connection: Connection) -> Result<Arc<ChromiumEngine>, Str
 
 fn send_commands(queue: &CommandQueue, routes: &Routes, connection: &Connection) {
     let mut writer = BufWriter::new(connection);
-    while let Some(command) = queue.pop() {
-        if let Err(error) = protocol::write_json(&mut writer, &command) {
+    while let Some(mut command) = queue.pop() {
+        let written = protocol::write_json(&mut writer, &command);
+        super::wipe_released(&mut command);
+        if let Err(error) = written {
             fail_routes(routes, &format!("Chromium command channel closed: {error}"));
             break;
         }

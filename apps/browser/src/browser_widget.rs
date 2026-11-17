@@ -83,6 +83,9 @@ mod page_events;
 #[cfg(test)]
 mod page_files_tests;
 mod page_find;
+mod page_items;
+#[cfg(test)]
+mod page_items_tests;
 mod page_resource;
 mod page_review_view;
 mod page_stopping;
@@ -624,6 +627,17 @@ pub struct BrowserWidget {
     /// Where this tab's engine stands against the tab's resource, which is
     /// Browser's resource ([`crate::page_resource`]).
     page_resource: crate::page_resource::TabRecorder,
+    /// This window's way to its person's vault, where it has one
+    /// ([`crate::page_items`]).
+    item_source: Option<Rc<dyn crate::page_items::ItemSource>>,
+    /// Fills by reference whose item was asked for and has not come yet.
+    item_fills: Vec<page_items::ItemFill>,
+    /// Fills by reference that ended before they took the tab's turn, and
+    /// whose callers have not read how.
+    item_fill_results: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// What this window sent released for one site: struck out of everything
+    /// it answers afterwards.
+    struck: ui::webview::StruckTexts,
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
@@ -1493,6 +1507,10 @@ impl BrowserWidget {
             page_resource_reads: Vec::new(),
             page_resource_answers: Vec::new(),
             page_resource: crate::page_resource::TabRecorder::default(),
+            item_source: None,
+            item_fills: Vec::new(),
+            item_fill_results: Vec::new(),
+            struck: ui::webview::StruckTexts::default(),
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
@@ -1949,7 +1967,7 @@ impl BrowserWidget {
             BrowserOperation::AnswerHeldRequest { .. } => {
                 return Err("a held request is answered through its resource action".into());
             }
-            BrowserOperation::Page(_) => {
+            BrowserOperation::Page(_) | BrowserOperation::FillPageItem { .. } => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
             BrowserOperation::Form(_) => {
@@ -3205,8 +3223,14 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
-                WebViewEvent::PageResource { seq, entry } => self.hear_page_resource(seq, &entry),
-                WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
+                WebViewEvent::PageResource { seq, mut entry } => {
+                    self.struck.strike_json(&mut entry);
+                    self.hear_page_resource(seq, &entry);
+                }
+                WebViewEvent::PageChanged(mut change) => {
+                    self.struck.strike_change(&mut change);
+                    self.hear_page_changed(&change);
+                }
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
                     // answers with it.
@@ -5376,6 +5400,21 @@ impl BrowserWidget {
                 spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
+        // A field filled from the vault by reference is offered only where this
+        // window has a way to its person's vault.
+        if self.item_source.is_some() {
+            let spec = E::FillPageItem {
+                element: String::new(),
+                item: String::new(),
+                reason: None,
+            }
+            .bound_asking(&["element", "item", "reason"][..]);
+            page.actions.push(if web_page {
+                spec
+            } else {
+                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
+            });
+        }
         // Each form the page is known to ask is an action of its own.
         page.actions.extend(self.form_actions());
 
@@ -5653,6 +5692,18 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         cancellation_requested: bool,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        let mut update = self.settled_invocation(invocation, cancellation_requested)?;
+        // Whatever the page said of a text this window sent released leaves the
+        // window struck out, in every answer and however the action ended.
+        self.strike_update(&mut update);
+        Some(update)
+    }
+
+    fn settled_invocation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        cancellation_requested: bool,
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         if let Some(stopped) =
             self.answer_a_cancelled_page_operation(invocation, cancellation_requested)
         {
@@ -5660,6 +5711,10 @@ impl BrowserWidget {
         }
         if let Some(released) = self.holds.take_answer(invocation) {
             return Some(released);
+        }
+        self.drive_item_fills();
+        if let Some(ended) = self.take_item_fill_result(invocation) {
+            return Some(ended);
         }
         self.drive_page_operation();
         if self
@@ -5860,6 +5915,7 @@ impl BrowserWidget {
         self.sync_window_toolbar();
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
+        self.drive_item_fills();
         self.drive_page_operation();
         self.sync_page_review();
         self.sync_forms_read();
@@ -5971,6 +6027,15 @@ impl BrowserWidget {
         }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, actor, request)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
+        if let BrowserOperation::FillPageItem {
+            element,
+            item,
+            reason,
+        } = operation
+        {
+            self.start_item_fill(invocation, actor, invoker, element, item, reason)?;
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::ShowPageField { element, frame } = operation {

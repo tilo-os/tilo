@@ -728,6 +728,7 @@ fn spawn_command_writer(
         while let Some(mut command) = rx.pop() {
             let result = protocol::write_json(&mut writer, &command);
             wipe_service_wire(&mut command);
+            wipe_released(&mut command);
             if let Err(error) = result {
                 writer_shared.fail(format!("Chromium command channel closed: {error}"));
                 fail_routes(
@@ -2270,6 +2271,17 @@ fn wipe_service_wire(value: &mut Value) {
     }
 }
 
+/// A page command that carries a text released for one site holds that text until it is
+/// written to the engine: it is wiped then, not left to the allocator.
+fn wipe_released(value: &mut Value) {
+    if value.get("op").and_then(Value::as_str) != Some("page") || value.get("at").is_none() {
+        return;
+    }
+    if let Some(Value::String(text)) = value.get_mut("text") {
+        zeroize::Zeroize::zeroize(text);
+    }
+}
+
 #[derive(Default)]
 struct CommandQueue {
     state: Mutex<(VecDeque<(Value, usize)>, usize, bool)>,
@@ -2279,6 +2291,7 @@ impl CommandQueue {
     fn push(&self, mut value: Value) -> Result<(), &'static str> {
         let result = self.push_owned(&mut value);
         wipe_service_wire(&mut value);
+        wipe_released(&mut value);
         result
     }
     fn push_owned(&self, value: &mut Value) -> Result<(), &'static str> {

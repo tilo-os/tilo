@@ -805,6 +805,11 @@ impl TabRecorder {
         {
             self.sent_secret(text);
         }
+        if let PageRequest::FillReleased { text, .. } = request {
+            // A text released for one site is remembered as any secret this
+            // window sent is.
+            let _ = text.read(|text| self.sent_secret(text));
+        }
     }
 
     /// `secret` leaves this window as a secret (a secret fill's text, a

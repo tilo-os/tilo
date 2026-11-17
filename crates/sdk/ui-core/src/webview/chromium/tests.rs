@@ -641,6 +641,34 @@ tilo_test_env::scenario! {
                     json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test","secret":false})
                 )
             );
+            // A text released for one site is written once, printed by nothing and held by
+            // nothing once it is written.
+            let released = crate::webview::ReleasedText::new("released-for-one-site".to_owned());
+            let command = WebViewCommand::Page {
+                request_id: 5,
+                actor: None,
+                request: PageRequest::FillReleased {
+                    element: "d2e9".into(),
+                    text: released.clone(),
+                    at: "https://example.test".into(),
+                    into: crate::webview::FillInto::Password,
+                },
+            };
+            assert!(command_within_limits(&command));
+            assert!(!format!("{command:?}").contains("released-for-one-site"));
+            let mut written = encode_command(command.clone()).unwrap();
+            assert_eq!(
+                written,
+                json!({"op":"page","request_id":5,"action":"fill","element":"d2e9","text":"released-for-one-site","secret":true,"at":"https://example.test","into":"password"})
+            );
+            assert!(released.take().is_none(), "the write took it");
+            assert!(
+                !command_within_limits(&command),
+                "and it is written no second time"
+            );
+            wipe_released(&mut written);
+            assert_eq!(written["text"], "");
+            assert_eq!(written["at"], "https://example.test");
             for invalid in [
                 WebViewCommand::Page {
                     request_id: 0,

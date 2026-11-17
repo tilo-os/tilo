@@ -28,6 +28,11 @@ impl BrowserWidget {
         value.insert("title".into(), self.title.as_str().into());
         value.insert("message".into(), message.into());
         value.insert("navigation".into(), reply.navigation.as_str().into());
+        // A fill by reference says where its text went, and never what it was.
+        if let PageRequest::FillReleased { at, .. } = request {
+            value.insert("filled".into(), true.into());
+            value.insert("site".into(), at.as_str().into());
+        }
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }

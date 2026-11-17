@@ -622,6 +622,7 @@ browser-effect-drag-page = Drag element
 browser-effect-pointer-path = Draw pointer path
 browser-effect-fill-page = Fill field
 browser-effect-fill-page-secret = Fill password field
+browser-effect-fill-page-item = Fill field from vault
 browser-effect-select-page = Choose options
 browser-effect-fill-page-files = Choose files to upload
 browser-effect-press-page = Press key
