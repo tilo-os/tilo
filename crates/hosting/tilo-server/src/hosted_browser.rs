@@ -2260,9 +2260,16 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
 /// action service places a session after.
 #[must_use]
 pub fn opens_browser(request: &InvokeRequest) -> bool {
-    provider_workspace(&request.target.provider).is_some()
-        && request.target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
-        && request.target.address.action == APPLICATION_OPEN_ACTION
+    opens_browser_at(&request.target)
+}
+
+/// Whether `target` is the open of Browser in a workspace: what [`opens_browser`] asks of a
+/// request, for whoever holds only what the request addresses.
+#[must_use]
+pub fn opens_browser_at(target: &RemoteActionTarget) -> bool {
+    provider_workspace(&target.provider).is_some()
+        && target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
+        && target.address.action == APPLICATION_OPEN_ACTION
 }
 
 /// The Linux app `request` opens (`app.so.tilo.linux#open`, naming its

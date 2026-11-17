@@ -105,21 +105,57 @@ pub(super) struct Hosted {
     /// What the mail servers' stand-in was asked to sign in with.
     proved: Arc<Mutex<Vec<String>>>,
     pub(super) state: tempfile::TempDir,
+    /// Where the server is reached: what a stand-in for a window in the workspace's machine
+    /// dials.
+    pub(super) address: iroh::EndpointAddr,
 }
 
 impl Hosted {
     pub(super) async fn start() -> Self {
+        Self::start_placing(None).await
+    }
+
+    /// [`Self::start`], on a server that places its workspaces' Browser windows through
+    /// `browsers`, where it is handed any.
+    pub(super) async fn start_placing(
+        browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
+    ) -> Self {
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (server, actions) = crate::harness::hosted::serving_records_with_actions(
-            &root,
-            &server_device,
-            state.path(),
-            crate::common::catalogue,
+        // A window's session reaches the server at the address it is told, and the server
+        // certifies that session's device as its person's stand-in.
+        let reached = browsers.is_some().then(|| {
+            tilo_server::hosted_browser::keep_stand_in(&state.path().join("server"), &root)
+                .expect("the root signs the server's stand-in");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(
+                tilo_server::hosted_browser::SERVER_ENV,
+                format!(
+                    "{}@127.0.0.1:7704",
+                    hex::encode(server_device.cert.device_public_key)
+                ),
+            );
+            env
+        });
+        let (server, actions) = tilo_server::agents::start_serving_documents(
+            crate::harness::hosted::on_this_machine(state.path()),
+            tilo_server::daemon::ServerIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: server_device.key.clone(),
+                device_cert: server_device.cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            Some(Arc::new(crate::common::catalogue)),
+            None,
+            None,
+            browsers.clone(),
         )
-        .await;
+        .await
+        .unwrap();
+        drop(reached);
+        let address = server.node_addr();
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
@@ -155,7 +191,7 @@ impl Hosted {
                 .push(format!("{account} with {password}"));
             Ok("signed in".into())
         });
-        let agents = HostAgents::new(workspaces.clone(), actions.clone(), None);
+        let agents = HostAgents::new(workspaces.clone(), actions.clone(), None).placing(browsers);
         Self {
             _server: Box::new(server),
             actions,
@@ -168,6 +204,7 @@ impl Hosted {
             model,
             proved,
             state,
+            address,
         }
     }
 
@@ -604,3 +641,7 @@ mod reworded;
 /// The same server, person and assistant, using a service the person connected.
 #[path = "hosted_connections.rs"]
 mod connections;
+
+/// The same server, person and assistant, opening Browser in the workspace's machine.
+#[path = "hosted_turn_browser.rs"]
+mod turn_browser;

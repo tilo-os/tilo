@@ -80,6 +80,8 @@ mod vault_uses;
 
 // What a turn reaches of the services its person connected.
 mod connections;
+// A turn's open of Browser, where this server places the window.
+mod turn_browser;
 
 pub use asks::{Answered, Carried, Carries, ServerAsk};
 pub use sub_agents::Line;
@@ -521,6 +523,9 @@ pub struct HostAgents {
     carriers: asks::Carriers,
     /// What the people's assistants find to do on their own, which a turn's tools reach too.
     initiative: Option<Initiative>,
+    /// The Browser windows this server places for its workspaces, where it places any: a
+    /// turn's open of Browser has its window placed there ([`turn_browser`]).
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 }
 
 impl HostAgents {
@@ -535,6 +540,7 @@ impl HostAgents {
             events: None,
             carriers: Arc::default(),
             initiative: None,
+            browsers: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(connections::WORD, connections::answers(&agents.workspaces));
@@ -549,6 +555,15 @@ impl HostAgents {
     #[must_use]
     pub fn with_initiative(mut self, initiative: Option<Initiative>) -> Self {
         self.initiative = initiative;
+        self
+    }
+
+    /// These agents, whose turns reach the Browser windows `browsers` places: a turn's open of
+    /// Browser has its window placed in the turn's workspace. With `None` such an open is
+    /// refused in words that say this server has no machine for a window.
+    #[must_use]
+    pub fn placing(mut self, browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>) -> Self {
+        self.browsers = browsers;
         self
     }
 
@@ -980,6 +995,10 @@ impl HostAgents {
     }
 
     /// Whom `turn`'s agent acts for in `workspace`, and through what.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the turn's own providers are handed to its service, which keeps them for the turn"
+    )]
     async fn scope(&self, workspace: &str, turn: &Turn) -> Result<TurnScope, String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
         let person: [u8; 32] = hex::decode(&turn.person)
@@ -1010,6 +1029,10 @@ impl HostAgents {
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(uses).answering(mail);
+        // Its open of Browser, whose window this server places where it has a machine for one.
+        let browser =
+            turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
+        scope.provider = scope.provider.answering(browser);
         Ok(scope)
     }
 
