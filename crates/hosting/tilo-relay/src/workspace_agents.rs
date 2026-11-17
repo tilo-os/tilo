@@ -1029,7 +1029,7 @@ impl Reply {
                 arguments.insert(
                     "text".into(),
                     json!(if words.trim().is_empty() {
-                        "Done."
+                        "I finished without saying what I did; look at the issue's history for my changes."
                     } else {
                         words.trim()
                     }),
@@ -1218,6 +1218,7 @@ async fn work(
     ];
     let mut cost = 0u64;
     let key = format!("{}:{}", turn.agent.id.0, turn.cause);
+    let mut asked_for_words = false;
     for round in 0..MOST_TURNS {
         if going.stopped() {
             return (Outcome::Cancelled, cost);
@@ -1262,7 +1263,15 @@ async fn work(
                 // Its person wrote while it answered: it goes on with that, not past it.
                 continue;
             }
-            return (Outcome::Answered(words_of(&response)), cost);
+            let words = words_of(&response);
+            if words.is_empty() && !asked_for_words {
+                // An answer with no words tells the person nothing: it is asked once what it did.
+                asked_for_words = true;
+                messages.push(Message::text(Role::User, SAY_WHAT_YOU_DID.to_owned()));
+                continue;
+            }
+            tracing::info!(agent = %turn.agent.id.0, round, cost, said = words.len(), "an agent on the workspace's server answered");
+            return (Outcome::Answered(words), cost);
         }
         let Some(results) = run_calls(&server, calls, reply, going).await else {
             return (Outcome::Cancelled, cost);
@@ -1381,6 +1390,12 @@ async fn run_calls(
         }
         reply.doing(&call.name).await;
         let (content, is_error) = call_tool(server, &call.name, call.input.clone()).await;
+        if is_error {
+            let said: String = content.chars().take(LOGGED_CHARS).collect();
+            tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
+        } else {
+            tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
+        }
         results.push(Content::ToolResult(ToolResult {
             call_id: call.id.clone(),
             content,
@@ -1392,6 +1407,13 @@ async fn run_calls(
         content: results,
     })
 }
+
+/// What an agent that answered without words is asked, once.
+const SAY_WHAT_YOU_DID: &str =
+    "Answer the person now in a few plain sentences: what you did, and what you could not do.";
+
+/// How much of a refused tool's words the server's log keeps.
+const LOGGED_CHARS: usize = 300;
 
 /// `wait` from now, or now when that is past what a clock reads.
 fn later(wait: Duration) -> Instant {
