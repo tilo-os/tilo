@@ -132,7 +132,19 @@ fn validate_input(input: &Value, schema: &Value) -> Result<(), String> {
                 }
             }
         }
+        let required = |key: &str| {
+            schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|required| required.iter().any(|name| name == key))
+        };
         for (key, value) in object {
+            // An optional argument a model writes as `null` is one it left out: the schemas
+            // declare no `null` type (every provider's dialect takes them), and a model filling
+            // every field it was shown writes the ones it means to omit as `null`.
+            if value.is_null() && !required(key) {
+                continue;
+            }
             if let Some(property) = schema.get("properties").and_then(|p| p.get(key)) {
                 validate_input(value, property).map_err(|error| format!("{key}: {error}"))?;
             } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
@@ -905,6 +917,33 @@ mod tests {
         ] {
             assert!(tool.validate_input(&input).is_err());
         }
+    }
+
+    /// An optional argument written as `null` is left out, as a model filling every field it was
+    /// shown writes one it does not mean; a required one written as `null` is still refused.
+    #[test]
+    fn tool_schema_takes_an_optional_argument_written_as_null_as_left_out() {
+        let tool = ToolDefinition {
+            name: "place".into(),
+            description: String::new(),
+            input_schema: json!({
+                "type": "object", "required": ["resource"], "additionalProperties": false,
+                "properties": {
+                    "resource": {"type": "string"},
+                    "view": {"type": "string"},
+                }
+            }),
+        };
+        assert!(
+            tool.validate_input(&json!({"resource": "r", "view": null}))
+                .is_ok()
+        );
+        assert!(tool.validate_input(&json!({"resource": null})).is_err());
+        assert!(
+            tool.validate_input(&json!({"resource": "r", "other": null}))
+                .is_ok(),
+            "a null is no argument at all"
+        );
     }
 
     #[test]
