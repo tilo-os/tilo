@@ -230,6 +230,7 @@ impl ResourceApp for App {
     fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
         match fixture.scenario() {
             Some("migrated" | "migrated-issue") => fixture.provide(sample::Scene::Migrated),
+            Some(long) if let Some(scene) = sample::Scene::long(long) => fixture.provide(scene),
             Some(_) => fixture.provide(sample::Scene::Launch),
             None => {}
         }

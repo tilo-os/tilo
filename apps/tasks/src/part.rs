@@ -537,6 +537,11 @@ pub struct Issues<'a> {
     ordered: Vec<(&'a Id, &'a Issue)>,
     /// Where each issue is in `ordered`, and the part that keeps it.
     at: HashMap<&'a Id, (usize, u64)>,
+    /// The issues standing at the top, and those under each parent, by
+    /// where they are in `ordered`: read once here, so walking the tree asks
+    /// each issue for its sub-issues without reading every issue again.
+    top: Vec<usize>,
+    under: HashMap<&'a Id, Vec<usize>>,
 }
 
 impl<'a> Issues<'a> {
@@ -558,12 +563,30 @@ impl<'a> Issues<'a> {
                 .then(a.number.cmp(&b.number))
                 .then_with(|| a_id.cmp(b_id))
         });
-        let at = ordered
+        let at: HashMap<&'a Id, (usize, u64)> = ordered
             .iter()
             .enumerate()
             .filter_map(|(position, (id, _))| Some((*id, (position, found.get(id)?.1))))
             .collect();
-        Self { ordered, at }
+        let mut top = Vec::new();
+        let mut under: HashMap<&'a Id, Vec<usize>> = HashMap::new();
+        for (position, (_, issue)) in ordered.iter().enumerate() {
+            // A parent that is gone leaves its sub-issue at the top.
+            match issue
+                .parent
+                .as_ref()
+                .and_then(|parent| at.get_key_value(parent))
+            {
+                Some((parent, _)) => under.entry(*parent).or_default().push(position),
+                None => top.push(position),
+            }
+        }
+        Self {
+            ordered,
+            at,
+            top,
+            under,
+        }
     }
 
     /// How many issues there are.
@@ -626,8 +649,13 @@ impl<'a> Issues<'a> {
         &'s self,
         parent: Option<&'s Id>,
     ) -> impl Iterator<Item = (&'a Id, &'a Issue)> + 's {
-        self.iter()
-            .filter(move |(_, issue)| self.parent_of(issue) == parent)
+        let positions = match parent {
+            None => self.top.as_slice(),
+            Some(parent) => self.under.get(parent).map_or(&[][..], Vec::as_slice),
+        };
+        positions
+            .iter()
+            .filter_map(|position| self.ordered.get(*position).copied())
     }
 
     /// How many of `parent`'s direct sub-issues are closed, of how many.

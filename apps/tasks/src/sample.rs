@@ -22,6 +22,20 @@ pub(crate) enum Scene {
     Launch,
     /// What a migration from Linear leaves.
     Migrated,
+    /// A long tracker of this many issues, for measuring one
+    /// (`issues-2500`).
+    Long(u64),
+}
+
+impl Scene {
+    /// The long tracker a scenario named `issues-N` asks for.
+    pub(crate) fn long(scenario: &str) -> Option<Self> {
+        scenario
+            .strip_prefix("issues-")?
+            .parse()
+            .ok()
+            .map(Self::Long)
+    }
 }
 
 pub(crate) const SCENARIOS: &[&str] = &[
@@ -100,6 +114,45 @@ pub(crate) fn fill(scene: Scene, chain: &Chain<IssuePart>, person: &str) {
     match scene {
         Scene::Launch => launch(chain, person),
         Scene::Migrated => migrated(chain, person),
+        Scene::Long(count) => long(chain, count),
+    }
+}
+
+/// `count` issues: every tenth a parent, the nine after it its sub-issues,
+/// every seventh one done.
+fn long(chain: &Chain<IssuePart>, count: u64) {
+    let mut parent: Option<Id> = None;
+    for number in 1..=count {
+        let title = format!("Issue number {number} of a long list");
+        let Some(named) = NonBlank::parse(&title) else {
+            continue;
+        };
+        let first = number % 10 == 1;
+        let status = if number % 7 == 0 {
+            Status::Done
+        } else {
+            Status::Todo
+        };
+        let Ok(Some(part)) = chain.invoke(&IssuePart::CREATE.with(crate::model::NewIssue {
+            status: Some(status),
+            parent: if first { None } else { parent.clone() },
+            ..crate::model::NewIssue::titled(named)
+        })) else {
+            continue;
+        };
+        if first {
+            // Found in the part it was written into, not across them all.
+            parent = chain
+                .parts()
+                .iter()
+                .find(|(index, _)| *index == part)
+                .and_then(|(_, kept)| {
+                    kept.issues
+                        .iter()
+                        .find(|(_, issue)| issue.title == title)
+                        .map(|(id, _)| id.clone())
+                });
+        }
     }
 }
 
