@@ -46,7 +46,7 @@ import {
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
-  settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
+  settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -973,8 +973,20 @@ export async function startEntryPage({mode}) {
     document.documentElement.dataset.pairingCode = code;
     status.textContent = pairingStatus(code);
   };
+  // A browser an earlier page paired to its own person is its own person
+  // again before anything asks who it is here (`unmarkOwnPairing`). Asked now
+  // and awaited with the runtime, which admission waits for anyway, so the
+  // page starts no later for it.
+  const ownAgain = unmarkOwnPairing(keptIdentity).catch(error => {
+    console.warn('pairing: this browser stays marked as paired to its own person', error);
+    return [];
+  });
   const deps = {
-    loadRuntime: async () => (runtime = await loadRuntime()),
+    loadRuntime: async () => {
+      runtime = await loadRuntime();
+      await ownAgain;
+      return runtime;
+    },
     rendererUnavailable: () => renderer,
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,

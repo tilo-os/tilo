@@ -736,3 +736,24 @@ test('a tab that waits to be approved without a link says where to approve it, a
   assert.match(said, /On a device where you are signed in/);
   assert.match(said, /open its link in this tab/);
 });
+
+test('a browser an earlier page paired to its own person opens as that person again', async () => {
+  // What a pairing link opened in the browser that made it left behind, before
+  // such a link was refused: the host kept as paired. The page then came up as
+  // a device whose root is elsewhere, left the root it keeps unused, and
+  // offered "Pair a new device" no more.
+  const set = JSON.stringify({step: 'done'});
+  const marked = {[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER, paired: true}};
+  const own = await fixture({kept: {rootPublicKey: USER}, local: {'tilo-host-memberships': JSON.stringify(marked), 'tilo-setup': set}});
+  assert.equal(own.failure, null);
+  assert.deepEqual(JSON.parse(localStorage.getItem('tilo-host-memberships')), {[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER}},
+    'the host is kept as one this browser joined as that person, whose root it holds');
+
+  // A device paired to a person whose root is elsewhere stays their device,
+  // whether this browser keeps another person or none.
+  for (const kept of [{rootPublicKey: ELSEWHERE}, null]) {
+    const device = await fixture({kept, local: {'tilo-host-memberships': JSON.stringify(marked), 'tilo-setup': set}});
+    assert.equal(device.failure, null);
+    assert.deepEqual(JSON.parse(localStorage.getItem('tilo-host-memberships')), marked, JSON.stringify(kept));
+  }
+});

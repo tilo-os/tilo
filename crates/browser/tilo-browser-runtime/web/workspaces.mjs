@@ -596,6 +596,35 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
   return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
+/**
+ * Undo the mark a browser was left with when it was paired to the person it
+ * already is: a pairing link opened in the browser that made it, before
+ * `pairViaHost` refused that. Every host kept as `paired` for the person
+ * whose root this browser keeps (`kept()`: `{rootPublicKey}` or `null`,
+ * `keptIdentity`) is kept as joined again; resolves to the origins changed.
+ *
+ * A browser that keeps a person's root is no device of theirs whose root is
+ * elsewhere. Marked as one it left that root unused, so it could let no
+ * further device in. A device paired to anyone else stays as it is, and a
+ * browser with no paired host is not asked whom it keeps.
+ */
+export async function unmarkOwnPairing(kept, memberships = globalThis.localStorage) {
+  const marked = Object.values(readMemberships(memberships)).some(host => host?.paired);
+  if (!marked) return [];
+  const holds = (await kept())?.rootPublicKey ?? null;
+  if (!/^[0-9a-f]{64}$/.test(holds ?? '')) return [];
+  // Read again: the person was asked for in between.
+  const all = readMemberships(memberships);
+  const own = Object.keys(all).filter(origin => all[origin]?.paired && all[origin].userPublicKey === holds);
+  for (const origin of own) {
+    const joined = {...all[origin]};
+    delete joined.paired;
+    all[origin] = joined;
+  }
+  if (own.length) memberships?.setItem(MEMBERSHIPS, JSON.stringify(all));
+  return own;
+}
+
 /** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or the
  * least wait the entry asked for (`retryAfter`, seconds), whichever is longer;
  * rejects once `signal` aborts. */
