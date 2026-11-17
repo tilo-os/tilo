@@ -255,6 +255,23 @@ fn address_part(id: &str) -> &str {
         .map_or(id, |(_, address)| address)
 }
 
+/// Whether `given` names `offer`'s action the way a `tilo` program calls it: `<app>.<action>`
+/// (`tasks.schedule`), where the app is its id or the alias a program imports it by (`tasks`
+/// for `so.tilo.lang.tasks`), in either case. A model reaching for an action it writes in a
+/// program writes that name, so the discovery tools find it by the same name the program does.
+fn names_action_as_a_program(given: &str, offer: &Offer) -> bool {
+    let (app, action) = (offer.app.as_str(), offer.descriptor.address.action.as_str());
+    let Some((asked_app, asked_action)) = given.rsplit_once('.') else {
+        return false;
+    };
+    if asked_action != action {
+        return false;
+    }
+    let asked_app = asked_app.to_lowercase();
+    let alias = crate::programs::alias_of(app).to_lowercase();
+    app.to_lowercase() == asked_app || alias == asked_app
+}
+
 /// The application an operation opens in a new window, when it is an open:
 /// an application's own `open`, or the launcher's open that the desktop
 /// publishes for every application it can start (`desktop:app:<app>#open`).
@@ -1548,10 +1565,17 @@ fn names_application(asked: &str, o: &Offer) -> bool {
     names(&o.app) || o.address().resource == asked || opened_app(o).is_some_and(names)
 }
 
-/// The words a search is matched against: everything the app itself wrote.
+/// The words a search is matched against: everything the app itself wrote, and the name a
+/// `tilo` program calls the action by (`tasks.schedule`), so a model searching for the word it
+/// writes in a program finds the operation that does it.
 fn haystack(o: &Offer) -> String {
+    let call = format!(
+        "{}.{}",
+        crate::programs::alias_of(&o.app),
+        o.descriptor.address.action
+    );
     format!(
-        "{} {} {} {} {}",
+        "{} {} {} {} {} {call}",
         o.id(),
         o.descriptor.action_label,
         o.descriptor.resource_label,
@@ -1673,17 +1697,30 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     };
     let given = given.trim();
     // An id copied without its `broker:<n>:` prefix names the one offer with
-    // that address, as long as only one has it.
-    let offer = surface::find(&catalogue.offers, given).or_else(|| {
-        let mut same = catalogue
-            .offers
-            .iter()
-            .filter(|o| address_part(&o.id()) == address_part(given));
-        match (same.next(), same.next()) {
-            (Some(only), None) => Some(only),
-            _ => None,
-        }
-    });
+    // that address, as long as only one has it; and the name a `tilo` program
+    // calls the action by (`tasks.schedule`) names it too, as long as only one
+    // offer in that app carries that action.
+    let offer = surface::find(&catalogue.offers, given)
+        .or_else(|| {
+            let mut same = catalogue
+                .offers
+                .iter()
+                .filter(|o| address_part(&o.id()) == address_part(given));
+            match (same.next(), same.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        })
+        .or_else(|| {
+            let mut same = catalogue
+                .offers
+                .iter()
+                .filter(|o| names_action_as_a_program(given, o));
+            match (same.next(), same.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        });
     let Some(offer) = offer else {
         // Unknown and not-offered are deliberately one answer, as they are at
         // the API: a caller must not be able to map what it may not see by

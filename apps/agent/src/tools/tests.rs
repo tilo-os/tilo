@@ -1178,8 +1178,7 @@ tilo_test_env::scenario! {
     }
 
     phase content_beside_words_shows_the_words_and_carries_the_content;
-    // An operation taking content beside words lists its other parameters
-    // and says the content one is carried in from the step before it.
+    // An operation taking content beside words lists its other parameters    // and says the content one is carried in from the step before it.
     {
         let mut attach = offer(
             "mail",
@@ -1236,6 +1235,59 @@ fn a_web_search_without_its_query_is_told_what_it_sent_and_what_it_takes() {
         described.contains("never the person's own things"),
         "{described}"
     );
+}
+
+/// A `tilo` program names an action `<app>.<action>` (`tasks.schedule`); `describe_operation`
+/// finds it by that name the same as by the id a listing returned.
+#[test]
+fn an_app_qualified_action_name_finds_the_operation() {
+    let tasks = |action: &str| {
+        offer(
+            "so.tilo.lang.tasks",
+            "tl:so.tilo.lang.tasks:root-fjqi4yze",
+            "tl.so.tilo.lang.tasks.Task",
+            action,
+            "Pick date",
+            InputSpec::None,
+        )
+    };
+    let mut catalogue = workspace();
+    catalogue.offers.push(tasks("schedule"));
+    catalogue.offers.push(tasks("remind_at"));
+    let mut revealed = Revealed::new();
+    let by_alias = describe(
+        &json!({"operation": "tasks.schedule"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(
+        by_alias.contains("#schedule"),
+        "an app-qualified name finds the action: {by_alias}"
+    );
+    let by_id = describe(
+        &json!({"operation": "so.tilo.lang.tasks.remind_at"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(
+        by_id.contains("#remind_at"),
+        "the app's whole id names it too: {by_id}"
+    );
+    let absent = describe(
+        &json!({"operation": "tasks.imaginary_verb"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert_eq!(absent, nothing_found("the operation tasks.imaginary_verb"));
+    // A search for the name a program writes finds the operation that does it: a model that
+    // reaches the task's actions this way still meets the one it will call.
+    let found = operations(
+        &json!({"search": "tasks.schedule"}),
+        &catalogue,
+        &mut revealed,
+    );
+    assert!(found.contains("#schedule"), "{found}");
+    assert!(!found.contains("#remind_at"), "{found}");
 }
 
 /// "Put my notes next to the inbox" is done in both apps by the one place: what it shows and
