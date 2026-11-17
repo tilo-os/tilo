@@ -8,6 +8,9 @@
 import {createPeerVoice} from './web/voice-peer.mjs';
 import {createVoiceControls} from './web/voice-controls.mjs';
 import {createBrowserAudio} from './web/voice-audio.mjs';
+// The page tells each change it makes, so the driver reads its state again
+// then rather than on a clock.
+import {changed} from './web/changes.mjs';
 
 const who = new URL(location.href).searchParams.get('who');
 const workspace = await (await fetch('/api/workspace')).text();
@@ -25,7 +28,7 @@ const certified = {
   voiceCall: (_, operation, request) => {void fetch(`/api/${who}/call/${request}`, {method: 'POST', body: operation, cache: 'no-store'});},
   // The microphone's frames, which the page publishes on its workspace's live
   // plane: this fixture holds no plane, so it counts them instead.
-  callAudio: (_, frames) => {window.publishedFrames = (window.publishedFrames ?? 0) + JSON.parse(frames).length;},
+  callAudio: (_, frames) => {window.publishedFrames = (window.publishedFrames ?? 0) + JSON.parse(frames).length; changed();},
   // What the page makes and reads of the call's pictures, posted to the
   // fixture that holds the plane: each as it is made, never on a timer.
   callPictures: (_, pictures) => {void fetch(`/api/${who}/pictures`, {method: 'POST', body: pictures, cache: 'no-store'});},
@@ -43,18 +46,24 @@ const reports = [];
 const levels = {messages: 0, max: {}, captureMax: 0};
 const resources = {contexts: [], streams: [], workers: []};
 const environment = {
-  AudioContext: class extends AudioContext {constructor(options) {super(options); resources.contexts.push(this);}},
+  AudioContext: class extends AudioContext {
+    constructor(options) {super(options); resources.contexts.push(this); this.addEventListener('statechange', changed);}
+  },
   AudioWorkletNode, AudioEncoder, AudioDecoder, AudioData, EncodedAudioChunk,
   Worker: class extends Worker {
     constructor(...args) {super(...args); resources.workers.push(this);}
-    terminate() {this.stopped = true; super.terminate();}
+    terminate() {this.stopped = true; super.terminate(); changed();}
   },
   navigator: {mediaDevices: {async getUserMedia(options) {
     const stream = await navigator.mediaDevices.getUserMedia(options);
+    for (const track of stream.getTracks()) {
+      const stop = track.stop.bind(track);
+      track.stop = () => {stop(); changed();};
+    }
     resources.streams.push(stream); return stream;
   }}},
 };
-const factory = createBrowserAudio({environment, onReport: report => reports.push(`${report.stage}: ${report.error ?? report.type}`)});
+const factory = createBrowserAudio({environment, onReport: report => {reports.push(`${report.stage}: ${report.error ?? report.type}`); changed();}});
 const audio = {start(options) {
   return factory.start({...options, onLevels(measured) {
     levels.messages += 1;
@@ -64,17 +73,18 @@ const audio = {start(options) {
       if (rms > 0.015) speechCounts[publisher] = (speechCounts[publisher] ?? 0) + 1;
     }
     options.onLevels(measured);
+    changed();
   }}).then(session => {
     const play = session.play.bind(session);
     session.play = frame => {
       const taken = play(frame);
-      if (taken) played[frame.publisherId] = (played[frame.publisherId] ?? 0) + 1;
+      if (taken) {played[frame.publisherId] = (played[frame.publisherId] ?? 0) + 1; changed();}
       return taken;
     };
     return session;
   });
 }};
-const peerVoice = createPeerVoice({peer: () => certified, workspace, device, audio, onReport: report => reports.push(`${report.type}: ${report.error?.message ?? ''}`)});
+const peerVoice = createPeerVoice({peer: () => certified, workspace, device, audio, onReport: report => {reports.push(`${report.type}: ${report.error?.message ?? ''}`); changed();}});
 const voice = peerVoice.call;
 const controls = createVoiceControls({voice: peerVoice, workspace});
 const act = command => controls.execute({app: 'so.tilo.chat', workspace, record: '', instance: '1', command: {version: 1, intent: 0, command}});
@@ -82,12 +92,15 @@ const act = command => controls.execute({app: 'so.tilo.chat', workspace, record:
   for (;;) {
     const events = await (await api('events')).json();
     peerVoice.pump(JSON.stringify(events));
+    if (events.length) changed();
     if (!events.length) await new Promise(resolve => setTimeout(resolve, 20));
   }
 })();
 const heardSpeaking = new Set();
 voice.subscribe(state => {
   for (const member of state.members) if (member.speaking) heardSpeaking.add(member.self ? 'self' : member.device);
+  changed();
 });
 Object.assign(window, {voice, act, played, reports, levels, heardSpeaking, speechCounts, resources, reconnect: () => api('reconnect', 'POST'), ready: true});
+changed();
 </script>

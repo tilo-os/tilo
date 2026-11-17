@@ -321,6 +321,9 @@ export function untilTruthy(expression, withinMs) {
     };
     const look = async () => {
       if (done) return;
+      // A loading step (the document ready, loaded) may be the one that
+      // brought the page's modules in: from then on its changes are followed.
+      follow();
       if (reading) { again = true; return; }
       reading = true;
       do {
