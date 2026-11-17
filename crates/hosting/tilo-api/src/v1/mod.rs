@@ -450,8 +450,9 @@ impl<'a> Caller<'a> {
                 tilo_relay_session::workspaces::check_labels(&labels)
                     .map_err(|why| ApiError::new("invalid_arguments", why))?;
                 let mut listed = self
-                    .server
-                    .relay
+                    .session
+                    .connection()
+                    .relay()
                     .labelled(self.session.connection(), &labels)
                     .await
                     .map_err(ApiError::from)?;
@@ -619,8 +620,9 @@ impl<'a> Caller<'a> {
     async fn export(&self) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         let workspace = self
-            .server
-            .relay
+            .session
+            .connection()
+            .relay()
             .workspace(self.session.connection(), &ws)
             .await
             .map_err(ApiError::from)?

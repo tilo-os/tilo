@@ -26,7 +26,7 @@ pub mod invocations;
 pub mod members;
 pub mod unattended;
 
-use crate::relay::{Connection, Relay, RelayError};
+use crate::relay::{Connection, RelayError};
 use crate::store::Scope;
 use serde_json::{Map, Value, json};
 use std::{
@@ -92,8 +92,7 @@ pub struct Session {
     run: String,
     /// The person, as their workspaces name them.
     person: String,
-    relay: Arc<Relay>,
-    /// The grant's session with the relay.
+    /// The grant's session with the host the front door forwarded to.
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
@@ -221,7 +220,6 @@ impl Session {
         grant: String,
         scope: Scope,
         label: String,
-        relay: Arc<Relay>,
         connection: Arc<Connection>,
         server: std::sync::Weak<crate::Server>,
     ) -> Self {
@@ -231,7 +229,6 @@ impl Session {
             label,
             run: uuid::Uuid::new_v4().simple().to_string(),
             person: hex::encode(connection.key.cert().user_public_key),
-            relay,
             connection,
             server,
             served: tokio::sync::Mutex::default(),
@@ -274,7 +271,11 @@ impl Session {
         if let Some(known) = entered.as_ref() {
             return Ok(Arc::clone(known));
         }
-        let id = self.relay.enter(&self.connection, workspace).await?;
+        let id = self
+            .connection
+            .relay()
+            .enter(&self.connection, workspace)
+            .await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
         let cert = self.connection.key.cert();
@@ -410,7 +411,8 @@ impl Session {
         workspace: &str,
     ) -> Option<tilo_relay_session::workspaces::WorkspaceHostAddress> {
         let address = self
-            .relay
+            .connection
+            .relay()
             .workspace(&self.connection, workspace)
             .await
             .ok()??

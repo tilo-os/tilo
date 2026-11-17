@@ -114,7 +114,7 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
-                relay: host.to_owned(),
+                hosts: vec![host.to_owned()],
             },
             Store::in_memory(),
         )

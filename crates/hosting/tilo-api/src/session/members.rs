@@ -93,7 +93,8 @@ impl Session {
         arguments: Map<String, Value>,
     ) -> Result<Value, Outcome> {
         let id = self
-            .relay
+            .connection
+            .relay()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
@@ -243,6 +244,7 @@ impl crate::Server {
         expires_at_ns: u64,
     ) -> String {
         let entry = self.config.web_entry.trim_end_matches('/');
+        let host = self.hosts.names().into_iter().next();
         let shelved = match (
             tilo_workspace_directory::client(),
             tilo_workspace_directory::web_origin(&format!("{entry}/")),
@@ -251,7 +253,7 @@ impl crate::Server {
                 tilo_workspace_directory::shelve(
                     &client,
                     &site,
-                    Some(&self.config.relay),
+                    host.as_deref(),
                     invitation,
                     expires_at_ns,
                 )
@@ -266,7 +268,7 @@ impl crate::Server {
                 // The route names the relay, as the site's own workspace
                 // links do: without it the page asks the site itself for
                 // the workspace's host, which it is not.
-                let host = self.relay.name();
+                let host = host.unwrap_or_default();
                 format!("{entry}/#/@{host}/w/{workspace}?invite={text}")
             },
             |shelved| shelved.link,

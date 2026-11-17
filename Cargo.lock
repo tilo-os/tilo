@@ -17552,6 +17552,7 @@ dependencies = [
  "tilo-files",
  "tilo-mcp",
  "tilo-net",
+ "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",

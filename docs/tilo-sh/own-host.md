@@ -13,8 +13,9 @@ Three places name the host, and they agree:
 | The command | `--api`, or `TILO_API_URL` |
 | An agent's MCP client | the URL you add: `<host>/mcp`, or `<host>/w/<workspace>/mcp` for one workspace |
 
-The key comes from the host it is used on. A key made at tilo.sh reaches nothing at your host, and the
-other way round: ask your host for one, approve it there, and keep them apart.
+A key belongs to its person, not to one host: it is the grant they approved, and it reaches their
+workspaces wherever those are held. An API server in front of your host accepts the same key as one in
+front of ours, and a key still works when the server that made it stops answering.
 
 ## Run one from the Tilo repository
 

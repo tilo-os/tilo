@@ -686,3 +686,115 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
         "{gone}"
     );
 }
+
+/// A front door that never approved the key serves it anyway: the key is the
+/// grant the person signed, so every front door reads the same one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_works_at_every_front_door() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+
+    let second = Server::new(
+        &tilo_api::Config {
+            issuer: ISSUER.into(),
+            web_entry: on_relay.web_entry.clone(),
+            hosts: vec![on_relay.relay.clone()],
+        },
+        tilo_api::store::Store::in_memory(),
+    )
+    .unwrap();
+    let elsewhere = V1 {
+        api: &second,
+        token: token.clone(),
+    };
+    let (status, listed) = elsewhere.get("/v1/workspaces").await;
+    assert_eq!(status, 200, "{listed}");
+    assert!(listed["workspaces"].is_array(), "{listed}");
+
+    // The door that approved it serves the same key, and the same grant.
+    let home = V1 {
+        api: &on_relay.api,
+        token,
+    };
+    let (status, listed) = home.get("/v1/workspaces").await;
+    assert_eq!(status, 200, "{listed}");
+}
+
+/// The host a call used goes away; another host of the person's serves the
+/// same key, because the key is the grant and every host admits it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_is_served_after_the_host_it_used_goes_away() {
+    Box::pin(async {
+        let on_relay = api_on_relay(ISSUER).await;
+        let used = on_relay.relay.clone();
+        let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+        let token = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+        let home = V1 {
+            api: &on_relay.api,
+            token: token.clone(),
+        };
+        let (status, listed) = home.get("/v1/workspaces").await;
+        assert_eq!(status, 200, "{listed}");
+
+        // The host the call used stops serving; another takes the key's calls.
+        let restarted = on_relay.restart(true).await;
+        let second = Server::new(
+            &tilo_api::Config {
+                issuer: ISSUER.into(),
+                web_entry: restarted.web_entry.clone(),
+                hosts: vec![used, restarted.relay.clone()],
+            },
+            tilo_api::store::Store::in_memory(),
+        )
+        .unwrap();
+        let elsewhere = V1 {
+            api: &second,
+            token,
+        };
+        let (status, listed) = elsewhere.get("/v1/workspaces").await;
+        assert_eq!(status, 200, "{listed}");
+    })
+    .await;
+}
+
+/// Nothing that can read the workspace is online: the call is refused in
+/// plain words, with what to do about it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+
+    let nowhere = Server::new(
+        &tilo_api::Config {
+            issuer: ISSUER.into(),
+            web_entry: on_relay.web_entry.clone(),
+            // Nothing serves at this address: no host is online for the key.
+            hosts: vec!["http://127.0.0.1:9".into()],
+        },
+        tilo_api::store::Store::in_memory(),
+    )
+    .unwrap();
+    let backend = V1 {
+        api: &nowhere,
+        token,
+    };
+    let (status, refused) = backend.get("/v1/workspaces").await;
+    assert_eq!(status, 503, "{refused}");
+    assert_eq!(refused["error"]["code"], "unavailable", "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("No device that can read this workspace is online"),
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["next_steps"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty()),
+        "{refused}"
+    );
+}

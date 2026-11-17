@@ -97,7 +97,12 @@ impl Session {
 
     /// Whether `workspace` runs commands unattended, as its listing says.
     async fn read_unattended(&self, workspace: &str) -> Outcome {
-        match self.relay.workspace(&self.connection, workspace).await {
+        match self
+            .connection
+            .relay()
+            .workspace(&self.connection, workspace)
+            .await
+        {
             Ok(Some(listed)) => Outcome::Ok(json!({
                 "workspace": workspace,
                 "unattended": listed.unattended,
@@ -124,7 +129,8 @@ impl Session {
             ));
         };
         let id = self
-            .relay
+            .connection
+            .relay()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;

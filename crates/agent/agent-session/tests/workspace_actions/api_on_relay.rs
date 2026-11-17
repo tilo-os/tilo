@@ -194,7 +194,7 @@ async fn start(
         &Config {
             issuer: issuer.into(),
             web_entry: web_entry.trim_end_matches('/').to_owned(),
-            relay: relay.clone(),
+            hosts: vec![relay.clone()],
         },
         Store::in_memory(),
     )
@@ -269,7 +269,7 @@ impl OnRelay {
             &Config {
                 issuer: issuer.clone(),
                 web_entry: web_entry.trim_end_matches('/').to_owned(),
-                relay: relay.clone(),
+                hosts: vec![relay.clone()],
             },
             Store::in_memory(),
         )

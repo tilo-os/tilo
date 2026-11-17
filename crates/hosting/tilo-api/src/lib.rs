@@ -18,9 +18,10 @@
 //!   another. Pointing the agent at `https://mcp.tilo.sh/w/<workspace>` asks for exactly
 //!   that.
 //!
-//! The server holds no standing authority over anyone: it acts only with a
-//! grant's key, which the relay the person's workspaces live on admits as
-//! its person's agent, within the grant's scope and until it expires
+//! The server holds no standing authority over anyone, and no workspace: it
+//! reads the grant a key carries, forwards each call to the host that serves
+//! the workspace best right now ([`hosts`]), and that host admits the grant's
+//! key as its person's agent, within the grant's scope and until it expires
 //! ([`relay`]). It serves each MCP session itself, with the agent surface
 //! `tilo mcp` serves, over the grant's own session with the relay, where
 //! record actions run on the relay's app workers ([`session`]). Every
@@ -32,6 +33,7 @@ pub mod account;
 pub mod content;
 pub mod direct;
 pub mod grant_key;
+pub mod hosts;
 pub mod keys;
 pub mod oauth;
 pub mod pages;
@@ -42,13 +44,14 @@ pub mod store;
 pub mod v1;
 
 use grant_key::GrantKey;
+use hosts::Hosts;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Method, Request, Response, StatusCode,
     body::{Bytes, Incoming},
     header::{self, HeaderValue},
 };
-use relay::{Connection, Relay};
+use relay::Connection;
 use serde_json::{Value, json};
 use session::{SESSION_HEADER, Session};
 use std::{
@@ -81,9 +84,11 @@ pub struct Config {
     pub issuer: String,
     /// The person's Tilo on the web, which signs them in to the server.
     pub web_entry: String,
-    /// The public origin of the relay the person's workspaces live on
-    /// (`https://eu1.tilo.sh`).
-    pub relay: String,
+    /// The public origins of the hosts this front door may forward a call
+    /// to (`https://eu1.tilo.sh`), best-known first. Every one that answers
+    /// is a candidate, and the call goes to the one that serves it best
+    /// ([`hosts::Hosts`]); a front door keeps no workspace of its own.
+    pub hosts: Vec<String>,
 }
 
 /// What a sign-in in progress is for.
@@ -155,7 +160,8 @@ pub struct Server {
     /// `<web_entry>/sign-in`, where the person's Tilo signs them in.
     sign_in_entry: url::Url,
     store: Store,
-    relay: Arc<Relay>,
+    /// The hosts calls are forwarded to, and which one serves each.
+    hosts: Arc<Hosts>,
     browsers: sign_in::Browsers,
     pending: Mutex<HashMap<String, Pending>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -211,11 +217,15 @@ impl Server {
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
-            relay: Arc::new(Relay::new(&http, &config.relay)),
+            hosts: Arc::new(Hosts::new(&http, &config.hosts)),
             http,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
-                relay: config.relay.trim_end_matches('/').to_owned(),
+                hosts: config
+                    .hosts
+                    .iter()
+                    .map(|host| host.trim_end_matches('/').to_owned())
+                    .collect(),
                 web_entry,
             },
             sign_in_entry,
@@ -1012,7 +1022,11 @@ impl Server {
             .map(|(grant, workspace, key)| async move {
                 let named = async {
                     let connection = self.connection(&grant, &key).await.ok()?;
-                    self.relay.workspace(&connection, &workspace).await.ok()?
+                    connection
+                        .relay()
+                        .workspace(&connection, &workspace)
+                        .await
+                        .ok()?
                 };
                 match tokio::time::timeout(NAME_WAIT, named).await {
                     Ok(Some(found)) => Some((grant, found.name)),
@@ -1414,7 +1428,6 @@ impl Server {
             grant.id.clone(),
             scope,
             label,
-            Arc::clone(&self.relay),
             connection,
             Arc::downgrade(self),
         ))
@@ -1442,7 +1455,7 @@ impl Server {
         if let Some(live) = shared.upgrade().filter(|live| live.is_live()) {
             return Ok(live);
         }
-        let connection = Arc::new(self.relay.connect(key).await?);
+        let connection = Arc::new(self.hosts.connect(key).await?);
         *shared = Arc::downgrade(&connection);
         drop(shared);
         Ok(connection)
