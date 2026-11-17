@@ -801,6 +801,16 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
     relay.shutdown().await;
 }
 
+/// The session of `device`: the watch that sends it what its person's devices
+/// are sent, and where that arrives.
+fn session_of(
+    workspaces: &crate::workspaces::Workspaces,
+    device: &DeviceCert,
+) -> (u64, tokio::sync::mpsc::Receiver<crate::transport::Envelope>) {
+    let (outbound, pushed) = tokio::sync::mpsc::channel(8);
+    (workspaces.watch_personal(device, outbound), pushed)
+}
+
 /// The next list the host pushes to a device's session, waiting for one that
 /// `ok` takes: a change lands as the host settles it, not in a fixed order.
 async fn next_list(
@@ -857,9 +867,8 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
     let desktop = key_of(&root, "studio", DeviceCapabilities::member());
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
-    // The session of the person's device: what the host pushes the list to.
-    let (outbound, mut pushed) = tokio::sync::mpsc::channel(8);
-    let _watch = workspaces.watch_personal(&desktop, outbound);
+    // The session of the person's device: where their list is sent.
+    let (_watch, mut pushed) = session_of(workspaces, &desktop);
 
     // A workspace the person makes is in the list at once.
     let created: CreatedWorkspace = serde_json::from_value(
@@ -933,4 +942,51 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
     .await;
 
     relay.shutdown().await;
+}
+
+/// A device of a person's is sent the list of their devices when another of
+/// them is taken back, marked there: whatever shows that list on it shows the
+/// device gone without asking again.
+#[tokio::test]
+async fn a_devices_session_is_sent_the_list_when_a_device_is_taken_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let holder = test_host(dir.path(), &key, &owner).await;
+    let workspaces = holder.workspaces();
+    // The person the fixture is set up for: the root it certifies its own
+    // device with.
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
+    workspaces.keep_issued_device(&desktop, "");
+    // The session of the person's desktop: where their list is sent.
+    let (_watch, mut pushed) = session_of(workspaces, &desktop);
+    let listed = |list: &PersonalList, device: &DeviceCert| {
+        list.devices
+            .iter()
+            .find(|listed| listed.cert.device_public_key == device.device_public_key)
+            .map(|listed| listed.revoked)
+    };
+
+    // A laptop paired with them is in the list their sessions are sent.
+    workspaces.keep_issued_device(&laptop, "");
+    next_list(&mut pushed, |list| listed(list, &laptop) == Some(false)).await;
+
+    // Their root takes the laptop back, and one of their sessions says so.
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: laptop.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    workspaces.take_revocations(vec![entry]).await.unwrap();
+    let sent = next_list(&mut pushed, |list| listed(list, &laptop) == Some(true)).await;
+    assert_eq!(
+        listed(&sent, &desktop),
+        Some(false),
+        "their other devices stay theirs"
+    );
+    holder.shutdown().await;
 }

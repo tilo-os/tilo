@@ -124,6 +124,10 @@ impl Workspaces {
         if changed {
             crate::authority_epoch::bump();
         }
+        // What lists a person's devices marks what was taken back from here
+        // on: every session of theirs is sent that list, so whatever shows
+        // it shows the device gone without asking again.
+        self.personal_changed();
         Ok(())
     }
 
