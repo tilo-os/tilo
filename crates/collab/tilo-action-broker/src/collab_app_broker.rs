@@ -6995,8 +6995,9 @@ impl AppBrokerState {
         agents
     }
 
-    /// The workspace's people as member rows, in id order: presence may supply a label, but only
-    /// owner-backed membership supplies the identity. An offline member remains a member.
+    /// The workspace's people as member rows, in id order, then those it removed: presence may
+    /// supply a label, but only owner-backed membership supplies the identity. An offline member
+    /// remains a member.
     fn people_members(workspace: &tilo_desktop_model::Workspace) -> Vec<collab_types::Member> {
         let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
             .roster()
@@ -7004,7 +7005,7 @@ impl AppBrokerState {
             .filter(|(person, _)| !workspace.is_blocked(person))
             .collect();
         people.sort_by(|left, right| left.0.cmp(&right.0));
-        people
+        let mut listed: Vec<collab_types::Member> = people
             .into_iter()
             .map(|(person, role)| {
                 let row = workspace
@@ -7027,7 +7028,17 @@ impl AppBrokerState {
                 member.joined_at = workspace.policy.joined_at(&person);
                 member
             })
-            .collect()
+            .collect();
+        // Whoever the workspace removed keeps their row, so what they wrote still names them.
+        let removed: Vec<collab_types::Member> = workspace
+            .members
+            .iter()
+            .filter(|member| member.removed && member.id.is_person())
+            .filter(|member| !listed.iter().any(|row| row.id == member.id))
+            .cloned()
+            .collect();
+        listed.extend(removed);
+        listed
     }
 
     /// Complete workspace membership for one retained native receiver. This is
@@ -7272,6 +7283,7 @@ impl AppBrokerState {
                         && left.name == right.name
                         && left.packed_colour() == right.packed_colour()
                         && left.is_self == right.is_self
+                        && left.removed == right.removed
                 })
         }
 

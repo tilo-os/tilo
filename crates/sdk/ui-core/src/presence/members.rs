@@ -52,8 +52,14 @@ impl PresenceCtx {
     /// Take the workspace's member list as the broker delivers it (`CollabEvent::Context`), a
     /// complete one each time: when each joined, what this session's own member and
     /// everyone else is called and the colour they wear. Whoever left the list since the last
-    /// one is no longer here.
+    /// one, or is on it as removed, is no longer here; a removed member keeps their name.
     pub fn apply_members(&mut self, members: Vec<Member>) {
+        let (departed, members): (Vec<Member>, Vec<Member>) =
+            members.into_iter().partition(|member| member.removed);
+        self.departed = departed
+            .into_iter()
+            .map(|member| (member.id, member.name))
+            .collect();
         let current: std::collections::HashSet<MemberId> =
             members.iter().map(|member| member.id.clone()).collect();
         let departed: Vec<MemberId> = self.members.difference(&current).cloned().collect();
@@ -78,6 +84,14 @@ impl PresenceCtx {
             self.set_presence_hue(member.id, member.colour);
         }
         self.members = current;
+    }
+
+    /// What the member list calls `member`, whom the workspace removed: `None` for anyone else.
+    pub fn departed_name(&self, member: &MemberId) -> Option<&str> {
+        self.departed
+            .get(member)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
     }
 
     /// Record whom `user` acts for, as the broker admitted it; `None` when

@@ -36,21 +36,32 @@ impl Session {
             // What the workspaces' agents did, drawn in this device's windows on the record each
             // acted in.
             app_wire.carets.narrate(sync.take_narrated());
-            // Who is here in the workspace in front, named and coloured as the bar and People
-            // draw them: the apps there are told, so a caret wears its person's face.
+            // The people of the workspace in front, as its governance names them, those it
+            // removed among them, and whoever is here named and coloured as the bar and People
+            // draw them: the apps there are told, so a caret wears its person's face and a
+            // message names its author after they went offline or left.
             if let Some((workspace, _)) = sync.front_members() {
-                let people = sync
-                    .here()
-                    .borrow()
-                    .persons()
-                    .into_iter()
-                    .map(|(id, name, (r, g, b))| {
-                        let member = collab_types::Person::new(id, name);
-                        let colour = ui::tokens::PresenceHue::nearest_to_srgb(r, g, b)
-                            .unwrap_or(member.colour);
-                        collab_types::Member::of_person(&member.wearing(colour), None)
-                    })
-                    .collect();
+                let mut people: Vec<collab_types::Member> = self
+                    .shared
+                    .engine
+                    .as_ref()
+                    .and_then(|engine| engine.people(&workspace).ok())
+                    .unwrap_or_default();
+                for (id, name, (r, g, b)) in sync.here().borrow().persons() {
+                    let person = collab_types::Person::new(id, name);
+                    let colour =
+                        ui::tokens::PresenceHue::nearest_to_srgb(r, g, b).unwrap_or(person.colour);
+                    let here = collab_types::Member::of_person(&person.wearing(colour), None);
+                    match people.iter_mut().find(|member| member.id == here.id) {
+                        Some(member) => {
+                            if !here.name.trim().is_empty() {
+                                member.name = here.name;
+                            }
+                            member.colour = here.colour;
+                        }
+                        None => people.push(here),
+                    }
+                }
                 app_wire.layout.set_people(&workspace, people);
             }
         }
