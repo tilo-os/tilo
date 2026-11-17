@@ -1096,7 +1096,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
 /// Only the agent an issue is with counts its sessions, a closed issue takes no
 /// wait and no stop, and a place is a folder's path and a note.
 #[test]
-fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
+fn sessions_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
     use crate::model::StoppedWhy;
     let mut task = Task::given();
     let issue = task.issue.clone();
@@ -1335,4 +1335,159 @@ fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
     )
     .unwrap();
     assert!(waiting(&task, "ada", "e-reply").is_empty());
+}
+
+/// Say how many of `issue`'s pieces are in work at once.
+fn pieces_at_once(issue: &Id, at_once: Option<u64>) -> impl Into<Invoke<IssuePart>> {
+    IssuePart::SET_PIECES_AT_ONCE.with(issue_part::SetPiecesAtOnce {
+        issue: issue.clone(),
+        at_once,
+    })
+}
+
+/// A task with three pieces under it, each given to the agent, of which one is in work at a
+/// time, and the task waiting for them: the task, and its pieces in the tracker's order.
+fn in_three_pieces() -> (Task, Vec<Id>) {
+    use crate::model::{WaitFor, WaitKind};
+    let mut task = Task::given();
+    let whole = task.issue.clone();
+    task.begins(1_100);
+    let mut pieces = Vec::new();
+    for (at, title) in [(1_200, "North"), (1_201, "South"), (1_202, "West")] {
+        task.ada_does(
+            at,
+            IssuePart::CREATE.with(NewIssue {
+                assignee: Some("agent:claude".into()),
+                parent: Some(ui::tilo_resource::items::Ref::from(whole.clone())),
+                ..NewIssue::titled(nb(title))
+            }),
+        )
+        .unwrap();
+        let held = task.ada.state().unwrap();
+        let piece = held.issues.iter().find(|(_, issue)| issue.title == title);
+        pieces.push(piece.unwrap().0.clone());
+    }
+    task.agent_does(1_300, pieces_at_once(&whole, Some(1)))
+        .unwrap();
+    task.agent_does(
+        1_400,
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue: whole,
+            waits: vec![WaitFor {
+                kind: WaitKind::Pieces,
+                what: "its three pieces".into(),
+                on: None,
+                event: None,
+            }],
+            until_ms: 1_400 + 2 * DAY_MS,
+        }),
+    )
+    .unwrap();
+    task.says(1_450, "I split it into three pieces and wait for them.");
+    task.ends(1_500, 0, 0);
+    (task, pieces)
+}
+
+/// How many of an issue's pieces are in work at once is said by a person or by the agent the
+/// issue is given to: no other agent says it, and none at a time is no bound.
+#[test]
+fn only_a_person_or_its_own_agent_says_how_many_pieces_are_in_work_at_once() {
+    let (mut task, _) = in_three_pieces();
+    let whole = task.issue.clone();
+    assert!(
+        task.ada_does(1_600, pieces_at_once(&whole, Some(0)))
+            .is_err(),
+        "none at a time"
+    );
+    let refused = task
+        .ada
+        .fork()
+        .as_agent_for("other", "ada")
+        .apply(pieces_at_once(&whole, Some(9)))
+        .map(drop)
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(refused.contains("its own agent"), "{refused}");
+    task.ada_does(1_700, pieces_at_once(&whole, Some(2)))
+        .unwrap();
+    assert_eq!(task.work().pieces_at_once, Some(2));
+    task.ada_does(1_800, pieces_at_once(&whole, None)).unwrap();
+    assert_eq!(task.work().pieces_at_once, None);
+}
+
+/// A task split into pieces: of the pieces under an issue that says how many are in work at
+/// once, only so many are begun, in the tracker's order, and the next is begun when one is
+/// through. The issue itself, waiting for its pieces, is asked again once all of them are.
+#[test]
+fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_through() {
+    use crate::model::{Asked, StoppedWhy};
+    let (mut task, pieces) = in_three_pieces();
+    let whole = task.issue.clone();
+    let asked = |task: &Task, now_ms: i64| -> Vec<(Id, Asked)> {
+        task.asks(now_ms)
+            .into_iter()
+            .map(|ask| (ask.issue, ask.asked))
+            .collect()
+    };
+    let began = |issue: &Id| {
+        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
+            issue: issue.clone(),
+        })
+    };
+    let placed = |issue: &Id, status| {
+        IssuePart::PLACE.with(issue_part::Place {
+            issue: issue.clone(),
+            status,
+            before: None,
+            rank: None,
+        })
+    };
+
+    // One at a time: only the first piece is begun, and nothing else while it is in work.
+    assert_eq!(
+        asked(&task, 2_000),
+        vec![(pieces[0].clone(), Asked::Assigned)]
+    );
+    task.agent_does(2_100, began(&pieces[0])).unwrap();
+    let said = IssuePart::COMMENT.with(issue_part::Comment {
+        issue: pieces[0].clone(),
+        text: nb("I am on it."),
+        origin: None,
+    });
+    task.agent_does(2_150, said).unwrap();
+    assert!(asked(&task, 2_200).is_empty(), "one piece is in work");
+
+    // It is ready for review: the second is begun. That one stops: the third is begun.
+    task.agent_does(2_300, placed(&pieces[0], Status::InReview))
+        .unwrap();
+    assert_eq!(
+        asked(&task, 2_400),
+        vec![(pieces[1].clone(), Asked::Assigned)]
+    );
+    task.agent_does(2_500, began(&pieces[1])).unwrap();
+    let stopped = IssuePart::STOP.with(issue_part::Stop {
+        issue: pieces[1].clone(),
+        why: StoppedWhy::Failed,
+        words: nb("I could not reach the site."),
+    });
+    task.agent_does(2_600, stopped).unwrap();
+    assert_eq!(
+        asked(&task, 2_700),
+        vec![(pieces[2].clone(), Asked::Assigned)]
+    );
+
+    // Its person calls the third off: every piece is through, and the issue is asked again
+    // with how they ended. A stopped piece is not counted as done.
+    task.ada_does(2_800, placed(&pieces[2], Status::Cancelled))
+        .unwrap();
+    let asks = task.asks(2_900);
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(
+        (&asks[0].issue, asks[0].asked),
+        (&whole, Asked::PiecesEnded)
+    );
+    assert_eq!(
+        asks[0].words,
+        "3 pieces: 1 ready for review, 0 done, 1 stopped, 1 cancelled"
+    );
 }

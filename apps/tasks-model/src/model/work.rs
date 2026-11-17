@@ -31,6 +31,8 @@ pub const MAX_LINE_CHARS: usize = 1024;
 pub const MAX_ADDRESS_CHARS: usize = 1024;
 /// How often in a row an agent session may be lost before the issue stops and says so.
 pub const MOST_LOST_SESSIONS: u64 = 2;
+/// The most of an issue's pieces that are worked on at once, where their number is bounded.
+pub const MOST_PIECES_AT_ONCE: u64 = 250;
 
 /// What a wait is for.
 #[derive(
@@ -49,6 +51,8 @@ pub enum WaitKind {
     Answer,
     /// Answers of several people.
     People,
+    /// Its pieces, the issues under it: it goes on when none of them is still to be worked on.
+    Pieces,
 }
 
 /// One thing an issue waits for.
@@ -151,6 +155,9 @@ pub struct Work {
     pub stopped: Option<Stopped>,
     /// Set when the work was told to go on: its agent is asked again from then.
     pub resumed: Option<Resumed>,
+    /// How many of its pieces, the issues under it, are worked on at once by the agents they
+    /// are given to; none for any number.
+    pub pieces_at_once: Option<u64>,
 }
 
 impl Work {

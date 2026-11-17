@@ -6,7 +6,7 @@ channel 19717
 subject 3017
 host 27592
 relay 3541
-run 29507
+run 29506
 seat 1445
 record 56949
 slot 11589

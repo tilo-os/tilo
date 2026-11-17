@@ -188,6 +188,7 @@ fields = [
   { path = "issues.*.work.resumed", type = { option = { named = "Resumed" } }, stored = "record" },
   { path = "issues.*.work.resumed.cause", type = "text" },
   { path = "issues.*.work.resumed.at_ms", type = "int" },
+  { path = "issues.*.work.pieces_at_once", type = { option = "int" } },
   { path = "before", type = "int", readonly = true },
   { path = "numbers", type = "int", readonly = true },
 ]
@@ -377,7 +378,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "waits", type = { list = { named = "WaitFor" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { event = { type = ["string", "null"] }, kind = { oneOf = [{ type = "string", const = "time" }, { type = "string", const = "reply" }, { type = "string", const = "change" }, { type = "string", const = "answer" }, { type = "string", const = "people" }] }, on = { type = ["string", "null"] }, what = { type = "string" } }, required = ["what"] } } },
+  { name = "waits", type = { list = { named = "WaitFor" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { event = { type = ["string", "null"] }, kind = { oneOf = [{ type = "string", const = "time" }, { type = "string", const = "reply" }, { type = "string", const = "change" }, { type = "string", const = "answer" }, { type = "string", const = "people" }, { type = "string", const = "pieces" }] }, on = { type = ["string", "null"] }, what = { type = "string" } }, required = ["what"] } } },
   { name = "until_ms", type = "int", required = true, schema = { type = "integer" } },
 ]
 
@@ -398,6 +399,15 @@ params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "money_micros", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
   { name = "time_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-pieces-at-once"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "at_once", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -635,6 +645,7 @@ cases = [
   { name = "change" },
   { name = "answer" },
   { name = "people" },
+  { name = "pieces" },
 ]
 
 [[resources.types]]
@@ -655,5 +666,6 @@ fields = [
   { name = "lost", type = "int" },
   { name = "stopped", type = { option = { named = "Stopped" } } },
   { name = "resumed", type = { option = { named = "Resumed" } } },
+  { name = "pieces_at_once", type = { option = "int" } },
 ]
 

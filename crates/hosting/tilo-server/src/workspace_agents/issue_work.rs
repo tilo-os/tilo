@@ -50,7 +50,11 @@ const HOW_TO_WORK: &str = "\n\nDo the work through the workspace's apps. Move th
     one of your person's automations can see what you wait for (a time, a resource of the \
     workspace changing), set it up first and name its id in the wait as `event`: when it comes, \
     the task goes on with what the automation says and nothing else is asked. Remove an \
-    automation you set up only for a wait once the wait is over. When the \
+    automation you set up only for a wait once the wait is over. Where the work falls into \
+    pieces that can be done apart, make each an issue under this one and give it to yourself, \
+    say with `set-pieces-at-once` how many are in work at once, give each a budget, and `wait` \
+    on this issue with a wait of the kind `pieces`: you are started again when they are \
+    through. When the \
     work is finished, move the issue to In review, never to Done: that is its person's to say. \
     If you cannot finish, say plainly why.";
 
@@ -414,6 +418,11 @@ pub(super) fn asked(issue: &Issue, ask: &IssueAsk) -> String {
             "\n\nYou let it wait, and what you waited for did not come by the moment you set. \
              The wait is over: decide how to go on.",
         ),
+        Asked::PiecesEnded => {
+            request.push_str("\n\nThe pieces you let it wait for are through (");
+            request.push_str(ask.words.trim());
+            request.push_str("). Read what each left in its thread and its note, and go on.");
+        }
         Asked::Assigned | Asked::Message => {}
     }
     request

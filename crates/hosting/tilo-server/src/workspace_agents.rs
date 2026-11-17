@@ -854,7 +854,9 @@ impl HostAgents {
         routes: &[(String, String)],
         now_ms: i64,
     ) -> Result<Vec<Turn>, String> {
-        let mut turns = Vec::new();
+        // Every part is taken before anything is asked: an issue's pieces may be kept in another
+        // part than the issue itself.
+        let mut kept = Vec::new();
         for (app, record) in routes {
             if app != TASKS
                 || ui::resource::DocumentId::parse(record)
@@ -863,36 +865,53 @@ impl HostAgents {
             {
                 continue;
             }
-            let Some(part) = self
-                .read::<tasks::part::IssuePart>(workspace, TASKS, record)
-                .await?
-            else {
+            let bytes = self
+                .workspaces
+                .resource_document(workspace, TASKS, record)
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(bytes) = bytes {
+                kept.push((record, bytes));
+            }
+        }
+        // They are read only now that nothing more is awaited: an issue's rich text does not
+        // travel between threads, and this look does.
+        let mut parts = Vec::new();
+        for (document, bytes) in kept {
+            let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            let part = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)?;
+            parts.push((document, part));
+        }
+        let asks = tasks_model::agent_asks_at(
+            parts.iter().flat_map(|(_, part)| part.issues.iter()),
+            now_ms,
+        );
+        let mut turns = Vec::new();
+        for ask in asks {
+            let Some(agent) = agents.get(&ask.agent) else {
                 continue;
             };
-            for ask in tasks_model::agent_asks_at(part.issues.iter(), now_ms) {
-                let Some(agent) = agents.get(&ask.agent) else {
-                    continue;
-                };
-                let Some(issue) = part.issues.get(&ask.issue) else {
-                    continue;
-                };
-                let request = issue_work::asked(issue, &ask);
-                turns.push(Turn {
-                    agent: agent.clone(),
-                    person: ask.person.person_id().unwrap_or_default().to_owned(),
-                    conversation: tasks_model::issue_resource(&ask.issue),
-                    cause: ask.cause.clone(),
-                    request,
-                    fold: None,
-                    typed: true,
-                    line: None,
-                    ask: Ask::Issue {
-                        record: record.clone(),
-                        issue: ask.issue.to_string(),
-                        cause: ask.cause,
-                    },
-                });
-            }
+            let Some((document, issue)) = parts.iter().find_map(|(document, part)| {
+                part.issues.get(&ask.issue).map(|issue| (*document, issue))
+            }) else {
+                continue;
+            };
+            let request = issue_work::asked(issue, &ask);
+            turns.push(Turn {
+                agent: agent.clone(),
+                person: ask.person.person_id().unwrap_or_default().to_owned(),
+                conversation: tasks_model::issue_resource(&ask.issue),
+                cause: ask.cause.clone(),
+                request,
+                fold: None,
+                typed: true,
+                line: None,
+                ask: Ask::Issue {
+                    record: document.clone(),
+                    issue: ask.issue.to_string(),
+                    cause: ask.cause,
+                },
+            });
         }
         Ok(turns)
     }
