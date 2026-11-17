@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use std::fmt::Write as _;
 use tilo_actions::remote::ActionHost as _;
 use tilo_actions::remote::workspace_invocations::{self, Invocations, InvocationsQuery};
-use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{ActionHostError, InvokeArgument, InvokeRequest, ReceiptStatus};
 
 /// The path of a workspace's invocations.
 pub const ROOT: &str = "workspace/invocations";
@@ -183,16 +183,11 @@ impl Session {
             appearance: None,
         };
         let unanswered = || failed("unavailable", "the workspace did not answer", "try again");
-        // As the person the server's device is certified for, as every
-        // other ask of its host is: never a person named after the program.
-        let person = tilo_actions::policy::PersonId::from_root(
-            self.connection.device.cert().user_public_key,
-        );
         let receipt = self
             .connection
             .device
             .actions(id)
-            .invoke(&Caller::local_person(person), request)
+            .invoke(&self.caller(), request)
             .await
             .ok_or_else(unanswered)?
             .map_err(|error| failed("unavailable", error.to_string(), "try again"))?;

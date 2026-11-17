@@ -230,6 +230,13 @@ pub fn agent_session_label(registered: &str, initialize: &Value, number: u64) ->
 }
 
 impl Session {
+    /// Who the session's requests are by: the key's person at the key, as its certificate names
+    /// them, which the host reads as that person or as their agent. Never a label.
+    pub(crate) fn caller(&self) -> tilo_actions::remote::Caller {
+        let cert = self.connection.key.cert();
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+    }
+
     pub(crate) fn new(
         grant: String,
         scope: Scope,
@@ -297,14 +304,8 @@ impl Session {
             .await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
-        let cert = self.connection.key.cert();
-        let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
-            actions.clone(),
-            tilo_actions::remote::Caller::authenticated(
-                cert.user_public_key,
-                cert.device_public_key,
-            ),
-        );
+        let catalogue =
+            tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
             .with_agent_session(&self.id, self.label.clone())

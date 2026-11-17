@@ -18,9 +18,7 @@ use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::ActionHost as _;
-use tilo_actions::remote::{
-    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_relay_session::workspaces::RUN_UNATTENDED;
 
 /// The path of a workspace's setting.
@@ -149,16 +147,11 @@ impl Session {
             wait_ms: Some(ANSWERING_MS),
             appearance: None,
         };
-        // As the person the server's device is certified for, as every
-        // other ask of its host is: never a person named after the program.
-        let person = tilo_actions::policy::PersonId::from_root(
-            self.connection.device.cert().user_public_key,
-        );
         let receipt = self
             .connection
             .device
             .actions(id)
-            .invoke(&Caller::local_person(person), request)
+            .invoke(&self.caller(), request)
             .await
             .ok_or_else(|| failed("unavailable", "the workspace did not answer", "try again"))?
             .map_err(|error| refusal(&error.to_string()))?;
