@@ -70,6 +70,7 @@ impl Layout {
             return None;
         }
         workspace.effect_receipts.push(receipt.clone());
+        crate::receipt::bounded_receipts(&mut workspace.effect_receipts);
         Some(receipt)
     }
 }

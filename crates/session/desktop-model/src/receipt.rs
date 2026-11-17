@@ -2,6 +2,31 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How many receipts a workspace keeps: the newest, by when their effects
+/// completed.
+///
+/// A receipt is not history in its own right. It says who performed an
+/// effect that left no row in an app's document, so the workspace's activity
+/// feed can attribute the row it did leave, and stand the effect in as an
+/// entry of its own; that feed holds a window of the newest 200 entries.
+/// Receipts past that window serve nothing and would make every change of the
+/// layout cost everything ever done, so a workspace keeps a multiple of the
+/// window: room for the entries a feed has not built yet, and for a retried
+/// effect to find the receipt it already has.
+pub const MAX_EFFECT_RECEIPTS: usize = 512;
+
+/// Keep the newest [`MAX_EFFECT_RECEIPTS`] of `receipts`, the oldest dropped.
+/// Whether any were.
+pub fn bounded_receipts(receipts: &mut Vec<WorkspaceEffectReceipt>) -> bool {
+    if receipts.len() <= MAX_EFFECT_RECEIPTS {
+        return false;
+    }
+    receipts.sort_by_key(|receipt| (receipt.completed_at, receipt.invocation.0));
+    let excess = receipts.len().saturating_sub(MAX_EFFECT_RECEIPTS);
+    receipts.drain(..excess);
+    true
+}
+
 /// Append-only, broker-authenticated record of an external side effect.
 /// Arguments, output values, produced resource addresses, failure messages,
 /// and failure details are deliberately absent from this durable shape.
@@ -166,5 +191,47 @@ mod effect_receipt_redaction_tests {
         assert!(!json.contains("secret text"));
         assert!(!json.contains("secret words"));
         assert!(receipt.is_redacted());
+    }
+}
+
+#[cfg(test)]
+mod receipt_bound_tests {
+    use super::{MAX_EFFECT_RECEIPTS, WorkspaceEffectReceipt, bounded_receipts};
+
+    fn receipt(at: i64) -> WorkspaceEffectReceipt {
+        WorkspaceEffectReceipt::redacted(
+            tilo_actions::InvocationId::new(),
+            &tilo_actions::MemberId::person("owner"),
+            tilo_actions::ActionContext::default(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            at,
+        )
+    }
+
+    /// Ten workspaces' worth of receipts, ten times the window they serve:
+    /// a workspace keeps the newest, and one more effect costs the bound,
+    /// not everything ever done.
+    #[test]
+    fn a_workspace_keeps_the_newest_receipts_whatever_it_did() {
+        let mut held: Vec<WorkspaceEffectReceipt> = (0..i64::try_from(MAX_EFFECT_RECEIPTS * 10)
+            .unwrap())
+            .map(receipt)
+            .collect();
+        assert!(bounded_receipts(&mut held), "ten times the window is cut");
+        assert_eq!(held.len(), MAX_EFFECT_RECEIPTS);
+        let oldest = held.iter().map(|held| held.completed_at).min().unwrap();
+        assert_eq!(
+            oldest,
+            i64::try_from(MAX_EFFECT_RECEIPTS * 9).unwrap(),
+            "the oldest were the ones dropped"
+        );
+        let kept_at_bound = held.len();
+        held.push(receipt(i64::MAX));
+        assert!(bounded_receipts(&mut held));
+        assert_eq!(held.len(), kept_at_bound, "one more costs the same");
+        // Under the bound nothing is dropped.
+        let mut few = vec![receipt(1), receipt(2)];
+        assert!(!bounded_receipts(&mut few));
+        assert_eq!(few.len(), 2);
     }
 }

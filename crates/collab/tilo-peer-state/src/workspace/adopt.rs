@@ -76,6 +76,8 @@ pub fn adopt_workspace(
             receipts.push(held.clone());
         }
     }
+    // The newest receipts only, as the layout keeps them.
+    tilo_desktop_model::receipt::bounded_receipts(&mut receipts);
     changed |= replace_sorted(&mut workspace.effect_receipts, receipts, |receipt| {
         receipt.invocation.0
     });

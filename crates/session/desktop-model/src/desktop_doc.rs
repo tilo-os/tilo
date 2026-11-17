@@ -636,6 +636,10 @@ fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectR
     let mut receipts: Vec<WorkspaceEffectReceipt> =
         read_blob_map(doc, entry, WORKSPACE_EFFECT_RECEIPTS_KEY).unwrap_or_default();
     receipts.compact_sort_by_key(|receipt| receipt.completed_at);
+    // The newest only: what the activity feed shows, and no more
+    // ([`crate::receipt::MAX_EFFECT_RECEIPTS`]). Writing the workspace trims
+    // what a layout kept before this bound.
+    crate::receipt::bounded_receipts(&mut receipts);
     receipts
 }
 
