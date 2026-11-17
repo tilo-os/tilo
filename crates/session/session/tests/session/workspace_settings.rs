@@ -408,29 +408,44 @@ fn app_here(session: &Session, app: &str) {
     session.handle().replace_tree(tree);
 }
 
-/// The agent's answer for one kind of action at one app, as the domain reads the workspace.
-fn answer(
-    session: &Session,
-    agent: &str,
-    app: &str,
-    kind: tilo_action_policy::ActionKind,
-) -> tilo_desktop::workspace_settings::agent_access::AnswerCell {
-    session.handle().read(|tree| {
-        let workspace = tree.active_workspace().expect("a workspace");
-        let admission = tilo_action_policy::roles::agent_grants(
-            &workspace.policy.workspace,
-            agent,
-            PERSON,
-            &[],
-        );
-        tilo_desktop::workspace_settings::agent_access::answer_at(
-            workspace,
-            agent,
-            &admission,
-            &tilo_action_policy::agent_answers::AnswerScope::app(app),
-            kind,
+/// The answer the review shows for changes in `app`, by its place among Allow, Ask first and Deny,
+/// and whether the agent's bound sets the app's answers.
+fn changes_answer(session: &Session, app: &str) -> (usize, bool) {
+    let row = listed_app(session, &format!("app:{app}"));
+    let line = row
+        .kinds
+        .iter()
+        .find(|line| line.kind == "change")
+        .expect("the app's line for changes");
+    (line.answer, row.customised)
+}
+
+/// The bound the workspace's list of its agents keeps for `agent`.
+fn bound_of(session: &Session, agent: &str) -> Vec<tilo_app::tilo_workspace_agent::Bound> {
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace")
+            .id()
+            .to_string()
+    });
+    let stored = session
+        .stored_record(
+            tilo_app::tilo_workspace_agent::OWNER,
+            &workspace,
+            &collab_types::workspace_document_id(tilo_app::tilo_workspace_agent::KIND),
         )
-    })
+        .expect("the list is kept here");
+    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
+    let doc = automerge::AutoCommit::load_with_options(&stored, options).expect("the list");
+    tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(&doc)
+        .expect("the list reads")
+        .state()
+        .agents
+        .iter()
+        .find(|held| held.id.0 == agent)
+        .expect("the list names the agent")
+        .bound
+        .clone()
 }
 
 /// Let the session answer an ask the sheet made, and the sheet settle.
@@ -480,7 +495,6 @@ fn settings_offer_a_model() {
 /// chooses its model and takes the agent out of the workspace.
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
-    use tilo_action_policy::ActionKind;
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
@@ -533,12 +547,20 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     );
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
-    let setting = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
-    assert!(setting.explicit, "the person's answer is the agent's own");
-    assert_eq!(setting.answer, tilo_action_policy::Answer::Ask);
+    assert_eq!(
+        changes_answer(&session, "so.tilo.notes"),
+        (1, true),
+        "the review shows the person's answer, and that it was set here"
+    );
+    let bound = bound_of(&session, "helper");
+    assert_eq!(
+        bound.len(),
+        1,
+        "the answer is a rule of the agent's bound: {bound:?}"
+    );
     assert!(
-        listed_app(&session, "app:so.tilo.notes").customised,
-        "the review says the app was customised"
+        bound[0].node.ends_with("/app:so.tilo.notes") && bound[0].answer == "ask",
+        "{bound:?}"
     );
 
     // The model it plans with is the keeper's to choose, from this device's Settings, and the
@@ -560,12 +582,14 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
 
     activate(&mut app, "Use defaults");
     settle(&mut session, &mut app);
-    let back = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
-    assert!(!back.explicit, "the app follows the admission again");
     assert_eq!(
-        back.answer,
-        tilo_action_policy::Answer::Allow,
-        "the turn's cap admits changes in the app"
+        changes_answer(&session, "so.tilo.notes"),
+        (0, false),
+        "the app follows the admission again, whose cap admits changes in it"
+    );
+    assert!(
+        bound_of(&session, "helper").is_empty(),
+        "the bound is the default again"
     );
 
     activate(&mut app, "Remove");
@@ -790,7 +814,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         )
         .expect("confirm");
 
-    // The tab shows the emoji, and Chat's record holds it: the store commits what a window changed
+    // The tab shows the emoji, and Chat's emoji document holds it: the store commits what a window changed
     // after a debounce, so what the device holds is read again until the emoji is in it.
     pump(&mut session, &mut [], |_, _| {
         app.settle();

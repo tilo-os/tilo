@@ -91,11 +91,6 @@ impl AgentsHost for PageRecords {
     fn manages(&self, _workspace: &tilo_desktop_model::Workspace, _person: &UserId) -> bool {
         self.administers.load(Ordering::Relaxed)
     }
-
-    /// The workspace's grants are its host's: a page asks it for changes.
-    fn writes_grants(&self) -> bool {
-        false
-    }
 }
 
 /// The page's workspace settings, as the sheets' code makes it (`crate::over_page::SHEETS`).

@@ -79,7 +79,7 @@ struct Shared<P: Resource> {
     record: StoredResource,
     /// The app that keeps it: whose node the workspace's grants decide on.
     owner: &'static str,
-    app_id: &'static str,
+    /// Where its changes are made, as their history names it.
     app_title: &'static str,
     me: tilo_resource::MemberId,
     permissions: Option<LivePermissions>,
@@ -201,8 +201,11 @@ impl<P: Resource> Shared<P> {
             invoker.clone()
         };
         let actor = invoker.acting.by.actor_bytes();
+        // The change is the owner's action, whichever window or tab makes it: every receiver
+        // decides it against the owner's surface and refuses a verb named under another app. The
+        // title still says where it was made ("Workspace settings").
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
-            .with_app(self.app_id, self.app_title)
+            .with_app(self.owner, self.app_title)
             .with_invoker(invoker)
             .with_change(change);
         let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
@@ -369,7 +372,6 @@ impl<P: Resource> WorkspaceResource<P> {
             shared: Rc::new(Shared::<P> {
                 record,
                 owner,
-                app_id: app.0,
                 app_title: app.1,
                 me,
                 permissions,

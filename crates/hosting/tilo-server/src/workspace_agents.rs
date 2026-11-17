@@ -1427,7 +1427,8 @@ async fn list_agent(
             } else {
                 tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
             };
-            let mut listing = agents.as_author(&person);
+            // Named as Chat's change: every receiver decides it against Chat's surface.
+            let mut listing = agents.as_author(&person).in_app(CHAT, "Chat");
             let listed = listing.state().map_err(|error| error.to_string())?;
             let applied = if listed
                 .agents

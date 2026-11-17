@@ -1,16 +1,19 @@
 //! What one agent may do in the workspace, app by app: Allow, Ask first or Deny for reading,
 //! changes and outside effects.
-//! Each answer is an ordinary workspace grant ([`agent_answers`]); without one the agent's
-//! admission decides, and the view says so. Actions whose contract asks for confirmation (sending,
-//! publishing, deleting for good) still ask first under an app-wide Allow; only "Always allow this"
-//! on the action itself lifts that, and those exceptions are listed here to take back.
+//! Each answer is a rule of the bound the workspace's list of its agents keeps for the agent
+//! ([`bound_with`]), which every device and the workspace's host read as they decide its calls;
+//! without one the agent's admission decides, and the view says so. Actions whose contract asks
+//! for confirmation (sending, publishing, deleting for good) still ask first under an app-wide
+//! Allow; only an Allow on the action itself lifts that, and those exceptions are listed here to
+//! take back.
 
-use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grantee, decide};
-use tilo_desktop_model::{UserId, Workspace};
+use tilo_action_policy::agent_answers::AnswerScope;
+use tilo_action_policy::roles::{Rule, is_agent_bound};
+use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, decide};
+use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
 
-use super::{AppDirectory, PolicyEdit, app_display_name, grant_subjects};
+use super::{AppDirectory, app_display_name, grant_subjects};
 use crate::i18n::{t, t_args};
 
 /// The three kinds of action, in column order.
@@ -50,7 +53,8 @@ pub fn kind_label(kind: ActionKind) -> String {
 pub struct AnswerCell {
     pub kind: ActionKind,
     pub answer: Answer,
-    /// The person set it here; otherwise it follows the agent's admission or a broader answer.
+    /// The agent's bound sets it at this scope; otherwise it follows the agent's admission or a
+    /// broader answer.
     pub explicit: bool,
 }
 
@@ -81,8 +85,8 @@ pub struct AgentException {
 }
 
 /// The answer `agent` holds for `kind` at `scope` : the turn's own grants (`admission`,
-/// [`tilo_action_policy::roles::agent_grants`]) and the workspace's grants naming it alone, so a
-/// narrower answer the person set here wins over what the admission says.
+/// [`tilo_action_policy::roles::agent_grants`], its bound among them) and the workspace's grants
+/// naming it alone, so a narrower answer its bound sets wins over what the cap says.
 #[must_use]
 pub fn answer_at(
     ws: &Workspace,
@@ -93,23 +97,25 @@ pub fn answer_at(
 ) -> AnswerCell {
     let subject = [Grantee::agent(agent)];
     let cx = tilo_desktop_model::context_at(tilo_clock::unix_now());
+    let node = scope.node(&ws.policy.workspace);
     let decision = decide(
         admission.iter().chain(ws.policy.grants.iter()),
         &subject,
-        &scope.node(&ws.policy.workspace),
+        &node,
         kind,
         &cx,
     );
-    let id = agent_answers::grant_id(agent, scope, kind);
     AnswerCell {
         kind,
         answer: decision.answer,
-        explicit: decision.grant().is_some_and(|grant| grant.id == id),
+        explicit: decision
+            .grant()
+            .is_some_and(|grant| is_agent_bound(grant, agent) && grant.node == node),
     }
 }
 
-/// The apps an agent's answers are offered for: every app the workspace shows, holds capabilities
-/// for, or that the agent already has answers for, by display name.
+/// The apps an agent's answers are offered for: every app the workspace shows or holds
+/// capabilities for, and every app its bound names, by display name.
 #[must_use]
 pub fn agent_access_rows(
     ws: &Workspace,
@@ -117,17 +123,15 @@ pub fn agent_access_rows(
     admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
-    let subject = Grantee::agent(agent);
     let mut ids: Vec<String> = grant_subjects(ws)
         .into_iter()
         .filter(|candidate| candidate.kind == super::SubjectKind::App)
         .map(|candidate| candidate.id)
         .collect();
     ids.extend(
-        ws.policy
-            .grants
+        admission
             .iter()
-            .filter(|grant| grant.grantee == subject && agent_answers::is_answer(grant))
+            .filter(|grant| is_agent_bound(grant, agent))
             .filter_map(|grant| match AnswerScope::of_node(&grant.node)? {
                 AnswerScope::App { app }
                 | AnswerScope::Kind { app, .. }
@@ -152,70 +156,59 @@ pub fn agent_access_rows(
     rows
 }
 
-/// The actions the person always allows `agent` .
+/// The actions `bound` always allows its agent, without asking first.
 #[must_use]
-pub fn agent_exceptions(
-    ws: &Workspace,
-    agent: &str,
-    apps: &dyn AppDirectory,
-) -> Vec<AgentException> {
-    let subject = Grantee::agent(agent);
-    let mut out: Vec<AgentException> = ws
-        .policy
-        .grants
+pub fn agent_exceptions(bound: &[Rule], apps: &dyn AppDirectory) -> Vec<AgentException> {
+    let mut out: Vec<AgentException> = bound
         .iter()
-        .filter(|grant| {
-            grant.grantee == subject
-                && agent_answers::is_answer(grant)
-                && grant.answer == Answer::Allow
-        })
-        .filter_map(|grant| {
-            let scope = AnswerScope::of_node(&grant.node)?;
-            let AnswerScope::Action { app, action, .. } = &scope else {
-                return None;
-            };
-            let label = t_args(
-                "workspace-settings-agent-exception",
-                &[
-                    ("app", app_display_name(apps, app).into()),
-                    ("action", humanize(action).into()),
-                ],
-            );
-            let kind = grant.kinds.iter().next()?;
-            Some(AgentException { scope, kind, label })
+        .filter(|rule| rule.answer == Answer::Allow)
+        .flat_map(|rule| {
+            let scope = AnswerScope::of_node(&rule.node);
+            rule.kinds.iter().filter_map(move |kind| {
+                let scope = scope.clone()?;
+                let AnswerScope::Action { app, action, .. } = &scope else {
+                    return None;
+                };
+                let label = t_args(
+                    "workspace-settings-agent-exception",
+                    &[
+                        ("app", app_display_name(apps, app).into()),
+                        ("action", humanize(action).into()),
+                    ],
+                );
+                Some(AgentException { scope, kind, label })
+            })
         })
         .collect();
     out.compact_sort_by(|a, b| a.label.cmp(&b.label));
     out
 }
 
-/// Set `agent` 's answers, each for a kind at a scope (`None` returns it to what the admission and
-/// broader answers say), as `actor` , in one governed edit.
-pub fn set_agent_answers(
-    ws: &mut Workspace,
-    actor: &UserId,
-    agent: &str,
+/// `bound` with each of `answers` set: for a kind at a scope in `workspace`, the answer, or
+/// (`None`) none, so the admission and broader answers decide there again. A rule is kept per
+/// scope and kind, so setting one again replaces it.
+#[must_use]
+pub fn bound_with(
+    bound: &[Rule],
+    workspace: &str,
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
-) -> PolicyEdit {
-    let root = ws.policy.workspace.clone();
-    let by = Grantee::person(actor.clone());
-    let changes: Vec<_> = answers
-        .iter()
-        .flat_map(|(scope, kind, answer)| {
-            agent_answers::set(
-                &root,
-                agent,
-                (scope, *kind),
-                *answer,
-                (by.clone(), &ws.policy.grants),
-            )
-        })
-        .collect();
-    if changes.is_empty() {
-        return PolicyEdit::default();
+) -> Vec<Rule> {
+    let mut rules = bound.to_vec();
+    for (scope, kind, answer) in answers {
+        let node = scope.node(workspace);
+        for rule in rules.iter_mut().filter(|rule| rule.node == node) {
+            rule.kinds = rule
+                .kinds
+                .iter()
+                .filter(|held| held != kind)
+                .fold(KindSet::NONE, KindSet::with);
+        }
+        rules.retain(|rule| !rule.kinds.is_empty());
+        if let Some(answer) = answer {
+            rules.push(Rule::new(node, KindSet::of(*kind), *answer));
+        }
     }
-    ws.govern_all_at(actor, changes, tilo_clock::unix_now())
-        .unwrap_or_default()
+    rules
 }
 
 /// `send_message` as `Send message` .
@@ -354,36 +347,36 @@ mod tests {
         ws
     }
 
-    /// The grants the agent's admission gives it: the editor cap, unbounded by its record.
-    fn admission(ws: &Workspace) -> Vec<tilo_action_policy::Grant> {
-        tilo_action_policy::roles::agent_grants(&ws.policy.workspace, AGENT, OWNER, &[])
+    /// The grants the agent's admission gives it: the editor cap, narrowed by `bound`.
+    fn admission(ws: &Workspace, bound: &[Rule]) -> Vec<tilo_action_policy::Grant> {
+        tilo_action_policy::roles::agent_grants(&ws.policy.workspace, AGENT, OWNER, bound)
     }
 
     tilo_test_env::scenario! {
-        fn an_agents_answers_follow_its_admission_until_set_here;
+        fn an_agents_answers_follow_its_admission_until_its_bound_sets_them;
 
-        phase answers_follow_the_admission_until_set_here;
+        phase answers_follow_the_admission_until_the_bound_sets_them;
         {
-            let mut ws = ws();
+            let ws = ws();
             let mail = AnswerScope::app(MAIL);
-            let read = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Read);
-            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            let read = answer_at(&ws, AGENT, &admission(&ws, &[]), &mail, ActionKind::Read);
+            let outside = answer_at(&ws, AGENT, &admission(&ws, &[]), &mail, ActionKind::Outside);
             assert_eq!((read.answer, read.explicit), (Answer::Allow, false));
             assert_eq!((outside.answer, outside.explicit), (Answer::Ask, false));
 
-            let edit = set_agent_answers(
-                &mut ws,
-                &OWNER.to_string(),
-                AGENT,
+            let bound = bound_with(
+                &[],
+                &ws.policy.workspace,
                 &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
             );
-            assert_eq!(edit.granted.len(), 1);
-            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            assert_eq!(bound.len(), 1);
+            let outside =
+                answer_at(&ws, AGENT, &admission(&ws, &bound), &mail, ActionKind::Outside);
             assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
             let notes = answer_at(
                 &ws,
                 AGENT,
-                &admission(&ws),
+                &admission(&ws, &bound),
                 &AnswerScope::app("so.tilo.notes"),
                 ActionKind::Outside,
             );
@@ -392,81 +385,61 @@ mod tests {
 
         phase setting_again_replaces_and_clearing_returns_to_the_admission;
         {
-            let mut ws = ws();
+            let ws = ws();
             let mail = AnswerScope::app(MAIL);
-            let set = |ws: &mut Workspace, answer| {
-                set_agent_answers(
-                    ws,
-                    &OWNER.to_string(),
-                    AGENT,
+            let set = |bound: &[Rule], answer| {
+                bound_with(
+                    bound,
+                    &ws.policy.workspace,
                     &[(mail.clone(), ActionKind::Undoable, answer)],
                 )
             };
-            set(&mut ws, Some(Answer::Ask));
-            let edit = set(&mut ws, Some(Answer::Deny));
-            assert_eq!(edit.granted.len(), 1);
-            let held: Vec<_> = ws
-                .policy
-                .grants
-                .iter()
-                .filter(|grant| agent_answers::is_answer(grant))
-                .collect();
-            assert_eq!(held.len(), 1, "one answer per scope and kind");
-            assert_eq!(held[0].answer, Answer::Deny);
-            let cleared = set(&mut ws, None);
-            assert_eq!((cleared.revoked.len(), cleared.granted.len()), (1, 0));
-            let cell = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Undoable);
+            let asked = set(&[], Some(Answer::Ask));
+            let denied = set(&asked, Some(Answer::Deny));
+            assert_eq!(denied.len(), 1, "one rule per scope and kind");
+            assert_eq!(denied[0].answer, Answer::Deny);
+            let cleared = set(&denied, None);
+            assert!(cleared.is_empty());
+            let cell = answer_at(&ws, AGENT, &admission(&ws, &cleared), &mail, ActionKind::Undoable);
             assert_eq!((cell.answer, cell.explicit), (Answer::Allow, false));
-            // Nothing to clear: no edit.
-            assert!(set(&mut ws, None).is_empty());
         }
 
-        phase rows_list_the_apps_with_answers_and_exceptions_only_action_allows;
+        phase rows_list_the_apps_the_bound_names_and_exceptions_only_action_allows;
         {
-            let mut ws = ws();
+            let ws = ws();
             let send = AnswerScope::action(MAIL, "mail.mailbox", "send_message");
             let purge = AnswerScope::action(MAIL, "mail.mailbox", "purge");
-            set_agent_answers(
-                &mut ws,
-                &OWNER.to_string(),
-                AGENT,
+            let bound = bound_with(
+                &[],
+                &ws.policy.workspace,
                 &[
                     (send.clone(), ActionKind::Outside, Some(Answer::Allow)),
                     (purge, ActionKind::Undoable, Some(Answer::Deny)),
                 ],
             );
-            let rows = agent_access_rows(&ws, AGENT, &admission(&ws), &super::super::NoAppDirectory);
+            let rows = agent_access_rows(
+                &ws,
+                AGENT,
+                &admission(&ws, &bound),
+                &super::super::NoAppDirectory,
+            );
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
             assert_eq!(rows[0].app, MAIL);
             assert_eq!(rows[0].label, "Mail", "an app is named, not shown by id");
             assert!(!rows[0].customised(), "an action's answer is not the app's");
-            let exceptions = agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory);
+            let exceptions = agent_exceptions(&bound, &super::super::NoAppDirectory);
             assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
             assert_eq!(exceptions[0].scope, send);
             assert_eq!(exceptions[0].kind, ActionKind::Outside);
             assert_eq!(exceptions[0].label, "Send message in Mail");
-            let edit = set_agent_answers(
-                &mut ws,
-                &OWNER.to_string(),
-                AGENT,
+            let taken_back = bound_with(
+                &bound,
+                &ws.policy.workspace,
                 &[(send, ActionKind::Outside, None)],
             );
-            assert_eq!(edit.revoked.len(), 1);
-            assert!(agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty());
-        }
-
-        phase someone_who_may_not_govern_changes_nothing;
-        {
-            let mut ws = ws();
-            let edit = set_agent_answers(
-                &mut ws,
-                &"stranger".to_string(),
-                AGENT,
-                &[(AnswerScope::app(MAIL), ActionKind::Read, Some(Answer::Deny))],
-            );
-            assert!(edit.is_empty());
-            assert!(!ws.policy.grants.iter().any(agent_answers::is_answer));
+            assert_eq!(taken_back.len(), 1);
+            assert!(agent_exceptions(&taken_back, &super::super::NoAppDirectory).is_empty());
         }
     }
 }

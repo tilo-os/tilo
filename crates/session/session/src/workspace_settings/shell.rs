@@ -8,12 +8,11 @@
 use std::cell::{Cell, RefCell};
 
 use collab_types::caps::{Effect, Expiry};
-use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Refusal, Role};
+use tilo_action_policy::{Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::people::PeopleNames;
-use tilo_desktop::workspace_settings::{self as domain, agent_access};
+use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::{Layout, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
@@ -245,7 +244,9 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { .. }
-        | sheet::WorkspaceSettingsEffect::SetAgentColour { .. } => agent_ask(state, fed, &effect),
+        | sheet::WorkspaceSettingsEffect::SetAgentColour { .. }
+        | sheet::WorkspaceSettingsEffect::SetAgentAnswer { .. }
+        | sheet::WorkspaceSettingsEffect::ResetAgentApp { .. } => agent_ask(state, fed, &effect),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(state, fed, &device);
         }
@@ -310,15 +311,6 @@ fn ask(
             show_review(state, fed, Some(&agent));
         }
         sheet::WorkspaceSettingsEffect::EndReview => show_review(state, fed, None),
-        sheet::WorkspaceSettingsEffect::SetAgentAnswer {
-            agent,
-            scope,
-            kind,
-            answer,
-        } => answer_agent(handle, person, &agent, &scope, &kind, &answer),
-        sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
-            reset_agent_app(handle, person, &agent, &scope);
-        }
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(state, fed, &bot),
     }
@@ -570,51 +562,6 @@ fn next_personal_default(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_
         // says why on the sheet.
         Err(error) => refuse(state, fed, &error.to_string()),
     }
-}
-
-/// Set what an agent may do for one kind of action at one app, and nothing else: the effect carries
-/// the answer the person chose, and an empty one takes the agent back to what its admission says.
-fn answer_agent(
-    handle: &DesktopHandle,
-    person: &UserId,
-    agent: &str,
-    scope: &str,
-    kind: &str,
-    answer: &str,
-) {
-    let (Some(scope), Some(kind)) = (AnswerScope::parse(scope), agent_access::kind_from_key(kind))
-    else {
-        tracing::debug!(%scope, %kind, "no such answer: nothing changed");
-        return;
-    };
-    let answer = if answer.is_empty() {
-        None
-    } else {
-        let Some(answer) = Answer::parse(answer) else {
-            tracing::debug!(%answer, "no such answer: nothing changed");
-            return;
-        };
-        Some(answer)
-    };
-    edit(handle, person, |ws, actor| {
-        agent_access::set_agent_answers(ws, actor, agent, &[(scope, kind, answer)])
-    });
-}
-
-/// Take every answer the person set for an agent at one app back to what the agent's admission
-/// says.
-fn reset_agent_app(handle: &DesktopHandle, person: &UserId, agent: &str, scope: &str) {
-    let Some(scope) = AnswerScope::parse(scope) else {
-        tracing::debug!(%scope, "no such app: nothing changed");
-        return;
-    };
-    edit(handle, person, |ws, actor| {
-        let answers: Vec<_> = agent_access::KINDS
-            .into_iter()
-            .map(|kind| (scope.clone(), kind, None))
-            .collect();
-        agent_access::set_agent_answers(ws, actor, agent, &answers)
-    });
 }
 
 /// The workspace in front, as the record of its agents is opened against.

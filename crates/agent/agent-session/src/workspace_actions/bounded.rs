@@ -477,20 +477,12 @@ impl Worker {
             }
             None => link.workspace_policy(workspace_id, &who.person_caller),
         });
-        match governed {
-            Some(mut policy)
+        let mut policy = match governed {
+            Some(policy)
                 if policy.workspace == cluster
                     && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
             {
-                // An agent a person's device handed its session to is held to the bound the
-                // workspace's list of its agents keeps for it.
-                if who.agent.is_some()
-                    && who.caller.is_session_delegated()
-                    && let Some(link) = self.shared.link.get()
-                {
-                    policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
-                }
-                Ok(policy)
+                policy
             }
             None if who.person == self.member && !self.governed(workspace_id) => {
                 let owner = ui::permissions::PermissionContext::member_of(
@@ -498,16 +490,26 @@ impl Worker {
                     &ui::permissions::MemberId::person(who.person.clone()),
                     ui::permissions::Role::Owner,
                 );
-                Ok(super::ViewReadPolicy {
+                super::ViewReadPolicy {
                     workspace: cluster.to_owned(),
                     access: owner.access().clone(),
                     sandbox: Vec::new(),
                     unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
                     agent_bound: Vec::new(),
-                })
+                }
             }
-            Some(_) | None => Err(ActionHostError::NotPermitted),
+            Some(_) | None => return Err(ActionHostError::NotPermitted),
+        };
+        // An agent a person's device handed its session to is held to the bound the workspace's
+        // list of its agents keeps for it: the own person's agents as much as anyone's, so what
+        // the person sets for it in the workspace holds on their own server too.
+        if who.agent.is_some()
+            && who.caller.is_session_delegated()
+            && let Some(link) = self.shared.link.get()
+        {
+            policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
         }
+        Ok(policy)
     }
 
     /// [`Self::policy_for`] the record at `route`.
@@ -531,16 +533,14 @@ impl Worker {
         caller: &Caller,
         kind: ActionKind,
     ) -> bool {
-        if super::acts_for(caller, &self.member) {
+        if self.serves_as_owner(caller) {
             return true;
         }
         let Some(who) = self.bounded(caller) else {
             return false;
         };
-        self.shared
-            .link
-            .get()
-            .and_then(|link| link.workspace_policy(workspace_id, &who.person_caller))
+        self.policy_for(workspace_id, &who, &workspace_id.to_string(), None)
+            .ok()
             .and_then(|policy| bounded_permissions(&policy, &who).ok())
             .is_some_and(|permissions| permissions.answer(&TreePath::root(), kind) == Answer::Allow)
     }

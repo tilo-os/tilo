@@ -1,7 +1,7 @@
 //! A person's agent on a computer of theirs (`tilo login`, then `tilo mcp`) is one of the
 //! workspace's agents from its first call there: the server adds it to the workspace's own list
 //! of its agents, kept by its person and marked as the client it connects as, so the workspace's
-//! Agents tab shows it.
+//! Agents tab shows it, and what its person bounds it to there holds its next call.
 use super::*;
 use tilo_mcp::McpServer;
 use tilo_session_client::remote::SessionActions;
@@ -46,8 +46,8 @@ async fn new_note(server: &McpServer<SessionActions>, title: &str) -> serde_json
         .unwrap()
 }
 
-/// The workspace's agents as its server holds them, once it holds any.
-async fn agents(hosted: &Hosted) -> Option<WorkspaceAgents> {
+/// The workspace's list of its agents as its server holds it, once it holds one.
+async fn agents_document(hosted: &Hosted) -> Option<automerge::AutoCommit> {
     let document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let bytes = hosted
         .server
@@ -56,7 +56,12 @@ async fn agents(hosted: &Hosted) -> Option<WorkspaceAgents> {
         .await
         .ok()
         .flatten()?;
-    let mut doc = automerge::AutoCommit::load(&bytes).ok()?;
+    automerge::AutoCommit::load(&bytes).ok()
+}
+
+/// The workspace's agents as its server holds them, once it holds any.
+async fn agents(hosted: &Hosted) -> Option<WorkspaceAgents> {
+    let mut doc = agents_document(hosted).await?;
     tilo_server::workspace_bots::opened::<WorkspaceAgents>(&mut doc).ok()
 }
 
@@ -109,4 +114,38 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     assert_ne!(again["result"]["isError"], true, "{again}");
     let all = agents(&hosted).await.unwrap();
     assert_eq!(all.agents.len(), 1, "listed once");
+
+    // Its person bounds it in this workspace: no changes in Notes. The list carries the bound,
+    // and the agent's next call there is refused by it.
+    let route = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: WORKSPACE.into(),
+        document: collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND),
+    };
+    let doc = agents_document(&hosted).await.unwrap();
+    let mut agents_list = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(doc)
+        .as_author(&hex::encode(root.verifying_key().to_bytes()))
+        .in_app(CHAT, "Chat");
+    let heads = agents_list.doc_mut().get_heads();
+    let notes = tilo_action_policy::agent_answers::AnswerScope::app(NOTES).node(WORKSPACE);
+    agents_list
+        .apply(WorkspaceAgents::SET_AGENT_BOUND.with(
+            ui::tilo_workspace_agent::workspace_agents::SetAgentBound {
+                agent: Id::from_raw(id.clone()),
+                bound: vec![ui::tilo_workspace_agent::Bound {
+                    node: notes.to_string(),
+                    kinds: vec!["undoable".into()],
+                    answer: "deny".into(),
+                }],
+            },
+        ))
+        .unwrap();
+    let changes = agents_list.doc_mut().save_after(&heads);
+    browser
+        .peer
+        .write(route, &collab_types::DocumentMutation::Incremental(changes))
+        .unwrap();
+    listed(&hosted, &id, |agent| !agent.bound.is_empty()).await;
+    let bounded = new_note(&server, "Past the bound").await;
+    assert_eq!(bounded["result"]["isError"], true, "{bounded}");
 }

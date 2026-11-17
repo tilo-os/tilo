@@ -850,7 +850,7 @@ pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) 
         &Lifetime::UntilRevoked,
     );
     grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
-        id: GrantId(format!("{prefix}:bound:{index}")),
+        id: GrantId(format!("{}{index}", bound_prefix(agent))),
         grantee: grantee.clone(),
         node: rule.node.clone(),
         kinds: rule.kinds,
@@ -859,6 +859,17 @@ pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) 
         granted_by: granted_by.clone(),
     }));
     grants
+}
+
+/// Where the ids of the grants [`agent_grants`] makes of `agent`'s bound begin.
+fn bound_prefix(agent: &str) -> String {
+    format!("turn:agent:{agent}:bound:")
+}
+
+/// Whether `grant` is one of the rules of `agent`'s bound, as [`agent_grants`] carries it.
+#[must_use]
+pub fn is_agent_bound(grant: &Grant, agent: &str) -> bool {
+    grant.id.0.starts_with(&bound_prefix(agent))
 }
 
 /// The app a person's desktop session publishes its own functions as (the

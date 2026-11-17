@@ -17,7 +17,7 @@
 //! empty the Trash.
 
 use crate::{
-    ActionKind, Answer, Basis, Change, Decision, Grant, GrantId, Grantee, KindSet, Level, TreePath,
+    ActionKind, Answer, Basis, Decision, Grant, GrantId, Grantee, KindSet, Level, TreePath,
 };
 
 /// The id prefix of every answer grant.
@@ -195,28 +195,6 @@ pub fn answer_grant(
         answer,
         granted_by,
     )
-}
-
-/// The changes setting `agent`'s answer for `kind` at `scope` in a workspace
-/// holding `held`: the earlier answer is revoked, so the new one replaces
-/// it. `None` clears the answer, returning the scope to what the agent's
-/// admission and broader answers say.
-#[must_use]
-pub fn set(
-    workspace: &str,
-    agent: &str,
-    (scope, kind): (&AnswerScope, ActionKind),
-    answer: Option<Answer>,
-    (granted_by, held): (Grantee, &[Grant]),
-) -> Vec<Change> {
-    let id = grant_id(agent, scope, kind);
-    held.iter()
-        .filter(|grant| grant.id == id)
-        .map(|grant| Change::Revoke(grant.id.clone()))
-        .chain(answer.map(|answer| {
-            Change::Grant(grant(workspace, agent, (scope, kind), answer, granted_by))
-        }))
-        .collect()
 }
 
 /// The answer an agent starts with for an action of `kind`, before anyone
