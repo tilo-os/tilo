@@ -190,7 +190,7 @@ pub struct Turn {
     pub request: String,
     /// What the turn asks its agent to take into its conversation's summary while it answers
     /// ([`chat::recall::told`]): none for most turns, and for every issue.
-    pub fold: Option<ui::collaboration::recall::Fold>,
+    pub fold: Option<runtime_collab::recall::Fold>,
 }
 
 impl Turn {

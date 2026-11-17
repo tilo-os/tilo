@@ -395,6 +395,34 @@ mod tests {
         }
     }
 
+    /// A turn is told what came before its message in its own conversation, oldest first, and
+    /// nothing said elsewhere.
+    #[test]
+    fn a_turn_is_told_its_own_conversation_and_nothing_said_elsewhere() {
+        let mut thread = Thread::new();
+        thread.say(&me(), "Remind me to call Bo");
+        thread.say(&agent(), "Done, for 3 pm");
+        thread.part.messages.push(
+            Id::from_raw("elsewhere"),
+            Message::new(
+                Id::from_raw("c_general"),
+                me(),
+                thread.clock + 1,
+                "Lunch at noon".to_owned(),
+            ),
+        );
+        let turn = thread.say(&me(), "Move it to Friday");
+        let told = thread.told(&turn, "Move it to Friday");
+        assert_eq!(
+            told.instruction,
+            format!(
+                "Move it to Friday{INSTRUCTION_CONVERSATION}\nPerson: Remind me to call Bo\nYou: \
+                 Done, for 3 pm"
+            )
+        );
+        assert_eq!(told.fold, None);
+    }
+
     /// A short conversation is told whole, as it was written: nothing is summarised and nothing
     /// asked of the agent.
     #[test]

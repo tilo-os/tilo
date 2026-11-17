@@ -15,6 +15,7 @@
 
 use std::time::Duration;
 
+use runtime_collab::recall::Fold;
 use serde_json::{Map, json};
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelRequest, Role, ToolChoice,
@@ -22,7 +23,6 @@ use tilo_model_gateway::host_backend::protocol::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 use tilo_resource::Resource as _;
-use ui::collaboration::recall::Fold;
 
 use super::{CHAT, HostAgents, Reply, Turn, invoke_named, later};
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
