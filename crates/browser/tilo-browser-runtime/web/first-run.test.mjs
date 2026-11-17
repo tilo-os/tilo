@@ -664,10 +664,16 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
   assert.equal(shows('https://tilo.example/#/@workspaces.example/w/team', {stored}), false,
     'back at the workspace they were invited to: the workspace, not the setup');
   assert.equal(JSON.parse(stored[SETUP]).step, 'later');
-  assert.equal(shows('https://tilo.example/', {stored, step: true}), '', 'opening the site itself: the setup shows');
+  assert.equal(shows('https://tilo.example/', {stored, step: true}), null,
+    'opening the site itself: the workspace they joined, never between them and their work');
   assert.equal(JSON.parse(stored[SETUP]).step, 'later', 'and is still for later, until they take it up');
   assert.equal(shows('https://tilo.example/#/@workspaces.example/w/team', {stored}), false,
     'so the workspace’s address still opens the workspace');
+  // A browser that joined nothing (they put the invitation off, say) is
+  // offered the setup on the site itself, as before.
+  const unjoined = {[SETUP]: JSON.stringify({step: 'later', at: Date.now()})};
+  assert.equal(shows('https://tilo.example/', {stored: unjoined, step: true}), '',
+    'no workspace joined: the site itself offers the setup');
   assert.equal(setupLater({getItem: () => JSON.stringify({step: 'later'})}), true);
   assert.equal(setupLater({getItem: () => JSON.stringify({step: 'done'})}), false);
   // Someone already here who opens an invitation keeps what they had.

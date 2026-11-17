@@ -14,9 +14,10 @@
 // invitation, a pairing) and a page inside another site never show it.
 // A newcomer who arrives by an invitation joins that workspace first, with
 // nothing in their way: their own setup is kept for later (`later`), and
-// shows the next time they open the site itself, never over a workspace's
-// address (the workspace also offers it once they have used it a while,
-// identity-actions.mjs). A browser this site knows nothing of is not shown
+// shows on the site itself only while they have joined no workspace; once
+// they have, that workspace offers it after some use
+// (identity-actions.mjs), never between them and their work. A browser this
+// site knows nothing of is not shown
 // the setup ahead of its entry's answer: a site that takes people by
 // invitation only may send them to its wait list, and the setup is no way
 // in where they hold no invitation. The page shows the screen itself once
@@ -48,8 +49,12 @@ try{
   return;
  }else if(setup.step==='later'){
   // Shown on the site itself, and kept for later still: until they take
-  // it up, a workspace's address opens the workspace.
-  if(!bare)return;
+  // it up, a workspace's address opens the workspace. A browser that has
+  // already joined a workspace opens it on the site itself too: their own
+  // setup waits inside the workspace, which offers it once they have used
+  // it a while (identity-actions.mjs), and never stands between them and
+  // the work they came back to.
+  if(!bare||!fresh())return;
   setup={step:'start',at:setup.at};
  }
 }catch(e){return;}
