@@ -2812,6 +2812,7 @@ settings-access-remove = Entfernen
 settings-access-cancel = Abbrechen
 settings-access-remove-device-consequence = Es wird abgemeldet und kann nicht mehr als du handeln.
 settings-access-remove-agent-consequence = Er hört sofort auf, als du zu handeln.
+settings-access-removing = Wird entfernt…
 settings-access-remove-from-another = Entferne ihn von einem anderen deiner Geräte aus.
 settings-access-browser-is-this = Entferne diesen Browser von einem anderen deiner Geräte aus.
 settings-access-approve = Annehmen

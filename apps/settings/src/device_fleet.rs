@@ -65,12 +65,10 @@ pub fn device_icon(label: &str) -> Icon {
     }
 }
 
-pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
-    remote.invoke(
-        identity_admin::target(identity_admin::DEVICES),
-        InvokeArgument::None,
-        None,
-    )
+/// Where the person's devices are listed: a host that keeps the read current
+/// sends the list again whenever it changes.
+pub(crate) fn listed() -> ui::tilo_actions::remote::RemoteActionTarget {
+    identity_admin::target(identity_admin::DEVICES)
 }
 
 pub(crate) fn revoke(

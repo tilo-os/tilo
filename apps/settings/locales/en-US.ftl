@@ -2812,6 +2812,7 @@ settings-access-remove = Remove
 settings-access-cancel = Cancel
 settings-access-remove-device-consequence = It's signed out and can't act as you anymore.
 settings-access-remove-agent-consequence = It stops acting as you right away.
+settings-access-removing = Removing…
 settings-access-remove-from-another = To remove it, use another of your devices.
 settings-access-browser-is-this = Remove this browser from another of your devices.
 settings-access-approve = Approve

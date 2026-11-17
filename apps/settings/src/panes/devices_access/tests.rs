@@ -40,6 +40,24 @@ struct RecordingHost {
     served: std::sync::Mutex<Option<serde_json::Value>>,
     /// The actions this host refuses whoever asks, after noting the ask.
     refused: std::sync::Mutex<Vec<ui::tilo_actions::remote::RemoteActionTarget>>,
+    /// The reads of its lists this host keeps current, once it does
+    /// ([`Self::keep_current`]). Without, it answers each list once, as a
+    /// host that cannot say when one changes.
+    current: std::sync::Mutex<Option<Current>>,
+}
+
+/// The reads a host keeps current.
+#[derive(Default)]
+struct Current {
+    /// Each open read, and the list it reads.
+    reads: Vec<(
+        ui::tilo_actions::InvocationId,
+        ui::tilo_actions::remote::RemoteActionTarget,
+    )>,
+    /// How often a list changed.
+    changes: u64,
+    /// Who waits to hear of the next change.
+    waiting: Vec<Completer<()>>,
 }
 
 /// How the session's shell answers an ask to open one of its sheets.
@@ -78,7 +96,30 @@ impl RecordingHost {
             sheet: std::sync::Mutex::default(),
             served: std::sync::Mutex::default(),
             refused: std::sync::Mutex::default(),
+            current: std::sync::Mutex::default(),
         })
+    }
+
+    /// Keep every list current from now on: each read of one stays open, and
+    /// is sent what it lists whenever [`Self::change`] changes it.
+    fn keep_current(&self) {
+        *self.current.lock().unwrap() = Some(Current::default());
+    }
+
+    /// Change the person's devices as this host lists them, and tell whoever
+    /// reads a list it keeps current.
+    fn change(&self, change: impl FnOnce(&mut serde_json::Value)) {
+        change(&mut self.listed.lock().unwrap());
+        let waiting = match &mut *self.current.lock().unwrap() {
+            Some(current) => {
+                current.changes = current.changes.saturating_add(1);
+                std::mem::take(&mut current.waiting)
+            }
+            None => Vec::new(),
+        };
+        for told in waiting {
+            told.complete(());
+        }
     }
 
     fn shell(&self, sheet: Sheet) {
@@ -159,6 +200,19 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
                 }
             };
         }
+        if (request.target == identity_admin::target(identity_admin::DEVICES)
+            || request.target == device_pairing::target(device_pairing::ASKING))
+            && let Some(current) = &mut *self.current.lock().unwrap()
+        {
+            // A read this host keeps current: admitted, and answered with
+            // each state of the list from here on.
+            current.reads.push((invocation, request.target.clone()));
+            self.asked.lock().unwrap().push(request);
+            return ui::tilo_actions::remote::Pending::ready(Ok(InvocationReceipt {
+                invocation,
+                status: ui::tilo_actions::remote::ReceiptStatus::Accepted,
+            }));
+        }
         let value = if request.target == identity_admin::target(identity_admin::DEVICES) {
             self.listed.lock().unwrap().clone()
         } else if request.target == device_pairing::target(device_pairing::ASKING) {
@@ -193,17 +247,52 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
     fn observe(
         &self,
         _: &Caller,
-        _: &ui::tilo_actions::InvocationId,
+        id: &ui::tilo_actions::InvocationId,
     ) -> Option<ui::tilo_actions::remote::InvocationState> {
-        None
+        let (target, sequence) = self.current.lock().unwrap().as_ref().and_then(|current| {
+            let (_, target) = current.reads.iter().find(|(read, _)| read == id)?;
+            Some((target.clone(), current.changes.saturating_add(1)))
+        })?;
+        let value = if target == identity_admin::target(identity_admin::DEVICES) {
+            self.listed.lock().unwrap().clone()
+        } else {
+            self.asking.lock().unwrap().clone()
+        };
+        Some(ui::tilo_actions::remote::InvocationState::new(
+            *id,
+            ui::tilo_actions::InvocationUpdate::Item {
+                invocation: *id,
+                sequence,
+                value,
+            },
+        ))
+    }
+
+    fn next_change(
+        &self,
+        _: &Caller,
+        id: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::Pending<()>> {
+        let (told, change) = ui::tilo_actions::remote::pending();
+        self.current.lock().unwrap().as_mut().and_then(|current| {
+            current
+                .reads
+                .iter()
+                .any(|(read, _)| read == id)
+                .then(|| current.waiting.push(told))
+        })?;
+        Some(change)
     }
 
     fn cancel(
         &self,
         _: &Caller,
-        _: &ui::tilo_actions::InvocationId,
+        id: &ui::tilo_actions::InvocationId,
     ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
     {
+        if let Some(current) = &mut *self.current.lock().unwrap() {
+            current.reads.retain(|(read, _)| read != id);
+        }
         ui::tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
@@ -1357,5 +1446,218 @@ tilo_test_env::scenario! {
             published_row(&mut app, &computer_row_id()).is_some(),
             "the computer is still one of the person's"
         );
+    }
+}
+
+/// [`a_full_list`] on a host that keeps its lists current, as a page's does:
+/// each list is read once and sent again whenever it changes.
+fn a_list_kept_current(now: i64) -> std::sync::Arc<RecordingHost> {
+    let host = a_full_list(now);
+    host.keep_current();
+    host
+}
+
+/// How often the host was asked for the person's devices.
+fn times_listed(host: &RecordingHost) -> usize {
+    host.asked_at(&identity_admin::target(identity_admin::DEVICES))
+        .len()
+}
+
+/// The controls the page offers for the entry `key` now, by name.
+fn offered_for(app: &mut TestApp<SettingsShell>, key: &str) -> Vec<String> {
+    let mut offered: Vec<String> = app
+        .harness()
+        .targets()
+        .into_keys()
+        .filter(|name| name.contains(key))
+        .collect();
+    offered.sort();
+    offered
+}
+
+/// Whether a row of the page says it is being removed.
+fn says_removing(app: &mut TestApp<SettingsShell>) -> bool {
+    plain_all(app.texts())
+        .iter()
+        .any(|text| text.contains("Removing…"))
+}
+
+/// The person removes the other computer: Remove on its row, Remove again
+/// where the row says what that does, and yes to what the host asks. The
+/// host has taken the removal when this returns.
+fn remove_the_other_computer(app: &mut TestApp<SettingsShell>, host: &RecordingHost) {
+    press(
+        app,
+        &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+    );
+    press(
+        app,
+        &format!("settings.access.device.{OTHER_COMPUTER}.remove"),
+    );
+    agree(app, host, &computer_row_id(), "revoke-device");
+    assert_eq!(asked_at_last(app, host, &revoke()).len(), 1);
+    app.settle();
+}
+
+/// The host lists the other computer as taken back from now on.
+fn the_other_computer_is_revoked(listed: &mut serde_json::Value) {
+    for device in listed.as_array_mut().unwrap() {
+        if device["key_hex"] == OTHER_COMPUTER {
+            device["revoked"] = true.into();
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_page_shows_the_persons_devices_as_they_are;
+
+    phase a_device_approved_while_the_page_is_open_is_listed_and_the_host_is_asked_once;
+    // The list was read when the page opened and after what the person did
+    // on it: a device approved on the shell's own card, or on another
+    // device, was listed only by a page loaded again.
+    {
+        let host = a_list_kept_current(now());
+        let mut app = window_on_a_full_list(&host);
+        let phone = format!("settings.device:{}", key(0x77));
+        assert!(published_row(&mut app, &phone).is_none());
+        host.change(|listed| {
+            listed.as_array_mut().unwrap().push(serde_json::json!({
+                "label": "Browser on iPhone", "key_hex": key(0x77),
+                "fingerprint": "77 77 77 77 77 77", "current": false, "revoked": false,
+                "issued_ms": now(), "online": true}));
+        });
+        tilo_test_env::wait_until("the new device to be listed", || {
+            app.settle();
+            published_row(&mut app, &phone).is_some()
+        });
+        let shown = plain_all(app.texts());
+        assert!(
+            shown.iter().any(|text| text.contains("Browser on iPhone")),
+            "{shown:?}"
+        );
+        assert_eq!(
+            times_listed(&host),
+            1,
+            "read once and followed, never asked for again"
+        );
+    }
+
+    phase a_list_its_host_keeps_current_is_asked_for_on_no_timer;
+    {
+        en();
+        let host = a_list_kept_current(0);
+        let (model, _remote) = model_on(&host);
+        assert_eq!(model.devices_read.kept, Kept::Current);
+        assert_eq!(model.asking_read.kept, Kept::Current);
+        assert_eq!(model.wakes_in(), None, "nothing wakes the page to ask again");
+        // A host that cannot say when its list changes is asked again while
+        // the page is open, as before.
+        let once = RecordingHost::new(record(0));
+        let (model, _remote) = model_on(&once);
+        assert_eq!(model.devices_read.kept, Kept::Once);
+        assert!(model.wakes_in().is_some_and(|wait| wait <= 4000));
+    }
+
+    phase a_removed_device_says_so_until_the_list_shows_it_gone;
+    // The host took the removal and its list named the device a moment
+    // longer: the row stayed, still offering Cancel and Remove, so the
+    // removal read as one that failed.
+    {
+        let host = a_list_kept_current(now());
+        let mut app = window_on_a_full_list(&host);
+        remove_the_other_computer(&mut app, &host);
+        let offered = offered_for(&mut app, OTHER_COMPUTER);
+        assert!(
+            !offered.iter().any(|name| {
+                name.ends_with(".cancel")
+                    || name.ends_with(".remove")
+                    || name.ends_with(".ask-remove")
+            }),
+            "a row being removed offers no removal: {offered:?}"
+        );
+        assert!(says_removing(&mut app));
+        assert!(
+            published_row(&mut app, &computer_row_id()).is_some(),
+            "the host's list still names it"
+        );
+
+        host.change(the_other_computer_is_revoked);
+        tilo_test_env::wait_until("the removed computer to leave the list", || {
+            app.settle();
+            published_row(&mut app, &computer_row_id()).is_none()
+        });
+        assert!(!says_removing(&mut app));
+        assert!(offered_for(&mut app, OTHER_COMPUTER).is_empty());
+        assert_eq!(times_listed(&host), 1, "the host said so itself");
+    }
+
+    phase a_host_that_answers_its_list_once_is_read_again_after_the_removal;
+    // As the session of a computer answers: the removal is done when it
+    // answers, and the list read after it no longer names the device.
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        let listed_before = times_listed(&host);
+        host.change(the_other_computer_is_revoked);
+        remove_the_other_computer(&mut app, &host);
+        tilo_test_env::wait_until("the removed computer to leave the list", || {
+            app.settle();
+            published_row(&mut app, &computer_row_id()).is_none()
+        });
+        assert!(!says_removing(&mut app));
+        assert_eq!(times_listed(&host), listed_before + 1);
+    }
+
+    phase a_removal_the_host_refuses_leaves_the_row_as_it_was;
+    {
+        let host = a_list_kept_current(now());
+        host.refused.lock().unwrap().push(revoke());
+        let mut app = window_on_a_full_list(&host);
+        remove_the_other_computer(&mut app, &host);
+        tilo_test_env::wait_until("the host's refusal to be told", || {
+            app.settle();
+            !app.harness().control_failures().is_empty()
+                || app.harness().refusal_said().is_some()
+        });
+        app.settle();
+        assert!(!says_removing(&mut app), "nothing is being removed");
+        let offered = offered_for(&mut app, OTHER_COMPUTER);
+        assert!(
+            offered.iter().any(|name| name.ends_with(".ask-remove")),
+            "the row offers Remove again: {offered:?}"
+        );
+        assert!(published_row(&mut app, &computer_row_id()).is_some());
+    }
+
+    phase a_removal_the_host_took_and_never_showed_gone_stops_saying_so;
+    {
+        en();
+        let host = a_list_kept_current(0);
+        let (mut model, remote) = model_on(&host);
+        model.now_ms = Some(1_000);
+        model
+            .act(
+                &remote,
+                &DevicesAccessEffect::RevokeDevice {
+                    device: OTHER_COMPUTER.into(),
+                    reason: REMOVED.into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(model.leaves(OTHER_COMPUTER));
+        model.poll(&remote);
+        assert!(
+            model.leaves(OTHER_COMPUTER),
+            "the host took it: until its list shows it gone"
+        );
+        assert_eq!(model.wakes_in(), Some(10_000));
+        model.now_ms = Some(11_000);
+        assert!(model.poll(&remote), "the page is built again");
+        assert!(
+            !model.leaves(OTHER_COMPUTER),
+            "the row shows what the list says"
+        );
+        assert_eq!(times_listed(&host), 1, "and the host is not asked again");
     }
 }
