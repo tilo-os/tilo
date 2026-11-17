@@ -41,6 +41,7 @@ pub mod records;
 pub mod runs;
 mod runtime_import;
 pub mod seccomp;
+pub mod served_runs;
 pub mod setup;
 pub mod shell_host;
 pub mod shell_start;

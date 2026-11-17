@@ -237,6 +237,48 @@ impl WorkspaceShells {
         ))
     }
 
+    /// The hosted-VM service a workspace's Linux programs run on, paid for
+    /// by `payer` rather than this host's own account when given.
+    fn target_for(&self, payer: Option<&Payer>) -> Option<HostedTarget> {
+        self.vms
+            .clone()
+            .or_else(|| self.paid_on_browsers(payer))
+            .map(|mut target| {
+                if let Some(payer) = payer {
+                    target.account.clone_from(&payer.account);
+                    target.size = payer.size;
+                }
+                target
+            })
+    }
+
+    /// `workspace`'s machine as a place to run programs, with its files
+    /// shared into it as a session's shell shares them, and where those
+    /// files are; `None` on a host that runs no machines.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's directory could not be made.
+    pub(crate) fn machine(
+        &self,
+        workspace: &str,
+        payer: Option<&Payer>,
+    ) -> io::Result<Option<(HostedPrograms, PathBuf)>> {
+        let files = self.files(workspace);
+        std::fs::create_dir_all(&files)?;
+        let Some(target) = self.target_for(payer) else {
+            return Ok(None);
+        };
+        let shared = files.clone();
+        let programs = HostedPrograms::new(
+            target,
+            workspace.to_owned(),
+            ENVIRONMENT.to_owned(),
+            Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
+        );
+        Ok(Some((programs, files)))
+    }
+
     fn open(&self, workspace: &str, payer: Option<&Payer>) -> io::Result<Session> {
         let root = self.state.join(safe(workspace));
         let files = self.files(workspace);
@@ -248,18 +290,7 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let target = self
-            .vms
-            .clone()
-            .or_else(|| self.paid_on_browsers(payer))
-            .map(|mut target| {
-                if let Some(payer) = payer {
-                    target.account.clone_from(&payer.account);
-                    target.size = payer.size;
-                }
-                target
-            });
-        let programs: Arc<dyn Programs> = match target {
+        let programs: Arc<dyn Programs> = match self.target_for(payer) {
             Some(target) => {
                 let shared = files.clone();
                 Arc::new(

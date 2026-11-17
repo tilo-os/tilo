@@ -604,10 +604,76 @@ fn relay_terminal(fd: &OwnedFd, signals: &LaunchSignals<AgentStream>, finished: 
     }
 }
 
+/// A workspace's machine for tests: a stand-in for the hosted-VM service in
+/// front of the real guest agent, run in this process as the test's own user.
+#[cfg(test)]
+pub(crate) mod testing {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "a test fixture: a machine it cannot set up is a test that failed"
+    )]
+
+    use super::*;
+
+    pub(crate) fn fake_vm(dir: &Path) -> PathBuf {
+        use std::io::BufRead as _;
+        let socket = dir.join("v.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let user = legacy_agent::user::GuestUser {
+            name: "me".into(),
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            home: std::env::temp_dir(),
+            shell: "/bin/sh".into(),
+        };
+        let agent = std::sync::Arc::new(legacy_agent::server::Agent::new(user, "boot".into()));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let agent = std::sync::Arc::clone(&agent);
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(line, format!("CONNECT {AGENT_PORT}\n"));
+                    stream.write_all(b"OK 1\n").unwrap();
+                    let _ = agent.serve(stream);
+                });
+            }
+        });
+        socket
+    }
+
+    pub(crate) fn fake_service(dir: &Path, vm: PathBuf) -> PathBuf {
+        let socket = dir.join("hosted.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let _: Option<Request> = control::FRAMING.read_value(&mut stream).unwrap();
+                control::FRAMING
+                    .write_value(
+                        &mut stream,
+                        &Reply::Ready {
+                            link: legacy_agent_protocol::link::AgentLink::Hybrid {
+                                socket: vm.clone(),
+                            },
+                            woke_ms: None,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        socket
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ush_shell::io::Captured;
+
+    use super::testing::{fake_service, fake_vm};
 
     tilo_test_env::scenario! {
         /// A hosted workspace's program in its VM: the grants it is given, a refusal's words and the session's terminal.
@@ -780,58 +846,6 @@ mod tests {
             );
             assert_ne!(modes.c_lflag & libc::ICANON, 0);
         }
-    }
-
-    fn fake_vm(dir: &Path) -> PathBuf {
-        use std::io::BufRead as _;
-        let socket = dir.join("v.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let user = legacy_agent::user::GuestUser {
-            name: "me".into(),
-            uid: rustix::process::getuid().as_raw(),
-            gid: rustix::process::getgid().as_raw(),
-            home: std::env::temp_dir(),
-            shell: "/bin/sh".into(),
-        };
-        let agent = std::sync::Arc::new(legacy_agent::server::Agent::new(user, "boot".into()));
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let agent = std::sync::Arc::clone(&agent);
-                std::thread::spawn(move || {
-                    let mut line = String::new();
-                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-                    reader.read_line(&mut line).unwrap();
-                    assert_eq!(line, format!("CONNECT {AGENT_PORT}\n"));
-                    stream.write_all(b"OK 1\n").unwrap();
-                    let _ = agent.serve(stream);
-                });
-            }
-        });
-        socket
-    }
-
-    fn fake_service(dir: &Path, vm: PathBuf) -> PathBuf {
-        let socket = dir.join("hosted.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let _: Option<Request> = control::FRAMING.read_value(&mut stream).unwrap();
-                control::FRAMING
-                    .write_value(
-                        &mut stream,
-                        &Reply::Ready {
-                            link: legacy_agent_protocol::link::AgentLink::Hybrid {
-                                socket: vm.clone(),
-                            },
-                            woke_ms: None,
-                        },
-                    )
-                    .unwrap();
-            }
-        });
-        socket
     }
 
     struct OutputWriter2(Output);
