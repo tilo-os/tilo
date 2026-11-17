@@ -4,7 +4,7 @@
 d-so-tilo-shell = Shell
 
 d-cejnvssb = Shell
-    .doc = The person's own shell resource, reached as `shell` (`root shell: Shell`).
+    .doc = The person's own shell document, reached as `shell` (`root shell: Shell`).
     .noun = { $count ->
         [one] shell
        *[other] shells
@@ -125,7 +125,7 @@ d-fjzbw5un = Kind
     .doc = What the part is; the bar draws it from this, so a part moved is a part the same, and its name is the one that part goes by.
 
 d-pbly7ymy = Shown
-    .doc = Whether it shows on the bar; a part off keeps its place in the resource.
+    .doc = Whether it shows on the bar; a part off keeps its place in the document.
 
 d-sfhd6wko-filter-kind = Kind
 
@@ -221,7 +221,7 @@ d-xsjcdedm = Reason
     .doc = Why it failed, in the app's own words; empty while it does better.
 
 d-jq4ftwnw = Layout ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's resource is named by.
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's document is named by.
     .noun = { $count ->
         [one] layout ref
        *[other] layout refs
@@ -358,7 +358,7 @@ d-nprpusuo = Shown as
     .doc = The view it shows the resource through; empty for the app's default.
 
 d-ofkshr4v = Resource
-    .doc = The resource it shows, when it shows one.
+    .doc = The document it shows, when it shows one.
 
 d-qqcejiim = Title
     .doc = The title it is shown under.
@@ -708,7 +708,7 @@ d-st426t4p = A front workspace
 d-st426t4p-name = Name
 
 d-ztflhbbf = A strip
-    .doc = Adds a strip named `name` to `row`, access at `width`, and returns its key.
+    .doc = Adds a strip named `name` to `row`, standing at `width`, and returns its key.
 
 d-ztflhbbf-row = Row
 
@@ -724,7 +724,7 @@ d-chvuqgur-strip = Strip
 d-chvuqgur-index = Index
 
 d-tnecawb6 = A foreign place
-    .doc = A place of a kind this build has no resource for: it stands as it is, which is what a place another shell made looks like.
+    .doc = A place of a kind this build has no document for: it stands as it is, which is what a place another shell made looks like.
 
 d-tnecawb6-strip = Strip
 

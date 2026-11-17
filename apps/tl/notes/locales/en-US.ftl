@@ -132,7 +132,7 @@ d-4s5iqnfo = Insert image
 d-4s5iqnfo-image = Image
 
 d-xptsjaii = Export markdown
-    .doc = A note as Markdown: its title, then its body, each picture it shows access beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes.
+    .doc = A note as Markdown: its title, then its body, each picture it shows standing beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes.
 
 d-2e5dloct = Export note
     .doc = A note as a file: its Markdown, and the pictures it shows beside it.
