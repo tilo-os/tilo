@@ -21,25 +21,9 @@ use super::{DOCUMENT_VERSION, Publication};
 pub(super) const FORMAT: Format = Format {
     name: "governed workspace document",
     version: DOCUMENT_VERSION,
-    oldest: 4,
-    steps: &[without_name],
+    oldest: DOCUMENT_VERSION,
+    steps: &[],
 };
-
-/// Version 4 to 5: the record keeps no name of its own. The workspace's name
-/// is its governance's, which the record's peer state holds and which version
-/// 4 kept a copy of beside it; the copy goes, and every byte after it stays.
-fn without_name(mut bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let read = |error: postcard::Error| format!("a version 4 record: {error}");
-    let (_version, rest) = postcard::take_from_bytes::<u32>(&bytes).map_err(read)?;
-    let (workspace, rest) = postcard::take_from_bytes::<String>(rest).map_err(read)?;
-    let (workspace_id, rest) = postcard::take_from_bytes::<WorkspaceId>(rest).map_err(read)?;
-    let (_name, rest) = postcard::take_from_bytes::<String>(rest).map_err(read)?;
-    let named = bytes.len().saturating_sub(rest.len());
-    let head = postcard::to_stdvec(&(5_u32, workspace, workspace_id))
-        .map_err(|error| error.to_string())?;
-    bytes.splice(..named, head);
-    Ok(bytes)
-}
 
 /// The record as it is written: the publications and join receipts not in the
 /// files beside it yet, and how many those hold.

@@ -187,10 +187,8 @@ pub use tilo_server_session::workspaces::{
 use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
-/// The record's version this build writes, and the one it reads: version 4
-/// keeps the publications and the join receipts in files beside the record,
-/// and version 5 no name of its own, the governance's being the one (see
-/// [`document_format`]).
+/// The record's version this build writes, and the one it reads: it keeps no
+/// name of its own, the governance's being the one (see [`document_format`]).
 const DOCUMENT_VERSION: u32 = 5;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
