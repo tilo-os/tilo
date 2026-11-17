@@ -631,18 +631,18 @@ fn locking_closes_the_panel_the_person_had_open() {
     session.compositor().lock_now().expect("the screen locks");
     session.step(REFRESH).expect("a turn of the session");
     assert!(
-        slots(&session).is_empty(),
+        parts(&session).is_empty(),
         "nothing of the person's stands over the lock: {:?}",
-        slots(&session)
+        parts(&session)
     );
     assert!(!session.quick_settings_open(), "the panel went down");
     // Unlocking does not bring it back: what the person opened was not theirs to find again.
     session.compositor().unlock().expect("the screen unlocks");
     session.step(REFRESH).expect("a turn of the session");
     assert!(
-        slots(&session).is_empty(),
+        parts(&session).is_empty(),
         "unlocking brings back no surface: {:?}",
-        slots(&session)
+        parts(&session)
     );
     assert!(!session.quick_settings_open(), "and the panel stays down");
 }
