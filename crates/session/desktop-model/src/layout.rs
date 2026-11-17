@@ -201,8 +201,8 @@ pub struct Tab {
     /// Written only by [`Tab::set_window_title`] and [`Tab::rename`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_title: Option<String>,
-    /// The view the tab shows its record through; empty for the app's own
-    /// default view.
+    /// The view the tab shows its record through, or the item its window
+    /// opened on, on every device; empty for the app's own default view.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub view: String,
     /// Whether the person pinned the tab: an agent arranges a pinned tab

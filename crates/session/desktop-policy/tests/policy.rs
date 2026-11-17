@@ -289,7 +289,7 @@ fn the_shell_names_the_tabs_it_has_for_apps_with_their_apps() {
     // asked for, and that tab is the app's window on its way: the next
     // launch of the app goes there instead of starting a second process.
     assert!(
-        policy.hold("so.tilo.notes", None, false, false),
+        policy.hold("so.tilo.notes", None, (false, false), None),
         "a place beside the window the app has"
     );
     // The place shows a window that has not come, which never stops moving.
@@ -659,7 +659,7 @@ fn a_conversation_opens_beside_its_sender() {
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
     let sender = window_tab(&policy, 1);
     assert!(
-        policy.hold("so.tilo.chat", None, false, true),
+        policy.hold("so.tilo.chat", None, (false, true), Some("dm")),
         "the shell takes the place beside the sender"
     );
     settle(&mut driver);
@@ -685,6 +685,8 @@ fn a_conversation_opens_beside_its_sender() {
         "the tab the window takes is the instance it is known by"
     );
     assert!(asked[0].beside, "a window of the app's own");
+    // Born showing the conversation, which every device's window of it opens on.
+    assert_eq!(policy.tab_showing("so.tilo.chat", "dm"), Some(tab));
     let groups = groups(&policy);
     let (sender_group, _, _) = groups
         .iter()

@@ -132,9 +132,6 @@ struct State {
     /// The windows apps asked this session for, by app and in ask order: each starts in the tab the
     /// shell holds for it once the shell asks back ([`Apps::start_asked`]).
     planned: BTreeMap<String, VecDeque<WindowAsk>>,
-    /// The window a send opened on an item, by app and the item's anchor, by the tab it stands in:
-    /// a second send landing in that item raises that window rather than standing another on it.
-    opened: BTreeMap<(String, String), u64>,
     /// What the tool a launch opens was asked to show, for the one launch being planned
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
@@ -288,7 +285,6 @@ impl Apps {
                 me: Weak::new(),
                 held: BTreeMap::new(),
                 planned: BTreeMap::new(),
-                opened: BTreeMap::new(),
                 tool_context: None,
                 broker: None,
                 wake,
@@ -981,14 +977,6 @@ impl Apps {
         let Some(tab) = tab else {
             return;
         };
-        // What the window opens on is what it shows: a later ask for the same item raises this
-        // window rather than opening another one beside it.
-        if let Some(reveal) = &planned.reveal {
-            self.state
-                .borrow_mut()
-                .opened
-                .insert((app.to_owned(), reveal.clone()), tab);
-        }
         // A launch into a workspace the shell is not showing: its tab goes there, and the window
         // starts in that workspace's records whether the shell holds it or not.
         let workspace = match &planned.workspace {
@@ -1059,7 +1047,7 @@ impl Apps {
             return false;
         };
         let app = launch.app();
-        if !desktop.with_policy(|policy| policy.hold(app, anchor, background, floated)) {
+        if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
             return false;
         }
         self.plan_window(WindowAsk {
@@ -1107,7 +1095,7 @@ impl Apps {
                 .flatten()
                 .filter(|_| !elsewhere)
             {
-                Some((anchor, ..)) => policy.hold(app, Some(anchor), false, false),
+                Some((anchor, ..)) => policy.hold(app, Some(anchor), (false, false), None),
                 None => policy.hold_open(app, elsewhere),
             }
         });
@@ -1123,24 +1111,6 @@ impl Apps {
             tool_context,
         });
         Ok(true)
-    }
-
-    /// The tab the window `app` opened on `item` stands in, while it is on the shell.
-    #[must_use]
-    pub fn window_on(&self, app: &str, item: &str) -> Option<u64> {
-        self.state
-            .borrow()
-            .opened
-            .get(&(app.to_owned(), item.to_owned()))
-            .copied()
-    }
-
-    /// The window opened on `item` is gone: the next send landing there opens a new one.
-    pub fn forget_window_on(&self, app: &str, item: &str) {
-        self.state
-            .borrow_mut()
-            .opened
-            .remove(&(app.to_owned(), item.to_owned()));
     }
 
     /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps its place

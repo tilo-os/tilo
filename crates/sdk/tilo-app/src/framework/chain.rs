@@ -1071,29 +1071,27 @@ impl ChainCore {
             return false;
         }
         let opened = if kept.is_some_and(|kept| kept >= newest) {
-            self.hold_kept(newest)
+            self.hold_kept(newest).map(|()| true)
         } else {
             // A part a peer started, started here from its genesis: what
             // they wrote in it is on its way, and a view of it waits for
-            // that rather than reading back from an empty head.
-            self.open_or_start(newest).and_then(|opened| match opened {
-                Opened::Held => Ok(()),
+            // that rather than reading back from an empty head. One asked
+            // for opens at the look its arrival brings.
+            self.open_or_start(newest).map(|opened| match opened {
+                Opened::Held => true,
                 Opened::Started => {
                     self.waiting
                         .borrow_mut()
                         .insert(newest, PartArrival::Arriving);
-                    Ok(())
+                    true
                 }
-                Opened::Asked => Err(Unopened {
-                    reason: PART_ARRIVING.into(),
-                    retry: false,
-                }),
+                Opened::Asked => false,
             })
         };
         match opened {
-            Ok(()) => {
+            Ok(moved) => {
                 self.looked.set(Some(looked));
-                true
+                moved
             }
             Err(Unopened { reason, retry }) => {
                 // A part another writer held for this moment is not gone: it

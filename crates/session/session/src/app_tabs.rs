@@ -1112,10 +1112,6 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::UpdateRegion { .. } => {
                 refuse(&reply, &app, &name, NO_REGION);
             }
-            // The record a window shows, as its app holds it: the one source of what a window
-            // shows, which its place, the layout kept beside it and where anyone here is read
-            // from. An app that keeps one document for the whole workspace speaks on a channel
-            // that names no record, so the window itself has to say it.
             // The record a window shows, as its app holds it. An app that keeps one document for
             // the whole workspace has no record id to name it by (its route is empty), so the
             // document's kind names it: the same on every device, and the same for every window
@@ -1270,12 +1266,12 @@ impl Answers<'_> {
         // One window per item: the conversation a window already shows is that window, so a
         // second send into it raises the window it stands in instead of opening another on the
         // same conversation.
-        if let Some(tab) = apps.window_on(app, anchor) {
-            if self.desktop.with_policy(|policy| policy.focus_tab(tab)) {
-                return;
-            }
-            // Its window closed: the item stands nowhere, and a window opens for it again.
-            apps.forget_window_on(app, anchor);
+        if self.desktop.with_policy(|policy| {
+            policy
+                .tab_showing(app, anchor)
+                .is_some_and(|tab| policy.focus_tab(tab))
+        }) {
+            return;
         }
         // The tab is there from this frame and the window starts once the shell asks back, so the
         // tab is the window's instance.

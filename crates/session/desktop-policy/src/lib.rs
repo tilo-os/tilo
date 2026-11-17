@@ -183,14 +183,15 @@ type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 
 /// A tab held for a window of an app that is on its way: the tab it takes
 /// when it maps (`None` until the desktop makes it), whether it takes focus
-/// there, and the one window it is held for, when that is known (a kept app's
+/// there, the one window it is held for, when that is known (a kept app's
 /// window after a restart of the desktop) rather than any next window of the
-/// app.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// app, and the item that window opens on, kept as its tab's view.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct HeldTab {
     tab: Option<TabId>,
     background: bool,
     window: Option<KeptWindow>,
+    shows: String,
 }
 
 /// The tabs held for each app's coming windows, oldest first: an app's next
@@ -304,6 +305,7 @@ impl TileSource for Windows {
                 .iter_mut()
                 .find(|record| record.tab.is_none())?;
             record.tab = Some(id);
+            let shows = record.shows.clone();
             drop(held);
             // The tab is the window's instance: the session starts the window it planned for it
             // now that the shell holds the place it takes.
@@ -312,7 +314,10 @@ impl TileSource for Windows {
                 tab: Some(id),
                 beside: true,
             });
-            let tab = self.place(id, app);
+            let tab = Tab {
+                view: shows,
+                ..self.place(id, app)
+            };
             self.titles
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -354,8 +359,7 @@ impl TileSource for Windows {
                 .or_default()
                 .push(HeldTab {
                     tab: Some(id),
-                    background: false,
-                    window: None,
+                    ..HeldTab::default()
                 });
             self.launches.borrow_mut().push(LaunchAsk {
                 app: asked.to_owned(),
@@ -385,8 +389,7 @@ impl TileSource for Windows {
             .or_default()
             .push(HeldTab {
                 tab: Some(tab.id),
-                background: false,
-                window: None,
+                ..HeldTab::default()
             });
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
@@ -911,14 +914,26 @@ impl DesktopPolicy {
         self.handle.read(|tree| anchor_for(tree, app))
     }
 
+    /// The tab of `app` whose window shows `item` (its view): one window per item, so a second
+    /// send into a conversation raises the window it stands in.
+    #[must_use]
+    pub fn tab_showing(&self, app: &str, item: &str) -> Option<TabId> {
+        self.app_tab(app, |tab| tab.view == item)
+    }
+
     /// The tab of `app` the window `instance` runs in, when the shell shows it:
     /// the tab a window is given is the window's instance ([`LaunchAsk::tab`]).
     #[must_use]
     pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
+        self.app_tab(app, |tab| tab.id == instance)
+    }
+
+    /// The first tab of `app` on the shell that `pick` takes.
+    fn app_tab(&self, app: &str, pick: impl Fn(&Tab) -> bool) -> Option<TabId> {
         self.handle.read(|tree| {
             tabs(tree)
                 .find(|tab| {
-                    tab.id == instance
+                    pick(tab)
                         && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
                             .is_some_and(|id| app_ids_match(&id, app))
                 })
@@ -1009,14 +1024,16 @@ impl DesktopPolicy {
     /// `background`. It lands right after `anchor` (the tab [`Self::anchor_for`] finds when none is
     /// named), and — `floated` — stands over the shell beside it instead: the window a send landed
     /// in, which the shell gives the strip's room to so the card it draws at stands beside the window
-    /// that sent rather than over it. The session starts that window when the shell asks back for the
+    /// that sent rather than over it. The tab is born showing `shows`, the item the window opens
+    /// on (the conversation a send landed in), so every device's window of it opens there too.
+    /// The session starts that window when the shell asks back for the
     /// tab ([`Self::take_launches`]). False when the desktop holds no tab of `app` to open beside.
     pub fn hold(
         &mut self,
         app: &str,
         anchor: Option<TabId>,
-        background: bool,
-        floated: bool,
+        (background, floated): (bool, bool),
+        shows: Option<&str>,
     ) -> bool {
         let beside = if floated {
             None
@@ -1035,7 +1052,7 @@ impl DesktopPolicy {
             background: Some(background),
             float: floated.then_some(true),
         };
-        self.hold_launch(app, command, background)
+        self.hold_launch(app, command, background, shows.unwrap_or_default())
     }
 
     /// Hold a tab for the next window of `app` where a launch lands, taking focus unless
@@ -1047,13 +1064,13 @@ impl DesktopPolicy {
             background: Some(background),
             float: None,
         };
-        self.hold_launch(app, command, background)
+        self.hold_launch(app, command, background, "")
     }
 
     /// Ask the shell for `command`'s window and keep the place it makes for
     /// `app`. The desktop makes the tab on its next pass: the place is asked
     /// for here, so one that never comes can be given up before then.
-    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool) -> bool {
+    fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool, shows: &str) -> bool {
         if self.handle.dispatch(command).is_err() {
             return false;
         }
@@ -1065,6 +1082,7 @@ impl DesktopPolicy {
                 tab: None,
                 background,
                 window: None,
+                shows: shows.to_owned(),
             });
         true
     }
@@ -1148,6 +1166,7 @@ impl DesktopPolicy {
                 tab: Some(tab),
                 background,
                 window,
+                ..HeldTab::default()
             });
         true
     }
@@ -1746,8 +1765,7 @@ fn ask_again(
     if !queue.iter().any(|record| record.tab == Some(tab)) {
         queue.push(HeldTab {
             tab: Some(tab),
-            background: false,
-            window: None,
+            ..HeldTab::default()
         });
     }
     drop(held);

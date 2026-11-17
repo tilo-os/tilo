@@ -66,6 +66,8 @@ struct Saved {
     name: String,
     /// How to start it again, when this machine still has it.
     launch: Option<Launch>,
+    /// The item its window opened on, as its tab's view keeps it on every device.
+    shows: String,
 }
 
 /// The app asked for a saved tab, and when.
@@ -351,7 +353,7 @@ impl Restore {
             &launch,
             &apps.workspace_named(&workspace),
             Some(saved.tab),
-            None,
+            Some(saved.shows.as_str()).filter(|shows| !shows.is_empty()),
         ) {
             Ok(()) => {
                 self.opening = Some(Opening {
@@ -451,6 +453,7 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                     app: app_id.clone(),
                     name,
                     launch: apps::launch_of(app_id),
+                    shows: tab.view.clone(),
                 },
             ));
         }
