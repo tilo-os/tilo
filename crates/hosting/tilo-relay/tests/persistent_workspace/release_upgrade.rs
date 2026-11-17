@@ -588,7 +588,7 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
     assert_eq!(
         access.get("status").and_then(|access| access.as_str()),
         Some("pending"),
-        "{status}"
+        "{access}"
     );
     // The person the release invited at an address: the address came over, and
     // the invitation mail went to it.

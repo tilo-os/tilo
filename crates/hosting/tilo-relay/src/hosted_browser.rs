@@ -2549,13 +2549,13 @@ mod tests {
      {
         use crate::browser_actions::BrowserMeter;
         use crate::placed_shells::{MEMBERS_ENV, PLACER_ENV};
-        use tilo_host_account::{ACCOUNT_ENV, LOG_ENV, PLANS_ENV};
+        use tilo_host_account::{ACCOUNT_ENV, ACTIONS_LOG_ENV, PLANS_ENV};
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove(PLACER_ENV)
             .remove(MEMBERS_ENV)
             .remove(ACCOUNT_ENV)
-            .remove(LOG_ENV)
+            .remove(ACTIONS_LOG_ENV)
             .remove(PLANS_ENV)
             .remove(RELAY_ENV);
         assert!(
@@ -2572,12 +2572,12 @@ mod tests {
             .set(MEMBERS_ENV, &members)
             .set(ACCOUNT_ENV, "acct-1");
         let error = HostedBrowsers::from_env().err().unwrap();
-        assert!(error.contains(LOG_ENV), "{error}");
+        assert!(error.contains(ACTIONS_LOG_ENV), "{error}");
         assert!(BrowserMeter::from_env().unwrap().is_none());
 
         // With the log but no address, its sessions would be told to reach
         // it where they cannot.
-        env.set(LOG_ENV, dir.path().join("actions.jsonl"))
+        env.set(ACTIONS_LOG_ENV, dir.path().join("actions.jsonl"))
             .set(PLANS_ENV, dir.path().join("plans.json"));
         let error = HostedBrowsers::from_env().err().unwrap();
         assert!(error.contains(RELAY_ENV), "{error}");
