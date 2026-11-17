@@ -68,6 +68,7 @@ mod going;
 mod mail;
 mod sub_agents;
 mod summary;
+mod team;
 mod turn_provider;
 mod vault_uses;
 
@@ -818,6 +819,7 @@ impl HostAgents {
             workspace: workspace.to_owned(),
             workspace_id,
         };
+        team::join(&self.workspaces, turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;

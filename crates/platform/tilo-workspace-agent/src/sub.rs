@@ -456,6 +456,26 @@ impl WorkspaceAgents {
         false
     }
 
+    /// The team under `above`: the sub-agents it started and theirs that work here, oldest
+    /// first. Nothing of whoever started `above` is among them, and nothing of a sub-agent
+    /// beside it: whoever started sub-agents reads those below it and nobody else.
+    #[must_use]
+    pub fn team_of<'a>(&'a self, above: &Agent) -> Vec<&'a Agent> {
+        let mut team: Vec<&Agent> = self
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent.is_active()
+                    && agent.keeper == above.keeper
+                    && self.started_under(agent, &above.id.0)
+            })
+            .collect();
+        team.sort_by(|one, other| {
+            (one.created_at, &one.id.0).cmp(&(other.created_at, &other.id.0))
+        });
+        team
+    }
+
     /// Refuses an action a sub-agent invokes. A sub-agent changes nothing of the workspace's
     /// agents but its own team: it could otherwise lift what binds it, or make an agent that
     /// nothing binds.

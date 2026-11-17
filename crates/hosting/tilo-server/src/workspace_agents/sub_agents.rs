@@ -288,11 +288,12 @@ pub(super) fn kind_of(agent: &Agent) -> Interaction {
 /// What `turn`'s agent is told about sub-agents, after what every agent is told: a sub-agent
 /// what it is, any other agent how it starts and steers them.
 pub(super) fn told(turn: &Turn) -> String {
-    // A person's own agent is told nothing here: the news it is asked with when work of a
-    // sub-agent of its ends says what to do, and no tool of a hosted turn starts one. Its person
-    // asks for one with `ask-agent` under the cause kind `sub-agent`, which this server answers.
+    // A person's own agent is told how it starts and steers a team where its turn is offered
+    // one ([`super::team`]): the news it is asked with when work of a sub-agent of its ends
+    // says what to do then. Its person also asks for one with `ask-agent` under the cause kind
+    // `sub-agent`, which this server answers.
     let Some(sub) = &turn.agent.sub else {
-        return String::new();
+        return super::team::told(turn);
     };
     let starter = turn
         .line
@@ -312,8 +313,9 @@ pub(super) fn told(turn: &Turn) -> String {
          You cannot read {starter}'s conversation or any other, and nothing Chat keeps is \
          yours to read: work from what you are told and from the workspace's other apps. When \
          the job is done, say what came of it in a few plain sentences; {starter} is told it. \
-         When only your person can decide something, ask them in your answer.",
+         When only your person can decide something, ask them in your answer.{team}",
         job = sub.job,
+        team = super::team::told(turn),
     )
 }
 
