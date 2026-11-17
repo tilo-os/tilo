@@ -38,6 +38,30 @@ async fn connect(
     .await
 }
 
+/// How long a refused change is given to surface before its absence counts.
+const QUIET: Duration = Duration::from_millis(400);
+
+/// Nothing of a member's: no state and no action reaches `client` for
+/// [`QUIET`], the listing the server pushes aside.
+async fn quiet(client: &ServerClient, window: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Some(envelope)) = tokio::time::timeout_at(deadline, client.recv()).await {
+        match envelope {
+            Envelope::PersonalList { .. } | Envelope::Ping | Envelope::Pong => {}
+            other => panic!("the member heard {other:?}"),
+        }
+    }
+    true
+}
+
+/// Waits until `client`'s session ends, whatever the server sends it first.
+async fn closes(client: &ServerClient) {
+    tilo_test_env::within("the session to close", async {
+        while client.recv().await.is_some() {}
+    })
+    .await;
+}
+
 /// The server's first answer to `client` subscribing to `workspace`: its state
 /// comes first on a workspace the server holds.
 async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
@@ -196,7 +220,22 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         delta: retained_delta(b"removed-live-writer"),
         signature: [0; 64],
     });
-    let told = tilo_test_env::within("a message on alice_client", alice_client.recv()).await;
+    let told = tilo_test_env::within("a message on alice_client", async {
+        loop {
+            match alice_client.recv().await {
+                Some(answer @ Envelope::NotAuthorised { workspace_id, .. })
+                    if workspace_id == shared =>
+                {
+                    break Some(answer);
+                }
+                // The person's listing changes with the removal.
+                Some(Envelope::PersonalList { .. }) => {}
+                None => break None,
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
     assert!(
         matches!(
             &told,
@@ -209,9 +248,8 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         "{told:?}"
     );
     assert!(
-        tokio::time::timeout(Duration::from_millis(400), bob_client.recv())
-            .await
-            .is_err()
+        quiet(&bob_client, QUIET).await,
+        "the live member hears nothing of the refused change"
     );
     assert!(
         !persisted(state.path(), b"removed-live-writer"),
@@ -221,11 +259,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     // Alice stays globally handshake-admitted through workspace 702, but the
     // periodic audit then closes her workspace-701 stream and that global
     // admission cannot reopen workspace 701.
-    assert!(
-        tilo_test_env::within("alice_client to close", alice_client.recv())
-            .await
-            .is_none()
-    );
+    closes(alice_client).await;
     assert!(!server.is_subscribed(shared, &alice_a_key).await);
     assert!(server.is_subscribed(shared, &bob_key).await);
     assert!(server.is_subscribed(shared, &charlie_key).await);
@@ -257,15 +291,10 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         })
         .unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_millis(400), bob_client.recv())
-            .await
-            .is_err()
+        quiet(&bob_client, QUIET).await,
+        "the live member hears nothing of the refused change"
     );
-    assert!(
-        tilo_test_env::within("alice_reconnect to close", alice_reconnect.recv())
-            .await
-            .is_none()
-    );
+    closes(alice_reconnect).await;
 
     // Another device of Alice's joins the workspace her person is still in,
     // and the one her person left no longer admits her.
@@ -293,7 +322,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
             signature: [0; 64],
         })
         .unwrap();
-    assert!(alice_reconnect.recv().await.is_none());
+    closes(alice_reconnect).await;
 
     drop(alice_client);
     drop(alice_workspace_b);

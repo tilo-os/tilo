@@ -103,10 +103,16 @@ fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
 }
 
 async fn next(client: &ServerClient, who: &str) -> Envelope {
-    tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
-        .await
-        .unwrap_or_else(|_| panic!("{who} timed out"))
-        .unwrap_or_else(|| panic!("{who} connection closed"))
+    loop {
+        let envelope = tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{who} timed out"))
+            .unwrap_or_else(|| panic!("{who} connection closed"));
+        // A member's session also carries their workspace listing.
+        if !matches!(envelope, Envelope::PersonalList { .. }) {
+            return envelope;
+        }
+    }
 }
 
 fn invoke(invocation: InvocationId) -> RemoteActionMessage {
