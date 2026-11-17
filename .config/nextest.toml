@@ -100,6 +100,25 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
+# The relay's coding-agent tests start the guest's own agent program in its
+# serving mode (`tilo-legacy-agent serve-run`), as a workspace's machine starts
+# it: a program of another package, which Cargo builds for no test of the relay's.
+[scripts.setup.machine-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "legacy-agent:tilo-legacy-agent",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-relay) and test(coding_agents::)"
+setup = "machine-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-relay) and test(coding_agents::)"
+setup = "machine-siblings"
+
 # The browser peer's Lounge test starts the same workspace service the deployment
 # runs, so it is built the same way: a program of another package, with the
 # feature `agents` that gives it the `workspace` subcommand.

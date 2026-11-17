@@ -69,6 +69,8 @@ pub mod agents;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
+#[cfg(feature = "agents")]
+pub mod coding_agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
