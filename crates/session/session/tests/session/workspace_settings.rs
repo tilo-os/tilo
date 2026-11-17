@@ -1193,10 +1193,10 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     );
 }
 
-/// An agent the workspace admitted before Chat kept records of them is made
-/// one of the record when the tab opens it: under the id its grants carry,
-/// numbered around the names the workspace uses, and kept by whoever
-/// admitted it.
+/// An agent the person here admitted to the workspace before Chat kept agents of its own is
+/// listed in its place when they open the tab: under the id its grants carry, numbered around the
+/// names the workspace uses. Whoever admits an agent keeps it and pays for its work, so another
+/// member's admission is left for that member's own device.
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let _settled = ui::motion::testing::settled();
@@ -1205,18 +1205,21 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
     let workspace = front_workspace(&session);
-    // The admission as workspaces stored it before records: a grant naming the agent, held by the
-    // workspace, given by the person who admitted it.
+    // The admissions as workspaces stored them before Chat kept agents of its own: grants naming
+    // each agent, held by the workspace, given by the person who admitted it. One is the person's
+    // here; ada's is hers to give an agent of its own.
     let mut tree = session.handle().read(Clone::clone);
     let front = tree.active_workspace_mut().expect("a workspace in front");
-    front.policy.grants.push(tilo_action_policy::Grant::new(
-        "agent-member:helper:observer",
-        tilo_action_policy::Grantee::agent("helper"),
-        front.node(),
-        tilo_action_policy::KindSet::READ,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person("ada".to_owned()),
-    ));
+    for (agent, admitted_by) in [("helper", PERSON), ("analyst", "ada")] {
+        front.policy.grants.push(tilo_action_policy::Grant::new(
+            format!("agent-member:{agent}:observer"),
+            tilo_action_policy::Grantee::agent(agent),
+            front.node(),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(admitted_by.to_owned()),
+        ));
+    }
     session.handle().replace_tree(tree);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
@@ -1236,10 +1239,15 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
                 .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)
         })
     });
+    let held = held.expect("Chat's agents in the workspace");
+    assert_eq!(
+        held.len(),
+        1,
+        "only the person's own admission is given an agent here: {held:?}"
+    );
     assert!(
-        held.as_deref().is_some_and(|agents| agents
-            .iter()
-            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)),
-        "Chat's record names the admitted agent, under its id and numbered around the names here: {held:?}"
+        held.iter()
+            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active),
+        "Chat names the admitted agent, under its id and numbered around the names here: {held:?}"
     );
 }
