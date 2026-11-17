@@ -64,6 +64,8 @@ struct Layout {
     removes: Vec<Option<Rect>>,
     search: Rect,
     rows: Vec<Rect>,
+    /// The line that says the search found nobody, in the place of the rows.
+    nothing: Rect,
     /// Why a report on the chips cannot be sent, when it cannot.
     note: Rect,
     subjects: Vec<Rect>,
@@ -380,7 +382,7 @@ impl SendToBox {
         let row = self.row_height();
         let pad = self.padding();
         let gap = self.gap() / 2.0;
-        let results = (self.rows.len().min(MAX_ROWS) as f64) * row;
+        let results = (self.result_lines() as f64) * row;
         pad * 2.0
             + self.header_height() // the quiet line naming the box
             + row // the recipients and the search, on one line
@@ -637,12 +639,19 @@ impl SendToBox {
                 y + row,
             )
         };
-        y = search.y1 + if self.rows.is_empty() { 0.0 } else { gap };
+        y = search.y1 + if self.result_lines() == 0 { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
             rows.push(Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row));
             y += row;
         }
+        let nothing = if self.found_nobody() {
+            let line = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row);
+            y += row;
+            line
+        } else {
+            Rect::ZERO
+        };
         // A report this computer is told nowhere says so beside its chip,
         // rather than leaving Send dead for a reason the person cannot read.
         let note = if self.report_refusal().is_some() {
@@ -694,6 +703,7 @@ impl SendToBox {
             removes,
             search,
             rows,
+            nothing,
             note,
             subjects,
             plus,
@@ -712,6 +722,21 @@ impl SendToBox {
         self.hovered = (!self.rows.is_empty()).then_some(0);
         self.dirty = true;
         self.layout = self.build_layout();
+    }
+
+    /// Whether the search answered what is typed with nobody: the box says so where the rows
+    /// would stand.
+    fn found_nobody(&self) -> bool {
+        self.answered && self.rows.is_empty() && !self.search.trim().is_empty()
+    }
+
+    /// The lines under the recipient field: the rows found, or the one saying nobody was.
+    fn result_lines(&self) -> usize {
+        if self.found_nobody() {
+            1
+        } else {
+            self.rows.len().min(MAX_ROWS)
+        }
     }
 
     /// What the box is called: a report, when the one place reports go is on
@@ -1337,15 +1362,17 @@ impl SendToBox {
                 );
             }
         }
-        if self.answered && self.rows.is_empty() && !self.search.trim().is_empty() {
+        if self.found_nobody() {
             let none = crate::i18n::I18nManager::lookup_plain("send-to-no-results");
+            let (_, height) = text_renderer.measure_style(&none, None, &style);
+            let line = self.layout.nothing;
             text_renderer.draw_style(
                 scene,
                 &none,
                 dim,
                 transform.pre_translate(Vec2::new(
-                    self.rect.x0 + self.padding(),
-                    self.layout.search.y1 + inset,
+                    line.x0,
+                    line.y0 + (line.height() - f64::from(height)) / 2.0,
                 )),
                 None,
                 &style,
