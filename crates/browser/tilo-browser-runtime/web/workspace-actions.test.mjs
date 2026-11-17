@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspaceActions, invitedLine, INVITE_LINK, JOIN_WORKSPACE, NEW_WORKSPACE, PEOPLE, WAITING} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine, INVITE_LINK, JOIN_WORKSPACE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
 
 test('an invited wait-list entry says how long ago it was invited', () => {
   const now = Date.UTC(2026, 9, 24, 12);
@@ -59,7 +59,7 @@ test('the wait list is listed, gets no banner, and each address is invited with 
   const actions = createWorkspaceActions({peer: member, inviteLink: sealedLink,
     ui: {share: async offer => { shared.push(offer); }, waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, INVITE_LINK.id, JOIN_WORKSPACE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [INVITE_LINK.id, JOIN_WORKSPACE.id, WAITING.id]);
   assert.equal(banners.length, 0, 'nobody is waiting to be let in, so nothing is offered');
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.load(), [ed]);
@@ -92,10 +92,10 @@ test('someone the workspace does not let invite is never offered the wait list',
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     inviteLink: sealedLink, ui: {}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, JOIN_WORKSPACE.id], 'a host that keeps its entry from this person offers nothing');
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'a host that keeps its entry from this person offers nothing');
   assert.ok(!calls.some(([call]) => call === 'waitList'), 'nor asks the host for a list it would refuse');
   await actions.perform(WAITING.id);
-  assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, JOIN_WORKSPACE.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
 });
 
 test('a new workspace is made on a machine the person set up, and opened', async () => {

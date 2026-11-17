@@ -349,7 +349,16 @@ test('a site that names its host as it was before it was set up again stops the 
   const said = [];
   const error = console.error;
   console.error = message => said.push(String(message));
-  t.after(() => { console.error = error; });
+  // What the page did not catch reaches the site's entry through `reportError`, where a runtime
+  // has one: it is caught here, as the entry would, not left to fail the run.
+  const reported = [];
+  const report = Object.getOwnPropertyDescriptor(globalThis, 'reportError');
+  globalThis.reportError = failure => reported.push(failure);
+  t.after(() => {
+    console.error = error;
+    if (report) Object.defineProperty(globalThis, 'reportError', report);
+    else delete globalThis.reportError;
+  });
   const entering = joinWorkspace(refusalOptions(runtime));
   await until(() => runtime.peer, 'the session');
   runtime.peer.transport = 'reconnecting';
@@ -359,6 +368,8 @@ test('a site that names its host as it was before it was set up again stops the 
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
   assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-relay page-host https://host.example:8443')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
+  assert.ok(reported.some(failure => failure.message.includes('TILO_WEB_HOME_HOST_INFO')),
+    'the entry hears what to set');
 });
 
 test('a host that listens for pages elsewhere, or under a renewed pinned certificate, is not the one the site named', () => {
