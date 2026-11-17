@@ -138,7 +138,7 @@ async fn joins(
     invitation: String,
     service: std::sync::Arc<dyn LocalJoinService>,
 ) {
-    let identity = HostIdentity::kept(cert.clone(), key.clone());
+    let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let enrollment = enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -420,7 +420,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     let (cmd, actor) = Actor::spawn_serving(
         host_endpoint.clone(),
         host_lookup,
-        Some(HostIdentity::kept(host_cert.clone(), host_key.clone())),
+        Some(DeviceIdentity::kept(host_cert.clone(), host_key.clone())),
         std::sync::Arc::new(Mutex::new(Vec::new())),
         tilo_endpoint_reachability::Reachability::default(),
         vec![(

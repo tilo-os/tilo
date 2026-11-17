@@ -15,7 +15,7 @@ fn a_device_sells_nothing() {
     let account = api.read();
     assert_eq!(
         account,
-        ServerAccount::sells_nothing("ada-laptop", HostKind::Device)
+        ServerAccount::sells_nothing("ada-laptop", ServerKind::Device)
     );
     assert!(account.plans.is_empty() && account.subscription.is_none());
 }

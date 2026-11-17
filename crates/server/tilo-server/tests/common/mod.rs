@@ -28,7 +28,7 @@ use tilo_user_identity::{
 use tilo_server::{
     Envelope, ServerClient, ServerConfig, WorkspaceId,
     daemon::{Server, ServerIdentity},
-    service::{HostConfig, HostIdentity, WorkspaceService},
+    service::{ServiceConfig, ServiceIdentity, WorkspaceService},
 };
 use tilo_server_protocol::WorkSetting;
 
@@ -309,8 +309,8 @@ pub async fn host_in(
 ) -> Hosted {
     let endpoint = device_endpoint(device).await;
     let host = WorkspaceService::open(
-        HostConfig::new(state.path().to_path_buf(), work),
-        HostIdentity {
+        ServiceConfig::new(state.path().to_path_buf(), work),
+        ServiceIdentity {
             user_public_key: user.user_pk,
             device_signing_key: device.sk.clone(),
             device_cert: device.cert.clone(),

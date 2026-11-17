@@ -23,7 +23,7 @@ use tilo_action_policy::roles::governance;
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 
 /// Where [`Workspaces::add_member`] puts a person.
@@ -351,7 +351,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::EnterWorkspace),
+            WorkspaceOp::Host(ServiceOperation::EnterWorkspace),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -634,7 +634,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::PutWorkspaceGrants),
+            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -670,7 +670,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::PutWorkspaceGrants),
+            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -757,7 +757,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::SetAdministrator),
+            WorkspaceOp::Host(ServiceOperation::SetAdministrator),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -1168,7 +1168,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::GovernBot),
+            WorkspaceOp::Host(ServiceOperation::GovernBot),
             now,
         )?;
         command.validate()?;

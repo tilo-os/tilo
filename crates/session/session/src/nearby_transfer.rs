@@ -2243,7 +2243,7 @@ mod transfers_between_devices {
     };
     use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices as _};
     use tilo_desktop_model::{Capability, FsMode, GRANT_SESSION, Layout, Workspace, WorkspaceId};
-    use tilo_network_actor::HostIdentity;
+    use tilo_network_actor::DeviceIdentity;
     use tilo_user_identity::DeviceCapabilities;
 
     use super::{FILES_APP_ID, NearbyTransfer};
@@ -2356,7 +2356,7 @@ mod transfers_between_devices {
         let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
         let client = Client::start(
             Entry {
-                identity: Some(HostIdentity::kept(cert, key)),
+                identity: Some(DeviceIdentity::kept(cert, key)),
                 own: OwnPresence::default(),
                 hosts: Vec::new(),
                 continuity: permitted(),

@@ -1,7 +1,7 @@
 //! The workspaces one device serves: their governance and the session stack their members
 //! connect through, embeddable in any process that owns an iroh endpoint.
 //!
-//! A device runs the same stack whether it has a screen or not; [`HostConfig::work`] is what
+//! A device runs the same stack whether it has a screen or not; [`ServiceConfig::work`] is what
 //! it takes from others. [`WorkspaceService::open`] spawns nothing periodic: with no peers
 //! connected the service wakes only on I/O, and a connected peer's session is audited when its
 //! workspaces' membership files change, which the service watches. Its embedder registers
@@ -35,10 +35,10 @@ use tilo_server_protocol::{WorkSetting, WorkspaceId};
 /// How much an in-process session buffers each way before its writer waits.
 const LOCAL_SESSION_BUFFER: usize = 1 << 20;
 
-/// What a host is opened with.
+/// What a service is opened with.
 #[derive(Clone)]
-pub struct HostConfig {
-    /// Where the host keeps its workspaces and their retained state.
+pub struct ServiceConfig {
+    /// Where the service keeps its workspaces and their retained state.
     pub state_root: PathBuf,
     /// The work this device takes from others. A device of its person hands it a workspace to
     /// serve only when the setting takes that person's work.
@@ -48,10 +48,10 @@ pub struct HostConfig {
     pub trust_policy: TrustPolicy,
     /// Pre-admissions each workspace keeps, spent ones included.
     pub max_workspace_grants: Option<usize>,
-    /// Answers remote actions addressed to this host beyond its own
+    /// Answers remote actions addressed to this service beyond its own
     /// governance (`tilo.host`, `tilo.workspace`).
     pub apps: Option<Arc<dyn AppActionServer>>,
-    /// Classifies co-edit bodies for every workspace the host opens.
+    /// Classifies co-edit bodies for every workspace the service opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// What a server's operator answered for the folder that keeps the keys
     /// of people's sealed stores apart from `state_root`: one a copy or a
@@ -65,8 +65,8 @@ pub struct HostConfig {
     pub people_keys: Option<PathBuf>,
 }
 
-impl HostConfig {
-    /// A host keeping its state under `state_root`, admitting the person's
+impl ServiceConfig {
+    /// A service keeping its state under `state_root`, admitting the person's
     /// own devices and its workspaces' members, with the desktop's payloads.
     #[must_use]
     pub fn new(state_root: PathBuf, work: WorkSetting) -> Self {
@@ -82,9 +82,9 @@ impl HostConfig {
     }
 }
 
-/// Why a host could not open or change.
+/// Why a service could not open or change.
 #[derive(Debug, thiserror::Error)]
-pub enum HostError {
+pub enum ServiceError {
     /// The identity is invalid.
     #[error("identity: {0}")]
     Identity(String),
@@ -109,7 +109,7 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace service answers on.
-const HOST_ALPNS: [&[u8]; 5] = [
+const SERVICE_ALPNS: [&[u8]; 5] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
@@ -117,10 +117,10 @@ const HOST_ALPNS: [&[u8]; 5] = [
     tilo_peer_state::direct::DIRECT_ALPN_V2,
 ];
 
-/// A host's session stack: its workspaces, the handshake that admits their
+/// A service's session stack: its workspaces, the handshake that admits their
 /// members, and the session every member runs, whatever its carrier.
 #[derive(Clone)]
-pub struct HostSessions {
+pub struct ServiceSessions {
     pub(crate) endpoint: Endpoint,
     pub workspaces: WorkspaceRegistry,
     pub metrics: Arc<Metrics>,
@@ -131,7 +131,7 @@ pub struct HostSessions {
     pub(crate) shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The server ALPN's handler, and every session's context.
     pub handler: ServerProtocol,
-    /// Ends the in-process sessions when the host shuts down.
+    /// Ends the in-process sessions when the service shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
     /// The watch that lets its workspaces' membership be read from memory until
     /// a file changes, so a live session is audited when something changed
@@ -139,30 +139,30 @@ pub struct HostSessions {
     membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
-/// A host's workspaces, when it governs them: the governance and the app action server
+/// A service's workspaces, when it governs them: the governance and the app action server
 /// answering its actions.
 pub struct Governed {
     pub workspaces: crate::workspaces::Workspaces,
     pub(crate) actions: Arc<dyn AppActionServer>,
 }
 
-impl HostSessions {
-    /// Open a host's sessions and, when `governs`, its workspaces. `wrap` gives
+impl ServiceSessions {
+    /// Open a service's sessions and, when `governs`, its workspaces. `wrap` gives
     /// the app action server every session answers remote actions with, from the
-    /// workspaces and the host's own app action server (its governance and apps): a
+    /// workspaces and the service's own app action server (its governance and apps): a
     /// server answers compute placement around it.
     ///
     /// # Errors
     ///
-    /// The identity is invalid or, for a certified host, not host-capable;
+    /// The identity is invalid or, for a certified service, not able to serve;
     /// the state root cannot be created; or the workspaces cannot be opened.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
     )]
     pub async fn open(
-        cfg: HostConfig,
-        identity: HostIdentity,
+        cfg: ServiceConfig,
+        identity: ServiceIdentity,
         endpoint: Endpoint,
         governs: bool,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
@@ -170,8 +170,8 @@ impl HostSessions {
             &WorkspaceRegistry,
             Option<Arc<dyn AppActionServer>>,
         ) -> Option<Arc<dyn AppActionServer>>,
-    ) -> Result<(Self, Option<Governed>), HostError> {
-        validate_host_device_identity(&identity)?;
+    ) -> Result<(Self, Option<Governed>), ServiceError> {
+        validate_service_device_identity(&identity)?;
         say_when_unsealed(governs, &identity.device_cert);
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
@@ -187,9 +187,9 @@ impl HostSessions {
         let handshake_trust = HandshakeTrust::new(&cfg.trust_policy, identity.user_public_key);
         let governs = governs && !handshake_trust.allow_any;
         handshake_trust.refresh(&workspaces).await;
-        // The host answers its workspaces' governance as actions itself, beside
+        // The service answers its workspaces' governance as actions itself, beside
         // whatever apps its embedder serves.
-        let governance = governs.then(crate::workspaces::HostWorkspaceActions::new);
+        let governance = governs.then(crate::workspaces::ServiceWorkspaceActions::new);
         let own_server = match &governance {
             Some(governance) => Some(Arc::new(crate::workspaces::GovernedServer {
                 governance: governance.clone(),
@@ -258,10 +258,10 @@ impl HostSessions {
             cfg.state_root.join("store"),
         )
         .await
-        .map_err(HostError::Workspaces)?;
+        .map_err(ServiceError::Workspaces)?;
         governance.attach(workspaces.clone());
         // Sessions ask its governance what a device may do; the lock is set
-        // before the endpoint routes any session to a host that governs here.
+        // before the endpoint routes any session to a service that governs here.
         let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
         #[cfg(any(feature = "agents", feature = "web"))]
         take_part(&sessions.handler.compactor, &workspaces);
@@ -274,12 +274,12 @@ impl HostSessions {
         ))
     }
 
-    /// What the workspaces a host governs take from it: its sessions' registry,
+    /// What the workspaces a service governs take from it: its sessions' registry,
     /// access, records, identity and live trust, and `cfg`'s workspace settings.
     fn workspace_services(
         &self,
-        cfg: &HostConfig,
-        identity: &HostIdentity,
+        cfg: &ServiceConfig,
+        identity: &ServiceIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
@@ -305,7 +305,7 @@ impl HostSessions {
         }
     }
 
-    /// The writer of the host's governed workspace access.
+    /// The writer of the service's governed workspace access.
     pub(crate) fn access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -316,7 +316,7 @@ impl HostSessions {
         }
     }
 
-    /// In-process access to the records of the workspaces this host holds.
+    /// In-process access to the records of the workspaces this service holds.
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
         crate::workspace_documents::WorkspaceDocuments::new(
             self.workspaces.clone(),
@@ -332,8 +332,8 @@ impl HostSessions {
     ///
     /// # Errors
     ///
-    /// [`HostError::GovernedAccess`] when the host admits anyone or
-    /// `state_root` is not its own, and [`HostError::Store`] when workspace
+    /// [`ServiceError::GovernedAccess`] when the service admits anyone or
+    /// `state_root` is not its own, and [`ServiceError::Store`] when workspace
     /// initialization or durable replacement fails.
     pub async fn replace_governed_workspace_access(
         &self,
@@ -341,14 +341,14 @@ impl HostSessions {
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
         state_root: PathBuf,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), ServiceError> {
         if self.handshake_trust.allow_any {
-            return Err(HostError::GovernedAccess(
-                "allow_any cannot host governed workspace admission".into(),
+            return Err(ServiceError::GovernedAccess(
+                "allow_any cannot serve governed workspace admission".into(),
             ));
         }
         if state_root != self.state_root {
-            return Err(HostError::GovernedAccess(
+            return Err(ServiceError::GovernedAccess(
                 "state root does not match the running server".into(),
             ));
         }
@@ -358,7 +358,7 @@ impl HostSessions {
             .map(drop)
     }
 
-    /// Whether the host counts `device` as subscribed to `workspace_id`.
+    /// Whether the service counts `device` as subscribed to `workspace_id`.
     pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
         match ws {
@@ -367,13 +367,13 @@ impl HostSessions {
         }
     }
 
-    /// A member session of this device's own person to this host, over an
+    /// A member session of this device's own person to this service, over an
     /// in-process stream: the handshake and the session a remote member
-    /// runs. It lasts until either side drops it or the host shuts down.
+    /// runs. It lasts until either side drops it or the service shuts down.
     ///
     /// # Errors
     ///
-    /// As [`ServerClient::connect_v2_over_stream`]: the host refused the
+    /// As [`ServerClient::connect_v2_over_stream`]: the service refused the
     /// device, or the handshake failed.
     pub(crate) async fn connect_local(
         &self,
@@ -387,7 +387,7 @@ impl HostSessions {
         let mut closing = self.closing.subscribe();
         tokio::spawn(async move {
             let closed = async move {
-                // The sender lives as long as the host; its end is one too.
+                // The sender lives as long as the service; its end is one too.
                 let _ = closing.wait_for(|closing| *closing).await;
             };
             if let Err(error) =
@@ -427,7 +427,7 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
     tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }
 
-/// Say loudly when a host that `governs` workspaces under `cert` takes part in no
+/// Say loudly when a service that `governs` workspaces under `cert` takes part in no
 /// channels: its certificate may not own workspaces, so the workspaces it governs
 /// keep their records in the clear in the workspace document instead of sealed
 /// channels.
@@ -435,15 +435,15 @@ fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
     if governs && !cert.capabilities.holds_workspace_keys() {
         tracing::error!(
             device = %cert.device_label,
-            "this host's certificate cannot own workspaces, so the workspaces it governs are not sealed; re-enroll it with the own capability"
+            "this service's certificate cannot own workspaces, so the workspaces it governs are not sealed; re-enroll it with the own capability"
         );
     }
 }
 
-/// The handlers of a governing host's ALPNs, shared between the routers
+/// The handlers of a governing service's ALPNs, shared between the routers
 /// that register them.
-fn host_handlers(
-    sessions: &HostSessions,
+fn service_handlers(
+    sessions: &ServiceSessions,
     workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)> {
     vec![
@@ -457,15 +457,15 @@ fn host_handlers(
                 workspaces.join_service(),
             )),
         ),
-        // The host's own device answers a workspace's member devices here, as
-        // the members answer each other: an offer is answered by the host as
+        // The service's own device answers a workspace's member devices here, as
+        // the members answer each other: an offer is answered by the service as
         // one of the workspace's member devices
         // (`crate::workspaces::device_actions`).
         (
             tilo_peer_state::actions::ACTIONS_ALPN,
             Arc::new(workspaces.action_service()) as Arc<dyn DynProtocolHandler>,
         ),
-        // A member device of a workspace syncs with the host here, the same
+        // A member device of a workspace syncs with the service here, the same
         // link a device runs for itself: the dial names its workspace first.
         (
             tilo_peer_state::direct::DIRECT_ALPN,
@@ -481,10 +481,10 @@ fn host_handlers(
 
 /// The workspaces' own ALPNs on a server's router, beside its session ALPN.
 pub fn workspaces_protocols(
-    sessions: &HostSessions,
+    sessions: &ServiceSessions,
     workspaces: &crate::workspaces::Workspaces,
 ) -> Vec<(&'static [u8], Box<dyn DynProtocolHandler>)> {
-    host_handlers(sessions, workspaces)
+    service_handlers(sessions, workspaces)
         .into_iter()
         .filter(|(alpn, _)| *alpn != ALPN)
         .map(|(alpn, handler)| {
@@ -513,7 +513,7 @@ impl ProtocolHandler for Shared {
 /// The governance of the workspaces placed on this device and the sessions of
 /// their members.
 pub struct WorkspaceService {
-    sessions: HostSessions,
+    sessions: ServiceSessions,
     workspaces: crate::workspaces::Workspaces,
     actions: Arc<dyn AppActionServer>,
     handlers: Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)>,
@@ -531,7 +531,7 @@ impl std::fmt::Debug for WorkspaceService {
 }
 
 impl WorkspaceService {
-    /// Open the host on `endpoint`, which the embedder owns and routes.
+    /// Open the service on `endpoint`, which the embedder owns and routes.
     /// Spawns nothing periodic: with no peers connected it wakes only on
     /// I/O.
     ///
@@ -541,28 +541,29 @@ impl WorkspaceService {
     /// the state root cannot be created; or the workspaces kept there cannot be
     /// opened.
     pub async fn open(
-        cfg: HostConfig,
-        identity: HostIdentity,
+        cfg: ServiceConfig,
+        identity: ServiceIdentity,
         endpoint: Endpoint,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
-    ) -> Result<Self, HostError> {
+    ) -> Result<Self, ServiceError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
-            return Err(HostError::Identity(
-                "a host admitting anyone governs no workspaces".into(),
+            return Err(ServiceError::Identity(
+                "a service admitting anyone governs no workspaces".into(),
             ));
         }
         let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, channels, |_, server| server).await?;
+            ServiceSessions::open(cfg, identity, endpoint, true, channels, |_, server| server)
+                .await?;
         let Some(Governed {
             workspaces,
             actions,
         }) = governed
         else {
-            return Err(HostError::Workspaces(
-                "the host governs no workspaces".into(),
+            return Err(ServiceError::Workspaces(
+                "the service governs no workspaces".into(),
             ));
         };
-        let handlers = host_handlers(&sessions, &workspaces);
+        let handlers = service_handlers(&sessions, &workspaces);
         Ok(Self {
             sessions,
             workspaces,
@@ -593,13 +594,13 @@ impl WorkspaceService {
             .map(|(_, handler)| handler)
     }
 
-    /// The governance of the workspaces hosted here.
+    /// The governance of the workspaces served here.
     #[must_use]
     pub const fn workspaces(&self) -> &crate::workspaces::Workspaces {
         &self.workspaces
     }
 
-    /// The app action server answering the host's own actions (`tilo.host`:
+    /// The app action server answering the service's own actions (`tilo.host`:
     /// creating, listing and entering workspaces; `tilo.workspace`: each workspace's
     /// governance) and its embedder's apps, for in-process callers. A
     /// caller is named by [`local_caller`] and its certificate.
@@ -608,7 +609,7 @@ impl WorkspaceService {
         Arc::clone(&self.actions)
     }
 
-    /// The workspace join service of the workspaces hosted here, for a joining
+    /// The workspace join service of the workspaces served here, for a joining
     /// device in the same process
     /// ([`WorkspaceJoinClient::local`](tilo_peer_state::join_transport::WorkspaceJoinClient::local)).
     #[must_use]
@@ -622,7 +623,7 @@ impl WorkspaceService {
     ///
     /// # Errors
     ///
-    /// The host refused `cert`, or the handshake failed.
+    /// The service refused `cert`, or the handshake failed.
     pub async fn connect_local(
         &self,
         cert: DeviceCert,
@@ -632,19 +633,19 @@ impl WorkspaceService {
         self.sessions.connect_local(cert, key, revocations).await
     }
 
-    /// This host's endpoint address: what a member dials.
+    /// This service's endpoint address: what a member dials.
     #[must_use]
     pub fn node_addr(&self) -> iroh_base::EndpointAddr {
         self.sessions.endpoint.addr()
     }
 
-    /// The compactor of the workspaces hosted here.
+    /// The compactor of the workspaces served here.
     #[cfg(all(test, feature = "agents"))]
     pub(crate) const fn compactor(&self) -> &crate::compaction::Compactor {
         &self.sessions.handler.compactor
     }
 
-    /// The runtime of workspace `workspace_id`, as this host's sessions hold
+    /// The runtime of workspace `workspace_id`, as this service's sessions hold
     /// it: what the workspace's own writes go through, for a test driving a
     /// member's change in and reading what the store kept of it.
     #[cfg(all(test, feature = "agents"))]
@@ -660,36 +661,36 @@ impl WorkspaceService {
             .cloned()
     }
 
-    /// The durable records of the workspaces hosted here, for a service the
+    /// The durable records of the workspaces served here, for a service the
     /// embedder runs beside them.
     #[must_use]
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
         self.sessions.workspace_documents()
     }
 
-    /// The certificate this host proves itself with.
+    /// The certificate this service proves itself with.
     #[must_use]
     pub fn device_cert(&self) -> &DeviceCert {
         &self.sessions.identity.cert
     }
 
-    /// Whether this host counts `device` as subscribed to `workspace_id`.
+    /// Whether this service counts `device` as subscribed to `workspace_id`.
     pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await
     }
 
-    /// Every counter of this host's sessions now.
+    /// Every counter of this service's sessions now.
     #[must_use]
     pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
         self.sessions.metrics.snapshot()
     }
 
-    /// End the in-process sessions and stop the host's work. The embedder
+    /// End the in-process sessions and stop the service's work. The embedder
     /// closes its own router and endpoint.
     ///
     /// What the workspaces took in of their members' writes is written
     /// through to their files first: that write-through is deferred, so a
-    /// host stopped without this would end with a record a member wrote only
+    /// service stopped without this would end with a record a member wrote only
     /// in memory. A start replays what the server retains, but it takes a
     /// write only into a record its governor already holds
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
@@ -699,7 +700,7 @@ impl WorkspaceService {
     }
 }
 
-/// The caller an in-process device is to the host's [`WorkspaceService::actions`].
+/// The caller an in-process device is to the service's [`WorkspaceService::actions`].
 #[must_use]
 pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
@@ -744,7 +745,7 @@ impl ServiceSlot {
 #[must_use]
 pub fn deferred_protocols() -> (ServiceSlot, Protocols) {
     let slot = ServiceSlot::default();
-    let handlers = HOST_ALPNS
+    let handlers = SERVICE_ALPNS
         .iter()
         .map(|alpn| {
             (
@@ -770,7 +771,7 @@ impl ProtocolHandler for Deferred {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let Some(service) = self.slot.service() else {
             return Err(AcceptError::from_err(std::io::Error::other(
-                "no workspace is hosted here",
+                "no workspace is served here",
             )));
         };
         let Some(handler) = service.handler(self.alpn).cloned() else {
@@ -798,7 +799,7 @@ impl GovernedAccessWriter {
         &self.state_root
     }
 
-    /// A workspace this host deleted admits nobody at the handshake either.
+    /// A workspace this service deleted admits nobody at the handshake either.
     pub(crate) fn forget_workspace(&self, workspace_id: WorkspaceId) {
         self.handshake_trust.forget(workspace_id);
     }
@@ -833,7 +834,7 @@ impl GovernedAccessWriter {
         workspace_id: WorkspaceId,
         pinned: bool,
         device_access: crate::workspace::DeviceAccess,
-    ) -> Result<(), HostError> {
+    ) -> Result<(), ServiceError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
@@ -857,10 +858,10 @@ impl GovernedAccessWriter {
         workspace_id: WorkspaceId,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
-    ) -> Result<Vec<[u8; 32]>, HostError> {
+    ) -> Result<Vec<[u8; 32]>, ServiceError> {
         if self.handshake_trust.allow_any {
-            return Err(HostError::GovernedAccess(
-                "allow_any cannot host governed workspace admission".into(),
+            return Err(ServiceError::GovernedAccess(
+                "allow_any cannot serve governed workspace admission".into(),
             ));
         }
         let _update = self.update.lock().await;
@@ -911,7 +912,7 @@ pub(crate) struct HandshakeTrust {
     /// The user roots each governed workspace admits, by workspace: the
     /// allow list is the operator's own together with all of them. One entry
     /// is replaced after that workspace's access settles, so an admission
-    /// decision does not walk and lock every workspace the host governs —
+    /// decision does not walk and lock every workspace the service governs —
     /// which, at hundreds of workspaces, is most of the cost of admitting one
     /// more.
     contributions: Arc<std::sync::Mutex<HashMap<WorkspaceId, HashSet<[u8; 32]>>>>,
@@ -932,7 +933,7 @@ impl HandshakeTrust {
         }
     }
 
-    /// Rebuild every workspace's contribution by reading them, for a host
+    /// Rebuild every workspace's contribution by reading them, for a service
     /// starting (or a write whose effect in memory only a read tells).
     pub(crate) async fn refresh(&self, workspaces: &WorkspaceRegistry) {
         if self.allow_any {
@@ -1026,7 +1027,7 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
             match key {
                 Ok(key) => Some(key),
                 Err(error) => {
-                    tracing::error!(user = %encoded, %error, "a trusted user in the host's allow list is not a key; it is not trusted");
+                    tracing::error!(user = %encoded, %error, "a trusted user in the service's allow list is not a key; it is not trusted");
                     None
                 }
             }
@@ -1035,12 +1036,12 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
     roots
 }
 
-/// Bundle of identity material a host needs to run. The server daemon's
+/// Bundle of identity material a service needs to run. The server daemon's
 /// `main.rs` loads it from
 /// [`tilo_user_identity::persist`] and passed in explicitly so the
 /// integration tests can wire a `tempdir`-based identity.
 #[derive(Clone)]
-pub struct HostIdentity {
+pub struct ServiceIdentity {
     /// The user root pubkey the server chains to.
     pub user_public_key: [u8; 32],
     pub device_signing_key: ed25519_dalek::SigningKey,
@@ -1050,23 +1051,25 @@ pub struct HostIdentity {
     pub revocations: RevocationList,
 }
 
-pub fn validate_host_device_identity(identity: &HostIdentity) -> Result<(), HostError> {
+pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<(), ServiceError> {
     verify_device_cert_at(&identity.device_cert, unix_now_ns())
-        .map_err(|error| HostError::Identity(format!("invalid device certificate: {error}")))?;
+        .map_err(|error| ServiceError::Identity(format!("invalid device certificate: {error}")))?;
     if identity.device_cert.user_public_key != identity.user_public_key {
-        return Err(HostError::Identity(
+        return Err(ServiceError::Identity(
             "device certificate does not chain to the configured user public key".into(),
         ));
     }
     if identity.device_cert.device_public_key
         != identity.device_signing_key.verifying_key().to_bytes()
     {
-        return Err(HostError::Identity(
+        return Err(ServiceError::Identity(
             "device certificate does not match the configured device signing key".into(),
         ));
     }
     if identity.revocations.refuses(&identity.device_cert) {
-        return Err(HostError::Identity("device certificate is revoked".into()));
+        return Err(ServiceError::Identity(
+            "device certificate is revoked".into(),
+        ));
     }
     Ok(())
 }
@@ -1080,26 +1083,26 @@ pub struct ServerProtocol {
     pub metrics: Arc<Metrics>,
     pub autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    /// Set once when the host starts serving browsers: the workspaces whose
+    /// Set once when the service starts serving browsers: the workspaces whose
     /// calls it carries.
     pub carried_calls: Arc<std::sync::OnceLock<crate::workspaces::WeakWorkspaces>>,
-    /// Set once when the host governs workspaces: what its sessions answer a
+    /// Set once when the service governs workspaces: what its sessions answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
-    /// Set once when the host serves a fetch proxy: the grant a session takes
+    /// Set once when the service serves a fetch proxy: the grant a session takes
     /// for its connection there.
     pub fetch: Arc<std::sync::OnceLock<Arc<dyn crate::peer::FetchGrants>>>,
     pub agents: crate::peer::AgentRegistry,
-    /// The devices this host certified for its browser environments, see
+    /// The devices this service certified for its browser environments, see
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
     pub compactor: crate::compaction::Compactor,
     /// Told each device whose session here authenticated
     /// ([`crate::attach::Arrivals`]).
     pub(crate) arrivals: crate::attach::Arrivals,
-    /// Whether this host's work setting takes workspaces of people other
+    /// Whether this service's work setting takes workspaces of people other
     /// than its own to hold ([`tilo_server_protocol::WorkFrom::takes_others`]):
-    /// their governing hosts, whom nothing here admits yet, then open a
+    /// their governing services, whom nothing here admits yet, then open a
     /// session to hand them over. Every workspace such a session reaches
     /// still asks the live policy, which admits none of theirs.
     pub(crate) holds_for_others: bool,
@@ -1194,7 +1197,7 @@ impl ServerProtocol {
     ///
     /// # Errors
     ///
-    /// The device is not one this host admits, or the handshake failed.
+    /// The device is not one this service admits, or the handshake failed.
     pub async fn authenticate_member<R, W>(
         &self,
         recv: &mut R,
@@ -1270,7 +1273,7 @@ async fn serve_streams(
 }
 
 /// One member session over `recv`/`send`: the bounded shared handshake
-/// under the live policy (the owner and every user the host currently
+/// under the live policy (the owner and every user the service currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
 /// Every carrier runs this: an iroh stream, and an in-process stream. Only a
 /// stream with a connection's keying material (`binding`) takes an entry.
@@ -1284,18 +1287,18 @@ async fn serve_session<R, W>(
     mut send: W,
     binding: Option<[u8; 32]>,
     closed: impl std::future::Future<Output = ()> + Send,
-) -> Result<(), HostError>
+) -> Result<(), ServiceError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     ctx.metrics.inc_conns_accepted();
-    // A device the host has not admitted yet may enter a workspace through
-    // its entry on this session, where the host governs workspaces.
+    // A device the service has not admitted yet may enter a workspace through
+    // its entry on this session, where the service governs workspaces.
     let admit = ctx.admin.get().cloned();
-    // A host that keeps workspaces for the people it let in takes a workspace
-    // another host governs for its owner, as it does for an operator taking
-    // others' workspaces: that host's device opens the session to hand it
+    // A service that keeps workspaces for the people it let in takes a workspace
+    // another service governs for its owner, as it does for an operator taking
+    // others' workspaces: that service's device opens the session to hand it
     // over before anything here admits it.
     let takes_handed_over = ctx.holds_for_others
         || admit
@@ -1324,7 +1327,7 @@ where
             if matches!(error, HandshakeError::Auth(_)) {
                 ctx.metrics.inc_auth_rejected();
             }
-            return Err(HostError::Handshake(error.to_string()));
+            return Err(ServiceError::Handshake(error.to_string()));
         }
     };
     if let Some(entered) = entered {
@@ -1339,14 +1342,14 @@ where
                 crate::transport::Envelope::Entered(entered),
             ),
         )
-        .map_err(|error| HostError::Handshake(error.to_string()))?;
+        .map_err(|error| ServiceError::Handshake(error.to_string()))?;
         tokio::io::AsyncWriteExt::write_all(&mut send, &frame)
             .await
-            .map_err(|error| HostError::Handshake(error.to_string()))?;
+            .map_err(|error| ServiceError::Handshake(error.to_string()))?;
         if !admitted {
             ctx.metrics.inc_auth_rejected();
             told_then_closed(&mut send, closed).await;
-            return Err(HostError::Handshake("the entry was refused".to_owned()));
+            return Err(ServiceError::Handshake("the entry was refused".to_owned()));
         }
     }
     ctx.metrics.inc_conns_authed();
@@ -1431,7 +1434,7 @@ mod tests {
     /// What one workspace settles joins the handshake's allow list, and a
     /// workspace forgotten leaves it, without reading any other workspace:
     /// the cost of admitting one more workspace does not grow with how many
-    /// the host governs.
+    /// the service governs.
     #[test]
     fn a_settled_workspace_joins_the_allow_list_and_a_forgotten_one_leaves_it() {
         let own_user = [1; 32];
@@ -1442,7 +1445,7 @@ mod tests {
             let policy = trust.live_policy.read_recover().clone();
             match policy {
                 TrustPolicy::AllowList { users } => users,
-                // A host that lists nobody, or trusts anyone, reads as an
+                // A service that lists nobody, or trusts anyone, reads as an
                 // empty list; the assertions below are what notice.
                 TrustPolicy::AllowMatchingUser | TrustPolicy::AllowAny => Vec::new(),
             }

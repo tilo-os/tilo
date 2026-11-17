@@ -1,5 +1,5 @@
 //! Workspaces of a person's own on this host: made whenever they ask
-//! ([`HostOperation::CreateOwnWorkspace`]), any number of them, governed here
+//! ([`ServiceOperation::CreateOwnWorkspace`]), any number of them, governed here
 //! like every workspace this server governs, with the person as each one's
 //! administrator.
 //!
@@ -27,14 +27,14 @@
 //! `own-workspace-unattended.json`: no record of the workspace holds it, so no
 //! key working in it can turn it on for itself.
 //!
-//! [`HostOperation::CreateOwnWorkspace`]: crate::host_authority::HostOperation::CreateOwnWorkspace
+//! [`ServiceOperation::CreateOwnWorkspace`]: crate::service_authority::ServiceOperation::CreateOwnWorkspace
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::server_account::{
-    HostKind, Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal, ServerAccount,
+    Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal, ServerAccount, ServerKind,
     Subscription, Usage, WorkspaceUsage,
 };
 use tilo_lock::MutexRecover as _;
@@ -798,7 +798,7 @@ impl Workspaces {
             .collect();
         Some(ServerAccount {
             server: own.offer().host.clone(),
-            kind: HostKind::Provider,
+            kind: ServerKind::Provider,
             plans: vec![plan.clone()],
             subscription: Some(Subscription {
                 account: hex::encode(person),

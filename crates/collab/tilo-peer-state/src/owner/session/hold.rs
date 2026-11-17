@@ -14,7 +14,7 @@ use std::{
     },
     time::Duration,
 };
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tokio::sync::Notify;
 
 /// The first pause before dialling again; each failure doubles it.
@@ -91,7 +91,7 @@ enum Outcome {
 /// workspace is no longer held here. Without ownership there is nothing to dial.
 pub async fn hold(
     connect: Connect,
-    identity: Option<HostIdentity>,
+    identity: Option<DeviceIdentity>,
     holder: &dyn Holder,
     link: &Link,
 ) {
@@ -139,7 +139,7 @@ async fn once(
     connect: &Connect,
     holder: &dyn Holder,
     link: &Link,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     last: &mut Option<[u8; 32]>,
 ) -> Outcome {
     let Ok((hint, cert, _)) = connect.material(identity) else {
@@ -210,7 +210,7 @@ async fn renew(
     connect: &Connect,
     holder: &dyn Holder,
     link: &Link,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
 ) -> Outcome {
     if !matches!(connect.renewal(identity), Ok(Some(_))) {
         return Outcome::Failed;

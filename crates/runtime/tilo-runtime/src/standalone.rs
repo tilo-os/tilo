@@ -1342,15 +1342,15 @@ fn place_own_workspace(
         tilo_rt::app()
             .handle()
             .block_on(tilo_workspace_service::service::WorkspaceService::open(
-                tilo_workspace_service::service::HostConfig {
+                tilo_workspace_service::service::ServiceConfig {
                     apps: Some(Arc::clone(&key_sessions)
                         as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-                    ..tilo_workspace_service::service::HostConfig::new(
+                    ..tilo_workspace_service::service::ServiceConfig::new(
                         profile.join(HOST_STORE),
                         tilo_server_protocol::WorkSetting::none(),
                     )
                 },
-                tilo_workspace_service::service::HostIdentity {
+                tilo_workspace_service::service::ServiceIdentity {
                     user_public_key: cert.user_public_key,
                     device_signing_key: key,
                     device_cert: cert,
@@ -1457,7 +1457,7 @@ fn joined_workspaces(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
-    let ownership = tilo_identity::identity_store::HostIdentity::held(
+    let ownership = tilo_identity::identity_store::DeviceIdentity::held(
         cert,
         key.clone(),
         std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(

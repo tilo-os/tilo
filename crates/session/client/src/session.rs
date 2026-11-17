@@ -298,7 +298,10 @@ fn session_task(
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
         Arc::default(),
-        tilo_identity::identity_store::HostIdentity::kept(config.cert.clone(), Arc::clone(&signer)),
+        tilo_identity::identity_store::DeviceIdentity::kept(
+            config.cert.clone(),
+            Arc::clone(&signer),
+        ),
         Arc::new(crate::membership_check::SessionMembership),
     ));
     engine.keys().set(Some(workspace_keys.clone()));

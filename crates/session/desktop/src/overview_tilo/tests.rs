@@ -37,7 +37,7 @@ fn captions(rows: &[TiloRow]) -> Vec<&str> {
 fn tilo_cloud() -> ServerAccount {
     ServerAccount {
         server: "Tilo Cloud".into(),
-        kind: HostKind::Provider,
+        kind: ServerKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
             name: "Pro".into(),
@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            hosts: vec![ServerAccount::sells_nothing("ada-laptop", HostKind::Device)],
+            hosts: vec![ServerAccount::sells_nothing("ada-laptop", ServerKind::Device)],
             ..TiloOverview::default()
         };
         assert!(!hosting_relevant(&shell.hosts));
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
         let shell = TiloOverview {
             hosts: vec![ServerAccount::sells_nothing(
                 "Ada's server",
-                HostKind::SelfHosted,
+                ServerKind::SelfHosted,
             )],
             ..TiloOverview::default()
         };

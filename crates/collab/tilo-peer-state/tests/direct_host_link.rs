@@ -405,9 +405,9 @@ async fn joins_in(
     tilo_peer_state::owner::NativeWorkspaceOwner,
     tilo_desktop_model::WorkspaceId,
 ) {
-    use tilo_identity::identity_store::HostIdentity;
+    use tilo_identity::identity_store::DeviceIdentity;
     let owner = owner_at(state);
-    let identity = HostIdentity::kept(cert.clone(), key.clone());
+    let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let topic = tilo_peer_state::join::WorkspaceId::parse(named).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(

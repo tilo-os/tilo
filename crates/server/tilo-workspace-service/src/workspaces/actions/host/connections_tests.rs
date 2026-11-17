@@ -22,7 +22,7 @@ use tilo_actions::remote::{
 };
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions as Served;
+use super::super::ServiceWorkspaceActions as Served;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;

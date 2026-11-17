@@ -12,11 +12,11 @@ use crate::owner::{
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     topic: WorkspaceId,
     expected: &DeviceCert,
 ) -> Result<(), String> {
@@ -55,7 +55,7 @@ fn active(
 )]
 pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     identity_topic: WorkspaceId,
     local: Option<WorkspaceId>,
     invitation: String,
@@ -326,7 +326,7 @@ async fn prove_membership(
     host: &iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
 ) -> Result<join::JoinBootstrap, String> {
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
@@ -370,7 +370,7 @@ async fn prove_membership(
 /// invitation, and holds what the host answers.
 pub async fn admit_as_member(
     client: WorkspaceJoinClient,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     owner: NativeWorkspaceOwner,
     workspace_id: WorkspaceId,
     hint: join::TransportHint,
@@ -398,7 +398,7 @@ pub async fn admit_as_member(
 /// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
 pub async fn renew_membership(
     client: WorkspaceJoinClient,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     owner: NativeWorkspaceOwner,
     workspace: WorkspaceId,
 ) -> Result<bool, String> {

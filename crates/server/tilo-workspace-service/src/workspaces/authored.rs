@@ -4,7 +4,7 @@
 
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, Workspaces, system_time};
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_user_identity::DeviceCert;
 
 impl Workspaces {
@@ -33,7 +33,7 @@ impl Workspaces {
         self.authorize(
             governor,
             None,
-            WorkspaceOp::Host(HostOperation::AuthorApplications),
+            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
             now,
         )?;
         if governor != &self.inner.host.cert {

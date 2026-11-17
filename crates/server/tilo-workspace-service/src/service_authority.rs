@@ -9,11 +9,11 @@
 //! handler.
 //!
 //! Five are anyone's: making the workspace of their own a host that offers
-//! them keeps for each person ([`HostOperation::CreateOwnWorkspace`]),
-//! deleting one of theirs ([`HostOperation::DeleteOwnWorkspace`]), listing
+//! them keeps for each person ([`ServiceOperation::CreateOwnWorkspace`]),
+//! deleting one of theirs ([`ServiceOperation::DeleteOwnWorkspace`]), listing
 //! workspaces, which answers anyone but the host's person only the ones of
 //! their own, and keeping and reading their own workspace list
-//! ([`HostOperation::KeepPersonalList`]). The workspace is governed here like any other; the
+//! ([`ServiceOperation::KeepPersonalList`]). The workspace is governed here like any other; the
 //! person administers it.
 //!
 //! Holding a workspace another host governs is asked of anyone too, and
@@ -33,7 +33,7 @@ use tilo_user_identity::DeviceCert;
 
 /// An operation on the host that no workspace's governance decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostOperation {
+pub enum ServiceOperation {
     CreateWorkspace,
     ListWorkspaces,
     /// Admit the calling device to a workspace as its owner. Never a member's:
@@ -98,7 +98,7 @@ pub enum HostOperation {
     NamePersonalDevice,
 }
 
-impl HostOperation {
+impl ServiceOperation {
     /// The operation's stable name, for the log line of a refusal.
     pub(crate) const fn name(self) -> &'static str {
         match self {
@@ -189,27 +189,27 @@ impl HostOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::HostOperation;
+    use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [HostOperation; 17] = [
-        HostOperation::CreateWorkspace,
-        HostOperation::ListWorkspaces,
-        HostOperation::EnterWorkspace,
-        HostOperation::PreAdmit,
-        HostOperation::PutWorkspaceGrants,
-        HostOperation::SetAdministrator,
-        HostOperation::GovernBot,
-        HostOperation::AuthorApplications,
-        HostOperation::ComputeControl,
-        HostOperation::HostWorkspace,
-        HostOperation::UnhostWorkspace,
-        HostOperation::ListRevocations,
-        HostOperation::CreateOwnWorkspace,
-        HostOperation::DeleteOwnWorkspace,
-        HostOperation::BranchOwnWorkspace,
-        HostOperation::KeepPersonalList,
-        HostOperation::ReadPersonalList,
+    const ALL: [ServiceOperation; 17] = [
+        ServiceOperation::CreateWorkspace,
+        ServiceOperation::ListWorkspaces,
+        ServiceOperation::EnterWorkspace,
+        ServiceOperation::PreAdmit,
+        ServiceOperation::PutWorkspaceGrants,
+        ServiceOperation::SetAdministrator,
+        ServiceOperation::GovernBot,
+        ServiceOperation::AuthorApplications,
+        ServiceOperation::ComputeControl,
+        ServiceOperation::HostWorkspace,
+        ServiceOperation::UnhostWorkspace,
+        ServiceOperation::ListRevocations,
+        ServiceOperation::CreateOwnWorkspace,
+        ServiceOperation::DeleteOwnWorkspace,
+        ServiceOperation::BranchOwnWorkspace,
+        ServiceOperation::KeepPersonalList,
+        ServiceOperation::ReadPersonalList,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {
@@ -231,14 +231,14 @@ mod tests {
         for operation in ALL {
             let anyones = matches!(
                 operation,
-                HostOperation::CreateOwnWorkspace
-                    | HostOperation::DeleteOwnWorkspace
-                    | HostOperation::BranchOwnWorkspace
-                    | HostOperation::ListWorkspaces
-                    | HostOperation::KeepPersonalList
-                    | HostOperation::ReadPersonalList
-                    | HostOperation::HostWorkspace
-                    | HostOperation::UnhostWorkspace
+                ServiceOperation::CreateOwnWorkspace
+                    | ServiceOperation::DeleteOwnWorkspace
+                    | ServiceOperation::BranchOwnWorkspace
+                    | ServiceOperation::ListWorkspaces
+                    | ServiceOperation::KeepPersonalList
+                    | ServiceOperation::ReadPersonalList
+                    | ServiceOperation::HostWorkspace
+                    | ServiceOperation::UnhostWorkspace
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),
@@ -268,16 +268,16 @@ mod tests {
         for operation in ALL {
             let reads = matches!(
                 operation,
-                HostOperation::ListWorkspaces
-                    | HostOperation::ListRevocations
-                    | HostOperation::ReadPersonalList
+                ServiceOperation::ListWorkspaces
+                    | ServiceOperation::ListRevocations
+                    | ServiceOperation::ReadPersonalList
             );
             let makes = matches!(
                 operation,
-                HostOperation::CreateWorkspace
-                    | HostOperation::CreateOwnWorkspace
-                    | HostOperation::DeleteOwnWorkspace
-                    | HostOperation::BranchOwnWorkspace
+                ServiceOperation::CreateWorkspace
+                    | ServiceOperation::CreateOwnWorkspace
+                    | ServiceOperation::DeleteOwnWorkspace
+                    | ServiceOperation::BranchOwnWorkspace
             );
             assert_eq!(
                 operation.permits(&host, &all),
@@ -288,7 +288,7 @@ mod tests {
             // It asks to enter its own workspace (the handler holds it to that one).
             assert_eq!(
                 operation.permits(&host, &one),
-                reads || operation == HostOperation::CreateOwnWorkspace,
+                reads || operation == ServiceOperation::CreateOwnWorkspace,
                 "{}",
                 operation.name()
             );
@@ -302,11 +302,11 @@ mod tests {
                 operation.permits(&host, &stranger),
                 matches!(
                     operation,
-                    HostOperation::CreateOwnWorkspace
-                        | HostOperation::DeleteOwnWorkspace
-                        | HostOperation::BranchOwnWorkspace
-                        | HostOperation::ListWorkspaces
-                        | HostOperation::ReadPersonalList
+                    ServiceOperation::CreateOwnWorkspace
+                        | ServiceOperation::DeleteOwnWorkspace
+                        | ServiceOperation::BranchOwnWorkspace
+                        | ServiceOperation::ListWorkspaces
+                        | ServiceOperation::ReadPersonalList
                 ),
                 "{}",
                 operation.name()

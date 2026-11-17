@@ -30,7 +30,7 @@ use super::{
     IssuedInvitation, RemoveMemberRequest, SetMemberRoleRequest, WorkspaceSummary, Workspaces,
     system_time,
 };
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
@@ -639,7 +639,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::PreAdmit),
+            WorkspaceOp::Host(ServiceOperation::PreAdmit),
             now,
         )?;
         grant.verify()?;
@@ -690,7 +690,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::CreateWorkspace),
+            WorkspaceOp::Host(ServiceOperation::CreateWorkspace),
             now,
         )?;
         let created = self.create(name).await?;
@@ -709,7 +709,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::CreateWorkspace),
+            WorkspaceOp::Host(ServiceOperation::CreateWorkspace),
             now,
         )?;
         if !self.inner.workspaces.lock().await.contains_key(workspace)
@@ -731,7 +731,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::ListWorkspaces),
+            WorkspaceOp::Host(ServiceOperation::ListWorkspaces),
             now,
         )?;
         let workspaces = self

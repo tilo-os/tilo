@@ -20,7 +20,7 @@ use runtime_collab::native_media::{Command, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_workspace_keys::{
     GovernanceTransport, InboundGovernance, KeyAccess, KeyDirectory, KeyProvider, KeysConfig,
     SharedKeys, WorkspaceKeys,
@@ -109,7 +109,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     );
     Client::start(
         Entry {
-            identity: Some(HostIdentity::kept(cert, key)),
+            identity: Some(DeviceIdentity::kept(cert, key)),
             own: OwnPresence::default(),
             hosts: Vec::new(),
             continuity: Continuity::default(),

@@ -1,5 +1,5 @@
 //! The person's workspace list, kept here for their keys to read
-//! ([`HostOperation::KeepPersonalList`], [`HostOperation::ReadPersonalList`]).
+//! ([`ServiceOperation::KeepPersonalList`], [`ServiceOperation::ReadPersonalList`]).
 //!
 //! The person's devices hold their list: every workspace of theirs, wherever
 //! it is hosted (a desktop of theirs, a paired device, a server), each with its
@@ -28,8 +28,8 @@
 //! kept together under the browser's id, so the list says which keys are one
 //! browser's.
 //!
-//! [`HostOperation::KeepPersonalList`]: crate::host_authority::HostOperation::KeepPersonalList
-//! [`HostOperation::ReadPersonalList`]: crate::host_authority::HostOperation::ReadPersonalList
+//! [`ServiceOperation::KeepPersonalList`]: crate::service_authority::ServiceOperation::KeepPersonalList
+//! [`ServiceOperation::ReadPersonalList`]: crate::service_authority::ServiceOperation::ReadPersonalList
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

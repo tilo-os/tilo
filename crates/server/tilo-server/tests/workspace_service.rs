@@ -9,7 +9,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteA
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::ServedWorkspace;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server::service::{HostConfig, HostIdentity, WorkspaceService};
+use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
@@ -321,11 +321,11 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
 
     let state = tempfile::tempdir().unwrap();
     let host = WorkspaceService::open(
-        HostConfig::new(
+        ServiceConfig::new(
             state.path().to_path_buf(),
             tilo_server_protocol::WorkSetting::none(),
         ),
-        HostIdentity {
+        ServiceIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: laptop.sk.clone(),
             device_cert: laptop.cert.clone(),

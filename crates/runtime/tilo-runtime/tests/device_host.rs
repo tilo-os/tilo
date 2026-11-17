@@ -34,7 +34,7 @@ use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-use tilo_workspace_service::service::{HostConfig, HostIdentity, WorkspaceService};
+use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
 /// The app the device runs, which a key lists and acts on.
 const NOTES: &str = "so.tilo.notes";
@@ -255,15 +255,15 @@ async fn device_host(root: &SigningKey) -> Box_ {
     }
     let host = Arc::new(
         WorkspaceService::open(
-            HostConfig {
+            ServiceConfig {
                 apps: Some(Arc::clone(&key_sessions)
                     as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-                ..HostConfig::new(
+                ..ServiceConfig::new(
                     state.path().join("workspace-host"),
                     tilo_server_protocol::WorkSetting::none(),
                 )
             },
-            HostIdentity {
+            ServiceIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
                 device_cert: cert.clone(),

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId as InviteWorkspaceId;
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
+use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 
 use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
@@ -17,7 +17,7 @@ use crate::workspace_keys::KeyLink;
 /// history, not only what is recorded from now on.
 pub(super) async fn redeem(
     endpoint: iroh::Endpoint,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     engine: Arc<Engine>,
     network: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
@@ -124,7 +124,7 @@ const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(1
 /// ends with the answer, since this device takes part over its own peer network.
 async fn through_entry(
     endpoint: iroh::Endpoint,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     entry: &url::Url,
     workspace: InviteWorkspaceId,
     name: &str,
@@ -251,7 +251,7 @@ pub(super) async fn take_part_in(
 /// the records it holds, so this device takes part in the workspace as it stands.
 pub(super) async fn enter(
     endpoint: iroh::Endpoint,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     engine: Arc<Engine>,
     network: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,

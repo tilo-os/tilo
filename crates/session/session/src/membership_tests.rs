@@ -11,7 +11,7 @@ use pollster::FutureExt as _;
 use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::engine::Engine;
@@ -20,8 +20,8 @@ use tilo_session_client::membership::{Membership, project};
 const WORKSPACE: &str = testing::WORKSPACE;
 
 /// The identity of the device certified as `cert` , signing with `key` .
-fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
 /// This device's engine, holding the workspace it governs, and the session's own view of it with
@@ -102,7 +102,7 @@ fn workspace_signed_through(
     let cert = testing::certificate(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
     let identity = match hold {
-        Some(hold) => HostIdentity::kept(
+        Some(hold) => DeviceIdentity::kept(
             cert.clone(),
             LateSigner {
                 key: person_key.clone(),

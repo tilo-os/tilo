@@ -27,7 +27,7 @@ use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::meter::{UsageEntry, UsageKind};
 use legacy_vm::hosted::plan::{Plans, Sells};
 use tilo_actions::remote::server_account::{
-    Entitlement, HostKind, Limits, ServerAccount, Subscription, Usage, WorkspaceUsage,
+    Entitlement, Limits, ServerAccount, ServerKind, Subscription, Usage, WorkspaceUsage,
 };
 
 pub mod browser_actions;
@@ -244,7 +244,7 @@ pub fn usage_of(records: &[UsageEntry], running: &[String], from_ms: u64, to_ms:
 #[must_use]
 pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> ServerAccount {
     let Some(sells) = &plans.sells else {
-        return ServerAccount::sells_nothing(name, HostKind::SelfHosted);
+        return ServerAccount::sells_nothing(name, ServerKind::SelfHosted);
     };
     let page = |page: &str| Sells::page(page, account);
     let subscription = match plans.accounts.get(account) {
@@ -285,7 +285,7 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Ser
     };
     ServerAccount {
         server: sells.host.clone(),
-        kind: HostKind::Provider,
+        kind: ServerKind::Provider,
         plans: sells.plans.clone(),
         subscription: Some(subscription),
         manage_billing: sells.manage_billing.as_deref().map(page),

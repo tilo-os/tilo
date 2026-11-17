@@ -940,7 +940,7 @@ tilo_test_env::scenario! {
     // nobody relays nowhere.
     {
         let (cert, key) = certified(1, 2, "here");
-        let identity = HostIdentity::kept(cert, key);
+        let identity = DeviceIdentity::kept(cert, key);
         let own = tilo_endpoint_reachability::EndpointRelays::for_choice(
             &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
         );
@@ -1554,7 +1554,7 @@ async fn session_endpoint(
     heard: &iroh::address_lookup::memory::MemoryLookup,
 ) -> iroh::Endpoint {
     let (cert, key) = certified(1, 2, "here");
-    let identity = HostIdentity::kept(cert, key);
+    let identity = DeviceIdentity::kept(cert, key);
     let relays = tilo_endpoint_reachability::EndpointRelays::for_choice(
         &settings_store::relay::Relays::None,
     );

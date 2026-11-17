@@ -1,6 +1,6 @@
 //! What Billing says of an account and which of the provider's pages it opens.
 
-use ui::tilo_actions::remote::server_account::HostKind;
+use ui::tilo_actions::remote::server_account::ServerKind;
 
 use super::*;
 
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
     phase a_self_hosted_host_sells_nothing;
     {
         en();
-        let own = ServerAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
+        let own = ServerAccount::sells_nothing("Ada's server", ServerKind::SelfHosted);
         assert!(!own.sells());
         assert!(page_of(&own, BillingEffect::ManageBilling).is_err());
     }

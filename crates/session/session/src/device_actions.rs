@@ -64,7 +64,7 @@ impl DeviceActions {
     /// `engine` holds, answering through the dispatcher the session installs once its broker
     /// serves, and offering work with what it keeps.
     pub(crate) fn start(
-        identity: &tilo_network_actor::HostIdentity,
+        identity: &tilo_network_actor::DeviceIdentity,
         endpoint: Endpoint,
         engine: Option<Arc<Engine>>,
     ) -> Self {
@@ -485,7 +485,7 @@ mod tests {
     use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
     use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
-    use tilo_network_actor::{HostIdentity, RecordContentDelivery};
+    use tilo_network_actor::{DeviceIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
 
@@ -511,8 +511,8 @@ mod tests {
         (key, cert)
     }
 
-    fn identity(cert: DeviceCert, key: &SigningKey) -> HostIdentity {
-        HostIdentity::kept(cert, key.clone())
+    fn identity(cert: DeviceCert, key: &SigningKey) -> DeviceIdentity {
+        DeviceIdentity::kept(cert, key.clone())
     }
 
     /// A loopback endpoint whose identity is the device `key` , as the session's own endpoint is.

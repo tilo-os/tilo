@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use tilo_action_broker::collab_broker::FanoutState;
 use tilo_action_broker::personal::{self, Links, Person};
 use tilo_broker_core::collab_core::BrokerChannels;
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 
 use crate::options::Options;
@@ -40,7 +40,7 @@ impl Personal {
     /// This session keeps no state, or the store kept there is not this
     /// device's to open: it cannot be read, or the device's certificate is
     /// not one the person's root signed that still holds.
-    pub(crate) fn open(options: &Options, identity: &HostIdentity) -> Result<Self, String> {
+    pub(crate) fn open(options: &Options, identity: &DeviceIdentity) -> Result<Self, String> {
         let Some(state) = options.state.as_deref() else {
             return Err("this session keeps no state to keep the person's records in".into());
         };

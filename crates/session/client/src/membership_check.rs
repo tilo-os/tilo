@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
@@ -33,7 +33,7 @@ pub trait MembershipCheck: collab_types::signer::MaybeSendSync {
         &self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(), String>;
 }
 
@@ -339,7 +339,7 @@ impl MembershipCheck for SessionMembership {
         &self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(), String> {
         owner.with_current(workspace, |view| {
             if view.device() == &identity.device_cert {

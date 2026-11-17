@@ -18,7 +18,7 @@ use tilo_server_session::workspaces::{
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::OwnWorkspaceOffer;
 use crate::workspaces::tests::{governor, test_host};
@@ -33,7 +33,7 @@ fn host_request(action: &str, argument: Value) -> InvokeRequest {
 }
 
 async fn invoke(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     device: &DeviceCert,
     action: &str,
     argument: Value,
@@ -50,7 +50,7 @@ async fn invoke(
     }
 }
 
-async fn read(host: &HostWorkspaceActions, device: &DeviceCert) -> PersonalList {
+async fn read(host: &ServiceWorkspaceActions, device: &DeviceCert) -> PersonalList {
     serde_json::from_value(
         invoke(host, device, LIST_PERSONAL, json!({}))
             .await
@@ -93,7 +93,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     // The site let the person in: an invitation into its home names them.
@@ -243,7 +243,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     assert_eq!(read(&host, &agent).await.workspaces.len(), 3);
     server.shutdown().await;
@@ -263,7 +263,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let home = workspaces.create("Lounge").await.unwrap().workspace;
@@ -379,7 +379,7 @@ async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let tabs: Vec<DeviceCert> = (0..3)
@@ -729,7 +729,7 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     // The site let the person in: an invitation into its home names them.
@@ -864,7 +864,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
         .await
         .unwrap();
     let desktop = key_of(&root, "studio", DeviceCapabilities::member());
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     // The session of the person's device: where their list is sent.
     let (_watch, mut pushed) = session_of(workspaces, &desktop);

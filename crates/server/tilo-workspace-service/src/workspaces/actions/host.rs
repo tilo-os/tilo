@@ -3,7 +3,7 @@
 //! (provider [`HOST_ACTIONS_PROVIDER`]).
 //!
 //! No workspace decides them: they are the server's person's alone
-//! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every entry,
+//! ([`ServiceOperation`]), and [`Workspaces::authorize`] says so for every entry,
 //! but for making a person's own workspace, which a host that keeps them
 //! offers anyone ([`CREATE_OWN_WORKSPACE`]).
 //! The catalogue asks the same decision, so a device of anyone else is
@@ -35,7 +35,7 @@ use super::{
     Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, invalid, refused,
     request_id,
 };
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
 use tilo_server_protocol::WorkspaceId;
@@ -58,8 +58,8 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
-/// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 12] = [
+/// [`ServiceOperation`] it is.
+const HOST_VERBS: [(Verb, ServiceOperation); 12] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -68,7 +68,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: create_params,
         },
-        HostOperation::CreateWorkspace,
+        ServiceOperation::CreateWorkspace,
     ),
     (
         Verb {
@@ -78,7 +78,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: create_own_params,
         },
-        HostOperation::CreateOwnWorkspace,
+        ServiceOperation::CreateOwnWorkspace,
     ),
     (
         Verb {
@@ -88,7 +88,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: workspace_params,
         },
-        HostOperation::DeleteOwnWorkspace,
+        ServiceOperation::DeleteOwnWorkspace,
     ),
     (
         Verb {
@@ -98,7 +98,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: branch::params,
         },
-        HostOperation::BranchOwnWorkspace,
+        ServiceOperation::BranchOwnWorkspace,
     ),
     (
         Verb {
@@ -108,7 +108,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: ActionKind::Read,
             params: Vec::new,
         },
-        HostOperation::ListWorkspaces,
+        ServiceOperation::ListWorkspaces,
     ),
     (
         Verb {
@@ -118,7 +118,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: ActionKind::Read,
             params: list_personal_params,
         },
-        HostOperation::ReadPersonalList,
+        ServiceOperation::ReadPersonalList,
     ),
     (
         Verb {
@@ -128,7 +128,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: keep_personal_params,
         },
-        HostOperation::KeepPersonalList,
+        ServiceOperation::KeepPersonalList,
     ),
     (
         Verb {
@@ -138,7 +138,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: name_personal_params,
         },
-        HostOperation::NamePersonalDevice,
+        ServiceOperation::NamePersonalDevice,
     ),
     (
         Verb {
@@ -148,7 +148,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: ActionKind::Read,
             params: Vec::new,
         },
-        HostOperation::ListRevocations,
+        ServiceOperation::ListRevocations,
     ),
     (
         Verb {
@@ -158,7 +158,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: enter_params,
         },
-        HostOperation::EnterWorkspace,
+        ServiceOperation::EnterWorkspace,
     ),
     (
         Verb {
@@ -168,7 +168,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: host_workspace_params,
         },
-        HostOperation::HostWorkspace,
+        ServiceOperation::HostWorkspace,
     ),
     (
         Verb {
@@ -178,7 +178,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             kind: roles::GOVERNANCE_KIND,
             params: workspace_params,
         },
-        HostOperation::UnhostWorkspace,
+        ServiceOperation::UnhostWorkspace,
     ),
 ];
 
@@ -430,14 +430,14 @@ pub(super) enum Asking {
 }
 
 impl Asking {
-    fn reaches(self, operation: HostOperation) -> bool {
+    fn reaches(self, operation: ServiceOperation) -> bool {
         match self {
             Self::AsPerson => true,
             Self::Reading => matches!(
                 operation,
-                HostOperation::ListWorkspaces
-                    | HostOperation::ReadPersonalList
-                    | HostOperation::ListRevocations
+                ServiceOperation::ListWorkspaces
+                    | ServiceOperation::ReadPersonalList
+                    | ServiceOperation::ListRevocations
             ),
         }
     }
@@ -484,22 +484,22 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
         match operation {
-            HostOperation::CreateWorkspace => {
+            ServiceOperation::CreateWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.create_invoke(device, &args, request_id, now).await
             }
-            HostOperation::CreateOwnWorkspace => {
+            ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.create_own_invoke(device, &args, request_id, now).await
             }
-            HostOperation::ListWorkspaces => {
+            ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 answer(&self.listed(device, &Listed::default()).await)
             }
-            HostOperation::DeleteOwnWorkspace => {
+            ServiceOperation::DeleteOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let workspace = args.required_text("workspace")?;
@@ -516,24 +516,24 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "deleted": workspace }))
             }
-            HostOperation::BranchOwnWorkspace => {
+            ServiceOperation::BranchOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.branch_own_invoke(device, &args, request_id, now).await
             }
-            HostOperation::ReadPersonalList
-            | HostOperation::KeepPersonalList
-            | HostOperation::NamePersonalDevice => {
+            ServiceOperation::ReadPersonalList
+            | ServiceOperation::KeepPersonalList
+            | ServiceOperation::NamePersonalDevice => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.personal_invoke(device, operation, &args).await
             }
-            HostOperation::ListRevocations => {
+            ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 answer(&self.revocations().iter().cloned().collect::<Vec<_>>())
             }
-            HostOperation::EnterWorkspace => {
+            ServiceOperation::EnterWorkspace => {
                 let workspace = args.required_text("workspace")?;
                 let seconds = args
                     .integer("expires_in_seconds")?
@@ -559,7 +559,7 @@ impl Workspaces {
                     invitation: ActionInvitation::of(&issued),
                 })
             }
-            HostOperation::HostWorkspace | HostOperation::UnhostWorkspace => {
+            ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
                 self.serving_invoke(device, operation, &args, now).await
             }
             _ => Err(ActionCallError::UnknownAction),
@@ -570,10 +570,10 @@ impl Workspaces {
     async fn personal_invoke(
         &self,
         device: &DeviceCert,
-        operation: HostOperation,
+        operation: ServiceOperation,
         args: &Args,
     ) -> Result<Value, ActionCallError> {
-        if operation == HostOperation::ReadPersonalList {
+        if operation == ServiceOperation::ReadPersonalList {
             self.note_own_device(device);
             // A page names its browser's tab keys; one it can't name as the
             // contract says still reads the list.
@@ -590,7 +590,7 @@ impl Workspaces {
             let here = self.listed(device, &only).await;
             return answer(&self.personal(device, &here, &only));
         }
-        if operation == HostOperation::NamePersonalDevice {
+        if operation == ServiceOperation::NamePersonalDevice {
             let key = args.required_text("device")?;
             let name = args.required_text("name")?;
             self.name_device(device, key, name)
@@ -1002,12 +1002,12 @@ impl Workspaces {
     async fn serving_invoke(
         &self,
         device: &DeviceCert,
-        operation: HostOperation,
+        operation: ServiceOperation,
         args: &Args,
         now: u64,
     ) -> Result<Value, ActionCallError> {
         match operation {
-            HostOperation::HostWorkspace => {
+            ServiceOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let request = super::super::HostWorkspaceRequest {
@@ -1030,7 +1030,7 @@ impl Workspaces {
                     host_hint: hex_postcard(&hint)?,
                 })
             }
-            HostOperation::UnhostWorkspace => {
+            ServiceOperation::UnhostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let stopped = self

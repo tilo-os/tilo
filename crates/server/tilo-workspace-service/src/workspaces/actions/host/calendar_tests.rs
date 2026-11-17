@@ -36,7 +36,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions as HolderActions;
+use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{caller, settled};
 use super::accounts_tests::key_of;
 use crate::workspaces::fixtures::TestHost as TestHolder;

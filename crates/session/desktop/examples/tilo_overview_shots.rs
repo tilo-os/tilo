@@ -23,8 +23,8 @@ use std::path::PathBuf;
 
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 use tilo_actions::remote::server_account::{
-    Entitlement, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, ServerAccount,
-    Subscription, Usage, WorkspaceUsage,
+    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, ServerAccount,
+    ServerKind, Subscription, Usage, WorkspaceUsage,
 };
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
@@ -107,7 +107,7 @@ fn tilo_cloud(build_box: &str) -> ServerAccount {
     };
     ServerAccount {
         server: "Tilo Cloud".into(),
-        kind: HostKind::Provider,
+        kind: ServerKind::Provider,
         plans: vec![PlanOffer {
             id: "pro".into(),
             name: "Pro".into(),
@@ -154,7 +154,7 @@ fn tilo_cloud(build_box: &str) -> ServerAccount {
 fn tilo_shell(build_box: &str) -> TiloOverview {
     TiloOverview {
         hosts: vec![
-            ServerAccount::sells_nothing("Framework 16", HostKind::Device),
+            ServerAccount::sells_nothing("Framework 16", ServerKind::Device),
             tilo_cloud(build_box),
         ],
         server: Some(Server {

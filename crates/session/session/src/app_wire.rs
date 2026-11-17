@@ -2174,14 +2174,14 @@ mod tests {
     }
 
     /// A device of a person, certified for their root, that holds workspaces.
-    fn held_identity() -> tilo_identity::identity_store::HostIdentity {
+    fn held_identity() -> tilo_identity::identity_store::DeviceIdentity {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
         let cert = tilo_peer_state::owner::testing::member_certificate(
             &ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]),
             &key,
             "Laptop",
         );
-        tilo_identity::identity_store::HostIdentity::kept(cert, key)
+        tilo_identity::identity_store::DeviceIdentity::kept(cert, key)
     }
 
     /// Every service the broker offers is decided here: served, served where

@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::owner::testing;
@@ -72,7 +72,7 @@ async fn joins(
     let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
         OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
     ));
-    let identity = HostIdentity::kept(certificate.clone(), key.clone());
+    let identity = DeviceIdentity::kept(certificate.clone(), key.clone());
     let enrollment = enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,

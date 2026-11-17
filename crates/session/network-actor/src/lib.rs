@@ -180,7 +180,7 @@ struct PersonalFabricWireFrame {
 
 pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
-pub use tilo_identity::identity_store::HostIdentity;
+pub use tilo_identity::identity_store::DeviceIdentity;
 
 /// Enrollment-bound identity expected behind a distinct server service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -880,7 +880,7 @@ impl Actor {
     pub fn spawn_serving(
         endpoint: Endpoint,
         lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
+        host_identity: Option<DeviceIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
         served: crate::local_host::Protocols,
@@ -903,7 +903,7 @@ impl Actor {
     fn spawn_with_heartbeat(
         endpoint: Endpoint,
         lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
+        host_identity: Option<DeviceIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
@@ -955,7 +955,7 @@ type GovernanceLog = VecDeque<([u8; 32], Vec<u8>)>;
 struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
-    host_identity: Option<HostIdentity>,
+    host_identity: Option<DeviceIdentity>,
     native_routes: native_ingress::Routes,
     /// This device's workspace host, through which the native owner joins the
     /// workspaces hosted here.
@@ -2831,7 +2831,7 @@ async fn personal_transfer_cancelled(cancel: &mut tokio::sync::watch::Receiver<b
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
-    host_identity: Option<HostIdentity>,
+    host_identity: Option<DeviceIdentity>,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
@@ -2982,7 +2982,7 @@ async fn run(
 /// changes. `None` for an identity kept in memory, or one that cannot be
 /// watched: it is then announced as it was when each link came up.
 fn watch_identity_material(
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     internal_tx: mpsc::Sender<InternalEvent>,
 ) -> Option<tilo_files::native::Watched<()>> {
     let directories = identity.material_directories();
@@ -3300,7 +3300,7 @@ fn mark_new_message(
 /// the single discovery-task registry.
 struct HostRouteScheduler<'a> {
     endpoint: &'a Endpoint,
-    identity: &'a HostIdentity,
+    identity: &'a DeviceIdentity,
     internal_tx: &'a mpsc::Sender<InternalEvent>,
     sessions: &'a HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &'a mut HashSet<(WorkspaceId, EndpointId)>,

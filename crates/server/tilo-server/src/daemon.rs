@@ -100,24 +100,24 @@ pub enum ServerError {
     ProtocolRegistration(String),
 }
 
-impl From<crate::service::HostError> for ServerError {
-    fn from(error: crate::service::HostError) -> Self {
-        use crate::service::HostError;
+impl From<crate::service::ServiceError> for ServerError {
+    fn from(error: crate::service::ServiceError) -> Self {
+        use crate::service::ServiceError;
         match error {
-            HostError::Identity(reason) => Self::Identity(reason),
-            HostError::Store(error) => Self::Store(error),
-            HostError::Io(error) => Self::Io(error),
-            HostError::GovernedAccess(reason) => Self::GovernedAccess(reason),
-            HostError::Workspaces(reason) => {
+            ServiceError::Identity(reason) => Self::Identity(reason),
+            ServiceError::Store(error) => Self::Store(error),
+            ServiceError::Io(error) => Self::Io(error),
+            ServiceError::GovernedAccess(reason) => Self::GovernedAccess(reason),
+            ServiceError::Workspaces(reason) => {
                 Self::Identity(format!("governed workspaces: {reason}"))
             }
-            HostError::Handshake(reason) => Self::Iroh(reason),
+            ServiceError::Handshake(reason) => Self::Iroh(reason),
         }
     }
 }
 
 /// The identity a server runs with: a host's.
-pub use crate::service::HostIdentity as ServerIdentity;
+pub use crate::service::ServiceIdentity as ServerIdentity;
 
 /// `identity` with the root-signed revocations persisted at `state_root`
 /// applied, each verified: what a host reads when it starts, so a device its
@@ -178,7 +178,7 @@ pub struct Server {
     router: Router,
     /// The workspace host this server is: its workspaces, the handshake that
     /// admits their members and every member's session.
-    sessions: crate::service::HostSessions,
+    sessions: crate::service::ServiceSessions,
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
@@ -605,8 +605,8 @@ impl Server {
         if !relayless {
             tilo_workspace_service::workspaces::await_relay(&endpoint).await;
         }
-        let (sessions, governed) = crate::service::HostSessions::open(
-            crate::service::HostConfig {
+        let (sessions, governed) = crate::service::ServiceSessions::open(
+            crate::service::ServiceConfig {
                 state_root: cfg.state_root.clone(),
                 work: cfg.work.clone(),
                 trust_policy: cfg.trust_policy.clone(),
@@ -1315,7 +1315,7 @@ fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: J
 }
 
 fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError> {
-    crate::service::validate_host_device_identity(identity)?;
+    crate::service::validate_service_device_identity(identity)?;
     if !identity.device_cert.capabilities.can_own_workspaces {
         return Err(ServerError::Identity(
             "the certificate is not a device of the person".into(),

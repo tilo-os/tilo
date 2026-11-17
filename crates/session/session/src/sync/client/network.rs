@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
+use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
@@ -271,7 +271,7 @@ pub(super) struct Wire {
 /// The thread: bind the endpoint, run the peer actor, and carry what it hears to the session's loop
 /// until it is told to stop.
 pub(super) fn run(
-    identity: Option<HostIdentity>,
+    identity: Option<DeviceIdentity>,
     engine: Option<Arc<Engine>>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<HostCmd>,
     wire: Wire,
@@ -408,7 +408,7 @@ struct Asking {
     events: tokio::sync::mpsc::Sender<NetEvent>,
     link: Option<Arc<KeyLink>>,
     engine: Option<Arc<Engine>>,
-    identity: Option<HostIdentity>,
+    identity: Option<DeviceIdentity>,
 }
 
 /// One thing the peer network asks a workspace's host for: someone's invitation redeemed into their
@@ -494,7 +494,7 @@ impl Asking {
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
 async fn listening(
-    identity: Option<&HostIdentity>,
+    identity: Option<&DeviceIdentity>,
     engine: Option<&Arc<Engine>>,
     arrivals: std::sync::mpsc::Sender<Event>,
     host_events: std::sync::mpsc::Sender<HostEvent>,

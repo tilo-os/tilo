@@ -31,7 +31,7 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_service::{Answer, Question, Questions};
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::{DeviceId, FabricStamp};
@@ -213,7 +213,7 @@ impl Devices {
         let phone = Rc::new(
             Client::start(
                 Entry {
-                    identity: Some(HostIdentity::kept(
+                    identity: Some(DeviceIdentity::kept(
                         person.phone_cert.clone(),
                         person.phone_key.clone(),
                     )),

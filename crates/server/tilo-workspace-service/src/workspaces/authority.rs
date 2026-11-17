@@ -8,7 +8,7 @@
 //!    revoked, and not one of the server's agents (an agent governs nothing;
 //!    it joins workspaces through its delegation).
 //! 2. A device of the server's own person administers every workspace here. That
-//!    person is the host's, so what no workspace decides ([`HostOperation`]) is
+//!    person is the host's, so what no workspace decides ([`ServiceOperation`]) is
 //!    theirs alone, but for making a person's own workspace, which a host
 //!    that keeps them does for anyone.
 //! 3. Any other device administers a workspace as far as the workspace's governance
@@ -31,14 +31,14 @@ use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, GovernedWorkspace, SetMemberRoleRequest, Workspaces, system_time};
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_lock::RwLockRecover as _;
 
 /// What a workspace administration request asks of its authority.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum WorkspaceOp<'a> {
     /// The host's own business, which no workspace's governance decides.
-    Host(HostOperation),
+    Host(ServiceOperation),
     /// One of the workspace's governance actions on the workspace itself
     /// ([`roles::governance`]).
     Govern(&'static str),
@@ -178,13 +178,13 @@ impl Workspaces {
             // here is theirs, and a key of theirs enters one by asking for it.
             let anyones = matches!(
                 operation,
-                HostOperation::CreateOwnWorkspace
-                    | HostOperation::ListWorkspaces
-                    | HostOperation::DeleteOwnWorkspace
-                    | HostOperation::BranchOwnWorkspace
-                    | HostOperation::KeepPersonalList
-                    | HostOperation::ReadPersonalList
-                    | HostOperation::NamePersonalDevice
+                ServiceOperation::CreateOwnWorkspace
+                    | ServiceOperation::ListWorkspaces
+                    | ServiceOperation::DeleteOwnWorkspace
+                    | ServiceOperation::BranchOwnWorkspace
+                    | ServiceOperation::KeepPersonalList
+                    | ServiceOperation::ReadPersonalList
+                    | ServiceOperation::NamePersonalDevice
             ) && !server_person;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(

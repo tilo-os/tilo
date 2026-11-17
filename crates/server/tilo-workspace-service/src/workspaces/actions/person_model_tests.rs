@@ -17,7 +17,7 @@ use tilo_actions::remote::{
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::HostWorkspaceActions;
+use super::ServiceWorkspaceActions;
 use super::tests::{admit, ask_own, governed, request, settled};
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
@@ -44,7 +44,7 @@ fn soon() -> tilo_clock::time::Instant {
 /// `device`'s person adds a provider and keeps its key, through the actions
 /// Settings asks with: the provider's id.
 async fn link(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     (name, endpoint, key): (&str, &str, &str),
@@ -73,7 +73,7 @@ async fn link(
 
 /// One of the model actions asked by `caller` on `device`'s session.
 async fn ask_as(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     caller: &Caller,

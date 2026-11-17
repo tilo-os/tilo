@@ -903,7 +903,7 @@ pub(crate) mod entry_tests {
     use tilo_server_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
-    use super::super::actions::{HostWorkspaceActions, PUBLISH, UNPUBLISH};
+    use super::super::actions::{PUBLISH, ServiceWorkspaceActions, UNPUBLISH};
     use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
@@ -950,7 +950,7 @@ pub(crate) mod entry_tests {
     ) -> serde_json::Value {
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key);
         let receipt = {
-            let host = HostWorkspaceActions::new();
+            let host = ServiceWorkspaceActions::new();
             host.attach(workspaces.clone());
             settled(host.in_workspace(workspace).invoke(&caller, request))
                 .await

@@ -1,23 +1,21 @@
 //! Workspaces this server governs.
 //!
-//! A shared workspace needs one authority that decides who is in it: it
-//! issues invitations, admits the device that redeems one, changes roles and
-//! removes members, and publishes each decision as signed workspace governance
-//! every member verifies. Here that authority is the server hosting the workspace.
-//! Its own device is the workspace's governor: it keeps the workspace's [`StatePeer`],
-//! publishes governance as its own retained changes of the workspace,
-//! and hands the governed member set to the server's admission after every
-//! decision, so a member it admits can subscribe at once and a member it
-//! removes is cut off.
+//! A shared workspace needs one authority that decides who is in it: it issues
+//! invitations, admits the device that redeems one, changes roles and removes
+//! members, and publishes each decision as signed workspace governance every
+//! member verifies. Here that authority is the service. Its own device is the
+//! workspace's governor: it keeps the workspace's [`StatePeer`], publishes
+//! governance as its own retained changes of the workspace, and hands the
+//! governed member set to the service's admission after every decision, so a
+//! member it admits can subscribe at once and a member it removes is cut off.
 //!
 //! Workspaces are administered as their own `tilo.workspace` governance actions,
-//! and the host's own operations (creating, listing and entering workspaces) as
-//! `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
+//! and the service's own operations (creating, listing and entering workspaces)
+//! as `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
 //! of the server's own user, and by other members as far as the workspace's
-//! governance lets them (`authority`, one decision for every entry).
-//! Any device redeems an invitation over the shared workspace-join
-//! protocol, and a page over HTTPS, where someone the workspace lets invite then
-//! admits it.
+//! governance lets them (`authority`, one decision for every entry). Any device
+//! redeems an invitation over the shared workspace-join protocol, and a page
+//! over HTTPS, where someone the workspace lets invite then admits it.
 
 mod actions;
 mod admissions;
@@ -74,6 +72,10 @@ pub use tilo_endpoint_reachability::await_relay;
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
+mod carried;
+use carried::Carried;
+mod clock;
+pub(crate) use clock::system_time;
 mod listing;
 mod memberships;
 mod own;
@@ -165,7 +167,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub(crate) use actions::{GovernedServer, HostWorkspaceActions};
+pub(crate) use actions::{GovernedServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
 pub use listing::EntryRefusal;
@@ -851,7 +853,6 @@ pub(crate) struct WorkspaceServices {
     pub(crate) channels: Option<DeviceKeyGroups>,
 }
 
-/// The workspaces this server governs.
 #[derive(Clone)]
 pub struct Workspaces {
     inner: Arc<WorkspacesInner>,
@@ -1034,7 +1035,6 @@ impl WorkspaceAuthority {
         self.workspaces.upgrade().map(|inner| Workspaces { inner })
     }
 
-    /// The governed workspace.
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
@@ -2927,22 +2927,4 @@ impl Workspaces {
     fn revocations(&self) -> RevocationList {
         self.inner.host.revocations.read_recover().clone()
     }
-}
-
-fn system_time(now_ns: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_nanos(now_ns))
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-}
-/// How a member's write reached the governor, which decides whether the host
-/// still has to keep what it carries.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Carried {
-    /// Over the member's server session: the server kept it before the
-    /// governor was told, so it is replayed to whoever catches up already.
-    Kept,
-    /// Some way the server keeps nothing of, the workspace's direct link or
-    /// a device's entry: the host keeps it for the members on server
-    /// sessions and whoever catches up later.
-    Unkept,
 }

@@ -2135,7 +2135,7 @@ struct GovernanceCall<'a> {
 
 /// The workspaces' governance as an action host, attached once the workspaces open.
 #[derive(Clone)]
-pub(crate) struct HostWorkspaceActions {
+pub(crate) struct ServiceWorkspaceActions {
     shared: Arc<Shared>,
 }
 
@@ -2153,7 +2153,7 @@ struct Shared {
     account_follows: Mutex<std::collections::HashMap<InvocationId, [u8; 32]>>,
 }
 
-impl HostWorkspaceActions {
+impl ServiceWorkspaceActions {
     /// Governance for workspaces [`attach`](Self::attach)ed later. Call it inside
     /// the runtime the server runs on.
     #[must_use]
@@ -2410,7 +2410,7 @@ fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationSt
 /// Answer that `invocation` runs, record it so, and record how it ends once
 /// `work` does: the caller follows it there.
 fn still_running(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     invocation: InvocationId,
     work: tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
 ) -> InvocationReceipt {
@@ -2448,11 +2448,11 @@ fn failed(invocation: InvocationId, message: &str) -> InvocationState {
     )
 }
 
-/// [`HostWorkspaceActions`] for the workspace one workspace carries, or (with no
+/// [`ServiceWorkspaceActions`] for the workspace one workspace carries, or (with no
 /// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
 struct InWorkspace {
-    host: HostWorkspaceActions,
+    host: ServiceWorkspaceActions,
     workspace_id: Option<WorkspaceId>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
@@ -2747,7 +2747,7 @@ const PROVIDERS: [&str; 11] = [
 /// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app action server its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedServer {
-    pub(crate) governance: HostWorkspaceActions,
+    pub(crate) governance: ServiceWorkspaceActions,
     /// Answers everything else, when the embedder serves apps.
     pub(crate) apps: Option<Arc<dyn AppActionServer>>,
 }

@@ -103,14 +103,14 @@ async fn a_host_whose_endpoint_reaches_no_relay_opens_and_names_the_address_it_h
     let host = WorkspaceService::open(
         // The fixture's own setting: a host serving other people's workspaces
         // takes their work in them.
-        HostConfig::new(
+        ServiceConfig::new(
             dir.path().to_owned(),
             tilo_server_protocol::WorkSetting {
                 from: tilo_server_protocol::WorkFrom::Anyone,
                 ..tilo_server_protocol::WorkSetting::own_person()
             },
         ),
-        HostIdentity {
+        ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),
             device_cert: cert.clone(),

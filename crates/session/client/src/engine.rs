@@ -26,7 +26,7 @@ use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
@@ -200,7 +200,7 @@ impl Admission {
 pub struct Engine {
     owner: NativeWorkspaceOwner,
     shown: Arc<Shown>,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
@@ -413,7 +413,7 @@ impl Engine {
     pub fn holding(
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         ownership: Arc<dyn MembershipCheck>,
     ) -> Self {
         let keys = KeyProvider::default();
@@ -449,7 +449,7 @@ impl Engine {
     /// The record holds no valid state, or the file cannot be written.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
         ownership: Arc<dyn MembershipCheck>,
@@ -1803,7 +1803,7 @@ impl Engine {
 
     /// This device's collaboration identity: the key its endpoint and its channels sign with, and
     /// the certificate that says whose it is.
-    pub fn identity(&self) -> &HostIdentity {
+    pub fn identity(&self) -> &DeviceIdentity {
         &self.identity
     }
 
@@ -2138,12 +2138,12 @@ mod tests {
 
     /// A device of a person, certified for their root, with `capabilities`,
     /// and the person's root key.
-    fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn identity(capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         device_of(tilo_test_env::node_key(), capabilities)
     }
 
     /// The person's device whose key is `device`.
-    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&device);
         let root = person.verifying_key().to_bytes();
@@ -2158,7 +2158,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        let identity = HostIdentity::kept(cert, device);
+        let identity = DeviceIdentity::kept(cert, device);
         (identity, root)
     }
 
@@ -2171,19 +2171,19 @@ mod tests {
             &self,
             _owner: &NativeWorkspaceOwner,
             _workspace: WorkspaceId,
-            _identity: &HostIdentity,
+            _identity: &DeviceIdentity,
         ) -> Result<(), String> {
             Ok(())
         }
     }
 
     /// This device's engine, kept in `state` .
-    fn engine(state: &Path, identity: HostIdentity) -> Engine {
+    fn engine(state: &Path, identity: DeviceIdentity) -> Engine {
         Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
     }
 
     /// Where a layout's own host is reached: its device's endpoint.
-    fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
+    fn endpoint(identity: &DeviceIdentity) -> iroh_base::EndpointAddr {
         iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                 .expect("a device endpoint"),

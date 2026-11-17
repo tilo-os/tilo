@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::clock::{
     ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync,
@@ -92,7 +92,7 @@ fn kept_device(
     let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
     let client = Client::start(
         Entry {
-            identity: Some(HostIdentity::kept(cert, key)),
+            identity: Some(DeviceIdentity::kept(cert, key)),
             own: OwnPresence::default(),
             hosts: Vec::new(),
             continuity: permitted(),

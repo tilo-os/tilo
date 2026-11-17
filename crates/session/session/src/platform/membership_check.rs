@@ -8,7 +8,7 @@
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::WorkspaceId;
 #[cfg(target_os = "linux")]
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 
@@ -25,7 +25,7 @@ impl MembershipCheck for Signed {
         &self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(), String> {
         tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace)?
             .ownership(identity)

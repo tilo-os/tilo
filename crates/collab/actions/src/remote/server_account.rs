@@ -61,7 +61,7 @@ pub fn target(action: &str) -> RemoteActionTarget {
 /// What kind of place a host is, as the person thinks of it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum HostKind {
+pub enum ServerKind {
     /// One of the person's own devices.
     #[default]
     Device,
@@ -249,7 +249,7 @@ pub struct ServerAccount {
     /// The server's name, as the person knows it ("Tilo Cloud", "Ada's
     /// laptop").
     pub server: String,
-    pub kind: HostKind,
+    pub kind: ServerKind,
     /// The plans it offers; none when it sells nothing.
     pub plans: Vec<PlanOffer>,
     /// The account's subscription; `None` on a host that sells nothing.
@@ -263,7 +263,7 @@ impl ServerAccount {
     /// A server named `server` that sells nothing: its programs run as its
     /// person's own.
     #[must_use]
-    pub fn sells_nothing(server: impl Into<String>, kind: HostKind) -> Self {
+    pub fn sells_nothing(server: impl Into<String>, kind: ServerKind) -> Self {
         Self {
             server: server.into(),
             kind,
@@ -400,7 +400,7 @@ mod tests {
 
         phase a_host_that_sells_nothing_answers_no_plans_and_no_subscription;
         {
-            let account = ServerAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
+            let account = ServerAccount::sells_nothing("Ada's server", ServerKind::SelfHosted);
             assert!(!account.sells());
             assert!(account.plan().is_none());
             let json = serde_json::to_value(&account).unwrap();
@@ -508,7 +508,7 @@ mod tests {
         {
             let host = ServerAccount {
                 server: "Tilo Cloud".into(),
-                kind: HostKind::Provider,
+                kind: ServerKind::Provider,
                 plans: vec![PlanOffer {
                     id: "pro".into(),
                     name: "Pro".into(),

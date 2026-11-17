@@ -19,7 +19,7 @@ use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::WorkspaceId;
-use tilo_network_actor::HostIdentity;
+use tilo_network_actor::DeviceIdentity;
 use tilo_peer_state::join::Role;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_session::Session;
@@ -35,8 +35,8 @@ use crate::common::{HEIGHT, WIDTH};
 
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
 /// device, and this one joins only what it is handed.
-fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn identity(cert: &DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
 fn settle(session: &mut Session) {

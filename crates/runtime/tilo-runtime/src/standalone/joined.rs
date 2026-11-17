@@ -19,7 +19,7 @@ use tilo_action_broker::{
     workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
 };
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
@@ -50,7 +50,7 @@ pub(super) use mcp_admission::{Refusal, SessionAdmission};
 pub(super) struct Joined {
     executions: Arc<super::execution::ExecutionPins>,
     owner: NativeWorkspaceOwner,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     endpoint: iroh::Endpoint,
     /// Workspaces this profile must not enroll in, whose writes are refused
     /// here: those the desktop session governs or enrolled this device in.
@@ -124,7 +124,7 @@ impl Joined {
     /// each. `endpoint` is keyed by this device's key, as hosts require.
     pub(super) fn open(
         profile: &Path,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         endpoint: iroh::Endpoint,
         refused: BTreeSet<WorkspaceId>,
         broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
@@ -168,7 +168,7 @@ impl Joined {
     /// starts with, as a member device that takes its workspaces' work does.
     pub(in crate::standalone) fn from_profile(
         profile: &Path,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         endpoint: iroh::Endpoint,
     ) -> io::Result<Arc<Self>> {
         let broker = (

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tilo_identity::identity_store::{HostIdentity, IdentityStore};
+use tilo_identity::identity_store::{DeviceIdentity, IdentityStore};
 
 /// This device's identity store, when this host holds an identity at all.
 #[must_use]
@@ -30,6 +30,6 @@ pub fn identity_store() -> Option<Arc<dyn IdentityStore>> {
 /// A session on a host without one takes part in no workspace as anybody: it binds a fresh key and
 /// stays anonymous until the person sets a device up.
 #[must_use]
-pub fn device_identity() -> Option<HostIdentity> {
-    HostIdentity::open(identity_store()?)
+pub fn device_identity() -> Option<DeviceIdentity> {
+    DeviceIdentity::open(identity_store()?)
 }
