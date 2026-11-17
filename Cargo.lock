@@ -883,7 +883,6 @@ dependencies = [
  "runtime-dylib",
  "serde_json",
  "tilo-app",
- "tilo-platform-caps",
  "tilo-test-env",
  "workspace-hack",
 ]
