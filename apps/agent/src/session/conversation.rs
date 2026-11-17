@@ -176,7 +176,7 @@ impl Session {
 
     /// Add one dispatched operation to the reply's step list: where it acted,
     /// what it did in its app's words (what the action declares it did, or
-    /// its label, with the title of what it acted on: "Showed on the canvas: All inboxes"),
+    /// its label, with the title of what it acted on: "Showed: All inboxes"),
     /// and what came of it.
     pub(super) fn resource_action(
         &mut self,

@@ -137,7 +137,7 @@ struct TaskAction {
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
-    /// What the action did, as its app declares it ("showed on the canvas"):
+    /// What the action did, as its app declares it ("showed"):
     /// how the reply's step line says it, beside its label.
     did: Option<String>,
     /// The parameter whose content comes from the immediately preceding

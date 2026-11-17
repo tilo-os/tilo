@@ -75,8 +75,8 @@ pub fn looked_up(app_title: Option<&str>) -> String {
 }
 
 /// What an action did, in its app's own words: what the app declares it did
-/// (`did`, "showed on the canvas"), else its label as the app words it, with
-/// `subject`, the title of what it acted on, beside it ("Showed on the canvas:
+/// (`did`, "showed"), else its label as the app words it, with
+/// `subject`, the title of what it acted on, beside it ("Showed:
 /// All inboxes"). Nothing here makes grammar of an app's words: an app that
 /// wants its step said as done declares how.
 #[must_use]
@@ -228,9 +228,9 @@ mod tests {
         for (label, declared, subject, said) in [
             (
                 "Show a resource on the canvas, as one of its views",
-                Some("showed on the canvas"),
+                Some("showed"),
                 "All inboxes",
-                "Showed on the canvas: All inboxes",
+                "Showed: All inboxes",
             ),
             (
                 "Add subtask",

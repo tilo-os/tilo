@@ -697,7 +697,7 @@ fn place_action(words: &Words) -> ActionSpec {
             }
         },
     )
-    .with_did("showed on the canvas")
+    .with_did("showed")
 }
 
 /// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
