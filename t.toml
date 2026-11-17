@@ -129,7 +129,9 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-relay:bin:tilo-relay=agents"], tilo-session-client = ["tilo-relay:bin:tilo-relay=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
+# The relay's coding-agent tests start the guest's own agent program in its serving mode, as the
+# machine-siblings setup names it.
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-relay:bin:tilo-relay=agents"], tilo-session-client = ["tilo-relay:bin:tilo-relay=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-relay = ["legacy-agent:tilo-legacy-agent"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -157,7 +159,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
 # the package, and a shard names none. So is the capability probe a run of a package
 # .config/nextest-capabilities.toml names runs first.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
+starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has

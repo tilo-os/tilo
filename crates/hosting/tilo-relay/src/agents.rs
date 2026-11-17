@@ -385,6 +385,33 @@ impl HostShells {
     }
 }
 
+impl HostShells {
+    /// Start `start` in `workspace`'s machine as a run this host serves
+    /// ([`ush::served_runs`]): a program that lasts, with a channel to its
+    /// host.
+    ///
+    /// # Errors
+    ///
+    /// This host runs no machines for its workspaces, or its machines are on
+    /// other computers, where a served run cannot be started yet.
+    pub fn serve_run(
+        &self,
+        workspace: &str,
+        start: ush::served_runs::ServeRun,
+    ) -> Result<ush::served_runs::ServedRun, String> {
+        match self {
+            Self::Here(shells) => shells
+                .serve_run(workspace, None, start)
+                .map_err(|error| error.to_string()),
+            Self::Placed(_) => Err(
+                "this host's machines run on other computers, where a coding agent cannot be \
+                 started yet"
+                    .to_owned(),
+            ),
+        }
+    }
+}
+
 impl WorkspaceShell for HostShells {
     fn run(
         &self,

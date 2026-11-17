@@ -275,6 +275,21 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the relay for the lounge's tests",
             )
+        # The relay's coding-agent tests start the guest's own agent program in its
+        # serving mode, as a workspace's machine starts it: a program of another
+        # package, which Cargo builds for no test of the relay's.
+        machine = scripts.pop("machine-siblings")
+        self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                              "legacy-agent:tilo-legacy-agent"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "machine-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-relay) and test(coding_agents::)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the guest's agent for the relay's coding-agent tests",
+            )
         # The browser peer's page tests drive the page's modules beside a
         # runtime module the harness builds once, before they start.
         page = scripts.pop("page-bundle")
@@ -317,6 +332,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
+                                 "package(tilo-relay) and test(coding_agents::)": "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",

@@ -16,6 +16,8 @@ pub mod launch;
 pub mod mounts;
 #[cfg(target_os = "linux")]
 pub mod remote_fs;
+#[cfg(target_os = "linux")]
+pub mod served;
 pub mod server;
 pub mod system;
 #[cfg(unix)]
