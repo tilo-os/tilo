@@ -99,9 +99,7 @@ fn a_long_trackers_list_builds_a_screenful_of_rows_and_names_each_rows_place() {
     let mut created = Vec::new();
     for title in ["One more", "And another", "And a third"] {
         let started = std::time::Instant::now();
-        app.call_on(&chain(), "create", json!({ "title": title }))
-            .expect("create");
-        app.settle();
+        create_issue(&mut app, title);
         created.push(started.elapsed().as_secs_f64() * 1000.0);
         assert_a_screenful(&tree_items(&mut app), "with an issue added");
     }
@@ -132,6 +130,31 @@ fn a_long_trackers_list_builds_a_screenful_of_rows_and_names_each_rows_place() {
             .map(|ms| format!("{ms:.0}"))
             .collect::<Vec<_>>()
             .join(" / "),
+    );
+}
+
+/// Add an issue titled `title` as a caller does. The call resolves the one resource it names (the
+/// chain) and never builds the tree of every issue to find it.
+#[inline(never)]
+fn create_issue(app: &mut TestApp<App>, title: &str) {
+    let ((), scopes) = ui::tilo_resource::profiling::observe(|| {
+        app.call_on(&chain(), "create", json!({ "title": title }))
+            .expect("create");
+        app.settle();
+    });
+    let whole: Vec<_> = scopes
+        .iter()
+        .filter(|scope| {
+            matches!(
+                scope.phase,
+                "framework.resources_for" | "framework.resource_for"
+            )
+        })
+        .map(|scope| (scope.phase, scope.calls))
+        .collect();
+    assert!(
+        whole.is_empty(),
+        "adding an issue built the whole published tree: {whole:?}"
     );
 }
 
