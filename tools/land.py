@@ -67,8 +67,10 @@ SHOWN_LINES = 120
 # changes: the round is tried again rather than answered. rcargo says so in these words.
 NO_BUILDER = ("remote builder unavailable",)
 NO_BUILDER_RETRY_SECONDS = 30
-# How a failed lint names the packages that did not build.
+# How a failed lint names what broke: the packages that did not build, and the files a
+# diagnostic points at or the format check found unformatted.
 NOT_BUILT = re.compile(r"could not compile `([^`]+)`")
+POINTED_AT = re.compile(r"(?:-->|Diff in) (\S+?):\d+:")
 EXIT = {"landed": 0, "lint": 1, "conflict": 2, "error": 3}
 STILL_QUEUED = 75
 
@@ -439,27 +441,38 @@ class Lander:
         self.finish(batch[0][0], {"status": "lint", "onto": upstream, "output": shown})
 
     def blamed(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> set[str]:
-        """The changes that touch a package the failed lint could not build."""
-        failing = set(NOT_BUILT.findall(output))
-        if not failing:
-            return set()
-        try:
-            metadata = json.loads(subprocess.run(
-                ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
-                cwd=self.tree, capture_output=True, text=True, check=True).stdout)
-        except (OSError, subprocess.CalledProcessError, ValueError):
-            return set()
+        """The changes that touch a file the failed lint points at, or a package it could not build."""
         tree = self.tree.resolve()
-        directories = [str(Path(package["manifest_path"]).resolve().parent.relative_to(tree)) + "/"
-                       for package in metadata.get("packages", []) if package["name"] in failing]
+        pointed = set()
+        for path in POINTED_AT.findall(output):
+            resolved = Path(path) if Path(path).is_absolute() else tree / path
+            try:
+                pointed.add(str(resolved.resolve().relative_to(tree)))
+            except ValueError:
+                continue
+        failing = set(NOT_BUILT.findall(output))
+        directories = self.directories(failing) if failing else []
         found = set()
         previous = upstream
         for entry, commit in batch:
             files = out(self.tree, "diff", "--name-only", previous, commit).splitlines()
             previous = commit
-            if any(path.startswith(directory) for path in files for directory in directories):
+            if pointed & set(files) or any(path.startswith(directory) for path in files
+                                           for directory in directories):
                 found.add(entry["id"])
         return found
+
+    def directories(self, packages: set[str]) -> list[str]:
+        """The repository directories of these packages."""
+        try:
+            metadata = json.loads(subprocess.run(
+                ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+                cwd=self.tree, capture_output=True, text=True, check=True).stdout)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return []
+        tree = self.tree.resolve()
+        return [str(Path(package["manifest_path"]).resolve().parent.relative_to(tree)) + "/"
+                for package in metadata.get("packages", []) if package["name"] in packages]
 
     def prune(self) -> None:
         """Answers nobody came back for within a day."""

@@ -27,7 +27,7 @@ if flaky.exists():
     sys.exit(1)
 bad = [p.name for p in root.iterdir() if p.is_file() and "BAD" in p.read_text(errors="replace")]
 if bad:
-    print("error: lint failed in " + ", ".join(bad))
+    print("\\n".join(f"Diff in {root / name}:1:" for name in bad))
     sys.exit(1)
 crates = [p.parent.parent.name for p in root.glob("*/src/lib.rs") if "BAD" in p.read_text()]
 if crates:
