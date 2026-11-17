@@ -137,7 +137,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
         1,
         "not yet opened"
     );
-    assert!(openings.open(&handle, |_, _| Ok(())));
+    assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
     driver.idle();
     driver.relayout();
     let snapshot = handle.snapshot("g", vec![]);
@@ -154,9 +154,11 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
-    openings.open(&handle, |_, _| {
-        Err(ui::tilo_actions::remote::ActionHostError::NotPermitted)
-    });
+    openings.open(
+        &handle,
+        |_, _| Err(ui::tilo_actions::remote::ActionHostError::NotPermitted),
+        |_, _| None,
+    );
     driver.idle();
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
     assert!(
@@ -382,16 +384,20 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     let refused = session.invoke(&caller, open("elsewhere"));
     drop(refused);
     assert!(
-        !openings.open(&handle, |_, _| Ok(())),
+        !openings.open(&handle, |_, _| Ok(()), |_, _| None),
         "nothing asked of here"
     );
 
     for _ in 0..2 {
         drop(session.invoke(&caller, open("workspace")));
-        assert!(openings.open(&handle, |app, _| {
-            assert_eq!(app, "so.tilo.notes", "admitted as its app");
-            Ok(())
-        }));
+        assert!(openings.open(
+            &handle,
+            |app, _| {
+                assert_eq!(app, "so.tilo.notes", "admitted as its app");
+                Ok(())
+            },
+            |_, _| None
+        ));
         driver.relayout();
     }
     assert_eq!(opened.borrow().len(), 1, "one window on the record");
@@ -440,7 +446,7 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
         .unwrap()
     };
     drop(session.invoke(&caller, ask(serde_json::json!({"Json": {"place": "top"}}))));
-    assert!(openings.open(&handle, |_, _| Ok(())));
+    assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
     driver.relayout();
     assert_eq!(opened.borrow().len(), 1, "the app opens on the record");
     let reveals = openings.take_reveals();
@@ -540,19 +546,168 @@ fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
     );
     drop(refused);
     assert!(
-        !openings.open(&handle, |_, _| Ok(())),
+        !openings.open(&handle, |_, _| Ok(()), |_, _| None),
         "a path is no content to open"
     );
     drop(session.invoke(&caller, ask(launch.argument())));
-    assert!(openings.open(&handle, |app, existing| {
-        assert_eq!(app, "so.tilo.photos", "admitted as its app");
-        assert!(!existing, "opening an app with content is opening the app");
-        Ok(())
-    }));
+    // Content handed over is a new thing to show, whatever window the app already has.
+    let camera = handle.snapshot("g", vec![]).entries[0].route.tab.clone();
+    assert!(openings.open(
+        &handle,
+        |app, existing| {
+            assert_eq!(app, "so.tilo.photos", "admitted as its app");
+            assert!(!existing, "opening an app with content is opening the app");
+            Ok(())
+        },
+        |_, _| camera.parse().ok()
+    ));
     driver.relayout();
     assert_eq!(
         *opened.borrow(),
         vec![("so.tilo.photos".to_owned(), hash)],
         "the app opens with the content"
     );
+}
+
+/// A shell with Mail in front of Settings, serving its windows the page's session, and the two
+/// windows' tabs.
+fn mail_before_settings() -> (
+    ui::headless::FrameHarness,
+    DesktopHandle,
+    std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
+    tilo_desktop_surface::session::Openings,
+    (u64, u64),
+) {
+    let mut minter = IdMinter::new(7);
+    let settings = tab(&mut minter, "Settings");
+    let mail = tab(&mut minter, "Mail");
+    let tabs = (mail.id, settings.id);
+    let tree = seed_tree(&mut minter, "Office", vec![settings, mail]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let in_front = handle.dispatch(LayoutEffect::Focus {
+        tab: tabs.0.to_string(),
+    });
+    assert_eq!(in_front, Ok(()), "Mail is a window of the shell");
+    driver.relayout();
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("workspace", std::sync::Arc::default());
+    (driver, handle, session, openings, tabs)
+}
+
+/// Mail's "Open External accounts": Settings' `open-link`, asked of the page's session as a link an
+/// app opens is, naming no record because Settings keeps the one.
+fn settings_link() -> ui::tilo_actions::remote::InvokeRequest {
+    use ui::tilo_actions::remote::{APPLICATION_OPEN_LINK_ACTION, OPEN_LINK_PARAM};
+    let target = tilo_desktop_search::InvokeTarget::action(
+        "so.tilo.settings",
+        "workspace",
+        "settings.root",
+        APPLICATION_OPEN_LINK_ACTION,
+    )
+    .with_argument(OPEN_LINK_PARAM, "settings://external_accounts");
+    serde_json::from_value(serde_json::json!({
+        "invocation": ui::tilo_actions::InvocationId::new(),
+        "target": target.remote(),
+        "argument": {"Json": target.arguments},
+    }))
+    .unwrap()
+}
+
+/// A link into another app goes to the window that already shows what it names. Mail's link to
+/// Settings' External accounts, with Settings open: no second Settings window, the open one comes
+/// forward, and the link's action is the one handed on to run in it. With no Settings window, or
+/// one that closed since the host looked, the link opens one.
+#[test]
+fn a_link_into_an_app_goes_to_the_window_that_already_shows_it() {
+    use ui::tilo_actions::remote::{ActionHost as _, Caller, OPEN_LINK_PARAM};
+    let caller = Caller::local_person("tester").in_workspace("workspace");
+    let (mut driver, handle, session, openings, (mail, settings)) = mail_before_settings();
+    let before = handle.snapshot("g", vec![]);
+    assert_eq!(before.entries.len(), 2, "{:?}", before.entries);
+    assert_eq!(
+        before.active.as_ref().map(|route| route.tab.clone()),
+        Some(mail.to_string()),
+        "Mail is in front"
+    );
+
+    drop(session.invoke(&caller, settings_link()));
+    let asked = std::cell::RefCell::new(Vec::new());
+    assert!(openings.open(
+        &handle,
+        |_, _| Ok(()),
+        |app, record| {
+            asked.borrow_mut().push((app.to_owned(), record.to_owned()));
+            (app == "so.tilo.settings" && record.is_empty()).then_some(settings)
+        }
+    ));
+    for _ in 0..3 {
+        driver.relayout();
+    }
+    assert_eq!(
+        *asked.borrow(),
+        [("so.tilo.settings".to_owned(), String::new())],
+        "the host is asked for the window on Settings' own record"
+    );
+    let after = handle.snapshot("g", vec![]);
+    assert_eq!(
+        after.entries.len(),
+        2,
+        "no second Settings window: {:?}",
+        after.entries
+    );
+    assert_eq!(
+        after.active.as_ref().map(|route| route.tab.clone()),
+        Some(settings.to_string()),
+        "the open Settings window came forward"
+    );
+    let reveals = openings.take_reveals();
+    assert_eq!(reveals.len(), 1, "{reveals:?}");
+    assert_eq!(
+        (
+            reveals[0].app.as_str(),
+            reveals[0].record.as_str(),
+            reveals[0].resource.as_str(),
+            reveals[0].action.as_str(),
+            reveals[0].arguments.get(OPEN_LINK_PARAM),
+        ),
+        (
+            "so.tilo.settings",
+            "",
+            "settings.root",
+            "open-link",
+            Some(&serde_json::json!("settings://external_accounts")),
+        ),
+        "the link is what the window that came forward is taken to"
+    );
+
+    // No window shows it: the link opens one, in front.
+    for gone in [None, Some(u64::MAX)] {
+        let (mut driver, handle, session, openings, _) = mail_before_settings();
+        drop(session.invoke(&caller, settings_link()));
+        assert!(openings.open(&handle, |_, _| Ok(()), |_, _| gone));
+        for _ in 0..3 {
+            driver.relayout();
+        }
+        let after = handle.snapshot("g", vec![]);
+        assert_eq!(after.entries.len(), 3, "{gone:?}: {:?}", after.entries);
+        let front = after.active.as_ref().expect("a window is in front");
+        let opened = after
+            .entries
+            .iter()
+            .find(|entry| entry.route == *front)
+            .expect("the window in front is one of the shell's");
+        assert_eq!(opened.app.as_deref(), Some("so.tilo.settings"));
+        assert!(
+            ![mail.to_string(), settings.to_string()].contains(&front.tab),
+            "{gone:?}: a new window, not one of the two that stood there"
+        );
+        assert_eq!(openings.take_reveals().len(), 1, "and it is told the link");
+    }
 }

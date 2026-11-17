@@ -162,6 +162,26 @@ export function keyboardRoute(event,composing,mac) {
   if(['Alt','Control','Meta','Shift'].includes(key))return 'modifier';
   return 'forward';
 }
+/** Whether a press of the primary button is the platform's secondary click: on a
+ * Mac, Control with the primary button is the secondary button. Its browsers
+ * send the press as the primary button with Control held and then ask for a
+ * context menu, so a runtime told only of the press would press what it lands
+ * on. Nowhere else, and never for a pen or a finger. */
+export function isControlClick(event,mac) {
+  return Boolean(mac)&&Boolean(event.ctrlKey)&&event.button===0&&(event.pointerType===undefined||event.pointerType==='mouse');
+}
+/** What a pointer event of `type` is made from to say `event`, a press or a
+ * release of the primary button with Control held, as the secondary button's:
+ * the same pointer at the same place, with Control spent on choosing the
+ * button. It does not bubble: it is for the surface alone. */
+export function asSecondaryButton(event,type) {
+  return {bubbles:false,cancelable:true,composed:false,
+    clientX:event.clientX,clientY:event.clientY,screenX:event.screenX,screenY:event.screenY,
+    button:2,buttons:type==='pointerdown'?2:0,detail:event.detail,
+    ctrlKey:false,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,
+    pointerId:event.pointerId,pointerType:event.pointerType,isPrimary:event.isPrimary,
+    pressure:event.pressure,width:event.width,height:event.height,tiltX:event.tiltX,tiltY:event.tiltY};
+}
 export function modifierSnapshot(event) {
   return [Boolean(event.ctrlKey),Boolean(event.altKey),Boolean(event.shiftKey),Boolean(event.metaKey)];
 }

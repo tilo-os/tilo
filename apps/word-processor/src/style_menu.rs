@@ -82,8 +82,9 @@ impl StyleMenu {
         presence: &PresenceCtx,
     ) {
         self.menu.set_text_scale(theme.text_scale);
+        // A menu paints in the overlay pass and nowhere else: its in-flow draw paints nothing.
         if self.is_open() {
-            ui::widget::DrawChild::draw_child(
+            ui::widget::Widget::draw_overlay(
                 &mut self.menu,
                 scene,
                 transform,
@@ -92,6 +93,11 @@ impl StyleMenu {
                 presence,
             );
         }
+    }
+
+    /// Whether the menu is still arriving or leaving, and so asks for another frame.
+    pub(crate) fn needs_animation_frame(&self) -> bool {
+        ui::widget::Widget::needs_animation_frame(&self.menu)
     }
 }
 

@@ -30,7 +30,7 @@ use ui::clipboard_copy;
 use ui::permissions::MemberId;
 #[cfg(test)]
 use ui::widget::Widget;
-use ui::widget::context_menu::ContextMenu;
+use ui::widget::context_menu::{ContextMenu, EditingCommand};
 use ui::widget::toast::Notice;
 use ui::widget::{BlockEditor, Embedded};
 use ui::{PathSegment, PresenceKey};
@@ -117,10 +117,8 @@ enum KeyPressEffect {
 /// the widget, so the rows carry these and dispatch by clicked index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CtxAction {
-    Cut,
-    Copy,
-    Paste,
-    SelectAll,
+    /// One of the rows every text's menu begins with.
+    Edit(EditingCommand),
     AddToDictionary(String),
     ApplySuggestion {
         block: String,

@@ -1227,6 +1227,19 @@ in `Widget::draw_overlay`, like a popover or a modal, so no later sibling,
 pane or the window's chrome covers it; a painted host draws its menu from
 its own `draw_overlay` or returns it from `children_mut` while it is open.
 
+**A secondary click opens the menu of what it lands on, and the keyboard
+opens the same menu.** The right button, a Mac's Control-click, a long press,
+the Menu key and Shift+F10 are one gesture: the pointer opens the menu where
+it is, the keyboard under the item or the caret that has it. A host that
+opens a menu of its own from the keyboard asks
+`context_menu::opens_from_keyboard`, so no menu answers to other keys. A
+text's menu begins with the same five rows wherever text is edited, named
+and keyed alike (`context_menu::EditingCommand::rows`): cut and copy, which
+wait for a selection, then paste, paste without formatting and select all.
+The host runs each through the command its shortcut runs, and adds what is
+its own (a spelling suggestion, a review, the formatting it applies) beside
+them, never a second set of clipboard rows.
+
 **A control with its own floor** (a filled rest face rather than a
 transparent one) takes all of its states from one ordered ramp against the
 ground: `chrome::selection_floor_ramp(theme, state, ground)` — rest, hover

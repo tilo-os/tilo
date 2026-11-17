@@ -19,7 +19,7 @@ use ui::richtext::FontFamily;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::context_menu::{ContextMenu, EditingCommand, MenuItem};
 use ui::widget::{SegmentedTouchGroup, SegmentedTouchResult};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -794,7 +794,33 @@ impl Editor {
             self.inner.select_word(state);
         }
 
-        let (wstart, wend) = Self::word_span_at(&block_text, raw_click_off);
+        self.show_context_menu(&block, &block_text, raw_click_off, pos);
+    }
+
+    /// Open the menu from the keyboard (the Menu key, Shift+F10), as a secondary click opens it:
+    /// about the caret's word and the selection as they stand, under the caret.
+    pub(super) fn open_context_menu_at_caret(&mut self, state: &AutoCommit) {
+        let block = self.inner.caret.block.clone();
+        let block_text = self.inner.current_text(state);
+        let offset = self.inner.caret.offset;
+        // Under the caret where it is drawn; a caret scrolled out of sight leaves the menu in
+        // the middle of what the window shows.
+        let at = self.ime_rect.map_or_else(
+            || self.rect.center(),
+            |caret| Point::new(caret.x0, caret.y1),
+        );
+        self.show_context_menu(
+            &block,
+            &block_text,
+            offset,
+            [num::f32_of_f64(at.x), num::f32_of_f64(at.y)],
+        );
+    }
+
+    /// The menu about the word at `offset` of `block`, at `pos`: what review and spelling offer
+    /// for the word, then the rows every text's menu has.
+    fn show_context_menu(&mut self, block: &str, block_text: &str, offset: usize, pos: [f32; 2]) {
+        let (wstart, wend) = Self::word_span_at(block_text, offset);
         let word: String = block_text
             .chars()
             .skip(wstart)
@@ -806,8 +832,8 @@ impl Editor {
         menu.set_viewport(Some(self.rect));
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
 
-        self.push_review_rows(&mut menu, &mut actions, &block, wstart, wend, raw_click_off);
-        self.push_spellcheck_rows(&mut menu, &mut actions, &block, &word, wstart, wend);
+        self.push_review_rows(&mut menu, &mut actions, block, wstart, wend, offset);
+        self.push_spellcheck_rows(&mut menu, &mut actions, block, &word, wstart, wend);
         self.push_clipboard_rows(&mut menu, &mut actions);
 
         menu.open_at(pos);
@@ -846,25 +872,36 @@ impl Editor {
         actions.push(None);
     }
 
+    /// The rows every text's menu has, named and keyed as the toolkit names them
+    /// ([`EditingCommand::rows`]): cut and copy wait for a selection, and paste is offered
+    /// without reading the clipboard to find out.
     fn push_clipboard_rows(&self, menu: &mut ContextMenu, actions: &mut Vec<Option<CtxAction>>) {
-        let has_sel = self.inner.has_selection();
-        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
-        if has_sel {
-            menu.push(MenuItem::action(t("menu-cut"), || {}));
-            actions.push(Some(CtxAction::Cut));
-            menu.push(MenuItem::action(t("menu-copy"), || {}));
-            actions.push(Some(CtxAction::Copy));
+        for (item, command) in EditingCommand::rows(self.inner.has_selection()) {
+            menu.push(item);
+            actions.push(Some(CtxAction::Edit(command)));
         }
-        if can_paste {
-            menu.push(MenuItem::action(t("menu-paste"), || {}));
-            actions.push(Some(CtxAction::Paste));
+    }
+
+    /// One of the standard editing commands, as its shortcut and its menu row both run it: the
+    /// clipboard through the document's own actions, the selection through its primitive.
+    pub(super) fn run_editing_command(
+        &mut self,
+        command: EditingCommand,
+        state: &mut ui::widget::Edits<'_>,
+    ) {
+        match command {
+            EditingCommand::Cut => {
+                if self.clipboard_copy(state) {
+                    self.insert_text_via_action(state, "");
+                }
+            }
+            EditingCommand::Copy => {
+                self.clipboard_copy(state);
+            }
+            EditingCommand::Paste => self.clipboard_paste(state),
+            EditingCommand::PastePlain => self.clipboard_paste_plain(state),
+            EditingCommand::SelectAll => self.select_all_via_primitive(state),
         }
-        if !menu.items().is_empty() {
-            menu.push(MenuItem::separator());
-            actions.push(None);
-        }
-        menu.push(MenuItem::action(t("menu-select-all"), || {}));
-        actions.push(Some(CtxAction::SelectAll));
     }
 
     pub(super) fn dispatch_context_action(
@@ -876,18 +913,7 @@ impl Editor {
             return false;
         };
         match action {
-            CtxAction::Cut => {
-                if self.clipboard_copy(state) {
-                    self.insert_text_via_action(state, "");
-                }
-            }
-            CtxAction::Copy => {
-                self.clipboard_copy(state);
-            }
-            CtxAction::Paste => {
-                self.clipboard_paste(state);
-            }
-            CtxAction::SelectAll => self.select_all_via_primitive(state),
+            CtxAction::Edit(command) => self.run_editing_command(command, state),
             CtxAction::AddToDictionary(word) => {
                 if self.proofing.personal {
                     let result = ui::personal_dictionary::snapshot().and_then(|snapshot| {

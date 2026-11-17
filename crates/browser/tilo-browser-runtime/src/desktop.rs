@@ -487,20 +487,47 @@ impl Shared {
         })
     }
 
-    /// The tab showing `app`'s record `record`, by route. The empty route is
-    /// the app's own record here: the workspace's, or the person's own of an
-    /// app whose manifest says each member keeps their own (the only one this
-    /// page opens is its person's).
-    pub fn tab_on(&self, app: &str, record: &str) -> Option<TabId> {
+    /// The tab showing `app`'s record `record`, by route, among the windows the shell has now,
+    /// in the order it holds them. The empty route is the app's own record here: the
+    /// workspace's, or the person's own of an app whose manifest says each member keeps their
+    /// own (the only one this page opens is its person's). A window that closed keeps its
+    /// record bound for a reopen, and is no window to go to or to run an action in.
+    pub fn tab_on(&self, handle: &DesktopHandle, app: &str, record: &str) -> Option<TabId> {
         let definition = application(app)?;
         let kind = definition.resource_type.clone();
         let own = definition.member_resource;
         let shows = |route: &str| route == record || (record.is_empty() && own);
-        self.records
-            .borrow()
-            .iter()
-            .find(|(_, checkout)| shows(checkout.id.route()) && checkout.kind == kind)
-            .map(|(tab, _)| *tab)
+        let records = self.records.borrow();
+        handle.read(|tree| {
+            tree.tabs().map(|tab| tab.id).find(|tab| {
+                records
+                    .get(tab)
+                    .is_some_and(|checkout| shows(checkout.id.route()) && checkout.kind == kind)
+            })
+        })
+    }
+
+    /// The window that already shows `app`'s record `record` (by route, empty for the app's
+    /// own): where an open of it goes, in place of a second window on what one shows. The
+    /// window whose record this page bound is that window ([`Self::tab_on`]), the one an
+    /// open's action then runs in. Before a window's record is bound (its bytes still on
+    /// their way), any window of an app that keeps one record, the workspace's or the
+    /// person's own, is on that record: Settings and Mail show one thing however many windows
+    /// they have. An app whose windows each keep a document of their own has no window on a
+    /// record none of them named, so an open that names none opens a window.
+    pub fn window_on(&self, handle: &DesktopHandle, app: &str, record: &str) -> Option<TabId> {
+        if let Some(tab) = self.tab_on(handle, app, record) {
+            return Some(tab);
+        }
+        let definition = application(app)?;
+        if !record.is_empty()
+            || !(definition.member_resource || definition.keeps_workspace_resource())
+        {
+            return None;
+        }
+        handle
+            .read(|tree| tilo_desktop_surface::navigation::window_of_app(tree, app))
+            .map(|ids| ids.tab)
     }
 
     /// Where each window of the desktop stands ([`crate::window_states`]), by its tab in hex as

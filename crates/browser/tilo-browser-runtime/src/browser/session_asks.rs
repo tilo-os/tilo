@@ -227,7 +227,10 @@ impl Mount {
             let reveal = &opening.reveal;
             // Its window is not up yet: the window coming up is the page's
             // own news, and nothing here can be asked of it before that.
-            let Some(tab) = desktop.shared.tab_on(&reveal.app, &reveal.record) else {
+            let Some(tab) = desktop
+                .shared
+                .tab_on(&desktop.handle, &reveal.app, &reveal.record)
+            else {
                 return opening.until > now;
             };
             // Nothing was published since the last try: the row this open

@@ -89,8 +89,6 @@ review-deletion = Deletion
 
 ## Edit context-menu (clipboard + spell)
 menu-add-to-dictionary = Add to dictionary
-menu-cut = Cut
-menu-copy = Copy
 menu-paste = Paste
 menu-select-all = Select all
 

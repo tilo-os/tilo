@@ -88,8 +88,6 @@ review-deletion = Löschung
 
 ## Edit context-menu (clipboard + spell)
 menu-add-to-dictionary = Zum Wörterbuch hinzufügen
-menu-cut = Ausschneiden
-menu-copy = Kopieren
 menu-paste = Einfügen
 menu-select-all = Alles auswählen
 

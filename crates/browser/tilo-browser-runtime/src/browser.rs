@@ -659,9 +659,11 @@ impl Desktop {
         self.ask_app_actions();
         self.layout.take_asked_floats();
         let permissions = self.permissions.borrow();
-        self.openings.open(&self.handle, |app, existing| {
-            crate::desktop::may_open(&permissions, app, existing)
-        })
+        self.openings.open(
+            &self.handle,
+            |app, existing| crate::desktop::may_open(&permissions, app, existing),
+            |app, record| self.shared.window_on(&self.handle, app, record),
+        )
     }
 
     /// Hand the page the agent grants the person took back:
