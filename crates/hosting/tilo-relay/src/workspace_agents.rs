@@ -552,7 +552,11 @@ impl HostAgents {
         Ok(agents
             .agents
             .iter()
-            .filter(|agent| agent.is_active() && agent.on_host && agent.mcp_client.is_none())
+            // A sub-agent is not worked here yet: its turns carry a rule of their own
+            // (`Agent::turn_rules`), and nothing is run for one without it.
+            .filter(|agent| {
+                agent.is_active() && agent.on_host && agent.mcp_client.is_none() && !agent.is_sub()
+            })
             .map(|agent| (agent.id.0.clone(), agent.clone()))
             .collect())
     }
