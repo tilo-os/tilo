@@ -123,6 +123,31 @@ tilo_test_env::scenario! {
         nudge_is_noop_when_strip_has_no_recorded_pointer();
     }
 
+    phase a_strip_whose_focused_group_left_it_focuses_the_window_it_still_holds;
+    {
+        // The person was in B, then carried B to another strip. The strip B
+        // left still names B as its focused group; a strip must focus a
+        // window it holds, or going back to it leaves no window in front.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, b) = (ids[0], ids[1]);
+        tree.set_active_group(strip_id, b);
+        let elsewhere = StripId(201);
+        tree.workspaces[0].strips.push(Strip::new(elsewhere, "Below"));
+        let moved = tree.workspaces[0].strips[0].window_groups.remove(1);
+        tree.workspaces[0].strips[1].window_groups.push(moved);
+
+        assert_eq!(
+            tree.resolve_active_group(strip_id, |_| false),
+            Some(a),
+            "the strip focuses the window it still holds, not the one that left"
+        );
+        assert_eq!(
+            tree.active_group_for(strip_id),
+            None,
+            "and the pointer, read straight, never names a window the strip no longer holds"
+        );
+    }
+
     phase resolve_active_group_returns_recorded_when_not_closing;
     {
         // Pure read path: with the recorded pointer not in the closing

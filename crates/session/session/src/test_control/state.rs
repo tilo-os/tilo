@@ -322,9 +322,13 @@ pub(super) fn window_rows(
         let active_strip = tree.active_strip.get(&workspace.id());
         for strip in &workspace.strips {
             let strip_active = workspace_active && active_strip == Some(&strip.id);
-            let active_group = tree.active_group.get(&strip.id);
+            // The window the strip focuses, read through the strip's own rule: a pointer left on a
+            // group carried to another strip names no window here.
+            let active_group = tree
+                .active_group_for(strip.id)
+                .or_else(|| strip.window_groups.first().map(|group| group.id));
             for group in &strip.window_groups {
-                let group_active = strip_active && active_group == Some(&group.id);
+                let group_active = strip_active && active_group == Some(group.id);
                 for tab in &group.tabs {
                     let (kind, app_id) = tile_kind(&tab.tile);
                     let window = window_of_tile(&tab.tile);

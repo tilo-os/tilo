@@ -310,9 +310,25 @@ impl Layout {
     }
 
     /// The currently-active [`GroupId`] for `strip_id`, or `None` if
-    /// unseeded — callers compose this with their own fallback.
+    /// unseeded — callers compose this with their own fallback. A group
+    /// carried to another strip leaves this strip's pointer behind, so a
+    /// pointer naming a group the strip no longer holds reads as unseeded
+    /// here: a reader that falls back then focuses a window the strip
+    /// actually shows, never one that is elsewhere. Pure read; nothing is
+    /// rewritten.
     pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
-        self.active_group.get(&strip_id).copied()
+        let recorded = self.active_group.get(&strip_id).copied()?;
+        self.strip_holds(strip_id, recorded).then_some(recorded)
+    }
+
+    /// Whether `strip_id` holds the group `group_id` — the membership a
+    /// strip's focus pointer is judged by.
+    fn strip_holds(&self, strip_id: StripId, group_id: GroupId) -> bool {
+        self.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .find(|strip| strip.id == strip_id)
+            .is_some_and(|strip| strip.window_groups.iter().any(|group| group.id == group_id))
     }
 
     /// Mark `group_id` as the active group of `strip_id`. Not validated
@@ -410,12 +426,17 @@ impl Layout {
         };
         match recorded {
             Some(id) => {
-                if !is_closing(id) {
+                // The pointer names a group the strip holds, and it is not
+                // closing: focus stays where it was. A group carried to
+                // another strip is no longer this strip's, whatever the
+                // pointer still says: the strip focuses a window it holds.
+                let idx = strip.window_groups.iter().position(|g| g.id == id);
+                if idx.is_some() && !is_closing(id) {
                     return Some(id);
                 }
-                // Recorded group is closing — find its index, then
-                // scan left for a survivor; if none, scan right.
-                let Some(idx) = strip.window_groups.iter().position(|g| g.id == id) else {
+                // Recorded group is closing, or has left — find its index,
+                // then scan left for a survivor; if none, scan right.
+                let Some(idx) = idx else {
                     // Recorded group no longer in the strip; fall
                     // through to "first non-closing" as a default.
                     return scan_right(0);
