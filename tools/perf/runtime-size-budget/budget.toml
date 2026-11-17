@@ -99,9 +99,9 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 
 [runtime.x86_64]
 bytes = 149618688
-relocation_bytes = 262144
+relocation_bytes = 131072
 relocated_bytes = 4194304
-symbol_relocations = 6528
+symbol_relocations = 1472
 
 [runtime.aarch64]
 bytes = 135659520
@@ -124,12 +124,12 @@ symbol_relocations = 6592
 "libtilo_agent_web_engine.so" = 393216
 "libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
-"libtilo_app_host_engine.so" = 1245184
+"libtilo_app_host_engine.so" = 720896
 "libtilo_archive_engine.so" = 1048576
 "libtilo_browser_import_engine.so" = 2818048
 "libtilo_contact_directory_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
-"libtilo_fuse_engine.so" = 3145728
+"libtilo_fuse_engine.so" = 1638400
 "libtilo_highlight_engine.so" = 2818048
 "libtilo_mail_engine.so" = 851968
 "libtilo_paint_engine.so" = 917504
@@ -138,7 +138,7 @@ symbol_relocations = 6592
 "libtilo_spotify_engine.so" = 11599872
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_timezone_engine.so" = 1310720
-"libtilo_typst_engine.so" = 43581440
+"libtilo_typst_engine.so" = 41156608
 "libtilo_youtube_engine.so" = 5898240
 
 [engines.aarch64]
