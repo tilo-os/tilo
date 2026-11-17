@@ -23,7 +23,7 @@ view channels(w: chat.Workspace, m: chat.Messages) {
             for c in w.channels {
                 text(channel_label(c))
                 for person in c.members {
-                    text(person, role: .caption)
+                    text(person.name(), role: .caption)
                 }
                 for msg in said_in(m, c.name) {
                     text(msg.text, role: .caption)
