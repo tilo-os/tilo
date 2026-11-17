@@ -1750,9 +1750,9 @@ fn the_resource_and_the_fields_are_read_typed_and_answer_in_the_declared_shape()
     assert_eq!(answers[0]["message"], "2 actions");
     // Each actor is answered as the actor it is, never as the engine's handle.
     let ada_actor = serde_json::json!({"member": {"agent": "ada"}});
-    let mut typed_record = record;
-    crate::page_resource::name_listed(Some(&mut typed_record));
-    assert_eq!(answers[0]["data"], typed_record);
+    let mut typed = record;
+    crate::page_resource::name_listed(Some(&mut typed));
+    assert_eq!(answers[0]["data"], typed);
     assert_eq!(answers[0]["data"]["entries"][0]["actor"], ada_actor);
     assert_eq!(
         answers[0]["data"]["entries"][0]["target"],

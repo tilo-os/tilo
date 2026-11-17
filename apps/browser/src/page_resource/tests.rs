@@ -300,8 +300,8 @@ fn as_typed(mut entry: Value) -> Value {
 }
 
 /// What `tab`'s resource keeps after the place `since`, as the engine lists it.
-fn kept_entries(record: &PersonResource<PageResource>, tab: &str, since: u64) -> Vec<Value> {
-    record.with(|state| {
+fn kept_entries(resource: &PersonResource<PageResource>, tab: &str, since: u64) -> Vec<Value> {
+    resource.with(|state| {
         state
             .page(tab, since)
             .entries
