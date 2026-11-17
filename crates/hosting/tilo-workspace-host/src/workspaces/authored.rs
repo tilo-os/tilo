@@ -16,7 +16,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// Refuses other certificates, stale ownership, incomplete records, sealed
-    /// ones whose channel this relay does not take part in, failed changes or
+    /// ones whose channel this server does not take part in, failed changes or
     /// oversized publication.
     #[expect(
         clippy::significant_drop_tightening,

@@ -72,7 +72,7 @@ pub struct Workspace {
     /// What every route names it by.
     pub id: String,
     pub name: String,
-    /// The host that keeps it: a relay's name, or the person's device that
+    /// The host that keeps it: a server's name, or the person's device that
     /// hosts it; absent while none of their devices said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,

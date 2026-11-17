@@ -1,14 +1,14 @@
 //! Fill a public workspace with people, as its entry takes them in: each a
 //! new person with their own root and device, entering through the
-//! workspace's entry on a session with the relay, as a page's Join does.
-//! Nothing is written around the relay: the members are the host's own, by
+//! workspace's entry on a session with the server, as a page's Join does.
+//! Nothing is written around the server: the members are the host's own, by
 //! the path every visitor takes.
 //!
 //! ```sh
-//! seed-lounge RELAY_ORIGIN WORKSPACE COUNT [CA_PEM]
+//! seed-lounge SERVER_ORIGIN WORKSPACE COUNT [CA_PEM]
 //! ```
 //!
-//! `CA_PEM` is a certificate the relay's TLS chains to (the local stack's
+//! `CA_PEM` is a certificate the server's TLS chains to (the local stack's
 //! Caddy CA), trusted beside the system's roots. Prints one JSON line:
 //! `{"joined": N, "seconds": S}`.
 
@@ -19,8 +19,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, DeviceIdentity, UserIde
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: seed-lounge RELAY_ORIGIN WORKSPACE COUNT [CA_PEM]";
-    let relay = args.next().ok_or(usage)?;
+    let usage = "usage: seed-lounge SERVER_ORIGIN WORKSPACE COUNT [CA_PEM]";
+    let server = args.next().ok_or(usage)?;
     let workspace = args.next().ok_or(usage)?;
     let count: usize = args
         .next()
@@ -40,11 +40,11 @@ async fn main() -> Result<(), String> {
         );
     }
     let client = builder.build().map_err(|error| error.to_string())?;
-    let host = tilo_server_client::https::Origin::new(&client, &relay);
+    let host = tilo_server_client::https::Origin::new(&client, &server);
     let info = tilo_server_client::https::host_info(&host)
         .await
-        .map_err(|error| format!("the relay: {error}"))?;
-    let address = info.address.ok_or("the relay takes no device sessions")?;
+        .map_err(|error| format!("the server: {error}"))?;
+    let address = info.address.ok_or("the server takes no device sessions")?;
     let began = std::time::Instant::now();
     let mut joined: usize = 0;
     for number in 1..=count {

@@ -266,13 +266,13 @@ operate it. Companion to `docs/security/design-rationale.md`.
   ensure step refuses a `BASE_SOURCE`
   whose digest no longer matches the pin, so a silent major bump fails closed
   instead of shipping.
-  The server images that ship without a bootc base (the relay, the API server,
+  The server images that ship without a bootc base (the server, the API server,
   the VM host) run on `fedora-minimal` instead, pinned by digest from
   `registry.fedoraproject.org`, which keeps the digests quay.io prunes. Their
   runtime packages come from the same frozen snapshot as the OS, so all of them
-  share one base and one package set; `tools/ci/publish/relay-build.sh`,
+  share one base and one package set; `tools/ci/publish/server-build.sh`,
   `api-build.sh` and `vm-host-build.sh` are the build path they share.
-  Every one of their programs is compiled by t (`relay-binaries`,
+  Every one of their programs is compiled by t (`server-binaries`,
   `api-binaries`, `vm-host-binaries`,
   tools/ci/publish/server-binaries.sh) and the images only package the result,
   so no image build compiles Rust: a change costs that crate's compile and a

@@ -1,4 +1,4 @@
-//! Who may still act on this connection: the relay-wide certificate and
+//! Who may still act on this connection: the server-wide certificate and
 //! membership checks the session handlers share, and the periodic
 //! subscriber audit that ends a session whose access lapsed.
 
@@ -28,7 +28,7 @@ pub(super) async fn audit_subscriber_access(
     subscribed: &mut Vec<WorkspaceId>,
 ) -> Result<bool, PeerError> {
     let mut watched = true;
-    // Relay-wide first, so a revoked or untrusted device ends even with no
+    // Server-wide first, so a revoked or untrusted device ends even with no
     // bound workspace left to ask.
     session
         .trust()

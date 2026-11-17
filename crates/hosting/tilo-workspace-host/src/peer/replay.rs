@@ -138,7 +138,7 @@ pub(super) async fn authorize_state_recipient(
     Ok(())
 }
 /// Write the workspace's bootstrap for `peer` ahead of its replay
-/// ([`Envelope::WorkspaceBootstrap`]), in a workspace this relay governs or hosts for
+/// ([`Envelope::WorkspaceBootstrap`]), in a workspace this server governs or hosts for
 /// its governor: what a member device builds its replica from before it
 /// admits the replay. A host attached to the workspace keeps its own replica and
 /// gets none; this host's own device takes one wherever it
@@ -255,7 +255,7 @@ async fn write_addressed<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// What a replay leaves out for its subscriber, beside what its capture
-/// already did: frames only other devices can use. A peer relay keeps all of
+/// already did: frames only other devices can use. A peer server keeps all of
 /// the workspace and is left nothing out.
 struct ReplayFilter {
     device: [u8; 32],

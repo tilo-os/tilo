@@ -1,13 +1,13 @@
 //! One agent session through the server: an MCP session of the agent, served here
 //! by the agent surface `tilo mcp` serves ([`tilo_mcp::McpServer`]),
 //! its actions asked of the workspace's relay over the grant's own session
-//! ([`crate::relay`], [`SessionActions`]). Record actions run on the relay's
+//! ([`crate::server`], [`SessionActions`]). Record actions run on the server's
 //! app workers, and each record the agent makes or changes opens on the
 //! workspace's shell as a window of the person's, naming the session, so whoever
 //! enters the workspace sees what the agent did.
 //!
 //! - **Pinned** (a one-workspace grant): the session serves that one
-//!   workspace. It cannot name another: the relay admits the grant nowhere
+//!   workspace. It cannot name another: the server admits the grant nowhere
 //!   else, and the server offers no tool that lists or makes workspaces.
 //! - **Account** (an all-workspaces grant): the session offers the
 //!   workspace tools with one more argument, `workspace`. A call naming a
@@ -36,7 +36,7 @@ pub mod keys;
 pub mod members;
 pub mod unattended;
 
-use crate::relay::{Connection, RelayError};
+use crate::server::{Connection, ServerError};
 use crate::store::Scope;
 use serde_json::{Map, Value, json};
 use std::{
@@ -108,7 +108,7 @@ pub struct Session {
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The sessions in workspaces the relay hosts, by [`queue`], each entered
+    /// The sessions in workspaces the server hosts, by [`queue`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
     /// The sessions in workspaces the person's devices host, by [`queue`].
@@ -193,13 +193,13 @@ pub fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
-/// The JSON-RPC error of a call the relay ran nothing for because it is busy
+/// The JSON-RPC error of a call the server ran nothing for because it is busy
 /// with the person's changes: `data` says so typed, with the wait, so a
 /// client retries the same call then.
 fn rate_limited(id: &Value, retry_after_ms: u64) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{
         "code": -32000,
-        "message": RelayError::RateLimited { retry_after_ms }.to_string(),
+        "message": ServerError::RateLimited { retry_after_ms }.to_string(),
         "data": {"code": crate::account::RATE_LIMITED, "retry_after_ms": retry_after_ms},
     }})
 }
@@ -275,7 +275,7 @@ impl Session {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     }
 
-    /// The grant's session with the relay, for the account's own actions.
+    /// The grant's session with the server, for the account's own actions.
     pub(crate) fn connection(&self) -> &Connection {
         &self.connection
     }
@@ -287,7 +287,7 @@ impl Session {
         &self,
         workspace: &str,
         program: Option<&str>,
-    ) -> Result<Arc<Served>, RelayError> {
+    ) -> Result<Arc<Served>, ServerError> {
         let slot = {
             let mut runs = self.served.lock().await;
             let slot = Arc::clone(runs.entry(queue(workspace, program)).or_default());
@@ -300,7 +300,7 @@ impl Session {
         }
         let id = self
             .connection
-            .relay()
+            .server()
             .enter(&self.connection, workspace)
             .await?;
         let device = &self.connection.device;
@@ -385,10 +385,10 @@ impl Session {
         }
         let run = match self.served(workspace, program).await {
             Ok(held) => held,
-            Err(RelayError::NotFound) => {
+            Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
-            Err(RelayError::RateLimited { retry_after_ms }) => {
+            Err(ServerError::RateLimited { retry_after_ms }) => {
                 return Reply::one(rate_limited(&id, retry_after_ms));
             }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
@@ -401,7 +401,7 @@ impl Session {
     /// The session in `workspace` when one of the person's devices hosts it, as
     /// their list says, entering it at that device's MCP server the first
     /// time (and again once the device closed it); `None` for a workspace the
-    /// relay keeps. As [`Self::served`], each workspace's entry has a lock of
+    /// server keeps. As [`Self::served`], each workspace's entry has a lock of
     /// its own.
     async fn on_device(
         &self,
@@ -409,7 +409,7 @@ impl Session {
         program: Option<&str>,
     ) -> Result<Option<Arc<OnDevice>>, String> {
         let queue = queue(workspace, program);
-        // A workspace the session already works in on the relay is the relay's.
+        // A workspace the session already works in on the server is the server's.
         if self.served.lock().await.contains_key(&queue) {
             return Ok(None);
         }
@@ -452,7 +452,7 @@ impl Session {
     ) -> Option<tilo_server_session::workspaces::WorkspaceHostAddress> {
         let address = self
             .connection
-            .relay()
+            .server()
             .workspace(&self.connection, workspace)
             .await
             .ok()??
@@ -795,7 +795,7 @@ impl Session {
     }
 
     /// End the run: the agent leaves every workspace. The grant's session
-    /// with the relay, which its other runs share, ends with the last of
+    /// with the server, which its other runs share, ends with the last of
     /// them, or when the grant is revoked.
     pub(crate) async fn close(&self) {
         self.served.lock().await.clear();

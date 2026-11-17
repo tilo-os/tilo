@@ -2,7 +2,7 @@
 //! session joins the workspace as a device and holds the window, and an
 //! agent's page actions reach that window as the agent's — counted, and
 //! refused with the host's typed refusal past the free allowance. A page
-//! action the window asks the person about is put to them by the relay
+//! action the window asks the person about is put to them by the server
 //! itself, and the caller waits for their answer.
 #![allow(
     clippy::significant_drop_tightening,
@@ -26,7 +26,7 @@ use tilo_server::hosted_browser::{
     no_payment_method,
 };
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::{AppActionServer, Envelope, RelayClient};
+use tilo_server::{AppActionServer, Envelope, ServerClient};
 use tilo_server_client::Approver;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, HostApproval, RevocationList,
@@ -34,8 +34,8 @@ use tilo_user_identity::{
 };
 
 use crate::common::{
-    TestDevice, TestRelay, TestUser, admit_members, client_endpoint, device_endpoint,
-    spawn_relay_serving_apps,
+    TestDevice, TestServer, TestUser, admit_members, client_endpoint, device_endpoint,
+    spawn_server_serving_apps,
 };
 use tilo_server::WorkspaceId;
 
@@ -49,7 +49,7 @@ const HOST_PROVIDER: &str = "workspace:11111111-1111-4111-8111-111111111111";
 const WINDOW_REVISION: &str = "window";
 
 /// Places environments in-process: each "environment" is the device the
-/// relay certified, which the test's client then joins the workspace as.
+/// server certified, which the test's client then joins the workspace as.
 #[derive(Default)]
 struct InProcessEnvironments {
     starts: Mutex<Vec<Material>>,
@@ -113,7 +113,7 @@ impl BrowserMeter for Counting {
     }
 }
 
-/// The app action server of a relay that routes its workspaces' Browser page actions to
+/// The app action server of a server that routes its workspaces' Browser page actions to
 /// the window holding them.
 struct Routing(Arc<HostedBrowsers>);
 
@@ -267,7 +267,7 @@ fn receipt_of(envelope: Envelope) -> InvocationReceipt {
 
 /// The receipt answering `invocation` of `caller`'s, past whatever answers an
 /// earlier one of its own arrived first.
-async fn receipt_for(caller: &RelayClient, invocation: InvocationId) -> InvocationReceipt {
+async fn receipt_for(caller: &ServerClient, invocation: InvocationId) -> InvocationReceipt {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let Envelope::RemoteAction { frame, .. } = next(caller, "caller").await else {
@@ -303,7 +303,7 @@ fn update_of(envelope: Envelope) -> Option<tilo_actions::remote::InvocationState
 /// How `invocation` of `caller`'s went, followed until it is over: what a
 /// caller that asked once and waits sees.
 async fn followed(
-    caller: &RelayClient,
+    caller: &ServerClient,
     host: [u8; 32],
     invocation: InvocationId,
 ) -> tilo_actions::InvocationUpdate {
@@ -350,19 +350,23 @@ fn to_host(workspace_id: WorkspaceId, host: [u8; 32], frame: Vec<u8>) -> Envelop
     }
 }
 
-async fn subscribe(relay: &tilo_server::Relay, user: &TestUser, device: &TestDevice) -> RelayClient {
-    subscribe_in(relay, user, device, WS).await
+async fn subscribe(
+    server: &tilo_server::Server,
+    user: &TestUser,
+    device: &TestDevice,
+) -> ServerClient {
+    subscribe_in(server, user, device, WS).await
 }
 
 async fn subscribe_in(
-    relay: &tilo_server::Relay,
+    server: &tilo_server::Server,
     user: &TestUser,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> RelayClient {
-    let client = RelayClient::connect(
+) -> ServerClient {
+    let client = ServerClient::connect(
         client_endpoint().await,
-        relay.node_addr(),
+        server.node_addr(),
         user.user_pk,
         device.cert.clone(),
         device.sk.clone(),
@@ -376,7 +380,7 @@ async fn subscribe_in(
     client
 }
 
-async fn next(client: &RelayClient, who: &str) -> Envelope {
+async fn next(client: &ServerClient, who: &str) -> Envelope {
     tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| panic!("{who} timed out"))
@@ -450,21 +454,21 @@ impl Asks {
 /// The device holding the workspace's Browser window: it answers every
 /// invocation with a receipt and keeps who sent it.
 async fn window_session(
-    relay: &tilo_server::Relay,
+    server: &tilo_server::Server,
     user: &TestUser,
     material: &Material,
     asks: Asks,
 ) -> Arc<Mutex<Vec<Handed>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let device = DeviceIdentity::of(material);
-    let client = subscribe(relay, user, &device).await;
+    let client = subscribe(server, user, &device).await;
     let heard = Arc::clone(&seen);
     let holder = material.device.device_public_key;
     let certifier = material
         .device
         .issuer
         .as_ref()
-        .expect("the relay certified the environment's device")
+        .expect("the server certified the environment's device")
         .device_public_key;
     let person = material.user_public_key;
     tokio::spawn(async move {
@@ -573,7 +577,7 @@ struct Fixture {
     agent: TestDevice,
     /// The person's own device, which answers what their agents ask them.
     laptop: TestDevice,
-    relay: TestRelay,
+    server: TestServer,
     browsers: Arc<HostedBrowsers>,
     environments: Arc<InProcessEnvironments>,
     meter: Arc<Counting>,
@@ -620,7 +624,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
         .with_reconnect(reconnect)
         .with_answer_wait(answer_wait),
     );
-    let relay = Box::pin(spawn_relay_serving_apps(
+    let server = Box::pin(spawn_server_serving_apps(
         &user,
         host,
         &[WS, OTHER_WS],
@@ -632,12 +636,12 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
         user_public_key: user.user_pk,
         cert: host_cert,
         key: host_key,
-        relay: relay.relay.node_addr(),
-        workspaces: relay.relay.workspaces().cloned(),
-        environments: relay.relay.environments(),
+        server: server.server.node_addr(),
+        workspaces: server.server.workspaces().cloned(),
+        environments: server.server.environments(),
         runtime: tokio::runtime::Handle::current(),
-        certification: relay.relay.confirmations(),
-        hand: relay.relay.hand(),
+        certification: server.server.confirmations(),
+        hand: server.server.hand(),
     });
     browsers
         .place(WS_NAME, WS, "record-1")
@@ -647,14 +651,14 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
         home,
         agent,
         laptop,
-        relay,
+        server,
         browsers,
         environments,
         meter,
     }
 }
 
-/// The environments a test started, behind the trait the relay holds.
+/// The environments a test started, behind the trait the server holds.
 struct EnvironmentsHandle(Arc<InProcessEnvironments>);
 
 impl BrowserSessions for EnvironmentsHandle {
@@ -667,7 +671,7 @@ impl BrowserSessions for EnvironmentsHandle {
     }
 }
 
-/// The meter a test counts with, behind the trait the relay holds.
+/// The meter a test counts with, behind the trait the server holds.
 struct SharedMeter(Arc<Counting>);
 
 impl BrowserMeter for SharedMeter {
@@ -681,37 +685,37 @@ impl BrowserMeter for SharedMeter {
 }
 
 impl Fixture {
-    /// The person's approving device, connected to the relay: where a page
+    /// The person's approving device, connected to the server: where a page
     /// action that asks first is put to them.
     async fn approving_device(&self) -> (iroh::endpoint::Endpoint, Approver) {
         let endpoint = client_endpoint().await;
         let approver = Approver::connect(
             &endpoint,
-            self.relay.relay.node_addr(),
+            self.server.server.node_addr(),
             self.laptop.cert.clone(),
             &self.laptop.sk,
             &RevocationList::new(),
         )
         .await
-        .expect("the person's device asks the relay what waits for them");
+        .expect("the person's device asks the server what waits for them");
         (endpoint, approver)
     }
 
-    /// The workspace lists the window's device, as the relay lists it on a
+    /// The workspace lists the window's device, as the server lists it on a
     /// host that governs the workspace.
     async fn list_environment(&self) {
         let device = self.browsers.window(WS).unwrap().device;
         admit_members(
-            &self.relay.relay,
+            &self.server.server,
             WS,
             &[self.agent.device_pubkey(), device],
-            &self.relay.state_root,
+            &self.server.state_root,
         )
         .await;
     }
 
     /// A key the person made for an agent to act in their workspaces, which
-    /// the workspace lists. It reaches all of them: the relay admits a key to
+    /// the workspace lists. It reaches all of them: the server admits a key to
     /// the workspaces its certificate reaches and no other, which is where a
     /// key for one workspace is held to it.
     fn key(&self, browser_pages: bool) -> TestDevice {
@@ -763,7 +767,7 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     );
     assert_eq!(
         material.device.device_public_key, window.device,
-        "the window is the device the relay certified"
+        "the window is the device the server certified"
     );
     // A second open attaches to the window already up.
     let again = fixture.browsers.place(WS_NAME, WS, "record-1").unwrap();
@@ -777,10 +781,10 @@ impl Fixture {
     async fn list_environment_and(&self, key: &TestDevice) {
         let window = self.browsers.window(WS).unwrap().device;
         admit_members(
-            &self.relay.relay,
+            &self.server.server,
             WS,
             &[key.device_pubkey(), window],
-            &self.relay.state_root,
+            &self.server.state_root,
         )
         .await;
     }
@@ -791,8 +795,14 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
 
     let id = InvocationId::new();
     caller
@@ -825,7 +835,7 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
             .map(|handed| handed.from)
             .collect::<Vec<_>>(),
         [fixture.agent.device_pubkey()],
-        "the window ran it as the caller, not as the relay: History records the agent's run"
+        "the window ran it as the caller, not as the server: History records the agent's run"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 1, "counted");
 }
@@ -839,8 +849,14 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let listing = |correlation, provider: Option<&str>| {
         frame(RemoteActionMessage::CatalogueRequest {
             correlation,
@@ -929,7 +945,13 @@ async fn a_listing_is_answered_while_another_window_is_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
     let (wake, waking) = std::sync::mpsc::channel();
     *fixture.environments.waking.lock().unwrap() = Some(waking);
     let browsers = Arc::clone(&fixture.browsers);
@@ -940,7 +962,7 @@ async fn a_listing_is_answered_while_another_window_is_placed() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     for (correlation, provider) in [(1, None), (2, Some(WINDOW))] {
         caller
             .send(to_host(
@@ -980,8 +1002,14 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
     let fixture = fixture(Arc::clone(&meter)).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
 
     let id = InvocationId::new();
     caller
@@ -1019,11 +1047,17 @@ async fn an_environment_serves_the_workspace_it_was_placed_for_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
     let environment = DeviceIdentity::of(&material);
-    let client = RelayClient::connect(
+    let client = ServerClient::connect(
         client_endpoint().await,
-        fixture.relay.relay.node_addr(),
+        fixture.server.server.node_addr(),
         fixture.user.user_pk,
         environment.cert.clone(),
         environment.sk.clone(),
@@ -1046,14 +1080,20 @@ async fn an_environment_serves_the_workspace_it_was_placed_for_and_no_other() {
 
 /// The agent reads and fills the page a visitor may read and fill without
 /// anyone being asked; the submit the same agent sends is put to the person
-/// by the relay itself — no caller-side confirmation, no entry of its own.
+/// by the server itself — no caller-side confirmation, no entry of its own.
 #[tokio::test]
 async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_person() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Submit).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Submit,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["read-page", "find-page-element", "fill-page", "select-page"] {
@@ -1112,13 +1152,13 @@ async fn a_submission_a_page_action_reached_is_asked_about_by_what_leaves() {
     fixture.list_environment().await;
     let material = fixture.environments.material();
     window_session(
-        &fixture.relay.relay,
+        &fixture.server.server,
         &fixture.user,
         &material,
         Asks::Departing,
     )
     .await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
@@ -1147,13 +1187,13 @@ async fn a_click_on_a_submit_button_is_asked_about_by_what_leaves() {
     fixture.list_environment().await;
     let material = fixture.environments.material();
     window_session(
-        &fixture.relay.relay,
+        &fixture.server.server,
         &fixture.user,
         &material,
         Asks::Departing,
     )
     .await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
@@ -1213,8 +1253,14 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
     let key = fixture.key(true);
     fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Acting).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &key).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Acting,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &key).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["navigate", "fill-page", "select-page", "click-page"] {
@@ -1293,8 +1339,14 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
     let key = fixture.key(false);
     fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Acting).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &key).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Acting,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &key).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     for action in ["fill-page", "select-page", "click-page"] {
@@ -1358,8 +1410,14 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Submit).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Submit,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
@@ -1407,7 +1465,7 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
     assert_eq!(
         seen[1].from,
         fixture.agent.device_pubkey(),
-        "the run with the person's answer is the agent's, not the relay's"
+        "the run with the person's answer is the agent's, not the server's"
     );
     assert!(seen[1].approved, "the second carried their answer");
 }
@@ -1419,8 +1477,14 @@ async fn the_persons_denial_ends_a_page_action_refused_and_counts_nothing() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Submit).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Submit,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     let id = InvocationId::new();
@@ -1465,8 +1529,14 @@ async fn a_question_nobody_answers_ends_a_page_action_refused() {
     .await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Submit).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Submit,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
 
     let id = InvocationId::new();
     caller
@@ -1499,8 +1569,14 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Submit).await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Submit,
+    )
+    .await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
 
     let id = InvocationId::new();
     let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
@@ -1571,7 +1647,7 @@ fn change(channel: [u8; 32], marker: &[u8]) -> Vec<u8> {
 }
 
 /// Every envelope a session hears in `within`, the ones it already holds first.
-async fn heard(client: &RelayClient, within: std::time::Duration) -> Vec<Envelope> {
+async fn heard(client: &ServerClient, within: std::time::Duration) -> Vec<Envelope> {
     let mut out = Vec::new();
     while let Ok(Some(envelope)) = tokio::time::timeout(within, client.recv()).await {
         out.push(envelope);
@@ -1589,28 +1665,30 @@ fn changed(envelopes: &[Envelope]) -> Vec<[u8; 32]> {
             };
             match tilo_server::coedit::CoeditPayload::decode(delta)? {
                 tilo_server::coedit::CoeditPayload::Checkpoint { channel, .. }
-                | tilo_server::coedit::CoeditPayload::RetainedDelta { channel, .. } => Some(channel),
+                | tilo_server::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
+                    Some(channel)
+                }
             }
         })
         .collect()
 }
 
 impl Fixture {
-    /// The environment's own session: the device the relay certified, joining
+    /// The environment's own session: the device the server certified, joining
     /// the one workspace it was placed in.
-    async fn environment_session(&self) -> RelayClient {
+    async fn environment_session(&self) -> ServerClient {
         let material = self.environments.material();
         let environment = DeviceIdentity::of(&material);
-        subscribe(&self.relay.relay, &self.user, &environment).await
+        subscribe(&self.server.server, &self.user, &environment).await
     }
 }
 
 #[tokio::test]
-async fn the_relay_confines_an_environments_device_to_the_record_it_placed() {
+async fn the_server_confines_an_environments_device_to_the_record_it_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let device = fixture.environments.material().device.device_public_key;
     assert_eq!(
-        tilo_server::environment::environment_of(&fixture.relay.relay.environments(), &device),
+        tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
         Some(tilo_server::environment::Environment::Placed(
             tilo_server::environment::EnvironmentScope::for_resource(
                 WS,
@@ -1623,14 +1701,14 @@ async fn the_relay_confines_an_environments_device_to_the_record_it_placed() {
 }
 
 #[tokio::test]
-async fn a_relay_that_restarts_still_confines_the_environment_it_placed() {
+async fn a_server_that_restarts_still_confines_the_environment_it_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let device = fixture.environments.material().device.device_public_key;
-    // What a relay that starts again reads: its own register, not the
+    // What a server that starts again reads: its own register, not the
     // workspace's listing, which still has the device in it.
     let restarted = tilo_server::environment::EnvironmentRegistry::at(
-        fixture.relay.state_root.join("environments.json"),
+        fixture.server.state_root.join("environments.json"),
     );
     assert_eq!(
         tilo_server::environment::environment_of(&restarted, &device),
@@ -1651,7 +1729,7 @@ async fn an_environment_hears_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let environment = fixture.environment_session().await;
-    let writer = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let writer = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     for (channel, marker) in [
         (notes_channel(), b"a customer's document".as_slice()),
         (window_channel(), b"the window's own state".as_slice()),
@@ -1720,7 +1798,7 @@ async fn an_environment_writes_its_record_and_no_other() {
         "its own record is its to write: {tolerance:?}"
     );
     let retained: Vec<Envelope> =
-        tilo_server::store::WorkspaceStore::open(&fixture.relay.state_root, WS, true)
+        tilo_server::store::WorkspaceStore::open(&fixture.server.state_root, WS, true)
             .unwrap()
             .load_retained()
             .unwrap()
@@ -1773,7 +1851,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
 async fn an_environments_replay_is_its_own_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
-    let writer = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let writer = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     for (channel, marker) in [
         (notes_channel(), b"a customer's document".as_slice()),
         (window_channel(), b"the window's own state".as_slice()),
@@ -1792,9 +1870,9 @@ async fn an_environments_replay_is_its_own_record_and_no_other() {
     // before its subscription, then replayed behind it — is its own record.
     let material = fixture.environments.material();
     let environment = DeviceIdentity::of(&material);
-    let client = RelayClient::connect(
+    let client = ServerClient::connect(
         client_endpoint().await,
-        fixture.relay.relay.node_addr(),
+        fixture.server.server.node_addr(),
         fixture.user.user_pk,
         environment.cert.clone(),
         environment.sk.clone(),
@@ -1826,7 +1904,13 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
     let material = fixture.environments.material();
-    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    let seen = window_session(
+        &fixture.server.server,
+        &fixture.user,
+        &material,
+        Asks::Never,
+    )
+    .await;
     let environment = fixture.environment_session().await;
     // The window's device calls the workspace's entry itself: not its to do.
     environment
@@ -1871,7 +1955,7 @@ async fn a_stopped_environment_reaches_nothing() {
     let environment = fixture.environment_session().await;
     fixture.browsers.stopped(WS);
     assert_eq!(
-        tilo_server::environment::environment_of(&fixture.relay.relay.environments(), &device),
+        tilo_server::environment::environment_of(&fixture.server.server.environments(), &device),
         Some(tilo_server::environment::Environment::Stopped {
             until_ns: material.device.expires_at_ns.unwrap()
         }),
@@ -1895,16 +1979,16 @@ async fn a_stopped_environment_reaches_nothing() {
     // `Workspaces`, which it has none of, so the delisting fails and the
     // refusal is all that is left. It is refused, not open.
     admit_members(
-        &fixture.relay.relay,
+        &fixture.server.server,
         WS,
         &[fixture.agent.device_pubkey(), device],
-        &fixture.relay.state_root,
+        &fixture.server.state_root,
     )
     .await;
     let environment = DeviceIdentity::of(&material);
-    let refused = RelayClient::connect(
+    let refused = ServerClient::connect(
         client_endpoint().await,
-        fixture.relay.relay.node_addr(),
+        fixture.server.server.node_addr(),
         fixture.user.user_pk,
         environment.cert.clone(),
         environment.sk.clone(),
@@ -1936,13 +2020,13 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     let device = material.device.device_public_key;
     let environment = fixture.environment_session().await;
     drop(environment);
-    // The relay hears that the device's session ended and stops its
+    // The server hears that the device's session ended and stops its
     // environment: one signal, and no protocol admits it after.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if fixture
-            .relay
-            .relay
+            .server
+            .server
             .environments()
             .of(&device, tilo_clock::unix_now_ns())
             == Some(tilo_server::environment::Environment::Stopped {
@@ -1965,10 +2049,10 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
 }
 
 /// The device holding the workspace's window, connected: what the session in
-/// the VM is, reporting the departures its page holds to the relay.
-async fn window_device(fixture: &Fixture, material: &Material) -> RelayClient {
+/// the VM is, reporting the departures its page holds to the server.
+async fn window_device(fixture: &Fixture, material: &Material) -> ServerClient {
     let device = DeviceIdentity::of(material);
-    subscribe(&fixture.relay.relay, &fixture.user, &device).await
+    subscribe(&fixture.server.server, &fixture.user, &device).await
 }
 
 /// A departure the window holds, reported as the session in the VM reports
@@ -2011,9 +2095,9 @@ fn held(correlation: u64, id: u32) -> RemoteActionMessage {
     }
 }
 
-/// What the relay answered the report `correlation` names, once it did.
+/// What the server answered the report `correlation` names, once it did.
 async fn hold_answer(
-    window: &RelayClient,
+    window: &ServerClient,
     correlation: u64,
 ) -> Result<Box<ConfirmedInvocation>, ActionHostError> {
     let deadline = tilo_test_env::hang_deadline();
@@ -2033,7 +2117,7 @@ async fn hold_answer(
 }
 
 /// A departure the page started on its own waits on nobody's invocation, so
-/// the session holding the window reports it: the relay puts it to the person
+/// the session holding the window reports it: the server puts it to the person
 /// once, and their allow is the approval that releases that one request.
 #[tokio::test]
 async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_names_it() {
@@ -2091,7 +2175,7 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
     let Some(Confirmation::Approved(token)) = Some(confirmed.confirmation) else {
         panic!("the person's answer travels as the host's approval");
     };
-    let approval = HostApproval::decode(&token).expect("the approval is the relay's");
+    let approval = HostApproval::decode(&token).expect("the approval is the server's");
     assert_eq!(
         approval.host_device_public_key, fixture.home,
         "signed by the host that certified the window"
@@ -2145,7 +2229,7 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
 async fn only_the_windows_own_device_reports_what_it_holds() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     fixture.list_environment().await;
-    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let caller = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let (_endpoint, mut approver) = fixture.approving_device().await;
 
     caller
@@ -2230,7 +2314,7 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         "the environment's own ask is the host's to answer: {receipt:?}"
     );
 
-    let agent = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let agent = subscribe(&fixture.server.server, &fixture.user, &fixture.agent).await;
     let id = InvocationId::new();
     agent
         .send(to_host(
@@ -2327,7 +2411,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
         "a session that writes its shell as any session does is not cut for it: {after:?}"
     );
     let retained: Vec<Vec<u8>> =
-        tilo_server::store::WorkspaceStore::open(&fixture.relay.state_root, WS, true)
+        tilo_server::store::WorkspaceStore::open(&fixture.server.state_root, WS, true)
             .unwrap()
             .load_retained()
             .unwrap()
@@ -2355,7 +2439,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
 /// The session in a workspace's VM joins the workspace, and the connection it
 /// joins over ends right after: after that the session takes part over its own
 /// lasting link and the live session it publishes its window on. The live session
-/// is therefore the relay's only sight of the device being here, and it must
+/// is therefore the server's only sight of the device being here, and it must
 /// count as such — otherwise the window stops a reconnect-wait after the join
 /// ends, as it did before any protocol counted the device.
 #[tokio::test]
@@ -2369,23 +2453,23 @@ async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
         tilo_server::hosted_browser::ANSWER_WAIT,
     )
     .await;
-    // The workspace lists the window's device, as the relay lists it.
+    // The workspace lists the window's device, as the server lists it.
     fixture.list_environment().await;
     let material = fixture.environments.material();
 
     // The join: the session's device enters the workspace, and that
     // connection ends at once, as the invitation connection in the VM does.
     let joined = subscribe(
-        &fixture.relay.relay,
+        &fixture.server.server,
         &fixture.user,
         &DeviceIdentity::of(&material),
     )
     .await;
     // The lasting connection the session keeps: the live session it publishes
     // its window on.
-    let (endpoint, live) = live_session(&fixture.relay.relay, &material).await;
+    let (endpoint, live) = live_session(&fixture.server.server, &material).await;
     // The join connection ends the way the session's own does: its endpoint
-    // closes, having told the relay it is going.
+    // closes, having told the server it is going.
     joined.close().await;
 
     tokio::time::sleep(reconnect * 4).await;
@@ -2413,10 +2497,10 @@ async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
 
 /// The environment's device joins the workspace's live session as the session
 /// in the VM does: over its own endpoint key, admitted by the certificate the
-/// relay issued it. The session stays open while the returned endpoint and
+/// server issued it. The session stays open while the returned endpoint and
 /// [`Connected`](tilo_live::admit::Connected) are held.
 async fn live_session(
-    relay: &tilo_server::Relay,
+    server: &tilo_server::Server,
     material: &Material,
 ) -> (iroh::endpoint::Endpoint, tilo_live::admit::Connected) {
     let endpoint = device_endpoint(&DeviceIdentity::of(material)).await;
@@ -2430,14 +2514,14 @@ async fn live_session(
     )
     .unwrap()
     .encode();
-    let dial = tilo_live::native::Iroh::new(endpoint.clone(), relay.node_addr());
+    let dial = tilo_live::native::Iroh::new(endpoint.clone(), server.node_addr());
     let joined = tilo_live::admit::Dial::dial(&dial, &grant, None, None, Duration::from_secs(20))
         .await
         .expect("the live session admits the environment's device");
     (endpoint, joined)
 }
 
-/// An app's open answers with the run it started, not with the record it made: the relay follows
+/// An app's open answers with the run it started, not with the record it made: the server follows
 /// that run and places the window when the record exists, so an agent's open still runs where its
 /// record is. The caller's own answer is unchanged — it follows its run as it does any other.
 #[tokio::test]
@@ -2445,8 +2529,8 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
     let fixture = fixture(Arc::new(Counting::default())).await;
     // A workspace this host governs: an open placed from its run names the workspace by its id.
     let second = fixture
-        .relay
-        .relay
+        .server
+        .server
         .workspaces()
         .unwrap()
         .create("Second")

@@ -17,9 +17,9 @@ use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_server::RelayClient;
-use tilo_server::coedit::{Inbound, RelayCoeditSession};
-use tilo_server::daemon::Relay;
+use tilo_server::ServerClient;
+use tilo_server::coedit::{Inbound, ServerCoeditSession};
+use tilo_server::daemon::Server;
 use tilo_server::web::WebHandle;
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{IssueInvitationRequest, IssuedInvitation};
@@ -57,7 +57,7 @@ pub async fn invited(key: &SigningKey, named: &iroh::EndpointAddr) -> iroh::Endp
     let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     match named.relay_urls().next() {
-        Some(relay) => builder.relay_mode(iroh::RelayMode::Custom(relay.clone().into())),
+        Some(server) => builder.relay_mode(iroh::RelayMode::Custom(server.clone().into())),
         None => builder,
     }
     .bind()
@@ -66,7 +66,7 @@ pub async fn invited(key: &SigningKey, named: &iroh::EndpointAddr) -> iroh::Endp
 }
 
 /// The next envelope from the browser session that `pick` accepts.
-pub async fn browser<T>(link: &RelayClient, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
+pub async fn browser<T>(link: &ServerClient, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
     tilo_test_env::within("the host answers the browser", async {
         loop {
             if let Some(value) = pick(link.recv().await.expect("session open")) {
@@ -87,8 +87,8 @@ pub fn granted(envelope: Envelope) -> Option<VoiceGrant> {
 
 /// Admit `device`, one of the relay's own person's, to `workspace` as its
 /// owner's.
-pub async fn enter(relay: &Relay, device: &DeviceCert, workspace: &str) {
-    relay
+pub async fn enter(server: &Server, device: &DeviceCert, workspace: &str) {
+    server
         .workspaces()
         .unwrap()
         .enter(workspace, device)
@@ -99,13 +99,13 @@ pub async fn enter(relay: &Relay, device: &DeviceCert, workspace: &str) {
 /// An Editor's invitation to `workspace` for `person` only, which the relay
 /// issues for the workspace's owner `issuer`.
 pub async fn issue(
-    relay: &Relay,
+    server: &Server,
     issuer: &DeviceCert,
     workspace: &str,
     person: &SigningKey,
 ) -> IssuedInvitation {
     let person = person.verifying_key().to_bytes();
-    relay
+    server
         .workspaces()
         .unwrap()
         .issue(
@@ -129,13 +129,13 @@ pub async fn issue(
 /// Invite `person` to `workspace` as an editor, for the workspace's owner `issuer`,
 /// and redeem the invitation with their device `page`.
 pub async fn invite(
-    relay: &Relay,
+    server: &Server,
     issuer: &DeviceCert,
     workspace: &str,
     person: &SigningKey,
     page: &Device,
 ) {
-    let invitation = issue(relay, issuer, workspace, person).await;
+    let invitation = issue(server, issuer, workspace, person).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -166,12 +166,12 @@ pub struct GovernedCall {
     pub alice: SigningKey,
     pub host: Device,
     pub laptop: Device,
-    pub relay: Relay,
+    pub server: Server,
     pub web: WebHandle,
     pub cluster_id: String,
     pub workspace_id: WorkspaceId,
     /// Alice's laptop's session with the workspace.
-    pub owner: RelayClient,
+    pub owner: ServerClient,
     /// The chat's voice channel the call is on.
     pub channel: String,
     pub call: CallState,
@@ -179,7 +179,7 @@ pub struct GovernedCall {
 }
 
 /// The next envelope from the native device that `pick` accepts.
-pub async fn native<T>(client: &RelayClient, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
+pub async fn native<T>(client: &ServerClient, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
     tilo_test_env::within("the host answers the native device", async {
         loop {
             if let Some(value) = pick(client.recv().await.expect("connection open")) {
@@ -192,7 +192,7 @@ pub async fn native<T>(client: &RelayClient, mut pick: impl FnMut(Envelope) -> O
 
 /// Ask the host to change a call as the native device `client`.
 pub async fn operate(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     request: u8,
     operation: CallOperation,
@@ -224,9 +224,9 @@ pub async fn create_voice_channel(
     workspace: &str,
     host: &DeviceCert,
     device: &Device,
-) -> (RelayCoeditSession, String) {
-    let session = RelayCoeditSession::join(
-        RelayClient::connect_to_pinned_host(
+) -> (ServerCoeditSession, String) {
+    let session = ServerCoeditSession::join(
+        ServerClient::connect_to_pinned_host(
             endpoint(&device.key).await,
             address,
             device.cert.clone(),
@@ -255,7 +255,7 @@ pub async fn create_voice_channel(
             if let Some(Inbound::Delta { author, data }) = session.recv().await {
                 let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                 peer.receive_from(
-                    TransportOrigin::RetainedRelayDelta(author),
+                    TransportOrigin::RetainedServerDelta(author),
                     message,
                     SystemTime::now(),
                 )
@@ -307,11 +307,16 @@ impl GovernedCall {
         let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
-        let TestHost { relay, web } =
+        let TestHost { server, web } =
             start_workspace_host_relaying(&alice, &host, state.path(), false, packet_relay).await;
-        let address = relay.node_addr();
-        let workspace = relay.workspaces().unwrap().create("Standup").await.unwrap();
-        enter(&relay, &laptop.cert, &workspace.workspace).await;
+        let address = server.node_addr();
+        let workspace = server
+            .workspaces()
+            .unwrap()
+            .create("Standup")
+            .await
+            .unwrap();
+        enter(&server, &laptop.cert, &workspace.workspace).await;
 
         // Alice's chat gets a voice channel; the workspace's governor learns it.
         let (owner, channel) = create_voice_channel(
@@ -348,7 +353,7 @@ impl GovernedCall {
             alice,
             host,
             laptop,
-            relay,
+            server,
             web,
             cluster_id: workspace.workspace,
             workspace_id: workspace.workspace_id,
@@ -365,7 +370,7 @@ impl GovernedCall {
         let person = SigningKey::generate(&mut UnwrapErr(SysRng));
         let page = enrol(&person, label, DeviceCapabilities::member());
         invite(
-            &self.relay,
+            &self.server,
             &self.laptop.cert,
             &self.cluster_id,
             &person,
@@ -377,15 +382,15 @@ impl GovernedCall {
 
     /// The host as a browser session reaches it.
     pub fn iroh(&self) -> tilo_server_client::Host {
-        tilo_server_client::Host::at(self.relay.node_addr()).with_web(Some(self.web.link.clone()))
+        tilo_server_client::Host::at(self.server.node_addr()).with_web(Some(self.web.link.clone()))
     }
 
     /// A raw session the device behind `cert` and `key` dials from its own
     /// iroh key, as a native device does: what a test drives envelopes with.
-    pub async fn session(&self, cert: &DeviceCert, key: &SigningKey) -> RelayClient {
-        RelayClient::connect_to_pinned_host(
+    pub async fn session(&self, cert: &DeviceCert, key: &SigningKey) -> ServerClient {
+        ServerClient::connect_to_pinned_host(
             endpoint(key).await,
-            self.relay.node_addr(),
+            self.server.node_addr(),
             cert.clone(),
             key.clone(),
             RevocationList::new(),
@@ -396,6 +401,6 @@ impl GovernedCall {
 
     pub async fn shutdown(self) {
         drop(self.web);
-        self.relay.shutdown().await;
+        self.server.shutdown().await;
     }
 }

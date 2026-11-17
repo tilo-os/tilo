@@ -820,7 +820,7 @@ mod unix {
         let approval = Approval {
             role: DeviceKind::Personal,
             device: candidate.device_node_id.clone(),
-            service: candidate.relay_service_node_id.clone(),
+            service: candidate.server_node_id.clone(),
             workspace_ids: None,
         };
         let pkexec = match elevate {

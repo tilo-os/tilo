@@ -1,4 +1,4 @@
-//! `tilo-server` — the Tilo host + relay daemon.
+//! `tilo-server` — the Tilo host + server daemon.
 //!
 //! # Model
 //!
@@ -14,11 +14,11 @@
 //! # Wire model
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
-//! connection speaks a Tilo relay ALPN and performs a small
+//! connection speaks a Tilo server ALPN and performs a small
 //! authenticated handshake ([`Hello`](tilo_server_protocol::auth::Hello)):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
-//! 2. Server verifies the cert chains to *this relay's* user
+//! 2. Server verifies the cert chains to *this server's* user
 //!    identity, replies with its own cert + a nonce + an Ed25519
 //!    signature over the client's nonce (challenge/response).
 //! 3. Client verifies the server's cert + signature, then sends the
@@ -128,9 +128,9 @@ tilo_automerge_isolate::test_worker!();
 #[cfg(all(test, feature = "agents"))]
 tilo_agent_session::app_worker!();
 
-// The records and wire messages shared with relay clients live in
+// The records and wire messages shared with server clients live in
 // `tilo-server-protocol`, the frame codec in `tilo-server-client`, and the
-// session clients (relay, co-edit, anti-entropy, workspace administration and
+// session clients (server, co-edit, anti-entropy, workspace administration and
 // workspace join) in `tilo-server-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,7 +147,7 @@ pub use tilo_server_protocol::{
 };
 pub use tilo_server_session::{antientropy, client, coedit, position};
 
-/// The relay wire messages ([`tilo_server_protocol::transport`]) together with
+/// The server wire messages ([`tilo_server_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its
 /// callers have always used for both.
 pub mod transport {
@@ -158,8 +158,8 @@ pub mod transport {
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 #[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionHostServer, AppActionServer};
-pub use client::{ClientError, RelayClient};
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+pub use client::{ClientError, ServerClient};
+pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, ServerCoeditSession};
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
@@ -167,9 +167,9 @@ pub use compute::{
     ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox,
 };
-pub use config::RelayConfig;
+pub use config::ServerConfig;
 #[cfg(not(target_arch = "wasm32"))]
-pub use daemon::{Relay, RelayError, RelayHandle};
+pub use daemon::{Server, ServerError, ServerHandle};
 pub use home_peer::{
     HomePeerRegistration, checked_home_peers, home_peer_registry_path, read_home_peers,
     valid_home_peer_label, write_home_peers,

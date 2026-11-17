@@ -1,8 +1,8 @@
 //! On-disk config schema for `tilo-server`.
 //!
 //! The daemon reads a TOML file — path is passed via `--config` and
-//! defaults to `/etc/tilo/relay.toml`. The file contains
-//! filesystem paths + a listen address + policy. Which workspaces a relay
+//! defaults to `/etc/tilo/server.toml`. The file contains
+//! filesystem paths + a listen address + policy. Which workspaces a server
 //! holds is decided by the workspaces themselves (their governance), never by
 //! this file. Any secrets stay on disk under those paths and are never
 //! inlined here.
@@ -10,13 +10,13 @@
 //! Example:
 //!
 //! ```toml
-//! # /etc/tilo/relay.toml
+//! # /etc/tilo/server.toml
 //!
 //! # Where the user root public key + this device's keypair + cert live.
 //! # Matches `tilo_user_identity::IdentityPaths::default_system()`.
 //! identity_root = "/var/lib/tilo"
 //!
-//! # Where relay state (workspace pins, pending deltas) lives.
+//! # Where server state (workspace pins, pending deltas) lives.
 //! state_root = "/var/lib/tilo-server"
 //!
 //! # Iroh endpoint bind hint. `"0.0.0.0:0"` lets iroh pick a port
@@ -37,10 +37,10 @@ use crate::mesh::ServiceCapabilities;
 use crate::policy::TrustPolicy;
 use crate::work::WorkSetting;
 
-/// Top-level relay configuration.
+/// Top-level server configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RelayConfig {
+pub struct ServerConfig {
     /// Root under which the user + device identity files live.
     /// Passed straight into
     /// [`tilo_user_identity::IdentityPaths::under`].
@@ -59,7 +59,7 @@ pub struct RelayConfig {
     #[serde(default = "default_full_replica_status")]
     pub full_replica_status: PathBuf,
 
-    /// The filesystem home-peer bundle. When present, this relay serves
+    /// The filesystem home-peer bundle. When present, this server serves
     /// full-content replication and discovery for the workspaces it names.
     #[serde(default = "default_home_peer_bundle")]
     pub home_peer_bundle: PathBuf,
@@ -83,7 +83,7 @@ pub struct RelayConfig {
 
     /// Which peers this relay accepts. Defaults to the matching-
     /// user policy — only peers whose cert chains to the same user
-    /// identity as this relay's cert.
+    /// identity as this server's cert.
     #[serde(default)]
     pub trust_policy: TrustPolicy,
 
@@ -109,7 +109,7 @@ pub struct RelayConfig {
     pub member_limits: Option<MemberLimitsConfig>,
     /// Pre-admissions a governed workspace keeps, spent ones included. A
     /// public workspace that pre-admits every visitor raises it. `None` keeps
-    /// 1024. It keeps the key `max_workspace_grants` in `relay.toml`.
+    /// 1024. It keeps the key `max_workspace_grants` in `server.toml`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -148,7 +148,7 @@ fn default_iroh_listen() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], 0))
 }
 
-impl Default for RelayConfig {
+impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             identity_root: default_identity_root(),
@@ -230,7 +230,7 @@ pub enum ConfigError {
     Encode(#[from] toml::ser::Error),
 }
 
-impl RelayConfig {
+impl ServerConfig {
     /// Read a config file from disk.
     ///
     /// # Errors
@@ -269,36 +269,36 @@ mod tests {
         "identity_root = \"/var/lib/tilo\"\nstate_root = \"/var/lib/tilo-server\"\n";
 
     tilo_test_env::scenario! {
-        fn relay_config_defaults_decodes_and_persists;
+        fn server_config_defaults_decodes_and_persists;
 
-        phase relay_config_defaults_and_toml_decoding;
+        phase server_config_defaults_and_toml_decoding;
         {
-            let cfg = RelayConfig::default();
+            let cfg = ServerConfig::default();
             assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
             assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-server"));
             assert_eq!(cfg.iroh_listen.port(), 0);
             assert_eq!(cfg.work, WorkSetting::own_person());
             assert!(cfg.services.workspace_replication);
-            assert!(cfg.services.inbound_relay);
+            assert!(cfg.services.inbound_server);
             assert!(!cfg.services.full_content_replication);
-            assert!(cfg.services.remote_control_relay);
+            assert!(cfg.services.remote_control_server);
             assert!(!cfg.services.app_serving);
             assert!(!cfg.services.compute);
 
             // A minimal file names only the two roots.
-            let _: RelayConfig = toml::from_str(PRELUDE).unwrap();
+            let _: ServerConfig = toml::from_str(PRELUDE).unwrap();
 
             // An unknown field is rejected rather than ignored.
-            assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
+            assert!(toml::from_str::<ServerConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
         }
 
-        phase relay_config_edits_are_idempotent_and_persist;
+        phase server_config_edits_are_idempotent_and_persist;
         {
             let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join("relay.toml");
-            let cfg = RelayConfig::default();
+            let path = tmp.path().join("server.toml");
+            let cfg = ServerConfig::default();
             cfg.save(&path).unwrap();
-            assert_eq!(cfg, RelayConfig::load(&path).unwrap());
+            assert_eq!(cfg, ServerConfig::load(&path).unwrap());
         }
     }
 }

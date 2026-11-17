@@ -64,7 +64,7 @@ impl SourceIdentity {
 
 /// One signed proof of possession for the bootstrap rendezvous: it binds the
 /// destination's new device key and ephemeral key to the exact operation and
-/// package, so a relay cannot substitute another device or transfer.
+/// package, so a server cannot substitute another device or transfer.
 #[derive(Serialize)]
 struct BootstrapProof<'a> {
     tag: &'static str,
@@ -214,7 +214,7 @@ pub(crate) fn seal_projection(
 ) -> io::Result<String> {
     let sealed = tilo_seal::hpke::seal_to_bytes(
         &tilo_seal::PublicKey::from_bytes(*ephemeral_public_key),
-        Label::RelayEnrollResponse,
+        Label::ServerEnrollResponse,
         aad,
         &projection.encode()?,
     )
@@ -232,7 +232,7 @@ pub(crate) fn open_projection(
 ) -> io::Result<BootstrapProjection> {
     let sealed = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, sealed)
         .map_err(|_| invalid("The identity export is invalid"))?;
-    let opened = tilo_seal::hpke::open_bytes(ephemeral, Label::RelayEnrollResponse, aad, &sealed)
+    let opened = tilo_seal::hpke::open_bytes(ephemeral, Label::ServerEnrollResponse, aad, &sealed)
         .map_err(|_| invalid("The identity export did not open"))?;
     BootstrapProjection::decode(&opened)
 }

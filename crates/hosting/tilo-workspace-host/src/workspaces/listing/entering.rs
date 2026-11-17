@@ -418,7 +418,7 @@ fn entered(reply: JoinReply) -> Entered {
 mod tests {
     #![expect(
         clippy::significant_drop_tightening,
-        reason = "the relay handle a test binds is a shared handle it keeps until the test ends"
+        reason = "the server handle a test binds is a shared handle it keeps until the test ends"
     )]
     use ed25519_dalek::SigningKey;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
@@ -533,8 +533,8 @@ mod tests {
     async fn a_members_further_device_enters_through_the_entry_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let closed = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -589,7 +589,7 @@ mod tests {
                 "{workspace}: {entered:?}"
             );
         }
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// The entry itself, asked for a person an invitation-only workspace has
@@ -600,8 +600,8 @@ mod tests {
     async fn an_invitation_only_entry_lets_a_member_in_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -651,7 +651,7 @@ mod tests {
             role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await,
             before
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// A person the workspace banned, or removed, brings no new device in
@@ -661,8 +661,8 @@ mod tests {
     async fn a_banned_or_removed_persons_device_and_a_members_agent_stay_out() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let banned = SigningKey::from_bytes(&rand::random());
         let removed = SigningKey::from_bytes(&rand::random());
@@ -713,6 +713,6 @@ mod tests {
                 .is_err(),
             "the agent holds nothing here"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

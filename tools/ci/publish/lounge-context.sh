@@ -18,13 +18,13 @@ cp "$binaries/tilo-server" "$binaries/discord-worker" "$out/bin/"
 cp -a "$fonts/." "$out/fonts/"
 cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one
-# file per version: the relay publishes them into its content store at start, so
+# file per version: the server publishes them into its content store at start, so
 # a change written by an older version than this build runs is decided without
 # asking anybody.
 #
 # A checkout without git (a build server's mirror) has no history: it gives the
 # current version of each surface and TILO_LOUNGE_SURFACE_COMMIT names the
-# commit it is from. The relay publishes those, and decides a change written by
+# commit it is from. The server publishes those, and decides a change written by
 # an older version with a member's help instead of alone.
 mkdir -p "$out/surfaces"
 surfaces_from_history() {

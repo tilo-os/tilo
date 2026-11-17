@@ -9,7 +9,7 @@
 //!
 //! What a site keeps waits on its state disk, one file per handle beside its
 //! other state, because a link is pasted into a message and read days later:
-//! an invitation survives the relay being restarted, replaced or deployed
+//! an invitation survives the server being restarted, replaced or deployed
 //! over, and is taken off the disk when it lapses. Each file is written
 //! whole, by a rename into place, so a crash mid-write leaves the invitation
 //! it replaced or the one it wrote, never half of either.
@@ -553,7 +553,7 @@ mod tests {
                 .put(
                     HANDLE,
                     Stored {
-                        host: Some("https://relay.example".to_owned()),
+                        host: Some("https://server.example".to_owned()),
                         ..stored(&sealed, 3600)
                     },
                     NOW,
@@ -561,14 +561,14 @@ mod tests {
                 .unwrap();
             drop(before);
 
-            // The relay that comes up next on the same state disk finds it, as
+            // The server that comes up next on the same state disk finds it, as
             // whoever the link reached needs it to.
             let after = Shelf::opening(disk.clone(), NOW + 60 * NS);
             assert_eq!(
                 after.get(HANDLE, NOW + 60 * NS),
                 Some(Fetched {
                     sealed,
-                    host: Some("https://relay.example".to_owned()),
+                    host: Some("https://server.example".to_owned()),
                 })
             );
             // The secret it was left with still takes it back, off the disk too.
@@ -594,7 +594,7 @@ mod tests {
             before.put(OTHER, stored("b3RoZXI", 3600), NOW).unwrap();
             drop(before);
 
-            // Two minutes later the relay is back: one invitation lapsed while it
+            // Two minutes later the server is back: one invitation lapsed while it
             // was down, the other did not.
             let after = Shelf::opening(state.path().to_path_buf(), NOW + 120 * NS);
             assert_eq!(after.get(HANDLE, NOW + 120 * NS), None);

@@ -1,8 +1,8 @@
 /**
  * The page as a certified device of one tilo-server workspace, in one call:
- * `connectRelayPeer` opens this profile's device key (`device-key.mjs`),
+ * `connectServerPeer` opens this profile's device key (`device-key.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `workspace`.
- * Pages written for the relay peer of the runtime this one replaced keep
+ * Pages written for the server peer of the runtime this one replaced keep
  * working unchanged:
  *
  * - `whenReady()`, `records()`, `hasRecord()`, `whenRecord()`: the workspace's
@@ -26,8 +26,8 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
  * earlier visit skips that. Resolves once the session started (observe
  * `getSnapshot().phase`, or `whenReady()`).
  */
-export async function connectRelayPeer({
-  origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-server:${workspace}`, device = 'relay',
+export async function connectServerPeer({
+  origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-server:${workspace}`, device = 'server',
   displayName = label, onPairingCode, onStatus, signal, fetch: fetcher, live = true,
 }) {
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');

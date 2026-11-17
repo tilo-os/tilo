@@ -214,7 +214,7 @@ mod imp_native {
                 )
                 .spawn();
             // Local (direct) addresses are known once bound; LAN and loopback
-            // peers need no relay.
+            // peers need no server.
             let ticket = serde_json::to_string(&endpoint.addr())
                 .map_err(|error| NetError::Protocol(error.to_string()))?;
             Ok(Self {

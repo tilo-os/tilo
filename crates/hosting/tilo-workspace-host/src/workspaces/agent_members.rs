@@ -1,19 +1,19 @@
-//! Delegated agents as governed members of the workspaces this relay governs.
+//! Delegated agents as governed members of the workspaces this server governs.
 //!
-//! An agent of this relay's user is a device of that person, with its own
+//! An agent of this server's user is a device of that person, with its own
 //! key, its own certificate and a root-signed delegation naming the workspaces
 //! and apps it may act in, until when. To act in a governed workspace it needs
 //! what every member needs: a place on the workspace's governed roster,
-//! which every member reads, which the relay admits to the workspace, and from
+//! which every member reads, which the server admits to the workspace, and from
 //! which the workspace's key holders admit devices to each record's channel.
 //!
 //! So when the agent's grant is approved (or restored after a restart), each
-//! workspace this relay governs asks the one admission decision,
+//! workspace this server governs asks the one admission decision,
 //! [`WorkspaceOperation::DelegateMembership`], with the agent's certificate: only a
-//! live delegated agent of this relay's own user, in a workspace the delegation
+//! live delegated agent of this server's own user, in a workspace the delegation
 //! names and governance owns here. If admitted, the agent goes on the roster
 //! bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
-//! relay then admits it to the workspace and a key holder to the channels it asks
+//! server then admits it to the workspace and a key holder to the channels it asks
 //! for, like any member. Every member admits its changes as its own: signed
 //! by its key, at its person's role but never above Editor, and only inside
 //! its delegation.
@@ -29,13 +29,13 @@ use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces, system_time};
 use crate::auth::AuthenticatedPeer;
-use crate::workspace_access::{self, Decision, DenyReason, RelayTrust, WorkspaceOperation};
+use crate::workspace_access::{self, Decision, DenyReason, ServerTrust, WorkspaceOperation};
 
 impl Workspaces {
-    /// The relay-wide facts the admission decision reads.
-    fn trust(&self) -> RelayTrust<'_> {
+    /// The server-wide facts the admission decision reads.
+    fn trust(&self) -> ServerTrust<'_> {
         let host = &self.inner.host;
-        RelayTrust {
+        ServerTrust {
             revocations: &host.revocations,
             policy: &host.trust_policy,
             own_user: &host.cert.user_public_key,
@@ -75,7 +75,7 @@ impl Workspaces {
         decision == Decision::Admit
     }
 
-    /// Bring agent `device`'s place in every workspace this relay governs in line
+    /// Bring agent `device`'s place in every workspace this server governs in line
     /// with its delegation now: after its grant was approved, restored,
     /// renewed, narrowed, withdrawn or ended. `cert` is its certificate when
     /// known; without it only the workspaces whose roster already lists it are

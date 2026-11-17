@@ -2,8 +2,8 @@
 # The people a release of tilo.sh kept, carried into the release that starts its
 # relay on fresh state.
 #
-#   tools/relay-upgrade/run.sh release RELEASE OUT   (t test relay-upgrade-release)
-#   tools/relay-upgrade/run.sh upgrade RELEASE OUT   (t test relay-upgrade)
+#   tools/server-upgrade/run.sh release RELEASE OUT   (t test server-upgrade-release)
+#   tools/server-upgrade/run.sh upgrade RELEASE OUT   (t test server-upgrade)
 #
 # RELEASE is a directory beside this script: `source` pins the release's commit
 # and the SHA-256 of its source archive, and `seed.rs` writes the state that
@@ -29,9 +29,9 @@ mode=${1:?usage: run.sh release|upgrade RELEASE OUT}
 release=${2:?usage: run.sh release|upgrade RELEASE OUT}
 out=${3:?usage: run.sh release|upgrade RELEASE OUT}
 pin=$here/$release
-[[ -f $pin/source && -f $pin/seed.rs ]] || { echo "relay-upgrade: $pin needs source and seed.rs" >&2; exit 2; }
+[[ -f $pin/source && -f $pin/seed.rs ]] || { echo "server-upgrade: $pin needs source and seed.rs" >&2; exit 2; }
 
-say() { printf 'relay-upgrade: %s\n' "$*" >&2; }
+say() { printf 'server-upgrade: %s\n' "$*" >&2; }
 
 # The test's output, passed on; fails unless exactly one test ran and passed,
 # so a name no test answers to is no pass. The Lounge's tests are built with the
@@ -50,7 +50,7 @@ release() {
   . "$pin/source"
   [[ ${commit:-} =~ ^[0-9a-f]{40}$ && ${tar_sha256:-} =~ ^[0-9a-f]{64}$ ]] \
     || { say "$pin/source names no commit and tar_sha256"; exit 2; }
-  local cache=${CARGO_TARGET_DIR:-$repo/target}/relay-upgrade/$release
+  local cache=${CARGO_TARGET_DIR:-$repo/target}/server-upgrade/$release
   local tree=$cache/tilo
   if [[ ! -f $cache/$commit.unpacked ]]; then
     say "fetching $release ($commit)"
@@ -102,7 +102,7 @@ upgrade() {
   export TILO_UPGRADE_DIR=$work
   tar -xf "$out/state.tar" -C "$TILO_UPGRADE_DIR"
   say "this checkout's release takes the people $release kept in"
-  (cd "$repo" && TILO_UPGRADE_RELAY_LOG=${TILO_UPGRADE_RELAY_LOG:-warn} cargo test --locked -p tilo-server --features agents --test it -- \
+  (cd "$repo" && TILO_UPGRADE_SERVER_LOG=${TILO_UPGRADE_SERVER_LOG:-warn} cargo test --locked -p tilo-server --features agents --test it -- \
     --ignored --exact persistent_workspace::release_upgrade::the_people_a_release_kept_arrive_in_the_release_that_starts_fresh \
     --nocapture --test-threads=1) | ran_one
   say "the people $release kept arrived"

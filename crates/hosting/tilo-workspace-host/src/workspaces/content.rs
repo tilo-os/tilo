@@ -575,13 +575,13 @@ mod tests {
     #[tokio::test]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the relay stays live until its consuming shutdown"
+        reason = "the server stays live until its consuming shutdown"
     )]
     async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = crate::workspaces::tests::governor();
-        let relay = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
-        let workspaces = relay.workspaces().clone();
+        let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
         let avatar = vec![7_u8; PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
         assert_eq!(

@@ -24,10 +24,10 @@ COPY os/usr/lib/systemd/user/tilo-ush.service \
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 # The interface declaration the session judges apps against travels with it.
 COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
-# Relay component metadata travels with the same component in images and updates.
-COPY os/usr/lib/tilo/node-relay.toml /tilo-components/usr/lib/tilo/node-relay.toml
+# Server component metadata travels with the same component in images and updates.
+COPY os/usr/lib/tilo/node-server.toml /tilo-components/usr/lib/tilo/node-server.toml
 COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo-components/usr/lib/sysusers.d/tilo-server.conf
-COPY os/usr/lib/systemd/system/tilo-node-relay@.service \
+COPY os/usr/lib/systemd/system/tilo-node-server@.service \
     os/usr/lib/systemd/system/tilo-node-session-key@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \
     os/usr/lib/systemd/system/tilo-node-session@.path \

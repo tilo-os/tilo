@@ -1,10 +1,10 @@
 //! An agent working through the action API hands a person a link to what it did:
 //! a call that changed a record answers the record's link, and `tilo_link`
 //! answers the link to any path. It is the record link a person copies in
-//! the app, under the site the action API and the relay announce, and carries no
+//! the app, under the site the action API and the server announce, and carries no
 //! secret: someone the workspace does not admit is told nothing.
 use super::api::{ISSUER, Mcp, upload};
-use super::api_on_relay::{api_on_relay, approved_key};
+use super::api_on_server::{api_on_server, approved_key};
 use super::hosted_documents::application_pdf;
 use super::*;
 use serde_json::{Value, json};
@@ -27,11 +27,11 @@ async fn link_of(mcp: &mut Mcp<'_>, workspace: Option<&str>, path: &str) -> (u16
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_hands_over_the_link_to_the_record_it_changed() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Visa backend").await;
     let mut backend = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -97,7 +97,7 @@ async fn an_agent_hands_over_the_link_to_the_record_it_changed() {
 
     // It is the record link a person copies in the app: the workspace on the
     // relay, the app and the record, under the site, and no secret.
-    let entries = WebEntries::new(vec![WebEntry::new(&on_relay.web_entry).unwrap()]);
+    let entries = WebEntries::new(vec![WebEntry::new(&on_server.web_entry).unwrap()]);
     let link = Link::parse(&url, &entries).unwrap_or_else(|error| panic!("{url}: {error}"));
     assert_eq!(link.mode, Mode::App, "{url}");
     assert!(link.secrets.is_empty(), "a link carries no secret: {url}");
@@ -105,7 +105,7 @@ async fn an_agent_hands_over_the_link_to_the_record_it_changed() {
         panic!("a link names its workspace: {url}");
     };
     assert_eq!(id.to_string(), workspace, "{url}");
-    assert_eq!(host.as_str(), on_relay.host_origin, "{url}");
+    assert_eq!(host.as_str(), on_server.host_origin, "{url}");
     assert_eq!(
         link.target
             .app
@@ -130,7 +130,7 @@ async fn an_agent_hands_over_the_link_to_the_record_it_changed() {
     // Someone the workspace does not admit is told nothing about it.
     let (bob, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
     let bobs_page = enrol(&bob, "Bob's browser", DeviceCapabilities::member());
-    let bobs_key = approved_key(&on_relay, &bob, &bobs_page, "Bob's backend").await;
+    let bobs_key = approved_key(&on_server, &bob, &bobs_page, "Bob's backend").await;
     let mut stranger = Mcp {
         api: &api,
         path: "/mcp".into(),

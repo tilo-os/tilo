@@ -38,7 +38,7 @@ trap cleanup EXIT
 
 root=$(b mount "$container")
 # Every Tilo image is Fedora, the OS included: the server trusts the same
-# certificates and links the same libraries as the relay beside it.
+# certificates and links the same libraries as the server beside it.
 b run "$container" -- /usr/bin/busybox grep -qx 'ID=fedora' /etc/os-release \
   || die 'the runtime is not a Fedora base'
 [[ -x $root/usr/local/bin/tilo-api ]] || die 'no /usr/local/bin/tilo-api'
@@ -64,7 +64,7 @@ chown 65532:65532 "$state"
 port=18080
 issuer=https://api.image.test
 web_entry=https://tilo.example.test
-relay=https://relay.example.test
+server=https://server.example.test
 # Every file of the root filesystem, as it stands: what the run below may not change. The
 # listing is what the run is compared with, not the files' timestamps against the clock, which
 # the archive's own times would answer for.
@@ -74,7 +74,7 @@ b run --user 65532:65532 -v "$state:/state" \
   -e TILO_API_LISTEN=127.0.0.1:$port \
   -e TILO_API_ORIGIN=$issuer \
   -e TILO_API_WEB_ENTRY=$web_entry \
-  -e TILO_API_HOST=$relay \
+  -e TILO_API_HOST=$server \
   -e TILO_API_STATE=/state/api.json \
   "$container" -- /usr/local/bin/tilo-api &
 server=$!

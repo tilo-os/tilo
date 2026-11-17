@@ -695,7 +695,7 @@ pub type Spawner =
     Arc<dyn Fn(AgentIdentity, Arc<AgentControl>) -> Result<(), String> + Send + Sync>;
 
 /// What a host gives its supervisor: the approver for new grants, and the
-/// relay's register of agent devices.
+/// server's register of agent devices.
 pub trait AgentHostLink: Send + Sync {
     /// Ask the user's approving device to certify `key` as the agent
     /// `proposal` describes, in one consent step. Returns the pairing code

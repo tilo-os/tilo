@@ -12,7 +12,7 @@
 //! Nothing below a workspace directory is watched. The workspace's store creates,
 //! writes and removes directories and files for every delta; watching them
 //! recursively made each one an inotify watch or event the watcher thread
-//! had to handle, about a fifth of a loaded relay's CPU.
+//! had to handle, about a fifth of a loaded server's CPU.
 //!
 //! The watch vouches for a workspace only while it is live. Before the first native
 //! watch is established, after the watch fails, and once the daemon stops the
@@ -69,7 +69,7 @@ impl MembershipWatch {
     /// A change to `file` of `workspace_id`: the workspace reads its files again
     /// and its sessions re-audit, unless the file holds exactly what this
     /// process last wrote there itself ([`wrote_own`]), which the workspace
-    /// already holds. The relay rewrites a governed workspace's access file
+    /// already holds. The server rewrites a governed workspace's access file
     /// whenever it admits someone, after it has applied the change to the
     /// workspace and announced whatever it narrowed; announcing each rewrite
     /// again woke every session in a public workspace to re-audit, and to read
@@ -529,10 +529,10 @@ mod tests {
         task.abort();
     }
 
-    /// The relay's own rewrite of a workspace's access file, already applied to
+    /// The server's own rewrite of a workspace's access file, already applied to
     /// the workspace, is not announced again; anything else in the file is.
     #[tokio::test]
-    async fn the_relays_own_access_write_is_not_announced_again() {
+    async fn the_servers_own_access_write_is_not_announced_again() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tmp
             .path()
@@ -551,9 +551,9 @@ mod tests {
         assert_eq!(
             generation.current(),
             before,
-            "the relay's own write must not move the workspace's generation"
+            "the server's own write must not move the workspace's generation"
         );
-        // What the relay did not write itself is announced, so the watch was
+        // What the server did not write itself is announced, so the watch was
         // looking all along.
         tilo_files::native::atomic::write(&file, br#"{"version":1,"member_devices":[]}"#).unwrap();
         moves_from(&generation, before, "a foreign write to bump the workspace").await;

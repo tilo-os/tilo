@@ -85,20 +85,20 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        Self::open_at(&hosted.relay, device, host, cluster_id).await
+        Self::open_at(&hosted.server, device, host, cluster_id).await
     }
 
-    /// [`Self::open_workspace`] on any host `relay` runs, whatever serves
+    /// [`Self::open_workspace`] on any host `server` runs, whatever serves
     /// its records.
     pub async fn open_at(
-        relay: &tilo_server::daemon::Relay,
+        server: &tilo_server::daemon::Server,
         device: &Device,
         host: &Device,
         cluster_id: &str,
     ) -> Self {
         let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let peer = start_peer(
-            Host::at(relay.node_addr()),
+            Host::at(server.node_addr()),
             device.cert.clone(),
             host.cert.clone(),
             device.key.clone(),

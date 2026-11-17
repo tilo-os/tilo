@@ -1,4 +1,4 @@
-//! Taking the people an earlier release kept into this relay's workspace
+//! Taking the people an earlier release kept into this server's workspace
 //! ([`OperatorCommand::ImportPeople`]): their addresses go on the wait list as
 //! they stood, an owner is declared by their key, and every other person is
 //! invited through the host's own invitation, mailed to the address the export

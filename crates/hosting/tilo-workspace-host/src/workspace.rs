@@ -14,7 +14,7 @@ use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
-/// Membership set for a workspace on this relay, as the workspace's governance
+/// Membership set for a workspace on this server, as the workspace's governance
 /// or an explicit admission set it. Peers listed here get
 /// store-and-forward; peers not listed get their subscribe rejected with
 /// `NotAuthorised`.
@@ -85,8 +85,8 @@ pub struct WorkspaceRuntime {
     /// own replica from.
     pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
     /// The access of each member device, as the workspace's governor projects
-    /// it: what the relay decides each change's claimed action against.
-    /// `None` until a governor projects one; the relay then decides changes
+    /// it: what the server decides each change's claimed action against.
+    /// `None` until a governor projects one; the server then decides changes
     /// against their app surface alone.
     pub(crate) device_access: Option<Arc<DeviceAccess>>,
     /// Woken each time [`Self::device_access`] is replaced, for a change held
@@ -117,12 +117,12 @@ pub struct WorkspaceRuntime {
     /// live watch vouched for a load, so every read goes to the disk.
     pub(crate) loaded_generation: Option<u64>,
     /// How the workspace admits devices beyond its exact membership: explicitly,
-    /// the relay owner's devices on a same-owner home host, or under native
+    /// the server owner's devices on a same-owner home host, or under native
     /// governance. Read only through [`crate::workspace_access::decide`].
     pub(crate) admission: crate::workspace_access::AdmissionMode,
     /// The people this native-governed workspace has as members, by their
     /// roots, whatever devices of theirs it lists now: the one answer to
-    /// whether a person is a member here, which the relay-wide handshake and
+    /// whether a person is a member here, which the server-wide handshake and
     /// the certification queue read. Exact workspace admission still uses
     /// `membership`, so an ungoverned sibling device under the same root
     /// does not join.
@@ -142,7 +142,7 @@ pub struct WorkspaceRuntime {
     /// ([`crate::attach::HostDialer::answer`]).
     pub(crate) attach_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
     /// What services beside the session stack keep for this workspace (a
-    /// relay's compute routing), one value per type.
+    /// server's compute routing), one value per type.
     pub extensions: Extensions,
     /// Per live device subscriber: the retained-checkpoint channels a live
     /// checkpoint has already been fanned to since the device last asked for a
@@ -284,7 +284,7 @@ impl CommitLog {
 const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
 /// Whether `bytes` can be an Automerge chunk. Automerge logs every chunk it
-/// cannot parse before returning the error, and the deltas a relay routes
+/// cannot parse before returning the error, and the deltas a server routes
 /// are mostly co-edit wrappers and sealed channel payloads, which never start
 /// with its magic: only bytes that do are worth handing to its parser.
 pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
@@ -293,8 +293,8 @@ pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
 
 impl WorkspaceRuntime {
     /// Whether the person whose root is `user` is admitted to this workspace as
-    /// a person of its own, on a relay whose owner is `own_user`: a member
-    /// its governance names, or the relay owner in a workspace of their own
+    /// a person of its own, on a server whose owner is `own_user`: a member
+    /// its governance names, or the server owner in a workspace of their own
     /// devices. What [`crate::workspace_access`] admits their devices by.
     #[must_use]
     pub fn admits_person(&self, user: &[u8; 32], own_user: &[u8; 32]) -> bool {
@@ -1015,7 +1015,7 @@ mod tests {
         }
     }
 
-    /// Retain `env` as the relay keeps an admitted change, at host order `seq`.
+    /// Retain `env` as the server keeps an admitted change, at host order `seq`.
     fn publish(rt: &WorkspaceRuntime, env: &Envelope, seq: u64) {
         let Envelope::Delta {
             author_device_public_key,
@@ -1224,7 +1224,7 @@ mod tests {
 }
 
 /// What services beside the session stack keep per workspace, one value per
-/// type: a relay keeps its compute routing here. The workspace knows nothing
+/// type: a server keeps its compute routing here. The workspace knows nothing
 /// of what they hold.
 #[derive(Default)]
 pub struct Extensions(HashMap<std::any::TypeId, Box<dyn std::any::Any + Send>>);

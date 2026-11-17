@@ -2,7 +2,7 @@
 //! `fetch`: the host's certificate and address, and joining a workspace.
 //!
 //! Everything after that is the session, over iroh
-//! (`tilo_server_session::RelayClient`), dialled where [`crate::Host`] says.
+//! (`tilo_server_session::ServerClient`), dialled where [`crate::Host`] says.
 
 use std::future::Future;
 use std::pin::Pin;

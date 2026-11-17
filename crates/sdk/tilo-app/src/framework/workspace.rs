@@ -4,7 +4,7 @@
 //! the two people it is between open from either side.
 //!
 //! Such a record is its owner's resource: the workspace's grants on the owner's
-//! node decide every change, here at the API as on the relay, whichever
+//! node decide every change, here at the API as on the server, whichever
 //! app's window makes it. The window opens it on first use, follows it
 //! change by change, and reports its route so the runtime syncs it; only
 //! the owner's own window publishes it (and lists it in its surface).

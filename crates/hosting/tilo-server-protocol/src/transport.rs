@@ -1,14 +1,14 @@
-//! Wire messages exchanged between a peer and the relay after the
+//! Wire messages exchanged between a peer and the server after the
 //! [`auth`](crate::auth) handshake.
 //!
 //! The framing that carries them lives with the stream I/O in
 //! `tilo-server-client`'s `frame` module; this module only defines the values.
 //!
-//! The relay uses **one long-lived bidirectional stream per
+//! The server uses **one long-lived bidirectional stream per
 //! connection**. After the handshake, the stream is a sequence of
 //! length-prefixed postcard-encoded [`Envelope`] messages:
 //!
-//! - The relay is not a general-purpose RPC service — its message
+//! - The server is not a general-purpose RPC service — its message
 //!   shape is a small closed enum.
 //! - Length-prefixed framing lets the reader skip malformed messages
 //!   without desynchronising the stream.
@@ -19,7 +19,7 @@ use collab_types::WorkspaceId;
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
-/// ALPN of the relay stream. It never changes: the peer protocol version
+/// ALPN of the server stream. It never changes: the peer protocol version
 /// is the handshake's first field, so a device at another version is told so
 /// there, and there is one framing per version
 /// (docs/architecture/compatibility.md).
@@ -38,13 +38,13 @@ pub const DISCOVERY_ALPN: &[u8] = b"tilo-server-discovery/2";
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 
 /// Small, stable discovery reply consumed directly by filesystem workers.
-/// Keeping this separate from the relay's richer placement profile avoids a
+/// Keeping this separate from the server's richer placement profile avoids a
 /// relay-only address ever being mistaken for a content endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEndpointAdvertisement {
     /// Explicit schema version for persisted/client registration envelopes.
     pub schema_version: u16,
-    /// Relay workspace whose signed filesystem authority authorised this lookup.
+    /// Server workspace whose signed filesystem authority authorised this lookup.
     pub workspace_id: WorkspaceId,
     /// Direct authenticated filesystem/blob endpoints currently ready for it.
     pub filesystem_endpoints: Vec<EndpointAddr>,
@@ -59,10 +59,10 @@ pub struct ContentPeerRegistration {
     pub endpoint: EndpointAddr,
     /// Encoded Files ticket binding a fresh daemon to the shared namespace.
     pub ticket: String,
-    /// Relay service that authenticated this registration.  This binds a
+    /// Server service that authenticated this registration.  This binds a
     /// persisted Files endpoint to the enrolled home peer which nominated it,
     /// so removing that peer can revoke its hydration route too.
-    pub relay_service_id: [u8; 32],
+    pub server_service_id: [u8; 32],
 }
 
 /// Bounded owner operation for an enrolled home peer.
@@ -87,9 +87,9 @@ pub enum HomePeerManagementRequest {
 pub struct HomePeerManagementResponse {
     /// Certified host device key.
     pub device_public_key: [u8; 32],
-    /// Current network-addressable relay service endpoint. The client has
+    /// Current network-addressable server service endpoint. The client has
     /// authenticated the certified host before accepting this advertisement.
-    pub relay_endpoint: iroh_base::EndpointAddr,
+    pub server_endpoint: iroh_base::EndpointAddr,
     /// Current operator-facing label.
     pub label: String,
     /// Whether the full filesystem replica currently proves readiness.
@@ -100,11 +100,11 @@ pub struct HomePeerManagementResponse {
     pub decommissioned: bool,
 }
 
-/// A client must name the relay workspace it is resolving. The host never exposes
+/// A client must name the server workspace it is resolving. The host never exposes
 /// its filesystem endpoints as a global, unauthorised discovery answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEndpointRequest {
-    /// Relay workspace whose filesystem endpoint the caller wants to resolve.
+    /// Server workspace whose filesystem endpoint the caller wants to resolve.
     pub workspace_id: WorkspaceId,
 }
 
@@ -123,7 +123,7 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// is fully binary anyway.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Envelope {
-    /// Peer asks to receive updates for `workspace_id`. The relay
+    /// Peer asks to receive updates for `workspace_id`. The server
     /// registers the peer as a subscriber and immediately drains
     /// any pending deltas queued for it (store-and-forward).
     Subscribe {
@@ -139,7 +139,7 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
     },
 
-    /// A workspace-directory CRDT delta. The relay:
+    /// A workspace-directory CRDT delta. The server:
     /// 1. Applies it to its own pinned copy (if pinned).
     /// 2. Fans it out to every other peer currently subscribed.
     /// 3. Queues it for every other member device that is offline.
@@ -167,19 +167,19 @@ pub enum Envelope {
     /// position.
     RetiredPresence {
         workspace_id: WorkspaceId,
-        /// Peer-defined presence payload. The relay never inspects
+        /// Peer-defined presence payload. The server never inspects
         /// the bytes.
         #[serde(with = "serde_bytes")]
         payload: Vec<u8>,
     },
 
-    /// The relay's response to a `Subscribe`: how many pending
-    /// deltas the relay is about to flush from the peer's
+    /// The server's response to a `Subscribe`: how many pending
+    /// deltas the server is about to flush from the peer's
     /// store-and-forward queue.
     Ready {
         workspace_id: WorkspaceId,
         /// Number of pending deltas queued for this peer that the
-        /// relay is about to flush.
+        /// server is about to flush.
         pending_deltas: u32,
         /// The workspace sends this peer its records only when it opens
         /// them ([`Self::OpenDocument`]), as a public workspace does: the
@@ -189,7 +189,7 @@ pub enum Envelope {
         documents_when_opened: bool,
     },
 
-    /// The relay's response to a subscribe that failed — e.g.
+    /// The server's response to a subscribe that failed — e.g.
     /// workspace not bound here, peer not a member.
     NotAuthorised {
         workspace_id: WorkspaceId,
@@ -210,7 +210,7 @@ pub enum Envelope {
     ///
     /// Sent by BOTH sides of an attach session: the dialer sends
     /// first, the accepter replies with its own hosted set.
-    PeerRelayHello {
+    PeerServerHello {
         /// Workspace ids this host currently hosts.
         hosted_workspaces: Vec<WorkspaceId>,
     },
@@ -250,11 +250,11 @@ pub enum Envelope {
     /// A remote-action frame (`tilo_actions::remote::RemoteActionFrame`
     /// bytes) addressed to one device of the workspace.
     ///
-    /// The relay routes it to the addressed device's live connection and
+    /// The server routes it to the addressed device's live connection and
     /// never stores, replays or executes it: an action that ran late would
     /// be worse than one that did not run. Only when the addressed device is
-    /// the relay itself *and* an app action server was supplied does the
-    /// relay answer it, through that protocol. Anything else comes back as
+    /// the server itself *and* an app action server was supplied does the
+    /// server answer it, through that protocol. Anything else comes back as
     /// [`Envelope::RemoteActionUndeliverable`].
     RemoteAction {
         /// Workspace id both devices are subscribed to.
@@ -263,7 +263,7 @@ pub enum Envelope {
         version: u16,
         /// The addressed device.
         to_device_public_key: [u8; 32],
-        /// The sending device, stamped by the relay from the authenticated
+        /// The sending device, stamped by the server from the authenticated
         /// connection. Whatever a sender puts here is overwritten.
         from_device_public_key: [u8; 32],
         /// The user root the sending device chains to, stamped the same way.
@@ -273,7 +273,7 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// The relay could not deliver a [`Envelope::RemoteAction`]: the
+    /// The server could not deliver a [`Envelope::RemoteAction`]: the
     /// addressed device is not connected to this workspace, the envelope
     /// version is unknown, or nothing here serves apps.
     RemoteActionUndeliverable {
@@ -502,7 +502,7 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         /// The addressed device.
         to_device_public_key: [u8; 32],
-        /// The sending device, stamped by the relay from the authenticated
+        /// The sending device, stamped by the server from the authenticated
         /// connection. Whatever a sender puts here is overwritten.
         from_device_public_key: [u8; 32],
         /// Opaque piece, at most [`MAX_DOCUMENT_CONTENT_FRAME_BYTES`].
@@ -511,7 +511,7 @@ pub enum Envelope {
     },
 
     /// Open an on-demand record of a subscribed workspace: a record a joining
-    /// device is not replayed (`neighbour_wire::document_sync`). The relay
+    /// device is not replayed (`neighbour_wire::document_sync`). The server
     /// sends what it retains of the record as [`Envelope::Delta`]s, under
     /// the same admission as a replay, then [`Envelope::DocumentOpened`];
     /// from then on the record's live changes reach the device too.
@@ -522,12 +522,12 @@ pub enum Envelope {
         /// (`neighbour_wire::app_document_channel`).
         channel: [u8; 32],
         /// The member's own record the channel carries, when the device knows
-        /// it is one: the relay answers another person's
+        /// it is one: the server answers another person's
         /// [`DocumentAnswer::NotYours`] even before anything of it was written.
         own: Option<OwnedChannel>,
     },
 
-    /// The relay's answer to an opened record: everything it retains of it
+    /// The server's answer to an opened record: everything it retains of it
     /// was sent, or it is not this device's to open.
     DocumentOpened {
         workspace_id: WorkspaceId,
@@ -537,7 +537,7 @@ pub enum Envelope {
     },
 
     /// What `participation` shows besides its voice from now on (its
-    /// camera, a shared screen). The relay records it on the participation
+    /// camera, a shared screen). The server records it on the participation
     /// and tells the call's members and the workspace's call list when it
     /// changed. Not answered.
     VoiceShow {
@@ -664,7 +664,7 @@ pub enum Envelope {
 
     /// The host's own word for a run it executes
     /// ([`crate::host_voice::HostSaid`]): sent by the host's device to the
-    /// relay that is the host, which fans it out to the workspace's other
+    /// server that is the host, which fans it out to the workspace's other
     /// subscribers only when its own device said it. A device takes it only
     /// when `signature` is its host's over `said`. It never rides the live
     /// live session, whose keys a host that is no member of it does not hold.
@@ -709,7 +709,7 @@ pub enum Envelope {
 }
 
 /// A member's own record a device opens ([`Envelope::OpenDocument`]): the app
-/// whose record it is and its kind and person. The relay takes it only when
+/// whose record it is and its kind and person. The server takes it only when
 /// it names the channel opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedChannel {
@@ -736,7 +736,7 @@ impl OwnedChannel {
     }
 }
 
-/// What the relay answered of a record a device opened ([`Envelope::OpenDocument`]).
+/// What the server answered of a record a device opened ([`Envelope::OpenDocument`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DocumentAnswer {
     /// Everything it retains of the record went before this answer, this many
@@ -761,7 +761,7 @@ impl Envelope {
             Self::NotAuthorised { .. } => "NotAuthorised",
             Self::Ping => "Ping",
             Self::Pong => "Pong",
-            Self::PeerRelayHello { .. } => "PeerRelayHello",
+            Self::PeerServerHello { .. } => "PeerServerHello",
             Self::SyncRequest { .. } => "SyncRequest",
             Self::SyncResponse { .. } => "SyncResponse",
             Self::RemoteAction { .. } => "RemoteAction",
@@ -811,8 +811,8 @@ impl Envelope {
         }
     }
 
-    /// The workspace (relay workspace) this envelope belongs to, or `None` for
-    /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
+    /// The workspace (server workspace) this envelope belongs to, or `None` for
+    /// the connection-level frames (`Ping`, `Pong`, `PeerServerHello`).
     ///
     /// The match is exhaustive on purpose: a new variant has to say which
     /// workspace it is charged to.
@@ -859,7 +859,7 @@ impl Envelope {
             | Self::DocumentContentRefused { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
-            | Self::PeerRelayHello { .. }
+            | Self::PeerServerHello { .. }
             | Self::HostAction { .. }
             | Self::WorkspacesRequest { .. }
             | Self::WorkspacesReply { .. }
@@ -879,11 +879,11 @@ impl Envelope {
 /// Bound, in characters, of the agent name an [`Envelope::AgentSession`] carries.
 pub const MAX_AGENT_LABEL_CHARS: usize = 32;
 
-/// Largest [`Envelope::DocumentContent`] frame a relay routes.
+/// Largest [`Envelope::DocumentContent`] frame a server routes.
 pub const MAX_DOCUMENT_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
-/// relay refuses other versions as undeliverable instead of forwarding
+/// server refuses other versions as undeliverable instead of forwarding
 /// frames whose routing fields it may misread.
 pub const REMOTE_ACTION_ENVELOPE_VERSION: u16 = 1;
 
@@ -945,7 +945,7 @@ mod tests {
                 (Envelope::Ping, vec![6]),
                 (Envelope::Pong, vec![7]),
                 (
-                    Envelope::PeerRelayHello {
+                    Envelope::PeerServerHello {
                         hosted_workspaces: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
                     },
                     [vec![8, 2], id(7), id(8)].concat(),
@@ -1043,7 +1043,7 @@ mod tests {
             );
             assert_eq!(Envelope::Ping.workspace_id(), None);
             assert_eq!(
-                Envelope::PeerRelayHello {
+                Envelope::PeerServerHello {
                     hosted_workspaces: vec![WorkspaceId::from_u128(1)]
                 }
                 .workspace_id(),

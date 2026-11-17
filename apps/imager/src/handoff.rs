@@ -647,12 +647,12 @@ mod tests {
         let peer = tilo_server_protocol::HomePeerRegistration {
             schema_version: tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(local_cert.device_public_key),
-            relay_service_node_id: hex::encode([4_u8; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([4_u8; 32]),
+            server_endpoint: None,
             label: "setup".into(),
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(7)],
+            server_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
             &home_peers,

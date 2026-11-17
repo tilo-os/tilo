@@ -230,7 +230,7 @@ async fn the_persons_api_lists_stops_and_revokes_their_agent_and_nobody_elses() 
     let workspace = crate::support::workspace();
     let mut peers = Vec::new();
     for device in [&browser, &computer] {
-        place(&host.relay, &device.cert).await;
+        place(&host.server, &device.cert).await;
         let peer = start_peer(
             host.iroh(),
             device.cert.clone(),

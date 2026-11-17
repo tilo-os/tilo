@@ -1,6 +1,6 @@
-//! The relay's part in the encrypted groups of the workspaces it governs.
+//! The server's part in the encrypted groups of the workspaces it governs.
 //!
-//! A relay whose device may own workspaces takes part in every group of the
+//! A server whose device may own workspaces takes part in every group of the
 //! workspaces it governs, with the one leaf it has in every other group
 //! ([`WorkspaceKeys`]). What its members send for a group reaches it
 //! through the workspace host's [`KeySink`], and what it settles is
@@ -13,7 +13,7 @@
 //! ([`KeySink::settled`]), so the service decides a record's group from
 //! the same state the host does, at the same moment.
 //!
-//! A relay whose device may not own workspaces runs no key service: its
+//! A server whose device may not own workspaces runs no key service: its
 //! workspaces retain what their members' groups are made of, and this device
 //! reads none of it.
 
@@ -56,7 +56,7 @@ const _: () =
 /// Where the shared key service keeps its state under the state root.
 const STATE: &str = "groups";
 
-/// The relay's key service: this device's keys and the thread settling the
+/// The server's key service: this device's keys and the thread settling the
 /// groups of the workspaces it governs. Stops when dropped.
 pub(crate) struct KeyService {
     device: DeviceKeys,
@@ -68,7 +68,7 @@ pub(crate) struct KeyService {
 }
 
 impl KeyService {
-    /// Open the relay's group state under `state_root`, taking part as
+    /// Open the server's group state under `state_root`, taking part as
     /// `device`.
     ///
     /// # Errors
@@ -138,7 +138,7 @@ impl KeyService {
                 };
                 let workspace = workspace.to_owned();
                 if let Err(error) = writing.publish_governance(&workspace, vec![message]).await {
-                    tracing::warn!(%workspace, %error, "the relay's group governance was not retained");
+                    tracing::warn!(%workspace, %error, "the server's group governance was not retained");
                 }
             }
         });
@@ -212,11 +212,11 @@ impl KeySink for Link {
     }
 }
 
-/// The workspace transport the relay's group governance travels on: what its
+/// The workspace transport the server's group governance travels on: what its
 /// members sent, waiting for the next pass, and what the pass settles, on its
 /// way to the workspace's store.
 struct Link {
-    /// Who may read the groups of the workspaces this relay governs, as each
+    /// Who may read the groups of the workspaces this server governs, as each
     /// noted its governance when it settled.
     directory: Directory,
     /// Governance the workspace host's sessions carried here, waiting for the
@@ -250,7 +250,7 @@ impl GovernanceTransport for Link {
     }
 }
 
-/// Who may read each group of the workspaces the relay governs, as their
+/// Who may read each group of the workspaces the server governs, as their
 /// governance last stood.
 #[derive(Clone)]
 struct Directory {
@@ -258,7 +258,7 @@ struct Directory {
     /// to the same document the workspace holds. Shared, so the pump reads it
     /// on its own thread without reaching for the workspace.
     states: Arc<Mutex<HashMap<String, StatePeer>>>,
-    /// The relay's own device key.
+    /// The server's own device key.
     device: [u8; 32],
 }
 
@@ -293,8 +293,8 @@ impl KeyDirectory for Directory {
     }
 }
 
-/// The key sealing the relay's group state: derived from the device key the
-/// relay signs with.
+/// The key sealing the server's group state: derived from the device key the
+/// server signs with.
 fn vault_key(device: &SigningKey) -> VaultKey {
     VaultKey::new(blake3::derive_key(
         "tilo-server workspace key vault v1",
@@ -315,7 +315,7 @@ mod tests {
     use super::{KeyDirectory, KeyService, STATE, SigningKey};
 
     #[test]
-    fn a_relay_that_may_own_workspaces_takes_part_in_their_groups() {
+    fn a_server_that_may_own_workspaces_takes_part_in_their_groups() {
         let state = tempfile::tempdir().unwrap();
         let device = SigningKey::from_bytes(&[7; 32]);
         let groups = KeyService::open(state.path(), device).unwrap();

@@ -15,8 +15,8 @@ async fn a_host_answers_each_governed_workspace_by_its_own_id() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
     member.device_public_key = member_key.verifying_key().to_bytes();
@@ -56,5 +56,5 @@ async fn a_host_answers_each_governed_workspace_by_its_own_id() {
         assert_eq!(policy.workspace, created.workspace);
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

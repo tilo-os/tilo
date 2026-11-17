@@ -18,7 +18,7 @@
 // real agent. The stack is plain HTTP on this machine, so the command needs
 // no test certificate to reach it.
 //
-// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
+// usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
 //
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
@@ -29,14 +29,14 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
 
-const [site, relay, tiloBin, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !out) {
-  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
+const [site, server, tiloBin, out] = process.argv.slice(2);
+if (!site || !server || !tiloBin || !out) {
+  console.error('usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
 const mark = clock();
-const report = {site, relay, at: new Date().toISOString(), steps: []};
+const report = {site, server, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
 // The stack is plain http on this machine, so no certificate stands in the
@@ -307,11 +307,11 @@ const followSteps = async (tab, done) => {
   return tab.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
 };
 // The person the page is, by their root, and the workspace in front.
-// The person is who the page keeps its memberships as, on the relay's host.
+// The person is who the page keeps its memberships as, on the server's host.
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try {
     const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
-    return all[${JSON.stringify(new URL(relay).origin)}]?.userPublicKey ?? null;
+    return all[${JSON.stringify(new URL(server).origin)}]?.userPublicKey ?? null;
   } catch { return null; } })(),
   title: document.title,
   workspace: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.workspace ?? null; } catch { return null; } })(),

@@ -84,7 +84,7 @@ fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
         registration: tilo_server::transport::ContentPeerRegistration {
             endpoint,
             ticket: ticket.encode().unwrap(),
-            relay_service_id: [77; 32],
+            server_service_id: [77; 32],
         },
         authority,
     }
@@ -234,7 +234,7 @@ fn serve_host(
     let registration = tilo_server::transport::ContentPeerRegistration {
         endpoint: host.endpoint.addr(),
         ticket: ticket.encode().unwrap(),
-        relay_service_id: [84; 32],
+        server_service_id: [84; 32],
     };
     NativeHost {
         _hosted: hosted,

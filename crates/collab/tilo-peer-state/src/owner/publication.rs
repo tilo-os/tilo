@@ -1,4 +1,4 @@
-//! Same-barrier native outgoing ownership; relay queue acceptance is never an ACK.
+//! Same-barrier native outgoing ownership; server queue acceptance is never an ACK.
 use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use web_time::SystemTime;
 
-/// Writes ownership keeps in its record at its head, where the relay session sends them from,
+/// Writes ownership keeps in its record at its head, where the server session sends them from,
 /// and at most as many again at its tail. Every write past them waits in runs of the store's
 /// beside the record ([`super::Store::put_ownership`]): ownership takes every write this device
 /// makes, linked or not, however long its host is away. This crate's tests keep fewer, so a
@@ -133,7 +133,7 @@ pub(crate) struct StoredPublication {
     pub(crate) projection: Vec<StoredOutgoing>,
     #[serde(default, deserialize_with = "read_entries")]
     governance: Vec<StoredOutgoing>,
-    /// What the workspace's relay host answered to this device's writes, per record.
+    /// What the workspace's server host answered to this device's writes, per record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     answered: Vec<AnsweredDocument>,
     /// Writes behind `entries` the store keeps beside the record, oldest first: they move to
@@ -245,7 +245,7 @@ pub(crate) struct SpilledRun {
     writes: u32,
     taken: u32,
 }
-/// The relay host's answers to this device's writes to one record, kept with the ownership they
+/// The server host's answers to this device's writes to one record, kept with the ownership they
 /// left.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct AnsweredDocument {
@@ -256,7 +256,7 @@ struct AnsweredDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_order: Option<u64>,
 }
-/// What a workspace's relay host answered to one of this device's writes.
+/// What a workspace's server host answered to one of this device's writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostAnswer {
     /// Kept durably, at this place in the host's order.
@@ -265,7 +265,7 @@ pub enum HostAnswer {
     Refused,
 }
 /// This device's writes to one record: those still in its ownership, and what the workspace's
-/// relay host answered to the others.
+/// server host answered to the others.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DocumentWrites {
     pub pending: usize,
@@ -547,7 +547,7 @@ fn allowed(
         let (app_id, document_id) = route;
         // A sealed write expires with the channel epoch it was made under:
         // its key holder renews it ([`NativeWorkspaceOwner::renew_outgoing`]),
-        // and the relay never re-sends the expired original beside a renewal.
+        // and the server never re-sends the expired original beside a renewal.
         // A cleartext frame is re-sent as it was signed, however old it is.
         if envelope.encryption.is_some() && !fresh(entry, now) {
             tracing::debug!(
@@ -649,7 +649,7 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
         return Err("native outgoing requires document".into());
     };
     // The one host classifier (`neighbour_wire::retention`), shared with
-    // browser peers and the relay. A single-use MLS application message has
+    // browser peers and the server. A single-use MLS application message has
     // no retention class and is refused here like any live frame.
     let (channel, kind) = neighbour_wire::retention(message, false)
         .ok_or("unsupported native outgoing document payload")?;
@@ -705,7 +705,7 @@ pub(crate) fn encode(message: &NeighbourMsg, limit: usize) -> Result<Vec<u8>, St
         .map_err(|e| e.to_string())?;
     postcard::to_allocvec(message).map_err(|e| e.to_string())
 }
-/// The bytes ownership keeps, and its relay session sends, for `request`, one of this device's
+/// The bytes ownership keeps, and its server session sends, for `request`, one of this device's
 /// document writes as the owner committed it.
 ///
 /// # Errors
@@ -1617,7 +1617,7 @@ pub(crate) fn retry_covered(
     retired(live, &message, view.device.device_public_key)
 }
 impl NativeWorkspaceOwner {
-    /// Read `workspace`'s outgoing ownership: what the relay session may send now.
+    /// Read `workspace`'s outgoing ownership: what the server session may send now.
     pub fn with_outgoing<T>(
         &self,
         workspace: WorkspaceId,
@@ -1772,8 +1772,8 @@ impl NativeWorkspaceOwner {
             .ok_or("native owner generation exhausted")?;
         self.publish_document(workspace, &candidate, record, None)
     }
-    /// Retire the ownership entries `answers` names, which the workspace's relay host answered:
-    /// a relay host acknowledges each commit, durable or refused, rather than receipting it in
+    /// Retire the ownership entries `answers` names, which the workspace's server host answered:
+    /// a server host acknowledges each commit, durable or refused, rather than receipting it in
     /// the workspace's governance, and an answered entry is never sent again. Each answer
     /// counts toward its record's [`DocumentWrites`], and a refused write leaves this device's
     /// replica as well: the workspace never holds it, so neither does this device.
@@ -1865,7 +1865,7 @@ impl NativeWorkspaceOwner {
         self.publish_document(workspace, &candidate, record, None)
     }
     /// This device's writes to each record of `workspace` it wrote, by app and record: those
-    /// in its ownership, and the relay host's answers to the others.
+    /// in its ownership, and the server host's answers to the others.
     pub fn document_writes(
         &self,
         workspace: WorkspaceId,

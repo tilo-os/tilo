@@ -18,7 +18,7 @@ root=$(b mount "$container")
 inside() { b run "$container" -- "$@"; }
 
 # Every Tilo image is Fedora, the OS included: a host that boots the guest and
-# joins the relay trusts the same libraries and certificates the OS ships.
+# joins the server trusts the same libraries and certificates the OS ships.
 inside grep -qx 'ID=fedora' /etc/os-release || die 'the runtime is not a Fedora base'
 [[ $(inside firecracker --version | head -1) == 'Firecracker v1.17.0' ]] || die 'not Firecracker 1.17.0'
 # Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
@@ -31,7 +31,7 @@ hosted_help=$(inside tilo-legacy hosted help)
 grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-legacy hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
-[[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the relay'"'"'s runs'
+[[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the server'"'"'s runs'
 [[ -x $root/usr/local/bin/tilo-hosted-serve ]] || die 'no tilo-hosted-serve, the guest fetch and service start'
 [[ -x $root/usr/local/bin/tilo-hosted-prepare ]] || die 'no tilo-hosted-prepare, the machine setup of the start'
 grep -q 'tilo-hosted-prepare$' "$root/usr/local/bin/tilo-vm-host" \

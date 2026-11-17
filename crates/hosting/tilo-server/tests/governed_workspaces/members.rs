@@ -4,8 +4,13 @@ use super::*;
 
 /// Admit `member`'s person to `workspace` as an Editor, through an invitation
 /// `host` issues and `member`'s device redeems.
-pub(super) async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, workspace: &str) {
-    let issued = relay
+pub(super) async fn admit(
+    server: &Server,
+    host: &TestDevice,
+    member: &TestDevice,
+    workspace: &str,
+) {
+    let issued = server
         .workspaces()
         .unwrap()
         .issue(

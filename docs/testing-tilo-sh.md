@@ -47,7 +47,7 @@ seconds; use them to rehearse exactly what the checks build. A clean checkout
 is built as its commit, one with changes as t finds it when the run starts.
 
 A fresh Lounge takes people by invitation, as production's does. The stack
-makes a person of its own and starts the relay with them as the Lounge's owner,
+makes a person of its own and starts the server with them as the Lounge's owner,
 and `up` prints an owner link they made: whoever opens it, in any browser, is in
 as an owner too (`stack.sh owner` prints it again).
 
@@ -57,9 +57,9 @@ podman. That rehearses what ships, and the images' own checks hold them to
 booting, answering their health route and answering one request per route.
 
 Each service gets the environment its manifest sets in tilo/infra
-(`apps/tilo-sh-relay`, `apps/tilo-api` and `apps/tilo-web`); only the public
+(`apps/tilo-sh-server`, `apps/tilo-api` and `apps/tilo-web`); only the public
 names change to loopback ports and the secrets become throwaway local ones.
-`stack.sh` lists the variables per service in `relay_env`, `api_env` and
+`stack.sh` lists the variables per service in `server_env`, `api_env` and
 `web_env`, and both modes use them, so a change to a production manifest
 belongs there too. Natively each service also gets the `ENV` its image's
 Containerfile sets. Only paths that live in the image move under the stack's
@@ -75,9 +75,9 @@ under their own numbers:
 | --- | --- |
 | `BASE+20` | the site, `http://tilo.localhost:BASE+20` |
 | `BASE+10` | the API server (MCP, `/v1`, keys, OAuth) |
-| `BASE` | the relay's public origin (which the page dials) |
+| `BASE` | the server's public origin (which the page dials) |
 | `BASE+6` | the live origin |
-| `BASE+1`, `BASE+3` | the relay's plain and route listeners |
+| `BASE+1`, `BASE+3` | the server's plain and route listeners |
 | `BASE+21`, `BASE+22`, `BASE+23` | the web entry, the releases, the mail sink |
 | `BASE+40`…`BASE+42` | the fake Discord (`up --discord`) |
 | `BASE+2`, `BASE+4`, `BASE+8` (UDP) | the page's QUIC: the packet relay, iroh, WebTransport |
@@ -100,19 +100,19 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 
 | Service | Production | Locally |
 | --- | --- | --- |
-| Lounge relay | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-server` through the image's entrypoint, laid out by the image's context script, behind production's Caddy at `127.0.0.1:24100` and `127.0.0.1:24106`; its entry takes people by invitation and keeps a wait list (`TILO_SH_ADMISSION=open` admits anyone as a guest, which the checks ask for) |
+| Lounge server | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-server` through the image's entrypoint, laid out by the image's context script, behind production's Caddy at `127.0.0.1:24100` and `127.0.0.1:24106`; its entry takes people by invitation and keeps a wait list (`TILO_SH_ADMISSION=open` admits anyone as a guest, which the checks ask for) |
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file at `127.0.0.1:24123`; `stack.sh mail` lists them with their links |
 | API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads and trusts instead of Tilo's release key |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root through `sudo` where the machine has `/dev/kvm`: with `--images`, or natively when `TILO_SH_VM_HOST=1` names its images; otherwise skipped with the reason |
-| Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there ([hosted Browser](hosted-browser.md)) |
+| Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the server places it there ([hosted Browser](hosted-browser.md)) |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
 
 With `--images`, the first three are the images themselves.
 
 ### What differs from production
 
-- **No TLS.** In production Cloudflare terminates TLS; here the site, the relay,
+- **No TLS.** In production Cloudflare terminates TLS; here the site, the server,
   its live session and the API server are plain HTTP on this machine's own names.
   Browsers treat `localhost`, names under it and loopback addresses as secure
   contexts, so the page runs as it does on tilo.sh (passkeys, WebCrypto, service
@@ -132,7 +132,7 @@ With `--images`, the first three are the images themselves.
   The image carries the release build.
 - **Natively, the trust bundle:** Tilo's programs read one fixed bundle path and
   no variable redirects it; `bwrap` mounts this machine's roots over that path
-  for the relay and the API server alone.
+  for the server and the API server alone.
 - **Natively, Caddy** is the one the caller built (`TILO_SH_CADDY`, which
   `t test e2e` hands the stack), else the `caddy` on your `PATH`, else the pinned
   release in `caddy.env`, fetched once and checked against its published
@@ -170,7 +170,7 @@ stack:
   makes one and joins; being in any workspace here also lets them past the
   invite-only sign-up and into the Lounge.
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway profile
-  at the local site. `integration/person.mjs SITE RELAY OUT` does the same
+  at the local site. `integration/person.mjs SITE SERVER OUT` does the same
   headless and prints the time until they are in the Lounge.
 - **The `tilo` command:** `tilo keys create "My backend"` prints a link.
   Approve it in the browser `stack.sh browser` opened, and the command prints
@@ -185,7 +185,7 @@ stack:
 - **Discord:** with `--discord`, the fake's control port at
   `http://127.0.0.1:24142` posts and reads as Discord's users do.
 
-`stack.sh status` shows what answers, `stack.sh logs relay` (or `tls`, `api`,
+`stack.sh status` shows what answers, `stack.sh logs server` (or `tls`, `api`,
 `web`, `discord`, `releases`, `bundle`) shows a service's log, `stack.sh down`
 stops the stack and `down --wipe` deletes its state.
 
@@ -241,9 +241,9 @@ images reproduce what is deployed.
 
 A release starts the Lounge on fresh state: it does not read the previous
 release's people, roles, wait list or invitations back. The deployment brings
-them over once, in the relay's own pod (tilo/infra `apps/tilo-sh-relay`), with
+them over once, in the server's own pod (tilo/infra `apps/tilo-sh-server`), with
 nobody reaching the cluster. `t test release-tilo-sh` proves the same steps on
-the previous release's own state (`relay-upgrade`).
+the previous release's own state (`server-upgrade`).
 
 1. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
    --publish`, and keep the three image digests it prints (the signing steps are
@@ -256,7 +256,7 @@ the previous release's own state (`relay-upgrade`).
    they are.
 3. **The host keeps its identity**: before the host first serves from the new
    directory, `keep-identity` copies the old release's device key
-   (`relay/host-device.key`) into it, once. The endpoint the VM hosts take work
+   (`server/host-device.key`) into it, once. The endpoint the VM hosts take work
    from and the address a workspace's Browser reaches the host at are derived
    from that key, so they stay the same.
 4. **The people come over**: the `release-people` container waits for the new
@@ -284,7 +284,7 @@ the previous release's own state (`relay-upgrade`).
    `<new state>/release-people/import.log`:
 
    ```sh
-   kubectl -n tilo-sh-vm-host logs deploy/tilo-sh-relay -c release-people
+   kubectl -n tilo-sh-vm-host logs deploy/tilo-sh-server -c release-people
    ```
 
 6. **Check**: the import named every person and the link each one got, the

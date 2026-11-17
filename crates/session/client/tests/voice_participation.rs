@@ -52,7 +52,7 @@ fn granted(event: &VoiceEvent) -> Option<VoiceGrant> {
 
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay fixture is consumed by shutdown after the final grant assertion; dropping it at Clippy's suggested location uses a moved value"
+    reason = "the server fixture is consumed by shutdown after the final grant assertion; dropping it at Clippy's suggested location uses a moved value"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {

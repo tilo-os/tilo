@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
 use ed25519_dalek::SigningKey;
-use tilo_server::daemon::RelayIdentity;
+use tilo_server::daemon::ServerIdentity;
 use tilo_server::web::WebHandle;
 use tilo_server::workspaces::{WaitListed, Workspaces};
 use tilo_server_protocol::directory::Listing;
@@ -30,7 +30,7 @@ use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32
 use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
+use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server_lending, web_config};
 use tilo_server::entry;
 
 mod bots;
@@ -41,7 +41,7 @@ mod import_people;
 use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
-pub(crate) const SECRET_APP: &str = "so.tilo.relay";
+pub(crate) const SECRET_APP: &str = "so.tilo.server";
 /// How often unconfirmed addresses left at the entry are let go.
 const WAIT_LIST_SWEEP_SECS: u64 = 60;
 #[derive(clap::Args, Clone, Debug, Default)]
@@ -472,20 +472,20 @@ fn hosted_identity(
     root: &SigningKey,
     host: SigningKey,
     host_cert: DeviceCert,
-    relay_state: &Path,
-) -> anyhow::Result<RelayIdentity> {
+    server_state: &Path,
+) -> anyhow::Result<ServerIdentity> {
     tilo_server::daemon::with_persisted_revocations(
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host,
             device_cert: host_cert,
             revocations: RevocationList::new(),
         },
-        relay_state,
+        server_state,
     )
 }
 
-/// The host's own device key, kept beside the relay's state. The root is
+/// The host's own device key, kept beside the server's state. The root is
 /// never written here.
 fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
     let path = state.join("host-device.key");
@@ -525,7 +525,7 @@ fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
 }
 
 /// The governed workspace: the one named in `workspace_id_file`, else the only workspace
-/// this relay governs (a start interrupted between keeping the root and
+/// this server governs (a start interrupted between keeping the root and
 /// writing the file), else a new one. An id whose state is gone starts again
 /// under it: the id is the workspace's address, which the id file keeps.
 async fn governed_workspace(
@@ -561,7 +561,9 @@ async fn governed_workspace(
                 keep_root(store, &created.workspace, root)?;
                 created.workspace
             }
-            _ => bail!("this relay governs several workspaces; a persistent workspace governs one"),
+            _ => {
+                bail!("this server governs several workspaces; a persistent workspace governs one")
+            }
         },
     };
     check_stored_root(store, &workspace, root)?;
@@ -868,7 +870,7 @@ async fn settle_owners(
 /// refounded (`refounded`), each a map from its name to a note. Being the
 /// workspace's, it moves with the workspace: any host serving it reads what
 /// was done, and a host started on an empty directory seeds nothing again.
-pub(crate) const SETTLED: (&str, &str) = ("so.tilo.relay", "settled");
+pub(crate) const SETTLED: (&str, &str) = ("so.tilo.server", "settled");
 
 /// What the workspace's [`SETTLED`] record names under `kind`.
 pub(crate) async fn settled_in(
@@ -992,8 +994,10 @@ pub(crate) async fn settle_chat(
         return Ok(());
     }
     let catalogue = tilo_agent_session::AppCatalogue::native();
-    let record =
-        tilo_server::workspace_bots::workspace_resource(&catalogue, crate::workspace_chat::CHAT_APP);
+    let record = tilo_server::workspace_bots::workspace_resource(
+        &catalogue,
+        crate::workspace_chat::CHAT_APP,
+    );
     workspaces
         .author_application(
             workspace,
@@ -1223,7 +1227,7 @@ async fn settle_invitation_only(
 #[expect(
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
-    reason = "one startup sequence; the hosted relay lives until shutdown"
+    reason = "one startup sequence; the hosted server lives until shutdown"
 )]
 pub(crate) async fn run(
     args: WorkspaceArgs,
@@ -1303,13 +1307,13 @@ pub(crate) async fn run(
         &format!("{name} workspace host"),
         tilo_user_identity::DeviceCapabilities::member(),
     )?;
-    let config = tilo_server::RelayConfig {
-        state_root: tilo_server_protocol::metrics::workspace_relay_root(&state),
+    let config = tilo_server::ServerConfig {
+        state_root: tilo_server_protocol::metrics::workspace_server_root(&state),
         identity_root: state.join("identity"),
         member_limits: persistent.member_limits.then(Default::default),
         iroh_listen: persistent
             .iroh_listen
-            .unwrap_or_else(|| tilo_server::RelayConfig::default().iroh_listen),
+            .unwrap_or_else(|| tilo_server::ServerConfig::default().iroh_listen),
         work: hold_for(persistent.hold_for.as_deref())?,
         ..Default::default()
     };
@@ -1324,7 +1328,7 @@ pub(crate) async fn run(
         tilo_server::hosted_browser::keep_stand_in(&config.state_root, &root)
             .map_err(anyhow::Error::msg)?;
     }
-    let hosted = start_relay_lending(
+    let hosted = start_server_lending(
         config,
         identity,
         &args.web,
@@ -1333,13 +1337,13 @@ pub(crate) async fn run(
     )
     .await?;
     // Everything a start settles and begins, in one place: a step that fails
-    // stops the relay it was started on before the error goes up (the `match`
+    // stops the server it was started on before the error goes up (the `match`
     // below).
     let serving = async {
         let workspaces = hosted
-            .relay
+            .server
             .workspaces()
-            .context("the relay governs no workspaces in this mode")?
+            .context("the server governs no workspaces in this mode")?
             .clone();
         let shown = persistent
             .workspace_name
@@ -1437,7 +1441,7 @@ pub(crate) async fn run(
         let mut config = web_config(&args.web, listen, &state);
         config.wait_list.clone_from(&page);
         let web = hosted
-            .relay
+            .server
             .serve_web(config)
             .await
             .context("start the browser listener")?;
@@ -1479,10 +1483,10 @@ pub(crate) async fn run(
         };
         let connector_host = tilo_server::workspace_bots::installed::ConnectorHost::new(
             workers,
-            // The relay's content, where it keeps each workspace's files, uploads
+            // The server's content, where it keeps each workspace's files, uploads
             // and what its apps made: one store per workspace for everything this
             // host keeps.
-            hosted.relay.content(),
+            hosted.server.content(),
             public,
             tilo_server::workspace_bots::discord::Served {
                 avatars_url: persistent.public_avatars_url.clone(),
@@ -1547,7 +1551,7 @@ pub(crate) async fn run(
             web,
             links: host_invite::Links {
                 web_entry: args.web.web_entry.clone(),
-                relay_origin: args.web.public_origin.clone(),
+                server_origin: args.web.public_origin.clone(),
             },
         };
         // The deployment's own routes serve once the workspace does, so a
@@ -1624,8 +1628,8 @@ pub(crate) async fn run(
     } = match serving {
         Ok(serving) => serving,
         Err(error) => {
-            // A start that failed stops the relay it began before its error
-            // goes up: a relay dropped from here closes its endpoint after the
+            // A start that failed stops the server it began before its error
+            // goes up: a server dropped from here closes its endpoint after the
             // runtime is gone, with its tasks still joining what they started.
             hosted.shutdown().await;
             return Err(error);
@@ -1864,7 +1868,7 @@ async fn serve_operator(
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the server stopped governing"),
                 }
                 let members = summary(context).await?.members;
                 for user in removals.taken_in(&members) {
@@ -1957,7 +1961,7 @@ mod tests {
             let serving = |extra: &[&str]| {
                 Args::try_parse_from(
                     [
-                        "relay",
+                        "server",
                         "--persistent",
                         "tilo",
                         "--root-file",
@@ -1987,7 +1991,7 @@ mod tests {
                 "gigabytes are a number"
             );
             assert!(
-                Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
+                Args::try_parse_from(["server", "--person-storage-gb", "40"]).is_err(),
                 "workspaces of people's own are kept by a persistent host"
             );
         }
@@ -2081,12 +2085,12 @@ mod tests {
         assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
     }
 
-    /// A relay governing one workspace `Plaza`, its workspaces and the host's
+    /// A server governing one workspace `Plaza`, its workspaces and the host's
     /// device certificate.
-    async fn plaza(dir: &Path) -> (tilo_server::daemon::Relay, Workspaces, DeviceCert, String) {
-        let (relay, workspaces, host_cert) = host(dir).await;
+    async fn plaza(dir: &Path) -> (tilo_server::daemon::Server, Workspaces, DeviceCert, String) {
+        let (server, workspaces, host_cert) = host(dir).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        (relay, workspaces, host_cert, workspace)
+        (server, workspaces, host_cert, workspace)
     }
 
     /// Seeds as the operator's start does, naming the apps it asked `--seed-app`
@@ -2115,7 +2119,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert) =
+        let (server, workspaces, host_cert) =
             host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
@@ -2129,12 +2133,12 @@ mod tests {
         // A restart seeds nothing again: what the first start seeded is kept.
         let again = seeded(&host_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(again, first);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
-    /// The relay of [`plaza`] started on `dir`, as every start signs its
+    /// The server of [`plaza`] started on `dir`, as every start signs its
     /// certificate afresh.
-    async fn host(dir: &Path) -> (tilo_server::daemon::Relay, Workspaces, DeviceCert) {
+    async fn host(dir: &Path) -> (tilo_server::daemon::Server, Workspaces, DeviceCert) {
         host_with(dir, DeviceCapabilities::member()).await
     }
 
@@ -2144,7 +2148,7 @@ mod tests {
     async fn host_with(
         dir: &Path,
         capabilities: DeviceCapabilities,
-    ) -> (tilo_server::daemon::Relay, Workspaces, DeviceCert) {
+    ) -> (tilo_server::daemon::Server, Workspaces, DeviceCert) {
         let root = SigningKey::from_bytes(&[1; 32]);
         // The host's device key outlives its starts, as `host-device.key` does.
         let kept = dir.join("host-device.key");
@@ -2158,13 +2162,13 @@ mod tests {
         );
         let host = SigningKey::from_bytes(&key);
         let host_cert = enrol(&root, &host, "host", capabilities).unwrap();
-        let relay = tilo_server::daemon::Relay::start(
-            tilo_server::RelayConfig {
-                state_root: dir.join("relay"),
+        let server = tilo_server::daemon::Server::start(
+            tilo_server::ServerConfig {
+                state_root: dir.join("server"),
                 identity_root: dir.join("identity"),
                 ..Default::default()
             },
-            RelayIdentity {
+            ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
                 device_cert: host_cert.clone(),
@@ -2173,8 +2177,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap().clone();
-        (relay, workspaces, host_cert)
+        let workspaces = server.workspaces().unwrap().clone();
+        (server, workspaces, host_cert)
     }
 
     /// A host started as `tilo-server workspace` starts one: the operator's root
@@ -2184,13 +2188,14 @@ mod tests {
         root: &SigningKey,
         host: &SigningKey,
         host_cert: &DeviceCert,
-        relay_state: &Path,
+        server_state: &Path,
         state: &Path,
-    ) -> tilo_server::daemon::Relay {
-        let identity = hosted_identity(root, host.clone(), host_cert.clone(), relay_state).unwrap();
-        tilo_server::daemon::Relay::start(
-            tilo_server::RelayConfig {
-                state_root: relay_state.to_path_buf(),
+    ) -> tilo_server::daemon::Server {
+        let identity =
+            hosted_identity(root, host.clone(), host_cert.clone(), server_state).unwrap();
+        tilo_server::daemon::Server::start(
+            tilo_server::ServerConfig {
+                state_root: server_state.to_path_buf(),
                 identity_root: state.join("identity"),
                 ..Default::default()
             },
@@ -2212,7 +2217,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         std::fs::create_dir_all(&state).unwrap();
-        let relay_state = tilo_server_protocol::metrics::workspace_relay_root(&state);
+        let server_state = tilo_server_protocol::metrics::workspace_server_root(&state);
         let root = SigningKey::from_bytes(&[0x11; 32]);
         let host = SigningKey::from_bytes(&[0x22; 32]);
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::member()).unwrap();
@@ -2230,9 +2235,9 @@ mod tests {
 
         // Before the operator withdraws it, the device connects: what the
         // refusal below is the log's doing, not the device's.
-        let relay = start_workspace(&root, &host, &host_cert, &relay_state, &state).await;
-        let addr = relay.node_addr();
-        let admitted = tilo_server::RelayClient::connect(
+        let server = start_workspace(&root, &host, &host_cert, &server_state, &state).await;
+        let addr = server.node_addr();
+        let admitted = tilo_server::ServerClient::connect(
             endpoint().await,
             addr,
             user,
@@ -2242,11 +2247,11 @@ mod tests {
         )
         .await;
         assert!(admitted.is_ok(), "an unrecognised device connects");
-        relay.shutdown().await;
+        server.shutdown().await;
 
         // The operator's revocation, written where the host reads it.
         let (_, changed) = tilo_server::root_signer::revoke_device(
-            &relay_state,
+            &server_state,
             &root,
             leaked_cert.device_public_key,
             tilo_user_identity::RevocationReason::Compromised,
@@ -2254,9 +2259,9 @@ mod tests {
         .unwrap();
         assert!(changed, "a first revocation changes the log");
 
-        let relay = start_workspace(&root, &host, &host_cert, &relay_state, &state).await;
-        let addr = relay.node_addr();
-        let refused = tilo_server::RelayClient::connect(
+        let server = start_workspace(&root, &host, &host_cert, &server_state, &state).await;
+        let addr = server.node_addr();
+        let refused = tilo_server::ServerClient::connect(
             endpoint().await,
             addr.clone(),
             user,
@@ -2269,7 +2274,7 @@ mod tests {
             refused.is_err(),
             "the restarted host refuses the device its root revoked"
         );
-        let admitted = tilo_server::RelayClient::connect(
+        let admitted = tilo_server::ServerClient::connect(
             endpoint().await,
             addr,
             user,
@@ -2344,7 +2349,7 @@ mod tests {
     #[tokio::test]
     async fn a_declared_owner_is_let_in_and_governs_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
         ensure_guest_policy(&workspaces, &workspace, &host_cert)
             .await
             .unwrap();
@@ -2434,7 +2439,7 @@ mod tests {
         // What is no key stops the start.
         let refused = settle_owners(&workspaces, &workspace, &["Ada".to_owned()]).await;
         assert!(refused.is_err(), "{refused:?}");
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Someone the listed workspace's entry lets in is a member; once the
@@ -2445,7 +2450,7 @@ mod tests {
     #[tokio::test]
     async fn taking_people_by_invitation_the_invitation_admits_the_guest() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
         ensure_guest_policy(&workspaces, &workspace, &host_cert)
             .await
             .unwrap();
@@ -2527,7 +2532,7 @@ mod tests {
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// A listed workspace people walked in through, with an owner declared,
@@ -2536,7 +2541,7 @@ mod tests {
     #[tokio::test]
     async fn a_lived_in_workspace_takes_its_hosts_settings_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
         ensure_guest_policy(&workspaces, &workspace, &host_cert)
             .await
             .unwrap();
@@ -2601,9 +2606,9 @@ mod tests {
             )
             .await
             .unwrap();
-        relay.shutdown().await;
+        server.shutdown().await;
 
-        let (relay, workspaces, host_cert) = host(dir.path()).await;
+        let (server, workspaces, host_cert) = host(dir.path()).await;
         for step in 0..2 {
             ensure_guest_policy(&workspaces, &workspace, &host_cert)
                 .await
@@ -2620,6 +2625,6 @@ mod tests {
             !log.iter().any(|line| line.contains("log against rows")),
             "{log:#?}"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

@@ -101,7 +101,7 @@ impl Workspaces {
     /// # Errors
     /// Refuses other certificates, stale ownership, undeclared apps, a primary
     /// of an app without one, missing records, sealed records whose channel
-    /// this relay does not take part in, failed changes or oversized
+    /// this server does not take part in, failed changes or oversized
     /// publication.
     #[expect(
         clippy::significant_drop_tightening,
@@ -214,7 +214,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// Refuses another governor's certificate, stale ownership, undeclared
-    /// apps, missing records, sealed ones whose channel this relay does not
+    /// apps, missing records, sealed ones whose channel this server does not
     /// take part in, a bot the workspace does not let act, a change outside its
     /// grants, or oversized publication.
     #[expect(

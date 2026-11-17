@@ -1,11 +1,11 @@
-//! The API server against the relay, as tilo.sh runs them: the relay's
+//! The API server against the server, as tilo.sh runs them: the server's
 //! own person is its operator, the site's home workspace lets people in
 //! through its action API, and each person keeps one workspace of their own there.
 //! A person's key works through the API's HTTP routes alone: it makes the
-//! person's workspace, is answered there by the relay's app workers with no
+//! person's workspace, is answered there by the server's app workers with no
 //! tab of anyone's open, mints a key that reaches that one workspace and
 //! nothing else, and revoking it ends both.
-use super::api_on_relay::{api_on_relay, api_on_relay_limiting, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server, api_on_server_limiting, approved_key, headers, json_of};
 use super::hosted_documents::{application_pdf, content_in, json_in};
 use super::*;
 use base64::Engine as _;
@@ -170,14 +170,14 @@ pub(super) async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16,
     clippy::too_many_lines,
     reason = "one key's story through the action API, from its approval to its revocation"
 )]
-async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let lobby = on_relay.lobby.clone();
+async fn a_key_works_through_the_api_on_the_server_and_ends_when_revoked() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let lobby = on_server.lobby.clone();
     // A person who never met the operator approves a key for their backend.
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Visa backend").await;
 
     let mut account = Mcp {
         api: &api,
@@ -188,7 +188,7 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
     let (status, init) = account.initialize().await;
     assert_eq!(status, 200, "{init}");
 
-    // It makes the person's workspace on the relay.
+    // It makes the person's workspace on the server.
     let created = account
         .tilo_do(json!({"path": "account/workspaces#create",
                         "args": {"name": "Applicant: Jane Doe"}}))
@@ -237,17 +237,17 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
     );
     assert!(
         rows.iter()
-            .any(|row| row["id"] == on_relay.lobby.as_str() && row["role"] == "editor"),
+            .any(|row| row["id"] == on_server.lobby.as_str() && row["role"] == "editor"),
         "the home workspace the key was let into: {listed}"
     );
-    // Each names the host it is on: the relay, for these.
+    // Each names the host it is on: the server, for these.
     assert!(
         rows.iter()
             .all(|row| row["host"].as_str().is_some_and(|host| !host.is_empty())),
         "every workspace names its host: {listed}"
     );
 
-    // The relay's app workers answer it there, with no tab of anyone's
+    // The server's app workers answer it there, with no tab of anyone's
     // open.
     let (status, listed) = account
         .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -290,7 +290,7 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
     assert_eq!(status, 200, "{listed}");
     assert_eq!(listed["result"]["isError"], false, "{listed}");
     // The person's own documents, through the action API alone with the key for
-    // that workspace, run by the relay's app workers though the relay is not
+    // that workspace, run by the server's app workers though the server is not
     // theirs: a form goes in over HTTP, PDF Viewer fills it, Writer writes a
     // letter and exports it, and the letter comes back out.
     let (status, put) = upload(&minted_session, &workspace, &application_pdf()).await;
@@ -485,7 +485,7 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backend_past_its_budget_is_told_when_to_ask_again() {
     const BURST: u32 = 3;
-    let on_relay = api_on_relay_limiting(
+    let on_server = api_on_server_limiting(
         ISSUER,
         Some(tilo_server::member_limits::MemberLimitsConfig {
             owner_burst: BURST,
@@ -495,10 +495,10 @@ async fn a_backend_past_its_budget_is_told_when_to_ask_again() {
         }),
     )
     .await;
-    let api = Arc::clone(&on_relay.api);
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Customer backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Customer backend").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -562,20 +562,20 @@ fn quantile(durations: &[Duration], quantile: f64) -> Duration {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
-    // The relay keeps each person to the budgets a public one does; a
+    // The server keeps each person to the budgets a public one does; a
     // person's server key spends the owner budget, which guests never reach.
-    let on_relay = api_on_relay_limiting(
+    let on_server = api_on_server_limiting(
         ISSUER,
         Some(tilo_server::member_limits::MemberLimitsConfig::default()),
     )
     .await;
-    let api = Arc::clone(&on_relay.api);
-    // A startup's backend, whose person is not the relay's operator, makes a
+    let api = Arc::clone(&on_server.api);
+    // A startup's backend, whose person is not the server's operator, makes a
     // workspace per customer with its one key, as fast as it answers: none
     // is refused or paced (`did` takes nothing but `ok`).
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Customer backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Customer backend").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -636,7 +636,7 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         "making a workspace stays fast: p95 {create_p95:?}"
     );
     // The last hundred cost what the first hundred did (the very first warms
-    // the relay up): nothing a create does, or that the workspaces made
+    // the server up): nothing a create does, or that the workspaces made
     // before it do meanwhile, grows with how many the person has.
     let (first, last) = (
         quantile(&creating[1..=100], 0.95),
@@ -748,11 +748,11 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 /// id (`_meta` invocation.id) beside the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Visa backend").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -855,27 +855,27 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     );
 }
 
-/// Workspaces a backend works in at once while the relay is busy making more:
+/// Workspaces a backend works in at once while the server is busy making more:
 /// the shape of the burst a startup driving a workspace per customer sees,
 /// large enough that a first answer queueing behind the others' joins cannot
 /// be mistaken for a slow machine.
 const WORKED_AT_ONCE: usize = 50;
 
-/// Workspaces the same backend makes meanwhile, so the relay is busy with
+/// Workspaces the same backend makes meanwhile, so the server is busy with
 /// other work than the burst's while the burst is answered.
 const MADE_MEANWHILE: usize = 200;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
-    let on_relay = api_on_relay_limiting(
+    let on_server = api_on_server_limiting(
         ISSUER,
         Some(tilo_server::member_limits::MemberLimitsConfig::default()),
     )
     .await;
-    let api = Arc::clone(&on_relay.api);
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Customer backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Customer backend").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -901,7 +901,7 @@ async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
     }
 
     // The same backend keeps making workspaces while it works in the ones it
-    // has: the relay's app workers answer the burst beside that work, as they
+    // has: the server's app workers answer the burst beside that work, as they
     // answer a startup's hundreds.
     let busy = tokio::spawn({
         let api = Arc::clone(&api);
@@ -998,11 +998,11 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     const MESSAGES: usize = 60;
     /// The posts compared at each end.
     const EACH_END: usize = 10;
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let lobby = on_relay.lobby.clone();
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let lobby = on_server.lobby.clone();
     // Its chat, as the operator sets it up, with the channel posts go to.
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces
         .prepare_application(
@@ -1043,7 +1043,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
         .unwrap();
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Lounge history").await;
+    let key = approved_key(&on_server, &ada, &page, "Lounge history").await;
     let mut lounge = Mcp {
         api: &api,
         path: format!("/w/{lobby}/mcp"),
@@ -1130,11 +1130,11 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_message_a_long_conversation_lists_is_read_at_its_path() {
     const MESSAGES: usize = 45;
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let lobby = on_relay.lobby.clone();
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let lobby = on_server.lobby.clone();
     // Its chat, as the operator seats it, with the channel posts go to.
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces
         .prepare_application(
@@ -1175,7 +1175,7 @@ async fn every_message_a_long_conversation_lists_is_read_at_its_path() {
         .unwrap();
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Long conversation").await;
+    let key = approved_key(&on_server, &ada, &page, "Long conversation").await;
     let mut lounge = Mcp {
         api: &api,
         path: format!("/w/{lobby}/mcp"),

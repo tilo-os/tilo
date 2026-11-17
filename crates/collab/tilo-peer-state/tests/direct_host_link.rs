@@ -819,7 +819,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     let host_device = host_key.verifying_key().to_bytes();
     host.publish(|peer| {
         peer.receive_from_report(
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(host_device),
+            tilo_peer_state::TransportOrigin::RetainedServerDelta(host_device),
             old.clone(),
             SystemTime::now(),
         )

@@ -103,8 +103,8 @@ async fn seed(members: u32) -> (std::time::Duration, std::time::Duration) {
     );
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let seeding = std::time::Instant::now();
     let mut last = Vec::new();
@@ -126,7 +126,7 @@ async fn seed(members: u32) -> (std::time::Duration, std::time::Duration) {
         );
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
     let mean = last.iter().sum::<std::time::Duration>() / u32::try_from(last.len()).unwrap();
     (seeded, mean)
 }
@@ -150,8 +150,8 @@ async fn work_per_arrival(
 ) -> Vec<(tilo_peer_state::governance_work::GovernanceWork, u64)> {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace;
     let access = dir
@@ -173,7 +173,7 @@ async fn work_per_arrival(
         }
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
     work
 }
 
@@ -230,8 +230,8 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
 async fn document_after(members: u32) -> (usize, u64) {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     for n in 0..members {
         entry_arrival(&workspaces, &cert, &workspace, n).await;
@@ -252,7 +252,7 @@ async fn document_after(members: u32) -> (usize, u64) {
     let beside = size(&path.with_extension(super::super::PUBLICATIONS))
         + size(&path.with_extension(super::super::RECEIPTS));
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
     (own, beside)
 }
 

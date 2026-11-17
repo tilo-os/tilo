@@ -261,8 +261,8 @@ expected='{"home":{"name":"Commons","host":{"origin":"https://workspaces.example
 
 # A workspace its host lists is joined through the entry the host lists it at.
 start TILO_WEB_HOME_HOST=workspaces.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" \
-  TILO_WEB_HOME_ENTRY=https://relay.example/peer/v1/directory/w1/
-expected='{"home":{"name":"Commons","host":{"origin":"https://workspaces.example","info":"'"$info_text"'"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://workspaces.example/directory"}'
+  TILO_WEB_HOME_ENTRY=https://server.example/peer/v1/directory/w1/
+expected='{"home":{"name":"Commons","host":{"origin":"https://workspaces.example","info":"'"$info_text"'"},"admission":"https://server.example/peer/v1/directory/w1/"},"directory":"https://workspaces.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json with an entry: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)
@@ -320,10 +320,10 @@ form_action=$(head_of /sign-in | grep '^content-security-policy:.*form-action' |
 # invitation: https://<site>/i/<handle>#<key>. A browser navigating there
 # gets the entry page, which reads the site's own configuration and files
 # (/entry.json, /v/…); the page's own request for the invitation — a caller
-# that asks for anything but the page — is the relay's to answer, the one the
+# that asks for anything but the page — is the server's to answer, the one the
 # site's home workspace is hosted on, which keeps the invitation under the
-# handle and is never given the key in the fragment. The relay here is a
-# stand-in on the loopback that keeps what it is given, as the relay's shelf
+# handle and is never given the key in the fragment. The server here is a
+# stand-in on the loopback that keeps what it is given, as the server's shelf
 # does; the site is started with a home host and nothing else, so the shelf it
 # leaves an invitation on is the one its entrypoint derives.
 handle=abcdefghijklmnop
@@ -356,7 +356,7 @@ class Shelf(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         held = json.loads(path.read_text())
-        # What a relay keeps and hands back: the sealed bytes, and the origin
+        # What a server keeps and hands back: the sealed bytes, and the origin
         # they admit into. Never the delete secret it was left with.
         body = json.dumps({"sealed": held["sealed"], "host": held["host"]},
                           separators=(",", ":")).encode()
@@ -378,7 +378,7 @@ start TILO_WEB_HOME_HOST=127.0.0.1:18082 TILO_WEB_HOME_NAME=Lounge "TILO_WEB_HOM
 sealed=c2VhbGVkIGludml0YXRpb24
 delete=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expires_at_ns=$(( ($(date +%s) + 600) * 1000000000 ))
-left=$(printf '{"sealed":"%s","expiresAtNs":%s,"delete":"%s","host":"https://relay.example"}' \
+left=$(printf '{"sealed":"%s","expiresAtNs":%s,"delete":"%s","host":"https://server.example"}' \
   "$sealed" "$expires_at_ns" "$delete")
 status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   --data "$left" "http://127.0.0.1:8080/i/$handle")
@@ -387,10 +387,10 @@ status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Conte
 # Whoever the link reaches fetches it back, and gets the invitation and where
 # it admits into, byte for byte, with no key and no delete secret.
 answered=$(get "/i/$handle" -H 'Accept: application/octet-stream')
-[[ $answered == "{\"sealed\":\"$sealed\",\"host\":\"https://relay.example\"}" ]] \
+[[ $answered == "{\"sealed\":\"$sealed\",\"host\":\"https://server.example\"}" ]] \
   || fail "the site must answer a link's handle with its invitation: $answered"
 grep -q "$delete" <<<"$answered" && fail "the site hands back the delete secret"
-# A handle nothing is kept under is the relay's answer, not the page's.
+# A handle nothing is kept under is the server's answer, not the page's.
 grep -q '^HTTP/[0-9.]* 410' <(head_of /i/ponmlkjihgfedcba -H 'Accept: application/octet-stream') \
   || fail "a link whose invitation is gone must say so"
 # A browser opening the same link gets the page, which asks for the invitation
@@ -406,11 +406,11 @@ grep -q '^cache-control: no-cache' <(head_of "/i/$handle" -H "Accept: $browser_a
 cmp -s <(get /i/apple-touch-icon.png -H 'Accept: */*') <(get /apple-touch-icon.png) \
   || fail "a file the link's page loads relative to /i/ must be the site's own"
 # Both ways round went to the shelf the entrypoint derived, at the path the
-# relay serves it under: an invitation left, and invitations fetched.
+# server serves it under: an invitation left, and invitations fetched.
 grep -q '^POST /i/' "$shelf_store/asked" && grep -q '^GET /i/' "$shelf_store/asked" \
   || fail "the shelf under /i/ was not the one the site derived: $(cat "$shelf_store/asked")"
 kill "$shelf_pid" 2>/dev/null || true
-# With no home workspace there is no relay behind the site to keep one: a
+# With no home workspace there is no server behind the site to keep one: a
 # request for the invitation is not answered with the page, which would hand a
 # stranger the editor instead of nothing.
 start

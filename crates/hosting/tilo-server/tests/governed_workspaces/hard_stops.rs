@@ -1,10 +1,10 @@
-//! A relay stopped hard (`podman rm -f`) right after it told a member a
-//! write was committed. The answer waits for the relay's own durable copy,
+//! A server stopped hard (`podman rm -f`) right after it told a member a
+//! write was committed. The answer waits for the server's own durable copy,
 //! not for the workspace's governor to have written its copy of the record
 //! through to the workspace file, which it does within a second: the next start
-//! replays the relay's copy into the governor's, so the write is in the
+//! replays the server's copy into the governor's, so the write is in the
 //! record's history all the same.
-use tilo_server::RelayClient;
+use tilo_server::ServerClient;
 
 use super::*;
 
@@ -24,19 +24,25 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_keeps_it() {
+async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_keeps_it() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspace = create_and_enter(&relay, &laptop, "Lounge").await;
-    let mut bob_peer =
-        super::sealed_documents::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [7; 32])
-            .await
-            .unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspace = create_and_enter(&server, &laptop, "Lounge").await;
+    let mut bob_peer = super::sealed_documents::join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &bob,
+        &phone,
+        [7; 32],
+    )
+    .await
+    .unwrap();
     let mut alice_peer = StatePeer::new(
         &workspace.workspace,
         host.cert.clone(),
@@ -45,8 +51,8 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
         SystemTime::now(),
     )
     .unwrap();
-    let alice_session = session(&relay, &laptop, workspace.workspace_id).await;
-    let bob_session = session(&relay, &phone, workspace.workspace_id).await;
+    let alice_session = session(&server, &laptop, workspace.workspace_id).await;
+    let bob_session = session(&server, &phone, workspace.workspace_id).await;
     let mut presence = Vec::new();
     receive_until(
         "Alice's replica admits Bob",
@@ -56,7 +62,7 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
         |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
     )
     .await;
-    crate::common::wait_until_subscribed(&relay, workspace.workspace_id, &phone.device_pubkey())
+    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
     // Alice's first write makes the record, and the governor holds it.
@@ -77,13 +83,13 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     )
     .await;
 
-    // Bob's page commits a write and is told it is committed; the relay is
+    // Bob's page commits a write and is told it is committed; the server is
     // stopped hard at that moment, before the governor's copy is kept.
-    let bob_client: RelayClient = bob_session.into_client();
+    let bob_client: ServerClient = bob_session.into_client();
     let write = write(&mut bob_peer, "reply", "committed", &phone.sk);
     super::shared_desktop::commit(&bob_client, &phone, workspace.workspace_id, &write)
         .await
-        .expect("the relay commits Bob's write");
+        .expect("the server commits Bob's write");
     let stopped = tempfile::tempdir().unwrap();
     copy_dir(state.path(), stopped.path());
 
@@ -111,5 +117,5 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     reopened.shutdown().await;
     alice_session.close().await;
     drop(bob_client);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

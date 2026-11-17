@@ -1102,7 +1102,7 @@ mod tests {
     fn proposed(person: [u8; 32]) -> (DeviceCert, [u8; 32]) {
         let candidate = tilo_identity_host::device_admin::Candidate {
             device_node_id: hex::encode([0x51; 32]),
-            relay_service_node_id: hex::encode([0x52; 32]),
+            server_node_id: hex::encode([0x52; 32]),
             label: "Phone".into(),
             verification_code: "123456".into(),
         };
@@ -1522,7 +1522,7 @@ mod tests {
     async fn person_host(
         root: &Arc<runtime_identity::SigningIdentity>,
         state: &std::path::Path,
-    ) -> (tilo_server::daemon::Relay, tilo_server::web::WebHandle) {
+    ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.person();
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let mut host_cert = DeviceCert {
@@ -1542,12 +1542,12 @@ mod tests {
         tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
             .await
             .unwrap();
-        let relay = tilo_server::daemon::Relay::start_with_relay_mode(
-            tilo_server::RelayConfig {
+        let server = tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
                 state_root: state.join("host"),
-                ..tilo_server::RelayConfig::default()
+                ..tilo_server::ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,
                 device_cert: host_cert,
@@ -1557,7 +1557,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let web = relay
+        let web = server
             .serve_web(tilo_server::web::WebConfig {
                 listen: "127.0.0.1:0".parse().unwrap(),
                 tls: tilo_server::web::TlsSource::Development {
@@ -1574,7 +1574,7 @@ mod tests {
             })
             .await
             .unwrap();
-        (relay, web)
+        (server, web)
     }
 
     /// The whole of adding a device from this computer: it shows the pairing link, a new device
@@ -1593,7 +1593,7 @@ mod tests {
 
         // The person's host on this machine, serving the web a new device opens the link on.
         let state = tempfile::tempdir().unwrap();
-        let (relay, web) = runtime.block_on(person_host(&root, state.path()));
+        let (server, web) = runtime.block_on(person_host(&root, state.path()));
         let origin = web.plain_origin.clone().unwrap();
 
         // This laptop holds the person's key and shows the link.
@@ -1671,6 +1671,6 @@ mod tests {
             "an answered device asks no more"
         );
         drop(web);
-        runtime.block_on(relay.shutdown());
+        runtime.block_on(server.shutdown());
     }
 }

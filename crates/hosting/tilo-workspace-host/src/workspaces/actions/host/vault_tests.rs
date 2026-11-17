@@ -156,8 +156,8 @@ pub(super) fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::pa
 async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -221,7 +221,7 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     .await
     .expect("Ada forgets her login");
     assert_eq!(remaining["items"], json!([]));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// No agent lists a person's vault, adds to it or removes from it: not one
@@ -233,8 +233,8 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
 async fn no_agent_reaches_a_persons_vault() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -314,7 +314,7 @@ async fn no_agent_reaches_a_persons_vault() {
     .await
     .unwrap();
     assert_eq!(his["items"], json!([]));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// An item that is not one to keep is refused before anything is kept, and
@@ -324,8 +324,8 @@ async fn no_agent_reaches_a_persons_vault() {
 async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
@@ -382,7 +382,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
     .unwrap();
     assert_eq!(hers["items"], json!([]));
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A provider of whoever asks, at `https://models.example/v1`, by its id.
@@ -450,8 +450,8 @@ async fn uses_of(
 async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
@@ -518,7 +518,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         matches!(refused, Err(ActionHostError::UnknownAction)),
         "{refused:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A provider of whoever asks and three items of theirs a use might name:
@@ -582,8 +582,8 @@ async fn nothing_was_used(
 async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -635,7 +635,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
         );
     }
     nothing_was_used(&service, workspace_id, hers, &items).await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A bot, an app and an agent no certificate stands behind use nothing of a
@@ -645,8 +645,8 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
 async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
@@ -693,7 +693,7 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
         );
     }
     nothing_was_used(&service, workspace_id, hers, &items).await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A mail sign-in named by reference goes only to the servers its item
@@ -703,8 +703,8 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
 async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);
@@ -783,7 +783,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         uses_of(&service, workspace_id, hers, &sign_in).await,
         json!([])
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Every file under `dir` called `name`.

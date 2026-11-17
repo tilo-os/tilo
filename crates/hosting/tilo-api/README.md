@@ -35,9 +35,9 @@ agent's grant (`tilo_user_identity::DeviceCapabilities::agent`): scoped to
 all of the person's workspaces or one, expiring within 90 days (the API server asks
 for 89), governing nothing. A key minted for one workspace is certified by its
 parent grant's key. The API server acts only with these keys, each the device of
-its own session with the relay:
+its own session with the server:
 
-- The relay admits a grant as its person's agent in exactly the workspaces its
+- The server admits a grant as its person's agent in exactly the workspaces its
   scope reaches where it redeemed its person's invitation, holds it to an
   agent's role (Editor at most), and lets it govern, invite or administer
   nothing (`tilo_workspace_host::workspace_access`). Its certificate's expiry and
@@ -52,7 +52,7 @@ its own session with the relay:
 Revoking a grant at `/grants` (or the agent revoking its refresh token, or
 `account/keys#revoke`) ends its tokens and sessions at once, with every grant
 it minted, and forgets their keys. The person can also revoke the grant's key
-from their devices like any other device; the relay then refuses it from its
+from their devices like any other device; the server then refuses it from its
 own revocation list. Past its certificate's expiry a grant issues no token and
 the agent asks again.
 
@@ -64,8 +64,8 @@ The binary reads its configuration from the environment:
 |---|---|
 | `TILO_API_LISTEN` | `HOST:PORT` to listen on, plain HTTP behind a TLS-terminating proxy |
 | `TILO_API_ORIGIN` | The API server's public origin as agents reach it (`https://mcp.tilo.sh`) |
-| `TILO_API_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the entry to the site's home workspace on the relay (`home.admission`) |
-| `TILO_API_HOST` | The public origin of the relay the person's workspaces live on (`https://eu1.tilo.sh`) |
+| `TILO_API_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the entry to the site's home workspace on the server (`home.admission`) |
+| `TILO_API_HOST` | The public origin of the server the person's workspaces live on (`https://eu1.tilo.sh`) |
 | `TILO_API_STATE` | A private file for registered clients, grants (with each live grant's key) and token digests; on persistent storage, one writer |
 
 What it reaches:
@@ -80,7 +80,7 @@ What it reaches:
   and each invitation it redeems is an entry on another stream of the same
   connection.
 
-The relay must be a persistent host, which keeps workspaces of people's own
+The server must be a persistent host, which keeps workspaces of people's own
 for anyone who asks, and run its workspaces' records (its agents, or
 `--workspace-documents`).
 
@@ -101,7 +101,7 @@ dispatch, signed releases from stable): uid/gid 65532, plain HTTP on 8080/tcp,
 its state on the `/state` volume, and nothing else written, so the root
 filesystem can be read-only. t compiles the API server (`api-binaries`,
 tools/ci/publish/server-binaries.sh) and the image only packages it with the
-pinned Fedora base and the frozen RPM snapshot the relay and VM host images use
+pinned Fedora base and the frozen RPM snapshot the server and VM host images use
 (tools/ci/publish/api-build.sh). Every variable above is the
 deployment's; the image carries none of them. `GET /health` answers
 `{"ok":true}`.

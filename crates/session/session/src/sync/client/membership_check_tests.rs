@@ -7,7 +7,7 @@
 
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the host's relay deliberately stays alive until each test ends"
+    reason = "the host's server deliberately stays alive until each test ends"
 )]
 
 tilo_automerge_isolate::test_worker!();
@@ -32,7 +32,7 @@ struct Device {
 }
 
 impl Device {
-    /// A session of a device certified by `root`, relaying through `host`'s relay: two of them
+    /// A session of a device certified by `root`, relaying through `host`'s server: two of them
     /// are two devices of one person. Each device mints a key no other run shares, as each host
     /// does.
     fn of(root: &SigningKey, label: &str, host: &test_server::Host) -> Self {

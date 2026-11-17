@@ -1,5 +1,5 @@
 //! Every change Notes makes is one its committed surface decides. A receiver
-//! (the signer, the broker, the relay) knows a change only by the kind and
+//! (the signer, the broker, the server) knows a change only by the kind and
 //! action it claims and the app's `surface.toml`; a kind missing there holds
 //! the change for good, and the identity service refuses to sign a held
 //! change, which shut the window's collaboration down on the first edit of

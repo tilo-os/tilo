@@ -1,5 +1,5 @@
 //! Members' writes to a governed workspace's shared desktop, decided before the
-//! relay keeps them.
+//! server keeps them.
 //!
 //! Whoever may edit the workspace may write its desktop. What a write does to a
 //! strip or window someone else made (closing, moving, renaming it) is
@@ -110,7 +110,7 @@ impl GovernedWorkspace {
         envelope: &collab_types::SignedOp,
     ) -> Result<Readable, String> {
         let payload = if envelope.encryption.is_some() {
-            // A sealed write of a channel this relay does not take part in (it
+            // A sealed write of a channel this server does not take part in (it
             // holds no keys for it) is the one write it cannot read: the
             // workspace's devices, which open it, decide it on receipt.
             #[cfg(any(feature = "agents", feature = "web"))]
@@ -145,12 +145,12 @@ impl GovernedWorkspace {
     }
 }
 
-/// What a desktop write's envelope gives the relay to decide.
+/// What a desktop write's envelope gives the server to decide.
 enum Readable {
     Whole(DocumentMutation),
     /// One segment of a write still incomplete.
     Partial,
-    /// Sealed under a channel this relay holds no keys for.
+    /// Sealed under a channel this server holds no keys for.
     Sealed,
 }
 
@@ -221,7 +221,7 @@ impl Workspaces {
             Readable::Whole(mutation) => mutation,
             Readable::Partial => return Ok(()),
             Readable::Sealed => {
-                tracing::debug!(%workspace, "a sealed shared desktop write this relay holds no keys for is left to the workspace's devices");
+                tracing::debug!(%workspace, "a sealed shared desktop write this server holds no keys for is left to the workspace's devices");
                 return Ok(());
             }
         };

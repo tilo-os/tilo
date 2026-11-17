@@ -5,7 +5,7 @@
 //! and decides every request from that.
 //!
 //! A host brings its own session ([`RemoteSession`]): this desktop's peer actor, a page's endpoint,
-//! a grant's session with its relay. An invocation the device accepted and still runs is followed
+//! a grant's session with its server. An invocation the device accepted and still runs is followed
 //! here, so whoever waits is woken by the change itself rather than asking again.
 
 use std::collections::HashMap;

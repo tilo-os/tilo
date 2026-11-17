@@ -2,7 +2,7 @@
 //!
 //! A node (a host certified to own workspaces) governs the workspace and takes
 //! part in its channels. Its workspace actions join as the same device, so they
-//! are handed the node's keys through the relay's admission decision rather
+//! are handed the node's keys through the server's admission decision rather
 //! than admitted to each channel a second time. The host owner's page acts
 //! on a sealed record through the host; another member of the workspace sees the
 //! change arrive sealed and authored by the host; that member, an editor,
@@ -35,7 +35,7 @@ async fn retained_by(
     author: [u8; 32],
 ) -> Vec<bool> {
     hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace)
         .await
@@ -58,7 +58,7 @@ async fn retained_by(
         .collect()
 }
 
-/// Wait until the relay retains at least `count` bodies `author` wrote to
+/// Wait until the server retains at least `count` bodies `author` wrote to
 /// `route`, then return whether each is sealed on the route's channel.
 async fn until_retained(
     hosted: &super::Hosted,
@@ -75,7 +75,7 @@ async fn until_retained(
         }
         assert!(
             Instant::now() < deadline,
-            "the relay never retained {count} change(s) to {} by {}: {sealed:?}",
+            "the server never retained {count} change(s) to {} by {}: {sealed:?}",
             route.document,
             hex::encode(author)
         );
@@ -120,7 +120,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Sealed records, governed here")
@@ -274,5 +274,5 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

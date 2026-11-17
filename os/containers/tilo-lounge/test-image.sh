@@ -52,7 +52,7 @@ trap cleanup EXIT
 # does not carry dies in the loader before its main, with "error while loading
 # shared libraries: …: cannot open shared object file" on stderr and status
 # 127; no file, mode or ELF check sees that, and the deployment found it as a
-# crash loop. Both programs are answered from their main: the relay's
+# crash loop. Both programs are answered from their main: the server's
 # `--version`, and the worker's refusal of a setting it cannot take (of which
 # the loader knows nothing).
 version=$(b run "$container" -- /usr/local/bin/tilo-server --version) \

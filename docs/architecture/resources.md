@@ -80,7 +80,7 @@ text it wrote itself.
 - `#[model(readonly)]` publishes the field for reading but offers no field edit;
   only verbs change it.
 - `#[model(unit)]` stores the field as its own storage unit (for a
-  `Collection`, each item is one), so the relay can enforce who may write it
+  `Collection`, each item is one), so the server can enforce who may write it
   without reading content ([permissions.md](permissions.md) §5). A comment
   thread inside a document is a unit; the document body is another.
 - `#[model(whole)]` reads all of a value that is otherwise read as views ask

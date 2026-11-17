@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let author = member.verifying_key().to_bytes();
         assert_eq!(
-            peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &message, now),
+            peer.decide_relayed_document(TransportOrigin::ServerDelta(author), &message, now),
             Ok(true)
         );
         assert_eq!(
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
             "deciding takes nothing in"
         );
         assert!(
-            peer.decide_relayed_document(TransportOrigin::RelayDelta([9; 32]), &message, now)
+            peer.decide_relayed_document(TransportOrigin::ServerDelta([9; 32]), &message, now)
                 .is_err(),
             "a write is its relaying device's own"
         );
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
             envelope.payload.push(0);
         }
         assert!(
-            peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &tampered, now)
+            peer.decide_relayed_document(TransportOrigin::ServerDelta(author), &tampered, now)
                 .is_err(),
             "its signature is checked"
         );

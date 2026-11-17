@@ -18,7 +18,7 @@
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
-// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK
+// usage: node people.mjs SITE_URL SERVER_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK
 // STACK is os/containers/tilo-sh/stack.sh of the stack the Lounge runs on,
 // whose own owner makes the inviter an owner (`stack.sh owner KEY`).
 // With EARLIER as the seventh argument the run is the other way round: one
@@ -38,9 +38,9 @@ import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 import {stepLimit, shellMetrics, SHELL} from './waits.mjs';
 
-const [site, relay, origin, out, stack, earlier] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !stack) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK [EARLIER]');
+const [site, server, origin, out, stack, earlier] = process.argv.slice(2);
+if (!site || !server || !origin || !out || !stack) {
+  console.error('usage: node people.mjs SITE_URL SERVER_ORIGIN WORKSPACE_ORIGIN OUT_DIR STACK [EARLIER]');
   process.exit(2);
 }
 
@@ -76,7 +76,7 @@ const runs = name => !only || only === name;
 // `all` opens every one here as well.
 const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
 
-const report = {site, relay, origin, at: new Date().toISOString()};
+const report = {site, server, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
 const opened = [];
 // What each press stood on, so a failure says why it did not take.
@@ -104,19 +104,19 @@ const failed = async (message, tab) => {
   process.exit(1);
 };
 
-// The relay's public directory: who is in the Lounge now, as the relay
-// counts them. Its `here` is the relay's HTTPS page sessions, not the live
+// The server's public directory: who is in the Lounge now, as the server
+// counts them. Its `here` is the server's HTTPS page sessions, not the live
 // live session's members: a page the live session never carried still counts here.
-// The relay's origin is plain http on the local stack and https behind a
+// The server's origin is plain http on the local stack and https behind a
 // TLS front, so the request takes the module its scheme names; behind the
 // front it trusts exactly the certificate that front serves.
 const request = (url, ...rest) =>
   (new URL(url).protocol === 'http:' ? httpRequest : httpsRequest)(url, ...rest);
-const relayCertificate = new URL(relay).protocol === 'https:' ? await servedCertificate(relay) : null;
+const serverCertificate = new URL(server).protocol === 'https:' ? await servedCertificate(server) : null;
 const directory = () => new Promise((resolve, reject) => {
   const body = Buffer.from('{}');
-  const ask = request(`${relay}/peer/v1/directory`, {
-    method: 'POST', ...(relayCertificate ? {ca: relayCertificate.certificate} : {}),
+  const ask = request(`${server}/peer/v1/directory`, {
+    method: 'POST', ...(serverCertificate ? {ca: serverCertificate.certificate} : {}),
     headers: {'content-type': 'application/json', 'content-length': body.length},
   }, response => {
     const chunks = [];
@@ -905,7 +905,7 @@ try {
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
   mark('two browsers joined the Lounge');
 
-  // The relay describes both as here: both pages opened their HTTPS sessions.
+  // The server describes both as here: both pages opened their HTTPS sessions.
   // That is the host's own count, not the live session's — the live session is read
   // from each page's channel diagnostics below.
   // A page counts there once its session is open, a moment after it joined:
@@ -971,7 +971,7 @@ try {
   // Each page joined the live session over the host's own iroh: its channel
   // diagnostics name the live session and the devices it reads. A page whose live session
   // never opened lists nobody and says so there instead, so this is the
-  // host's address, its relay and the live session all read from the page that used
+  // host's address, its server and the live session all read from the page that used
   // them.
   const joinedLiveSession = async (person, who) => {
     // The live session of the workspace this person joined, by its own id: any

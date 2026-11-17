@@ -1,15 +1,15 @@
 //! The host's own operations as actions: creating, listing and entering the
-//! workspaces this relay governs, and letting an app author one of them
+//! workspaces this server governs, and letting an app author one of them
 //! (provider [`HOST_ACTIONS_PROVIDER`]).
 //!
-//! No workspace decides them: they are the relay's person's alone
+//! No workspace decides them: they are the server's person's alone
 //! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every entry,
 //! but for making a person's own workspace, which a host that keeps them
 //! offers anyone ([`CREATE_OWN_WORKSPACE`]).
 //! The catalogue asks the same decision, so a device of anyone else is
 //! offered nothing, and invoking one is the same `UnknownAction` as invoking
 //! one that does not exist. The device is the one whose certificate the
-//! relay's handshake verified, which entering a workspace admits.
+//! server's handshake verified, which entering a workspace admits.
 //!
 //! Creating a workspace may issue its first invitation, and entering one answers
 //! the invitation the device redeems to hold it: a device shares a workspace
@@ -460,7 +460,7 @@ impl Workspaces {
     }
 
     /// Run the host operation `request` names as `device`, the certificate
-    /// the relay's handshake verified for the caller.
+    /// the server's handshake verified for the caller.
     pub(super) async fn host_invoke(
         &self,
         device: &DeviceCert,

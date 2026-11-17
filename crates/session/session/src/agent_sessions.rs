@@ -62,7 +62,7 @@ struct Connection {
     /// The environment's server it came in by: none for the session's own. It ends with that
     /// environment.
     environment: Option<Entered>,
-    /// The other device of the person's it came from, as the remote relay verified it: none for a
+    /// The other device of the person's it came from, as the remote server verified it: none for a
     /// program of this login.
     origin: Option<tilo_actions::InvokerDevice>,
     /// What the person allowed it for every later step like one it asked about.
@@ -638,7 +638,7 @@ pub(crate) struct Agent {
     pub unseen: i64,
     /// Whether the person may stop it here.
     pub stoppable: bool,
-    /// The other device of the person's it works from, as the relay that let it in verified: its
+    /// The other device of the person's it works from, as the server that let it in verified: its
     /// key in hex. Empty for a program of this device.
     pub device: String,
     /// What that device is called, as its certificate labels it.

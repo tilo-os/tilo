@@ -2,9 +2,9 @@
 // browser that has never been here: the wait list shows instead of the setup
 // screen, the address is left and confirmed through the mail the entry sends,
 // and the tab stays on the wait list when it reloads. The site is the web
-// entry's bundle served beside the relay, as the image serves it.
+// entry's bundle served beside the server, as the image serves it.
 //
-// usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
+// usage: node wait-list.mjs SITE_URL SERVER_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
 //
 // Prints a JSON report and keeps the screenshots and the tab's console in
 // OUT_DIR; exits non-zero when a step did not happen or the page failed.
@@ -13,19 +13,19 @@ import {join} from 'node:path';
 import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics} from './waits.mjs';
 
-const [site, relay, mailDir, out, before] = process.argv.slice(2);
-if (!site || !relay || !mailDir || !out) {
-  console.error('usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
+const [site, server, mailDir, out, before] = process.argv.slice(2);
+if (!site || !server || !mailDir || !out) {
+  console.error('usage: node wait-list.mjs SITE_URL SERVER_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-const report = {site, relay, at: new Date().toISOString()};
+const report = {site, server, at: new Date().toISOString()};
 
 // The entry's page loads the site's and the host's own certificates, and the
 // "before" site's too, which the same mint signs. A browser loads these and no
 // others, as a person's loads what it trusts.
 const siteCertificate = await servedCertificate(site);
-const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(relay)])]});
+const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(server)])]});
 // A stranger's browser: nothing kept from an earlier visit, so the entry
 // page opens on its first screen unless the entry takes its place.
 const tab = await browser.tab({firstRun: true});

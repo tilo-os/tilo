@@ -5,7 +5,7 @@
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
 //! The child writes one [`OperatorEvent`] per line to its stdout, each behind
 //! [`LINE_PREFIX`], so nothing else the child prints can be mistaken for one.
-//! Operator and workspace relay are built from one tree, so the protocol changes
+//! Operator and workspace server are built from one tree, so the protocol changes
 //! in one commit;
 //! [`VERSION`] is announced in [`OperatorEvent::Started`] and a reader refuses
 //! any other. Neither side skips a line it cannot decode: an unknown
@@ -49,7 +49,7 @@ pub const LINE_PREFIX: &str = "tilo-workspace-operator ";
 /// certification request before it answers [`RefusalReason::NoMatchingRequest`].
 pub const ADMIT_WAIT_SECS: u64 = 60;
 
-/// What the workspace service tells its workspace relay.
+/// What the workspace service tells its workspace server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperatorCommand {
@@ -159,11 +159,11 @@ impl InviteRole {
     }
 }
 
-/// What the workspace relay reports to the workspace service.
+/// What the workspace server reports to the workspace service.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperatorEvent {
-    /// The relay serves browsers. Always the first event.
+    /// The server serves browsers. Always the first event.
     Started {
         /// [`VERSION`] of the child.
         version: u16,
@@ -264,7 +264,7 @@ pub enum OperatorEvent {
         /// secret, and its address had been confirmed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         told: Option<WaitListMailbox>,
-        /// Relay-private SHA-256 of `workspaces::contact_key`, even for a pending
+        /// Server-private SHA-256 of `workspaces::contact_key`, even for a pending
         /// entry, so the entry can cancel its queued mail and receipts. Never
         /// returned by the entry's public removal endpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -837,7 +837,7 @@ mod tests {
                 Err(LineError::NotProtocol)
             ));
             assert!(matches!(
-                OperatorEvent::from_line("2026-10-08T00:00:00Z WARN relay: {\"userPublicKey\":\"ab\"}"),
+                OperatorEvent::from_line("2026-10-08T00:00:00Z WARN server: {\"userPublicKey\":\"ab\"}"),
                 Err(LineError::NotProtocol)
             ));
         }

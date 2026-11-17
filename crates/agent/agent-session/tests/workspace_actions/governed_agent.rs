@@ -33,11 +33,11 @@ use tilo_server_protocol::WorkspaceId;
 /// The laptop: a root holder answering every agent request with the
 /// agent's certificate and the delegation of exactly what was proposed.
 fn approve_agents(
-    relay: &tilo_server::daemon::Relay,
+    server: &tilo_server::daemon::Server,
     root: SigningKey,
     laptop: &Device,
 ) -> tokio::task::JoinHandle<()> {
-    let addr = relay.node_addr();
+    let addr = server.node_addr();
     let cert = laptop.cert.clone();
     let key = laptop.key.clone();
     tokio::spawn(async move {
@@ -173,7 +173,7 @@ async fn until_sheet_by(
     None
 }
 
-/// Every body `author` wrote that the relay retains for `workspace`: its
+/// Every body `author` wrote that the server retains for `workspace`: its
 /// message kind, app and whether it is sealed.
 async fn retained_by(
     hosted: &super::Hosted,
@@ -181,7 +181,7 @@ async fn retained_by(
     author: [u8; 32],
 ) -> Vec<String> {
     hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace)
         .await
@@ -200,7 +200,7 @@ async fn retained_by(
         .collect()
 }
 
-/// Whether every body `author` wrote to `route` that the relay retains is
+/// Whether every body `author` wrote to `route` that the server retains is
 /// sealed on the route's channel, and how many there are.
 async fn retained_sealed(
     hosted: &super::Hosted,
@@ -209,7 +209,7 @@ async fn retained_sealed(
     author: [u8; 32],
 ) -> (usize, bool) {
     let bodies: Vec<bool> = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace)
         .await
@@ -247,7 +247,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap().clone();
+    let workspaces = hosted.server.workspaces().unwrap().clone();
     let workspace = workspaces.create("An agent's own session").await.unwrap();
     let elsewhere = workspaces.create("Not the agent's").await.unwrap();
     admit_person(
@@ -261,7 +261,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let mut page =
         Browser::open_workspace(&hosted, &page_device, &host, &workspace.workspace).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.workspace).await;
-    let approver = approve_agents(&hosted.relay, owner.clone(), &laptop);
+    let approver = approve_agents(&hosted.server, owner.clone(), &laptop);
 
     // One consent step: Ada's page asks, her laptop approves the agent with
     // the delegation of this workspace and Sheets.
@@ -414,5 +414,5 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

@@ -6,7 +6,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -63,7 +63,7 @@ pub(super) async fn create_own(
 }
 
 /// Name the home workspace whose people `workspaces` keeps workspaces of
-/// their own for, as a site's relay names its own: returns it.
+/// their own for, as a site's server names its own: returns it.
 async fn home_of(workspaces: &Workspaces) -> String {
     let home = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&home));
@@ -165,8 +165,8 @@ async fn access(
 async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
@@ -277,7 +277,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         "{refused:?}"
     );
 
-    // Someone else gets their own; the relay's own workspaces are no one's.
+    // Someone else gets their own; the server's own workspaces are no one's.
     let (_, stranger) = guest_device();
     let_in(workspaces, &home, stranger.user_public_key).await;
     let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
@@ -297,7 +297,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         .unwrap();
     assert_eq!(wieder.workspace.workspace, ihr.workspace.workspace);
     assert_eq!(wieder.workspace.name, "Mein Arbeitsbereich");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// How many workspaces of their own one person is given in one test.
@@ -307,8 +307,8 @@ const HUNDREDS: usize = 300;
 async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_quick() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -385,15 +385,15 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         "{HUNDREDS} workspaces of their own: made, listed and read with no pass over the host's records; whose-names file {} bytes",
         std::fs::metadata(&index).unwrap().len()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_how_many() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -441,15 +441,15 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
             .sum::<u64>()
     );
     assert!(subscription.usage.stored_bytes() > 0);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
@@ -484,15 +484,15 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
             .storage_bytes,
         Some(OwnWorkspaceOffer::DEFAULT_STORAGE_BYTES)
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -590,7 +590,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     let_in(&workspaces, &home, stranger.user_public_key).await;
     let other = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(workspaces.storage_refusal(&other.workspace.workspace), None);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -601,8 +601,8 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
 async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspaces() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -709,15 +709,15 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     };
     let listed: Vec<Value> = serde_json::from_value(output.value.unwrap()).unwrap();
     assert_eq!(listed.len(), 1, "{listed:?}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer {
             host: "tilo.test".into(),
@@ -759,15 +759,15 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     assert_eq!(subscription.limits.unwrap().storage_bytes, Some(1));
     assert_eq!(subscription.usage.stored_bytes(), used_bytes);
     assert_eq!(subscription.usage.workspaces[0].workspace, own.workspace);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_none() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -840,7 +840,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
         matches!(refused, Err(ActionHostError::UnknownAction)),
         "{refused:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A certificate `root` signs for `key` with `capabilities`, lasting an hour.
@@ -871,7 +871,7 @@ fn certified_as(
     cert
 }
 
-/// The caller a key's session with the relay makes it: its person's agent.
+/// The caller a key's session with the server makes it: its person's agent.
 fn as_key(cert: &DeviceCert) -> Caller {
     Caller::authenticated(cert.user_public_key, cert.device_public_key).delegated_to("key")
 }
@@ -919,8 +919,8 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     use tilo_action_policy::roles::governance;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1027,7 +1027,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         .find(|member| member["member"]["person"] == hex::encode(rosa_person))
         .cloned();
     assert_eq!(rosa_row.unwrap()["role"], "editor", "{members}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// An owner's server key lets a person in by their key, at once, as an owner:
@@ -1038,8 +1038,8 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
 async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1115,7 +1115,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     let stranger = SigningKey::from_bytes(&rand::random());
     let by_editor = add_member(&host, workspace, &ivy_key, &stranger, "viewer").await;
     assert!(by_editor.is_err(), "{by_editor:?}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// `person`'s server key, certified and entered into `workspace` as the person's own.
@@ -1177,8 +1177,8 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     use tilo_action_policy::roles::governance;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1320,7 +1320,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         )],
         "the workspace she was invited into"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 fn delete_request(workspace: &str) -> InvokeRequest {
@@ -1337,8 +1337,8 @@ fn delete_request(workspace: &str) -> InvokeRequest {
 async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1462,8 +1462,8 @@ async fn held_host() -> (
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -1523,8 +1523,8 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
 
     let (key, owner) = governor();
     let dir = tempfile::tempdir().unwrap();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -1800,7 +1800,7 @@ fn tab_of(root: &SigningKey, label: &str) -> DeviceCert {
     cert
 }
 
-/// How `workspace` on `workspaces`' relay answers `device` subscribing, as a
+/// How `workspace` on `workspaces`' server answers `device` subscribing, as a
 /// page's join does: admitted (enrolled first where the workspace enrols it),
 /// or refused and why.
 async fn subscribe(
@@ -1823,7 +1823,7 @@ async fn subscribe(
     let agents = crate::peer::AgentRegistry::default();
     let environments = crate::environment::EnvironmentRegistry::default();
     let own_user = workspaces.serving_certificate().user_public_key;
-    let trust = crate::workspace_access::RelayTrust {
+    let trust = crate::workspace_access::ServerTrust {
         revocations: &revocations,
         policy: &policy,
         own_user: &own_user,
@@ -1855,8 +1855,8 @@ async fn subscribe(
 async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_stays_in() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let home = open(workspaces).await;
@@ -1896,7 +1896,7 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
         Err(crate::workspace_access::DenyReason::NotAMember),
         "a stranger's device is no member"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A browser asks for the person's own workspace by no id: the host makes it
@@ -1908,8 +1908,8 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
 async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let home = open(workspaces).await;
@@ -1969,7 +1969,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
         matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Someone the operator declares an owner of the home workspace holds it by
@@ -1981,8 +1981,8 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     use tilo_action_policy::roles::governance;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -2022,5 +2022,5 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     .await
     .unwrap();
     assert!(issued["invitation"].is_string(), "{issued}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }

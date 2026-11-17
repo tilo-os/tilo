@@ -621,14 +621,14 @@ pub fn now() -> SystemTime {
         .unwrap()
 }
 
-/// `message` arriving from `guest` as a relay delta at [`now`].
+/// `message` arriving from `guest` as a server delta at [`now`].
 pub fn receive(
     peer: &mut StatePeer,
     guest: &DeviceCert,
     message: NeighbourMsg,
 ) -> Result<(), String> {
     peer.receive_from(
-        TransportOrigin::RelayDelta(guest.device_public_key),
+        TransportOrigin::ServerDelta(guest.device_public_key),
         message,
         now(),
     )

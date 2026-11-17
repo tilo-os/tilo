@@ -42,7 +42,7 @@ use std::time::Instant;
 struct Words(u64);
 
 const WORDS: &[&str] = &[
-    "relay",
+    "server",
     "workspace",
     "record",
     "sync",

@@ -107,7 +107,7 @@ pub(crate) struct SessionFabric {
     /// Where this device's fabric is kept for its next run, if anywhere.
     kept: Option<std::path::PathBuf>,
     /// The endpoints heard on this device's local network, of which the person's devices are
-    /// reachable without a relay.
+    /// reachable without a server.
     lan: tilo_endpoint_reachability::Nearby,
 }
 

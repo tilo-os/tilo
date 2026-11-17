@@ -1,15 +1,15 @@
 //! Store-and-forward: a delta authored while peer B is offline
-//! must be queued on the relay's disk under
+//! must be queued on the server's disk under
 //! `workspaces/<workspace id>/pending/<hex(pubkey_B)>/`, then delivered on
 //! B's next Subscribe.
 //!
 //! Timeline:
-//!   1. relay + peers A and B start; both are workspace 5 members.
+//!   1. server + peers A and B start; both are workspace 5 members.
 //!   2. Peer A connects + subscribes.
 //!   3. Peer A publishes delta D1. B is offline → D1 gets queued.
 //!   4. Peer A disconnects, publishes nothing more.
 //!   5. Peer B connects + subscribes.
-//!   6. The relay's Ready reports `pending_deltas=1` and immediately
+//!   6. The server's Ready reports `pending_deltas=1` and immediately
 //!      delivers D1 to B.
 
 #![allow(
@@ -28,7 +28,7 @@ use std::time::Duration;
 use tilo_server::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(5);
@@ -52,7 +52,7 @@ async fn a_publishes_two_offline_deltas(
     a: &crate::common::TestDevice,
     pending_dir: &std::path::Path,
 ) {
-    let a_client = tilo_server::RelayClient::connect(
+    let a_client = tilo_server::ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -81,7 +81,7 @@ async fn a_publishes_two_offline_deltas(
             })
             .unwrap();
     }
-    // The writes land asynchronously on the relay's persistence turn: wait
+    // The writes land asynchronously on the server's persistence turn: wait
     // for them rather than for a fixed time.
     let deadline = tilo_test_env::hang_deadline();
     let mut queued = queued_deltas(pending_dir);
@@ -97,14 +97,14 @@ async fn a_publishes_two_offline_deltas(
 }
 
 /// B connects, subscribes, and drains the two queued deltas plus the
-/// Ready marker (the relay drains pending before it sends Ready, so B
+/// Ready marker (the server drains pending before it sends Ready, so B
 /// receives Delta, Delta, then Ready).
 async fn b_connects_and_drains_queue(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
 ) {
-    let b_client = tilo_server::RelayClient::connect(
+    let b_client = tilo_server::ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -122,7 +122,7 @@ async fn b_connects_and_drains_queue(
 
     // The next N messages B receives are the two queued deltas
     // (order preserved) followed by Ready. Iteration order is:
-    // the relay drains pending BEFORE it sends Ready, so B
+    // the server drains pending BEFORE it sends Ready, so B
     // receives Delta, Delta, then Ready.
     let mut got_payloads: Vec<Vec<u8>> = Vec::new();
     let mut got_ready = false;
@@ -160,23 +160,23 @@ async fn b_connects_and_drains_queue(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_peer_gets_queued_deltas_on_reconnect() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server_dev = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        relay_dev,
+        server_dev,
         &[WORKSPACE],
         &[a.device_pubkey(), b.device_pubkey()],
     ))
     .await;
-    let addr = relay.relay.node_addr();
+    let addr = server.server.node_addr();
 
     // Verify the deltas landed on disk under
     // <state>/workspaces/<id>/pending/<hex(b)>/.
     let b_hex = hex::encode(b.device_pubkey());
-    let pending_dir = relay
+    let pending_dir = server
         .state_root
         .join("workspaces")
         .join(WORKSPACE.to_string())
@@ -187,7 +187,7 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
     // B comes online + subscribes, and drains the queue.
     b_connects_and_drains_queue(addr, &user, &b).await;
 
-    // The pending entries retire on the relay's persistence turn after
+    // The pending entries retire on the server's persistence turn after
     // delivery, so they may still be on disk as B reads Ready. Wait for the
     // queue to drain, naming what stayed if it does not.
     let deadline = tilo_test_env::hang_deadline();

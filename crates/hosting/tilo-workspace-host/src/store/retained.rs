@@ -146,7 +146,7 @@ fn first_chunk(bytes: &[u8]) -> Option<(&[u8], &[u8], u8)> {
 ///
 /// Retained bodies are peer-supplied. Reading their frames decodes nothing;
 /// every Automerge decode of them goes through `tilo_automerge_isolate`, so a
-/// hostile body costs a worker process, never the relay.
+/// hostile body costs a worker process, never the server.
 fn independently_valid_chunks(bytes: &[u8]) -> bool {
     if bytes.is_empty()
         || tilo_automerge_isolate::precheck::check(
@@ -1940,7 +1940,7 @@ pub(super) mod tests {
     }
 
     /// A retained tail whose bytes are hostile to Automerge is decoded only in
-    /// the isolate: one that crashes the decoder costs a worker, not the relay,
+    /// the isolate: one that crashes the decoder costs a worker, not the server,
     /// and neither it nor a known change with a bad checksum after a valid
     /// prefix is ever covered by a later checkpoint.
     #[test]

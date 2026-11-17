@@ -1,8 +1,8 @@
-//! That presence reaches a member of the workspace through the real relay.
+//! That presence reaches a member of the workspace through the real server.
 //!
-//! A member drags a pointer at 100 Hz through the real relay, then
+//! A member drags a pointer at 100 Hz through the real server, then
 //! moves a caret and clears the pointer, publishing as the shell does
-//! (`RelayCoeditSession::publish_presence`). A member reads what the relay
+//! (`ServerCoeditSession::publish_presence`). A member reads what the server
 //! writes it; the host batches what arrives together, in order (see
 //! `crate::presence_mailbox`). The member must see every author stamped, the
 //! pointer's last position, the caret, and the event after everything sent
@@ -37,17 +37,17 @@ use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
-use tilo_server::{AttributedPresence, Envelope, RelayCoeditSession};
+use tilo_server::{AttributedPresence, Envelope, ServerCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
+use crate::common::{TestDevice, TestServer, TestUser, client_endpoint, publisher, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(710);
 const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
-/// A member reading the relay's frames through the production session
+/// A member reading the server's frames through the production session
 /// reader, which expands `PresenceBatch` frames.
 struct Member {
     _endpoint: iroh::Endpoint,
@@ -57,10 +57,10 @@ struct Member {
 }
 
 impl Member {
-    async fn open(relay: &TestRelay, device: &TestDevice) -> Self {
+    async fn open(server: &TestServer, device: &TestDevice) -> Self {
         let endpoint = client_endpoint().await;
         let connection = endpoint
-            .connect(relay.relay.node_addr(), tilo_server::ALPN)
+            .connect(server.server.node_addr(), tilo_server::ALPN)
             .await
             .unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
@@ -126,9 +126,9 @@ impl Member {
     }
 }
 
-fn session_writes(relay: &TestRelay, device: [u8; 32]) -> u64 {
-    relay
-        .relay
+fn session_writes(server: &TestServer, device: [u8; 32]) -> u64 {
+    server
+        .server
         .handle()
         .metrics
         .session_egress()
@@ -138,9 +138,9 @@ fn session_writes(relay: &TestRelay, device: [u8; 32]) -> u64 {
         .sum()
 }
 
-fn session_bytes(relay: &TestRelay, device: [u8; 32]) -> u64 {
-    relay
-        .relay
+fn session_bytes(server: &TestServer, device: [u8; 32]) -> u64 {
+    server
+        .server
         .handle()
         .metrics
         .session_egress()
@@ -189,7 +189,7 @@ fn typing(start: u64, end: u64) -> NeighbourMsg {
     }
 }
 
-fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
     session
         .publish_presence(postcard::to_allocvec(message).unwrap())
         .unwrap();
@@ -199,7 +199,7 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protocol: &str) -> usize {
     assert!(
         seen.iter().all(|(from, _)| *from == author),
-        "{protocol}: the relay stamps the authenticated author"
+        "{protocol}: the server stamps the authenticated author"
     );
     let moves: Vec<_> = seen
         .iter()
@@ -246,18 +246,18 @@ async fn presence_reaches_a_member_in_order() {
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("member", DeviceCapabilities::member());
     let members = [author.device_pubkey(), reader.device_pubkey()];
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        user.enrol("relay", DeviceCapabilities::member()),
+        user.enrol("server", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
     .await;
-    let mut member = Member::open(&relay, &reader).await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let mut member = Member::open(&server, &reader).await;
+    let publisher = publisher(&server, &user, &author, WORKSPACE).await;
 
     let user_hex = hex::encode(user.user_pk);
-    let before = session_bytes(&relay, reader.device_pubkey());
+    let before = session_bytes(&server, reader.device_pubkey());
     for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -273,10 +273,10 @@ async fn presence_reaches_a_member_in_order() {
         },
     );
     let seen = member.presence_until_cleared().await;
-    let count = check(&seen, author.device_pubkey(), &user_hex, "relay");
+    let count = check(&seen, author.device_pubkey(), &user_hex, "server");
 
     // Only presence reached the member since the counters were read.
-    let bytes = session_bytes(&relay, reader.device_pubkey()) - before;
+    let bytes = session_bytes(&server, reader.device_pubkey()) - before;
     let per = bytes as f64 / count as f64;
     println!(
         "PRESENCE_COST moves_published={MOVES} presence={count} bytes={bytes} \
@@ -365,9 +365,9 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
     let members = [author.device_pubkey(), reader.device_pubkey()];
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        user.enrol("relay", DeviceCapabilities::member()),
+        user.enrol("server", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
@@ -376,8 +376,8 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let (mut owner, mut doc) = seeded_workspace(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
-    let mut member = Member::open(&relay, &reader).await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let mut member = Member::open(&server, &reader).await;
+    let publisher = publisher(&server, &user, &author, WORKSPACE).await;
 
     let mut writes = Vec::new();
     let mut delta_first = 0usize;
@@ -400,7 +400,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
             .unwrap();
         let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
         let pos = end as u64 + 1;
-        let before = session_writes(&relay, reader.device_pubkey());
+        let before = session_writes(&server, reader.device_pubkey());
         publisher
             .publish_retained_delta(channel, postcard::to_allocvec(&message).unwrap())
             .unwrap();
@@ -409,7 +409,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         let delta = member.keystroke(pos).await;
         // The first keystroke warms the session's coding up.
         if keystroke > 0 {
-            writes.push(session_writes(&relay, reader.device_pubkey()) - before);
+            writes.push(session_writes(&server, reader.device_pubkey()) - before);
             delta_first += usize::from(delta);
         }
     }
@@ -459,17 +459,17 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
     let members = [author.device_pubkey(), reader.device_pubkey()];
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        user.enrol("relay", DeviceCapabilities::member()),
+        user.enrol("server", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
     .await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let publisher = publisher(&server, &user, &author, WORKSPACE).await;
     let user_hex = hex::encode(user.user_pk);
 
-    let mut member = Member::open(&relay, &reader).await;
+    let mut member = Member::open(&server, &reader).await;
     let last = pointer(MOVES - 1, &user_hex);
     for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));

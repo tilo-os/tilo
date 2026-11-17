@@ -581,7 +581,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
 }
 
 /// A device of the person's heard on this machine's local network says so on its row: the two reach
-/// each other there without a relay.
+/// each other there without a server.
 #[test]
 fn a_device_on_the_local_network_is_listed_as_nearby() {
     let _settled = ui::motion::testing::settled();

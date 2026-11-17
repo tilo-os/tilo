@@ -135,8 +135,8 @@ enum Command {
         workspace_cache: PathBuf,
         #[arg(long, default_value = "/var/lib/tilo/fs-capabilities.json")]
         acl: PathBuf,
-        #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<WorkspaceId>,
+        #[arg(long = "server-workspace-id")]
+        server_workspace_ids: Vec<WorkspaceId>,
         #[arg(long)]
         expected_device: Option<String>,
         #[arg(long)]
@@ -163,7 +163,7 @@ enum Command {
         approved_cert: Option<PathBuf>,
     },
     /// Withdraw a device the root certified: sign a revocation with a root key
-    /// kept in a file and append it to a relay's revocation log, so that host
+    /// kept in a file and append it to a server's revocation log, so that host
     /// refuses the device as it connects from its next start on.
     Revoke(RevokeArgs),
     #[command(flatten)]
@@ -174,7 +174,7 @@ enum Command {
 #[derive(Subcommand)]
 enum OutOfBand {
     /// Create this device's key if it has none and print, as one JSON line,
-    /// its public key and the endpoint id of a relay it runs.
+    /// its public key and the endpoint id of a server it runs.
     DeviceKey {
         #[arg(long, default_value = "/var/lib/tilo")]
         identity_root: PathBuf,
@@ -230,8 +230,8 @@ struct RevokeArgs {
     /// The device's public key, hex.
     #[arg(long)]
     device: String,
-    /// The relay's state directory, whose revocation log the host reads: the
-    /// `relay` directory under `tilo-server workspace --state`, or the plain
+    /// The server's state directory, whose revocation log the host reads: the
+    /// `server` directory under `tilo-server workspace --state`, or the plain
     /// daemon's configured state root.
     #[arg(long)]
     state: PathBuf,
@@ -250,7 +250,7 @@ enum EnrollmentKind {
 struct Request {
     token: String,
     device_public_key: [u8; 32],
-    relay_service_node_id: [u8; 32],
+    server_node_id: [u8; 32],
     label: String,
     kind: EnrollmentKind,
 }
@@ -280,7 +280,7 @@ struct ResponseRoute {
 struct ResponsePayload {
     nonce: [u8; 16],
     recipient_device_public_key: [u8; 32],
-    relay_service_node_id: [u8; 32],
+    server_node_id: [u8; 32],
     cert: DeviceCert,
     home_peer_toml: Option<String>,
     /// A public-only runtime identity record. It deliberately contains no
@@ -338,7 +338,7 @@ impl Approver<'_> {
 struct PairSolicitation {
     magic: [u8; 8],
     device_public_key: [u8; 32],
-    relay_service_node_id: [u8; 32],
+    server_node_id: [u8; 32],
     label: String,
     kind: EnrollmentKind,
 }
@@ -346,7 +346,7 @@ struct PairSolicitation {
 #[derive(Serialize, Deserialize)]
 struct PairCandidate {
     device_node_id: String,
-    relay_service_node_id: String,
+    server_node_id: String,
     label: String,
     verification_code: String,
     kind: EnrollmentKind,
@@ -1065,11 +1065,12 @@ struct Finalized {
 fn register_home_peer(
     identity_root: &std::path::Path,
     cert: &DeviceCert,
-    relay_service_node_id: [u8; 32],
-    relay_workspace_ids: &[WorkspaceId],
-    relay_endpoint: Option<iroh_base::EndpointAddr>,
+    server_node_id: [u8; 32],
+    server_workspace_ids: &[WorkspaceId],
+    server_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
-    if !tilo_server::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
+    if !tilo_server::valid_home_peer_label(&cert.device_label) || server_workspace_ids.len() > 4096
+    {
         bail!("home-peer registration exceeds its bounded schema");
     }
     let mut registrations =
@@ -1080,12 +1081,12 @@ fn register_home_peer(
     registrations.push(HomePeerRegistration {
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id,
-        relay_service_node_id: hex::encode(relay_service_node_id),
-        relay_endpoint,
+        server_node_id: hex::encode(server_node_id),
+        server_endpoint,
         label: cert.device_label.clone(),
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
-        relay_workspace_ids: relay_workspace_ids.to_vec(),
+        server_workspace_ids: server_workspace_ids.to_vec(),
     });
     tilo_server::write_home_peers(
         &tilo_server::home_peer_registry_path(identity_root),
@@ -1171,7 +1172,7 @@ fn verify_response(
 fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
     solicitation.magic == PAIR_MAGIC
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
-        && solicitation.relay_service_node_id != [0; 32]
+        && solicitation.server_node_id != [0; 32]
         && tilo_server::valid_home_peer_label(&solicitation.label)
 }
 
@@ -1231,11 +1232,11 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
                     "{}",
                     serde_json::to_string(&PairCandidate {
                         device_node_id: hex::encode(solicitation.device_public_key),
-                        relay_service_node_id: hex::encode(solicitation.relay_service_node_id),
+                        server_node_id: hex::encode(solicitation.server_node_id),
                         label: solicitation.label,
                         verification_code: pairing_code(
                             solicitation.device_public_key,
-                            solicitation.relay_service_node_id,
+                            solicitation.server_node_id,
                         ),
                         kind: solicitation.kind,
                     })?
@@ -1299,7 +1300,7 @@ fn pair_offer_aad(recipient: [u8; 32]) -> Vec<u8> {
 fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
     Ok(wrap_v2(&tilo_seal::hpke::seal(
         &device_sealing_public(recipient)?,
-        tilo_seal::Label::RelayEnrollOffer,
+        tilo_seal::Label::ServerEnrollOffer,
         &pair_offer_aad(recipient),
         token.as_bytes(),
     )?))
@@ -1314,7 +1315,7 @@ fn decrypt_pair_offer(
     let aad = pair_offer_aad(recipient_public);
     let plaintext = v2_body(bytes)
         .and_then(|body| {
-            tilo_seal::hpke::open_bytes(&secret, tilo_seal::Label::RelayEnrollOffer, &aad, body)
+            tilo_seal::hpke::open_bytes(&secret, tilo_seal::Label::ServerEnrollOffer, &aad, body)
                 .ok()
         })
         .ok_or_else(|| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
@@ -1341,7 +1342,7 @@ fn encrypt_request(
     })?);
     let sealed = tilo_seal::hpke::seal(
         &device_sealing_public(issuer_device_public_key)?,
-        tilo_seal::Label::RelayEnrollRequest,
+        tilo_seal::Label::ServerEnrollRequest,
         &v2_header(),
         &plaintext,
     )?;
@@ -1359,7 +1360,7 @@ fn decrypt_request(
     let body = v2_body(bytes).ok_or_else(not_for_us)?;
     let plaintext = tilo_seal::hpke::open_bytes(
         &secret,
-        tilo_seal::Label::RelayEnrollRequest,
+        tilo_seal::Label::ServerEnrollRequest,
         &v2_header(),
         body,
     )
@@ -1383,7 +1384,7 @@ fn encrypt_response(
     let aad = response_aad(token_nonce, recipient);
     Ok(wrap_v2(&tilo_seal::hpke::seal(
         &tilo_seal::PublicKey::from_bytes(route.response_public_key),
-        tilo_seal::Label::RelayEnrollResponse,
+        tilo_seal::Label::ServerEnrollResponse,
         &aad,
         plaintext,
     )?))
@@ -1400,7 +1401,7 @@ fn decrypt_response(
         .and_then(|body| {
             tilo_seal::hpke::open_bytes(
                 response_secret,
-                tilo_seal::Label::RelayEnrollResponse,
+                tilo_seal::Label::ServerEnrollResponse,
                 &aad,
                 body,
             )
@@ -1609,7 +1610,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     let request = Request {
         token: token_text.to_owned(),
         device_public_key: device.verifying_key().to_bytes(),
-        relay_service_node_id: tilo_server::daemon::relay_service_node_id(&device),
+        server_node_id: tilo_server::daemon::server_node_id(&device),
         label: label.chars().take(80).collect(),
         kind,
     };
@@ -1638,7 +1639,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                 };
                 let this_device = request.device_public_key;
                 let answers_this_request = payload.nonce == token.nonce
-                    && payload.relay_service_node_id == request.relay_service_node_id;
+                    && payload.server_node_id == request.server_node_id;
                 let addressed_to_this_device = payload.recipient_device_public_key == this_device
                     && payload.cert.device_public_key == this_device;
                 let certifies_the_token = payload.cert.user_public_key == token.user_public_key
@@ -1825,7 +1826,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
     let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
-    let relay_service_node_id = tilo_server::daemon::relay_service_node_id(&device);
+    let server_node_id = tilo_server::daemon::server_node_id(&device);
     let label: String = label.chars().take(80).collect();
     if !tilo_server::valid_home_peer_label(&label) {
         bail!("home-server label must be a printable single-line name");
@@ -1833,11 +1834,11 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     let solicitation = postcard::to_stdvec(&PairSolicitation {
         magic: PAIR_MAGIC,
         device_public_key: device.verifying_key().to_bytes(),
-        relay_service_node_id,
+        server_node_id,
         label: label.clone(),
         kind,
     })?;
-    let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
+    let code = pairing_code(device.verifying_key().to_bytes(), server_node_id);
     if let Some(path) = status_file {
         write_pairing_status(
             path,
@@ -1993,7 +1994,7 @@ struct ApprovalOptions<'a> {
     timeout: u64,
     workspace_cache: &'a std::path::Path,
     acl: &'a std::path::Path,
-    relay_workspace_ids: &'a [WorkspaceId],
+    server_workspace_ids: &'a [WorkspaceId],
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
@@ -2028,7 +2029,7 @@ struct ApprovalIdentity {
     /// This device's certificate, the issuer of the tokens it mints.
     issuer_cert: DeviceCert,
     user_public_key: [u8; 32],
-    relay_workspace_ids: Vec<WorkspaceId>,
+    server_workspace_ids: Vec<WorkspaceId>,
 }
 
 struct SelectedNearby {
@@ -2052,7 +2053,7 @@ struct ApprovalProjection {
 
 struct PreparedApproval {
     cert: DeviceCert,
-    relay_service_node_id: [u8; 32],
+    server_node_id: [u8; 32],
     encrypted: Vec<u8>,
 }
 
@@ -2110,7 +2111,7 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         device,
         issuer_cert,
         user_public_key,
-        relay_workspace_ids: options.relay_workspace_ids.to_vec(),
+        server_workspace_ids: options.server_workspace_ids.to_vec(),
     })
 }
 
@@ -2126,15 +2127,14 @@ fn handle_solicitation(
     if !valid_solicitation(solicitation)
         || solicitation.kind != kind
         || expected.is_some_and(|(device, service)| {
-            solicitation.device_public_key != device
-                || solicitation.relay_service_node_id != service
+            solicitation.device_public_key != device || solicitation.server_node_id != service
         })
     {
         return Ok(());
     }
     if selected.as_ref().is_some_and(|current| {
         current.solicitation.device_public_key != solicitation.device_public_key
-            || current.solicitation.relay_service_node_id != solicitation.relay_service_node_id
+            || current.solicitation.server_node_id != solicitation.server_node_id
     }) {
         return Ok(());
     }
@@ -2151,10 +2151,7 @@ fn handle_solicitation(
             expires_at_ns,
             &identity.device,
         )?;
-        let code = pairing_code(
-            solicitation.device_public_key,
-            solicitation.relay_service_node_id,
-        );
+        let code = pairing_code(solicitation.device_public_key, solicitation.server_node_id);
         println!(
             "Approving nearby device '{}' with code {code}",
             solicitation.label
@@ -2185,7 +2182,7 @@ fn valid_pending_request(
 ) -> anyhow::Result<bool> {
     let wrong_selection = selected.is_some_and(|selection| {
         request.device_public_key != selection.solicitation.device_public_key
-            || request.relay_service_node_id != selection.solicitation.relay_service_node_id
+            || request.server_node_id != selection.solicitation.server_node_id
             || request.label != selection.solicitation.label
             || request.kind != selection.solicitation.kind
             || request.token != selection.token_text
@@ -2285,9 +2282,9 @@ fn approval_projection(
                         .sign_message(payload)
                 },
             )?;
-            let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
-            relay_workspace_ids.sort_unstable();
-            relay_workspace_ids.dedup();
+            let mut server_workspace_ids = identity.server_workspace_ids.clone();
+            server_workspace_ids.sort_unstable();
+            server_workspace_ids.dedup();
             let home_peer = fs::full_replica::HomePeerSet {
                 status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
                 workspaces: vec![fs::full_replica::HomePeerBundle {
@@ -2297,7 +2294,7 @@ fn approval_projection(
                     capability_json,
                     authority: Some(authority),
                     members: Vec::new(),
-                    relay_workspace_ids,
+                    server_workspace_ids,
                 }],
             };
             Ok(ApprovalProjection {
@@ -2349,7 +2346,7 @@ fn prepare_approval(
         ResponsePayload {
             nonce: pending.token.nonce,
             recipient_device_public_key: pending.request.device_public_key,
-            relay_service_node_id: pending.request.relay_service_node_id,
+            server_node_id: pending.request.server_node_id,
             cert: cert.clone(),
             home_peer_toml: projection.home_peer_toml,
             public_identity_json: projection.public_identity_json,
@@ -2366,7 +2363,7 @@ fn prepare_approval(
     )?;
     Ok(PreparedApproval {
         cert,
-        relay_service_node_id: pending.request.relay_service_node_id,
+        server_node_id: pending.request.server_node_id,
         encrypted,
     })
 }
@@ -2461,8 +2458,8 @@ fn commit_approval(
         EnrollmentKind::HomePeer => register_home_peer(
             options.identity_root,
             &prepared.cert,
-            prepared.relay_service_node_id,
-            &identity.relay_workspace_ids,
+            prepared.server_node_id,
+            &identity.server_workspace_ids,
             None,
         )?,
         EnrollmentKind::PersonalDevice => {
@@ -2532,7 +2529,7 @@ fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
         "{}",
         serde_json::json!({
             "device_public_key": hex::encode(device.verifying_key().to_bytes()),
-            "relay_service_node_id": hex::encode(tilo_server::daemon::relay_service_node_id(&device)),
+            "server_node_id": hex::encode(tilo_server::daemon::server_node_id(&device)),
         })
     );
     Ok(())
@@ -2553,7 +2550,7 @@ fn out_of_band_payload(
     Ok(ResponsePayload {
         nonce,
         recipient_device_public_key: cert.device_public_key,
-        relay_service_node_id: tilo_server::daemon::relay_service_node_id(device),
+        server_node_id: tilo_server::daemon::server_node_id(device),
         home_peer_toml: None,
         public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
@@ -2848,7 +2845,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             workspace_cache,
             acl,
-            relay_workspace_ids,
+            server_workspace_ids,
             expected_device,
             expected_service,
         } => approve(&ApprovalOptions {
@@ -2857,7 +2854,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             workspace_cache: &workspace_cache,
             acl: &acl,
-            relay_workspace_ids: &relay_workspace_ids,
+            server_workspace_ids: &server_workspace_ids,
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             kind: EnrollmentKind::HomePeer,
@@ -2878,7 +2875,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
+            server_workspace_ids: &[],
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             kind: EnrollmentKind::PersonalDevice,

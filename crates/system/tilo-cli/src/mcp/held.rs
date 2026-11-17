@@ -848,7 +848,7 @@ mod tests {
     }
 
     /// A computer's login made again makes another device, with a holder of its own place at the
-    /// relay; one computer still runs one holder, so the two never hold a second endpoint under
+    /// server; one computer still runs one holder, so the two never hold a second endpoint under
     /// a device key at the same time.
     #[test]
     fn a_device_directory_has_one_holder_however_its_login_changed() {

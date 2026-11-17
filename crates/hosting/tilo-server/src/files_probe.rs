@@ -10,29 +10,29 @@ use tilo_user_identity::{IdentityPaths, persist};
 #[derive(Debug, Serialize)]
 struct FilesStatus {
     schema_version: u8,
-    relay_workspace_id: WorkspaceId,
+    server_workspace_id: WorkspaceId,
     files_workspace_id: uuid::Uuid,
     files_endpoint_id: String,
-    relay_service_id: String,
+    server_service_id: String,
 }
 
 fn public_status(
     registration: &tilo_server::transport::ContentPeerRegistration,
-    relay_workspace_id: WorkspaceId,
+    server_workspace_id: WorkspaceId,
     service: [u8; 32],
 ) -> Result<FilesStatus> {
     anyhow::ensure!(
-        registration.relay_service_id == service,
-        "discovery returned another relay service"
+        registration.server_service_id == service,
+        "discovery returned another server service"
     );
     let ticket =
         fs::Ticket::decode(&registration.ticket).context("invalid Files workspace binding")?;
     Ok(FilesStatus {
         schema_version: 1,
-        relay_workspace_id,
+        server_workspace_id,
         files_workspace_id: ticket.workspace_id(),
         files_endpoint_id: registration.endpoint.id.to_string(),
-        relay_service_id: hex::encode(service),
+        server_service_id: hex::encode(service),
     })
 }
 
@@ -87,14 +87,14 @@ pub(super) fn discover(
         .into_iter()
         .find(|r| {
             r.device_node_id == device
-                && r.relay_service_node_id == service
+                && r.server_node_id == service
                 && r.user_public_key == hex::encode(user)
-                && r.relay_workspace_ids.contains(&workspace)
+                && r.server_workspace_ids.contains(&workspace)
         })
         .context("selected workspace is not registered to this person's enrolled home peer")?;
     let service_key = iroh_base::PublicKey::from_bytes(&service_id)?;
     let address = selected
-        .relay_endpoint
+        .server_endpoint
         .filter(|endpoint| endpoint.id == service_key && !endpoint.is_empty())
         .unwrap_or_else(|| iroh_base::EndpointAddr::new(service_key));
     let registration = tilo_rt::block_on(async move {
@@ -103,7 +103,7 @@ pub(super) fn discover(
             .context("bind ephemeral Files probe endpoint")?;
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            tilo_server::RelayClient::discover_content_peer(
+            tilo_server::ServerClient::discover_content_peer(
                 &endpoint,
                 address,
                 workspace,
@@ -182,7 +182,7 @@ mod tests {
             let registration = tilo_server::transport::ContentPeerRegistration {
                 endpoint,
                 ticket: encoded.clone(),
-                relay_service_id: [9; 32],
+                server_service_id: [9; 32],
             };
             let status = public_status(&registration, WorkspaceId::from_u128(10), [9; 32])
                 .expect("matching service");

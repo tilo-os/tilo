@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# The build half of the relay image (os/containers/tilo-server/Containerfile): the relay, its admin,
+# The build half of the server image (os/containers/tilo-server/Containerfile): the server, its admin,
 # its enroll program and the filesystem replica t already built (server-binaries.sh, the check
-# relay-binaries) laid out on the mirrored base, with the runtime packages installed from the frozen
+# server-binaries) laid out on the mirrored base, with the runtime packages installed from the frozen
 # RPM snapshot rpm-snapshot-ref.sh named in SNAPSHOT (the published one, or this run's
 # image-rpms-x86_64 in RPMS where it is not published yet), into OUT (oci-build.sh), with the
 # snapshot it came from in OUT/rpms-source, which oci-sign.sh refuses unless it is the published one.
 # Nothing compiles here: the image is only the base, the packages, the binaries and their
 # configuration, so it costs a layering run whatever changed in the tree.
 #
-# usage: relay-build.sh SNAPSHOT RPMS BINARIES OUT
+# usage: server-build.sh SNAPSHOT RPMS BINARIES OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: relay-build.sh SNAPSHOT RPMS BINARIES OUT'
+usage='usage: server-build.sh SNAPSHOT RPMS BINARIES OUT'
 snapshot=${1:?$usage}
 rpms=${2:?$usage}
 binaries=${3:?$usage}
@@ -33,7 +33,7 @@ fi
 # The context is what the image copies and nothing else, so no checkout metadata reaches the
 # build and a one-crate change moves one file in it. Source bytes and the pinned base and snapshot
 # decide the image; a commit time is no input (oci-build.sh fixes the timestamps).
-context=$scratch/relay-context
+context=$scratch/server-context
 rm -rf "$context"
 mkdir -p "$context/bin" "$context/os/containers/tilo-server" "$context/os/usr/lib/systemd/system"
 cp os/containers/tilo-server/Containerfile "$context/"

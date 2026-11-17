@@ -48,7 +48,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use tilo_automerge::ApplyIncoming as _;
 
-/// The directory beside a host's workspaces, under the relay's state root,
+/// The directory beside a host's workspaces, under the server's state root,
 /// where a record's repair keeps every change it left out.
 pub const REPAIRED_DOCUMENTS: &str = "repaired-records";
 
@@ -59,7 +59,7 @@ pub const PRIMARY: &str = "(primary)";
 /// The file extension of a kept change.
 const CHANGE: &str = "change";
 
-/// Where a record's repair keeps the changes it left out, under the relay's
+/// Where a record's repair keeps the changes it left out, under the server's
 /// state root `root`: `<root>/repaired-records/<workspace>/<app>/<record>`.
 #[must_use]
 pub fn repaired_document_dir(root: &Path, workspace: &str, app: &str, record: &str) -> PathBuf {
@@ -288,7 +288,7 @@ struct TakenIn {
 
 impl Workspaces {
     /// Where the changes this host's records' repairs left out are kept: beside
-    /// its workspaces, under the relay's state root.
+    /// its workspaces, under the server's state root.
     fn repaired_documents_root(&self) -> Option<PathBuf> {
         self.inner.dir.parent().map(Path::to_path_buf)
     }

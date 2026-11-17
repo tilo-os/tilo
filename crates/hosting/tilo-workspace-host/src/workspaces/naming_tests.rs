@@ -3,7 +3,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -20,8 +20,8 @@ use super::tests::admitted_member;
 async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (writer, _salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let writer_key = SigningKey::from_bytes(&[3; 32]);
@@ -67,5 +67,5 @@ async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
         .expect("the workspace is listed");
     assert_eq!(listed.name, "Tilo", "{listed:?}");
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

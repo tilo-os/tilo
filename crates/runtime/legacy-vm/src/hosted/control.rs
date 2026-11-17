@@ -37,7 +37,7 @@ pub struct ShareRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenBrowser {
     pub workspace: String,
-    /// The account the VM belongs to, as the relay knows it; opening Browser needs no card, since
+    /// The account the VM belongs to, as the server knows it; opening Browser needs no card, since
     /// its page actions are counted instead.
     pub account: String,
     pub size: VmSize,
@@ -425,7 +425,7 @@ mod tests {
         ]
     }
 
-    /// A placer, a relay and ush built before a request was added still speak to this host: every
+    /// A placer, a server and ush built before a request was added still speak to this host: every
     /// request they send means here what it meant to them, byte for byte.
     #[test]
     fn every_request_keeps_its_encoding() {

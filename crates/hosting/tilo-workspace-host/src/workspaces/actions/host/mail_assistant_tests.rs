@@ -47,7 +47,7 @@ struct Setup {
     host: HostWorkspaceActions,
     device: DeviceCert,
     workspace_id: WorkspaceId,
-    _relay: TestHost,
+    _server: TestHost,
     _dir: tempfile::TempDir,
 }
 
@@ -55,8 +55,8 @@ impl Setup {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces().clone();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
         let servers = Arc::new(Watched::answering());
         workspaces.carry_mail_through(servers.clone());
         let host = HostWorkspaceActions::new();
@@ -74,7 +74,7 @@ impl Setup {
             host,
             device,
             workspace_id,
-            _relay: relay,
+            _server: server,
             _dir: dir,
         }
     }

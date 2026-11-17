@@ -1,11 +1,11 @@
-//! Two-peer fan-out through a single relay.
+//! Two-peer fan-out through a single server.
 //!
 //! Spins up:
-//! - one relay bound to workspace 42, membership = {A, B}
-//! - two peer devices A + B, each dials the relay
+//! - one server bound to workspace 42, membership = {A, B}
+//! - two peer devices A + B, each dials the server
 //!
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
-//! receives the same delta bytes via the relay's fan-out.
+//! receives the same delta bytes via the server's fan-out.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,18 +19,18 @@
 
 use std::time::Duration;
 
-use tilo_server::{CoeditPayload, Envelope, RelayClient, RelayCoeditSession, RelayConfig};
+use tilo_server::{CoeditPayload, Envelope, ServerClient, ServerCoeditSession, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(9);
 const COEDIT_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(19);
 const SECOND_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
 
-/// Upper bound for a frame the relay owes a client. Live fan-out waits for the
-/// delta's durable commit (pending file plus directory fsyncs) and the relay's
+/// Upper bound for a frame the server owes a client. Live fan-out waits for the
+/// delta's durable commit (pending file plus directory fsyncs) and the server's
 /// blocking-worker pool, so a disk-contended CI host can take seconds; this
 /// only bounds a hang.
 const HANG: Duration = Duration::from_secs(30);
@@ -44,27 +44,27 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `first_time_home_device_bootstraps_from_retained_checkpoint`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+        let server_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("new-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = crate::common::start_relay(
-            RelayConfig {
+        let server = crate::common::start_server(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
-                device_signing_key: relay_dev.sk,
-                device_cert: relay_dev.cert,
+                device_signing_key: server_dev.sk,
+                device_cert: server_dev.cert,
                 revocations: RevocationList::new(),
             },
         )
         .await
         .unwrap();
-        let addr = relay.node_addr();
+        let addr = server.node_addr();
         let a_key = a.device_pubkey();
-        let a_client = RelayClient::connect(
+        let a_client = ServerClient::connect(
             client_endpoint().await,
             addr.clone(),
             user.user_pk,
@@ -74,29 +74,29 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
-        let a_session = RelayCoeditSession::join(a_client, COEDIT_WORKSPACE, a_key).unwrap();
+        let a_session = ServerCoeditSession::join(a_client, COEDIT_WORKSPACE, a_key).unwrap();
         assert!(matches!(
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
             Some(tilo_server::Inbound::Ready { pending: 0, .. })
         ));
-        let metrics = relay.handle().metrics;
+        let metrics = server.handle().metrics;
         a_session
             .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
             .unwrap();
         // A and B use separate connections, so B's Subscribe can reach the
-        // relay before A's checkpoint does. Wait for the relay to commit it.
+        // server before A's checkpoint does. Wait for the server to commit it.
         tokio::time::timeout(HANG, async {
             while metrics.snapshot().deltas_received == 0 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("relay committed A's checkpoint");
+        .expect("server committed A's checkpoint");
 
         // B was not a workspace member when A published, so no per-device
         // pending queue could have existed. Its first subscribe must use retained
         // state instead.
-        let b_client = RelayClient::connect(
+        let b_client = ServerClient::connect(
             client_endpoint().await,
             addr,
             user.user_pk,
@@ -133,27 +133,27 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+        let server_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
         let a_key = a.device_pubkey();
         let state = tempfile::tempdir().unwrap();
-        let relay = crate::common::start_relay(
-            RelayConfig {
+        let server = crate::common::start_server(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: user.user_pk,
-                device_signing_key: relay_dev.sk,
-                device_cert: relay_dev.cert,
+                device_signing_key: server_dev.sk,
+                device_cert: server_dev.cert,
                 revocations: RevocationList::new(),
             },
         )
         .await
         .unwrap();
-        let addr = relay.node_addr();
-        let a_client = RelayClient::connect(
+        let addr = server.node_addr();
+        let a_client = ServerClient::connect(
             client_endpoint().await,
             addr.clone(),
             user.user_pk,
@@ -163,7 +163,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
-        let b_client = RelayClient::connect(
+        let b_client = ServerClient::connect(
             client_endpoint().await,
             addr.clone(),
             user.user_pk,
@@ -191,10 +191,10 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             pending_dir
                 .read_dir()
                 .is_ok_and(|mut files| files.next().is_some()),
-            "relay noticed the closed session and queued an offline change"
+            "server noticed the closed session and queued an offline change"
         );
 
-        let b_again = RelayClient::connect(
+        let b_again = ServerClient::connect(
             client_endpoint().await,
             addr,
             user.user_pk,
@@ -213,7 +213,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         tilo_test_env::within("a message on b_again", b_again.recv()).await,
         Some(Envelope::Delta { ref delta, .. }) if delta == b"offline-change"
             ));
-        wait_for_ready_with_pending(&b_again, &relay.handle().metrics).await;
+        wait_for_ready_with_pending(&b_again, &server.handle().metrics).await;
 
         // Both devices the host enrolled are members of the workspace's one
         // record, so a restart admits them without any second list.
@@ -230,23 +230,23 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `two_peers_fan_out_through_relay`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+        let server_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
 
-        let relay = Box::pin(spawn_relay(
+        let server = Box::pin(spawn_server(
             &user,
-            relay_dev,
+            server_dev,
             &[SECOND_WORKSPACE],
             &[a.device_pubkey(), b.device_pubkey()],
         ))
         .await;
-        let relay_addr = relay.relay.node_addr();
+        let server_addr = server.server.node_addr();
 
         let ep_a = client_endpoint().await;
-        let a_client = RelayClient::connect(
+        let a_client = ServerClient::connect(
             ep_a,
-            relay_addr.clone(),
+            server_addr.clone(),
             user.user_pk,
             a.cert.clone(),
             a.sk.clone(),
@@ -256,9 +256,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .expect("A connect");
 
         let ep_b = client_endpoint().await;
-        let b_client = RelayClient::connect(
+        let b_client = ServerClient::connect(
             ep_b,
-            relay_addr.clone(),
+            server_addr.clone(),
             user.user_pk,
             b.cert.clone(),
             b.sk.clone(),
@@ -324,16 +324,16 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let ghost = tokio::time::timeout(Duration::from_millis(200), a_client.recv()).await;
         assert!(ghost.is_err(), "A should not receive its own delta");
 
-        let snap = relay.relay.handle().metrics.snapshot();
+        let snap = server.server.handle().metrics.snapshot();
         assert!(snap.conns_authed >= 2, "at least both peers authed");
     }
 }
 
 /// Publish synthetic deltas from `a_client` until `pending_dir` shows a
-/// queued file (the relay noticed the closed session), or the hang bound
+/// queued file (the server noticed the closed session), or the hang bound
 /// runs out — the caller's own `assert!` reports the timeout.
 async fn publish_until_queued(
-    a_client: &RelayClient,
+    a_client: &ServerClient,
     a_key: [u8; 32],
     pending_dir: &std::path::Path,
 ) {
@@ -363,7 +363,7 @@ async fn publish_until_queued(
 /// Drain replayed `Delta`s until the `Ready` marker reports at least one
 /// pending delta was queued for this reconnect.
 async fn wait_for_ready_with_pending(
-    b_again: &RelayClient,
+    b_again: &ServerClient,
     metrics: &std::sync::Arc<tilo_server::metrics::Metrics>,
 ) {
     loop {
@@ -380,7 +380,7 @@ async fn wait_for_ready_with_pending(
             Ok(None) => {
                 let snapshot = metrics.snapshot();
                 panic!(
-                    "the relay closed the reconnected session before Ready: {} sessions ended with an error, {} of them for backpressure",
+                    "the server closed the reconnected session before Ready: {} sessions ended with an error, {} of them for backpressure",
                     snapshot.subscriber_dropped, snapshot.subscriber_dropped_backpressure
                 );
             }

@@ -30,13 +30,13 @@ pub(crate) fn load(
     Ok(ModerationAgent::new(judge))
 }
 
-/// Names the model key file that moderates this relay's public workspaces;
+/// Names the model key file that moderates this server's public workspaces;
 /// unset, they are moderated by their own moderators alone.
 pub(crate) const PUBLIC_MODERATION_KEY_ENV: &str = "TILO_SERVER_MODERATION_KEY_FILE";
 /// Names the model that moderates them, when not [`tilo_moderation::DEFAULT_MODEL`].
 pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_SERVER_MODERATION_MODEL";
 
-/// Run the moderation agent in every workspace this relay lists as a public
+/// Run the moderation agent in every workspace this server lists as a public
 /// workspace, for as long as it is listed, when the operator mounted a
 /// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public workspace takes in
 /// strangers, so its reports are answered even while its moderators are
@@ -45,17 +45,17 @@ pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_SERVER_MODERATION_MOD
 /// through that workspace's governance.
 ///
 /// # Errors
-/// The key is named but unusable; the relay refuses to start rather than
+/// The key is named but unusable; the server refuses to start rather than
 /// run its public workspaces unmoderated by mistake.
 pub(crate) fn follow_published(
-    relay: &tilo_server::daemon::Relay,
+    server: &tilo_server::daemon::Server,
 ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
     let Some(key_file) = std::env::var_os(PUBLIC_MODERATION_KEY_ENV).map(std::path::PathBuf::from)
     else {
         return Ok(None);
     };
     let model = std::env::var(PUBLIC_MODERATION_MODEL_ENV).ok();
-    let Some(workspaces) = relay.workspaces().cloned() else {
+    let Some(workspaces) = server.workspaces().cloned() else {
         return Ok(None);
     };
     let store = tilo_secrets::SecretStore::for_app(crate::persistent_workspace_cli::SECRET_APP);

@@ -183,7 +183,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     for peer in [a, b] {
         peer.close();
     }
-    pages.host.relay.shutdown().await;
+    pages.host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -243,7 +243,7 @@ async fn a_window_opened_on_the_shared_layout_reaches_the_other_person() {
     for peer in [a, b] {
         peer.close();
     }
-    pages.host.relay.shutdown().await;
+    pages.host.server.shutdown().await;
 }
 
 /// The route of the workspace's shared desktop.

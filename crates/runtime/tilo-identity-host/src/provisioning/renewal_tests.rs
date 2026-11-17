@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
         let attempts = Cell::new(0);
         keep_device_certificates_renewed(&personal, &paths, &clock, || {
             attempts.set(attempts.get() + 1);
-            Err(io::Error::other("the relay is unreachable"))
+            Err(io::Error::other("the server is unreachable"))
         });
         assert_eq!(attempts.get(), 1);
         assert_eq!(*clock.waited.borrow(), [None], "no timed retry");

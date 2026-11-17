@@ -1,7 +1,7 @@
 //! The agent in the workspace: a certified member beside browsers and
 //! native devices.
 //!
-//! [`AgentMember`] holds a certified relay session under the agent's own
+//! [`AgentMember`] holds a certified server session under the agent's own
 //! device key and joins the workspace's durable and live sessions. It holds the
 //! records it works in as replicas of their resources, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts

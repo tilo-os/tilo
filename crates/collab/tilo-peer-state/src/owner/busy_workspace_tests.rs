@@ -327,7 +327,7 @@ fn joining_a_busy_public_workspace_never_fails_because_of_how_many_messages_it_h
         .unwrap();
 }
 
-/// How many relay inputs of one session the shell admits in one commit.
+/// How many server inputs of one session the shell admits in one commit.
 const BATCH: usize = 256;
 
 #[test]
@@ -346,7 +346,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
         let batch = sync
             .by_ref()
             .take(BATCH)
-            .map(|(author, message)| (TransportOrigin::RetainedRelayDelta(author), message))
+            .map(|(author, message)| (TransportOrigin::RetainedServerDelta(author), message))
             .collect();
         let reports = owner
             .receive_batch(id, batch, workspace.now)
@@ -362,7 +362,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
             assert!(report.summary().dropped.is_empty());
         }
     }
-    eprintln!("{inputs} relay inputs admitted in {:?}", started.elapsed());
+    eprintln!("{inputs} server inputs admitted in {:?}", started.elapsed());
     assert_eq!(
         owner
             .with_current(id, |view| Ok(view.generation()))

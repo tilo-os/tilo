@@ -124,7 +124,7 @@ impl WorkspaceService {
         command
             .arg(&entrypoint)
             // `exec tilo-server` finds the binary the run built beside the test's own programs.
-            .env("PATH", relay_on_path())
+            .env("PATH", server_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it.
             .env("TILO_WORKSPACES_PERSISTENT", "lounge")
             .env("TILO_WORKSPACES_NAME", "Lounge")
@@ -258,11 +258,14 @@ fn entrypoint() -> std::path::PathBuf {
         })
 }
 
-/// A PATH holding the relay the run built, so the image's `exec tilo-server` runs it: the run's own
+/// A PATH holding the server the run built, so the image's `exec tilo-server` runs it: the run's own
 /// programs beside the test binary, then this machine's.
-fn relay_on_path() -> std::ffi::OsString {
-    let relay = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
-    let programs = relay.parent().expect("the relay's directory").to_path_buf();
+fn server_on_path() -> std::ffi::OsString {
+    let server = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
+    let programs = server
+        .parent()
+        .expect("the server's directory")
+        .to_path_buf();
     let mut paths = vec![programs];
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),

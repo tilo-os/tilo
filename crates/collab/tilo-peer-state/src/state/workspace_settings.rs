@@ -404,7 +404,7 @@ mod tests {
             .map(|change| change.raw_bytes().to_vec())
             .collect();
         peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
                 workspace: WORKSPACE.into(),
                 changes,

@@ -1,4 +1,4 @@
-//! Relay-mediated device certification over `tilo-device-certify/1`: a
+//! Server-mediated device certification over `tilo-device-certify/1`: a
 //! device holding only its own key is certified by a same-user device that
 //! holds the root, through the host, and the host enforces request binding,
 //! policy, approver capability and revocation.
@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::RelayClient;
+use tilo_server::ServerClient;
 use tilo_server::certify::{ApproverDecision, ApproverReply};
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server_client::{Approver, CertificationOutcome, CertifyError, request_certification};
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
@@ -37,16 +37,16 @@ fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest 
     .unwrap()
 }
 
-async fn start_relay(user: &TestUser, revocations: RevocationList) -> (Relay, tempfile::TempDir) {
+async fn start_server(user: &TestUser, revocations: RevocationList) -> (Server, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let host = user.enrol("home-server", DeviceCapabilities::member());
-    let cfg = tilo_server::RelayConfig {
+    let cfg = tilo_server::ServerConfig {
         state_root: tmp.path().to_path_buf(),
         ..Default::default()
     };
-    let relay = crate::common::start_relay(
+    let server = crate::common::start_server(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: host.sk,
             device_cert: host.cert,
@@ -55,7 +55,7 @@ async fn start_relay(user: &TestUser, revocations: RevocationList) -> (Relay, te
     )
     .await
     .unwrap();
-    (relay, tmp)
+    (server, tmp)
 }
 
 /// Wait until the host lists exactly one pending request.
@@ -70,13 +70,13 @@ async fn one_pending(approver: &mut Approver) -> tilo_server::certify::PendingCe
     panic!("the request never reached the approver");
 }
 
-/// `device`'s session with `relay` as an approver of its person's requests,
+/// `device`'s session with `server` as an approver of its person's requests,
 /// and the endpoint that session lives on.
-async fn approver_at(relay: &Relay, device: &TestDevice) -> (iroh::endpoint::Endpoint, Approver) {
+async fn approver_at(server: &Server, device: &TestDevice) -> (iroh::endpoint::Endpoint, Approver) {
     let endpoint = client_endpoint().await;
     let approver = Approver::connect(
         &endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         &device.sk,
         &RevocationList::new(),
@@ -90,8 +90,8 @@ async fn approver_at(relay: &Relay, device: &TestDevice) -> (iroh::endpoint::End
 async fn root_holder_certifies_a_browser_device_through_the_host() {
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
 
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let request = browser_request(user.user_pk, &browser_key);
@@ -154,8 +154,8 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     assert!(host_cert.capabilities.can_own_workspaces);
     assert!(!issued.capabilities.can_admit_devices);
 
-    // The new certificate authenticates on the relay ALPN with a signer.
-    let client = RelayClient::connect_with_signer(
+    // The new certificate authenticates on the server ALPN with a signer.
+    let client = ServerClient::connect_with_signer(
         client_endpoint().await,
         host,
         Some(user.user_pk),
@@ -170,7 +170,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     .await
     .unwrap();
     assert_eq!(
-        client.relay_peer.device_public_key,
+        client.server_peer.device_public_key,
         host_cert.device_public_key
     );
     approver.close();
@@ -180,8 +180,8 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
 async fn two_devices_asking_under_one_name_are_named_apart() {
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
     let approver_endpoint = client_endpoint().await;
     let mut approver = Approver::connect(
         &approver_endpoint,
@@ -231,8 +231,8 @@ async fn two_devices_asking_under_one_name_are_named_apart() {
 async fn host_refuses_escalation_and_relays_a_denial() {
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let request = browser_request(user.user_pk, &browser_key);
     let browser_endpoint = client_endpoint().await;
@@ -299,8 +299,8 @@ async fn only_root_holders_approve_and_revoked_keys_are_refused() {
     sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(entry).unwrap();
-    let (relay, _tmp) = start_relay(&user, revocations).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, revocations).await;
+    let host = server.node_addr();
 
     let approver_endpoint = client_endpoint().await;
     let refused: Result<Vec<_>, CertifyError> = async {
@@ -361,8 +361,8 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
     let invite = [9; 16];
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
 
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let request = request_dated(
@@ -390,7 +390,7 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
         );
     };
 
-    let (_approver_endpoint, mut approver) = approver_at(&relay, &laptop).await;
+    let (_approver_endpoint, mut approver) = approver_at(&server, &laptop).await;
     let pending = one_pending(&mut approver).await;
     assert_eq!(pending.pairing_code, shown_in_browser);
     assert_eq!(pending.request, request);
@@ -425,7 +425,7 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
 
     // The host lets the new device in with it at once: its handshake reads
     // the certificate by the host's own clock, exactly.
-    let client = RelayClient::connect_with_signer(
+    let client = ServerClient::connect_with_signer(
         client_endpoint().await,
         host.clone(),
         Some(user.user_pk),
@@ -440,7 +440,7 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
     .await
     .unwrap();
     assert_eq!(
-        client.relay_peer.device_public_key,
+        client.server_peer.device_public_key,
         host_cert.device_public_key
     );
 
@@ -468,8 +468,8 @@ async fn a_request_dated_far_ahead_is_refused_for_its_clock_and_leaves_its_link_
     let invite = [3; 16];
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     // Five minutes ahead: no clock that keeps time is that far from another.
@@ -510,7 +510,7 @@ async fn a_request_dated_far_ahead_is_refused_for_its_clock_and_leaves_its_link_
         let again = again.clone();
         async move { request_certification(&browser_endpoint, host, again, |_| {}).await }
     });
-    let (_approver_endpoint, mut approver) = approver_at(&relay, &laptop).await;
+    let (_approver_endpoint, mut approver) = approver_at(&server, &laptop).await;
     let pending = one_pending(&mut approver).await;
     assert_eq!(pending.request, again);
     assert_eq!(
@@ -535,8 +535,8 @@ async fn a_device_dates_its_request_a_minute_back_and_waits_as_long_as_before() 
     // while their pages move on, so the device does its part too.
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
-    let host = relay.node_addr();
+    let (server, _tmp) = start_server(&user, RevocationList::new()).await;
+    let host = server.node_addr();
     let device = SigningKey::generate(&mut UnwrapErr(SysRng));
 
     let before = tilo_clock::unix_now_ns();
@@ -544,7 +544,9 @@ async fn a_device_dates_its_request_a_minute_back_and_waits_as_long_as_before() 
         let host = tilo_server_client::Host::at(host.clone());
         let device = device.clone();
         let person = user.user_pk;
-        async move { tilo_server_client::certify(&host, person, "Phone", [0; 16], &device, |_| {}).await }
+        async move {
+            tilo_server_client::certify(&host, person, "Phone", [0; 16], &device, |_| {}).await
+        }
     });
     let approver_endpoint = client_endpoint().await;
     let mut approver = Approver::connect(

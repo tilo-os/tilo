@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-session-client"
-description = "A member's client of the peer network: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live session."
+description = "A member's client of the peer network: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified server session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live session."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -122,7 +122,7 @@ test-http = { path = "../../dev/test-http" }
 tilo-server = { path = "../../hosting/tilo-server", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
-# A relay listener on loopback, as the live session's acceptance test drives it.
+# A server listener on loopback, as the live session's acceptance test drives it.
 tilo-live = { path = "../../collab/tilo-live", features = ["live_session", "relay", "iroh"] }
 # The call's native side sends and hears a real tone, as a call does.
 opus = "0.4"
@@ -145,7 +145,7 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
-# A relay on this machine's loopback, which is what a test's devices relay through.
+# A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../dev/test-server" }
 # The broker's verdict, for the browser's to be checked against.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }

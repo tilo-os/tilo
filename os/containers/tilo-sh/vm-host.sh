@@ -4,16 +4,16 @@
 # the placer that places workspaces' VMs on it, and the guest image this
 # checkout built instead of a release's. It is what a hosted workspace needs
 # under it locally: a workspace's Linux programs and its Browser run in its VM
-# here, and its browser session joins the workspace at the relay beside it.
+# here, and its browser session joins the workspace at the server beside it.
 #
 # usage: vm-host.sh up|down|status|env
 #
 #   up       make the state disk, certify this host's member device under the
-#            relay's root, ready the guest image, start the placer and
+#            server's root, ready the guest image, start the placer and
 #            vm-host-0
 #   down     stop both, and remove the state disk and the host's identities
 #   status   what is up, and the VMs the host holds
-#   env      the variables the relay reads to place here (nothing while the
+#   env      the variables the server reads to place here (nothing while the
 #            host is down)
 #
 # What a caller passes (each has the default shown):
@@ -39,27 +39,27 @@
 #                                       the size's warm template (1 GiB), so
 #                                       the machine's room is what bounds it,
 #                                       not this stack's default
-#   TILO_SH_RELAY_SECRETS=<state>/secrets
-#                                       where the relay's secrets are on this
+#   TILO_SH_SERVER_SECRETS=<state>/secrets
+#                                       where the server's secrets are on this
 #                                       machine: the hosts' member devices and
 #                                       the plans file are written there, for
-#                                       the relay to read
-#   TILO_SH_RELAY_SECRETS_VIEW=/run/secrets
-#                                       where that relay reads them (the image
+#                                       the server to read
+#   TILO_SH_SERVER_SECRETS_VIEW=/run/secrets
+#                                       where that server reads them (the image
 #                                       mounts them at /run/secrets; the
-#                                       native stack's relay reads them in the
+#                                       native stack's server reads them in the
 #                                       stack's own state)
-#   TILO_SH_RELAY_WORKSPACES_VIEW=/run/tilo-workspaces
-#                                       where that relay reads its own state
+#   TILO_SH_SERVER_WORKSPACES_VIEW=/run/tilo-workspaces
+#                                       where that server reads its own state
 #                                       (the image's volume, or natively the
 #                                       stack's state)
-#   TILO_SH_RELAY_ROOT=<state>/secrets/workspace-root-lounge
-#                                       the relay's owner root, 64 hex
+#   TILO_SH_SERVER_ROOT=<state>/secrets/workspace-root-lounge
+#                                       the server's owner root, 64 hex
 #                                       characters: what certifies the member
-#   TILO_SH_RELAY_STATE=<state>/workspaces/lounge/relay
-#                                       the relay's own state, where the
+#   TILO_SH_SERVER_STATE=<state>/workspaces/lounge/server
+#                                       the server's own state, where the
 #                                       device key it answers as is
-#   TILO_SH_RELAY_IROH=127.0.0.1:24104  where the relay's endpoint listens
+#   TILO_SH_SERVER_IROH=127.0.0.1:24104  where the server's endpoint listens
 #
 # Root, /dev/kvm and a loop device are what a VM host needs: without them
 # there is nothing to run, and `up` says so and stops.
@@ -67,18 +67,18 @@ set -euo pipefail
 
 state=${TILO_SH_STATE:-/var/lib/tilo-sh}
 vm=$state/vm
-# The relay's secrets: where it reads the member devices and the plans file
+# The server's secrets: where it reads the member devices and the plans file
 # from, which may be a stack's directory rather than this host's.
-secrets=${TILO_SH_RELAY_SECRETS:-$state/secrets}
+secrets=${TILO_SH_SERVER_SECRETS:-$state/secrets}
 pod=vm-host-0
 placer_container=tilo-sh-vm-placer
 host_container=tilo-sh-$pod
 place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
 status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
 member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
-relay_iroh=${TILO_SH_RELAY_IROH:-127.0.0.1:24104}
-relay_root=${TILO_SH_RELAY_ROOT:-$secrets/workspace-root-lounge}
-relay_state=${TILO_SH_RELAY_STATE:-$state/workspaces/lounge/relay}
+relay_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
+server_root=${TILO_SH_SERVER_ROOT:-$secrets/workspace-root-lounge}
+server_state=${TILO_SH_SERVER_STATE:-$state/workspaces/lounge/server}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
@@ -94,11 +94,11 @@ case ${TILO_SH_HOSTED_VM_SIZE:-default} in
   *) size_memory_mib=8192 ;;
 esac
 memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 3072))}
-# The relay's own view of what this host writes for it: the image's secrets
-# volume and state volume, or, for the stack that runs the relay natively, the
-# paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_WORKSPACES_VIEW).
-relay_secrets=${TILO_SH_RELAY_SECRETS_VIEW:-/run/secrets}
-relay_workspaces=${TILO_SH_RELAY_WORKSPACES_VIEW:-/run/tilo-workspaces}
+# The server's own view of what this host writes for it: the image's secrets
+# volume and state volume, or, for the stack that runs the server natively, the
+# paths of its state (TILO_SH_SERVER_SECRETS_VIEW, TILO_SH_SERVER_WORKSPACES_VIEW).
+server_secrets=${TILO_SH_SERVER_SECRETS_VIEW:-/run/secrets}
+server_workspaces=${TILO_SH_SERVER_WORKSPACES_VIEW:-/run/tilo-workspaces}
 # A VM host's state disk is 512 GiB on the cloud: a sparse file that size
 # holds the same, since only what is written is stored.
 state_size=${TILO_SH_VM_HOST_STATE_SIZE:-512G}
@@ -154,18 +154,18 @@ guest_ready() { # dir images -> reference
   printf '%s' "$reference"
 }
 
-# The relay's own device, as the member must know it: the key it certified in
-# the relay's state, its public key, and the endpoint id it answers on (a
-# relay's endpoint is keyed apart from its device). `tilo-enroll device-key`
+# The server's own device, as the member must know it: the key it certified in
+# the server's state, its public key, and the endpoint id it answers on (a
+# server's endpoint is keyed apart from its device). `tilo-enroll device-key`
 # derives both from the key.
-relay_device() {
-  local work=$vm/relay-device
-  [ -f "$relay_state/host-device.key" ] \
-    || fail "$relay_state/host-device.key: the relay has not started yet: start the stack's relay first"
+server_device() {
+  local work=$vm/server-device
+  [ -f "$server_state/host-device.key" ] \
+    || fail "$server_state/host-device.key: the server has not started yet: start the stack's server first"
   rm -rf "$work"
   mkdir -p "$work/device-private"
   chmod 0700 "$work/device-private"
-  install -m 0600 "$relay_state/host-device.key" "$work/device-private/keypair.bin"
+  install -m 0600 "$server_state/host-device.key" "$work/device-private/keypair.bin"
   "$enroll" device-key --identity-root "$work"
 }
 
@@ -197,28 +197,28 @@ state_disk() {
   umount "$mount"
 }
 
-# The operator root as a signing key: the relay's root file is 64 hex
+# The operator root as a signing key: the server's root file is 64 hex
 # characters, and `tilo-enroll certify --root-key` reads 32 bytes.
 root_key() { # work
   local hex
-  hex=$(tr -d '[:space:]' < "$relay_root")
-  [ ${#hex} = 64 ] || fail "$relay_root: the relay's root is 64 hex characters"
+  hex=$(tr -d '[:space:]' < "$server_root")
+  [ ${#hex} = 64 ] || fail "$server_root: the server's root is 64 hex characters"
   case $hex in
-    *[!0-9a-fA-F]*) fail "$relay_root: the relay's root is 64 hex characters" ;;
+    *[!0-9a-fA-F]*) fail "$server_root: the server's root is 64 hex characters" ;;
   esac
   printf "$(printf '%s' "$hex" | sed 's/../\\x&/g')" > "$1/root-key.bin"
   chmod 0600 "$1/root-key.bin"
 }
 
 # This host's member device, as the tar the start installs on its state disk
-# (TILO_VM_MEMBER_IDENTITIES): its key, the relay's root certifying it, and
+# (TILO_VM_MEMBER_IDENTITIES): its key, the server's root certifying it, and
 # the person's record. It prints the device's public key. The member holds the
 # workspaces it enters as any of the person's devices does, so it is certified
 # as one (`own`): a host certificate makes a store node, which holds none of
 # the person's own documents, and the member's runtime does not start as one.
 member_identity() {
   local work=$vm/member identities=$vm/member-identities device
-  [ -f "$relay_root" ] || fail "$relay_root: the relay's root is not there yet"
+  [ -f "$server_root" ] || fail "$server_root: the server's root is not there yet"
   if [ ! -f "$identities/$pod.tar" ]; then
     rm -rf "$work"
     mkdir -p "$work/root" "$work/person"
@@ -242,14 +242,14 @@ member_identity() {
   cat "$identities/$pod.device"
 }
 
-# The plans file the relay and the host admit by (docs/hosted-browser.md,
+# The plans file the server and the host admit by (docs/hosted-browser.md,
 # "Metering"): five free Browser page actions, so the card prompt comes after
 # them, and the stack's account with a card on file for the Linux VMs and for
-# what follows the card — the account the relay places its workspaces' VMs for,
+# what follows the card — the account the server places its workspaces' VMs for,
 # so a proof run inside one names the account that owns it.
 # TILO_SH_BROWSER_FREE_ACTIONS sets another allowance: a check that counts page
 # actions gives itself few of them. The file lives in
-# the secrets the stack mounts for the relay, which reads it again for every
+# the secrets the stack mounts for the server, which reads it again for every
 # page action: an account added to it mid-run is served from the next one.
 plans_file=$secrets/vm-host-plans.json
 free_actions=${TILO_SH_BROWSER_FREE_ACTIONS:-5}
@@ -287,7 +287,7 @@ plans() {
 JSON
 }
 
-# The VM hosts' member devices as the relay reads them: this stack's one host,
+# The VM hosts' member devices as the server reads them: this stack's one host,
 # by the name the placer answers and where its endpoint listens.
 members() { # device
   mkdir -p "$secrets"
@@ -301,15 +301,15 @@ up() {
   [ -n "${TILO_SH_IMAGE_VM_HOST:-}" ] || fail 'TILO_SH_IMAGE_VM_HOST: the vm-host image is not named'
   [ -n "${TILO_SH_HOSTED_GUEST:-}" ] || fail 'TILO_SH_HOSTED_GUEST: the guest image is not named'
   command -v "$enroll" >/dev/null || fail "$enroll: not found: name the tilo-enroll a release ships (TILO_SH_TILO_ENROLL)"
-  local relay relay_key relay_endpoint device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
+  local server server_key server_endpoint device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
   if [ -f "$image" ]; then
     image=$(podman load -q -i "$image" | sed -n 's/^Loaded image[s]*: *//p' | tail -n 1)
     [ -n "$image" ] || fail "$TILO_SH_IMAGE_VM_HOST: podman loaded no image from it"
   fi
-  relay=$(relay_device)
-  relay_key=$(printf '%s' "$relay" | json_field device_public_key)
-  relay_endpoint=$(printf '%s' "$relay" | json_field relay_service_node_id)
-  [ -n "$relay_key" ] && [ -n "$relay_endpoint" ] || fail "the relay's own device: $relay"
+  server=$(server_device)
+  server_key=$(printf '%s' "$server" | json_field device_public_key)
+  server_endpoint=$(printf '%s' "$server" | json_field server_node_id)
+  [ -n "$server_key" ] && [ -n "$server_endpoint" ] || fail "the server's own device: $server"
   device=$(member_identity)
   [ -n "$device" ] || fail "the host's member device"
   members "$device"
@@ -337,7 +337,7 @@ up() {
   # the jail helper's mounts, with its state disk as a raw block device and
   # its member identity on a read-only mount, as the cloud's StatefulSet runs
   # it. TILO_VM_SERVER_ENDPOINT is where a workspace's browser session reaches
-  # the relay, the one address besides the internet a VM may reach.
+  # the server, the one address besides the internet a VM may reach.
   podman rm -f "$host_container" >/dev/null 2>&1 || true
   podman run -d --name "$host_container" --hostname "$pod" --network host --privileged \
     --log-driver k8s-file \
@@ -351,9 +351,9 @@ up() {
     -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
     -e TILO_VM_SERVER_ENDPOINT="$relay_iroh" \
-    -e TILO_TAKE_WORK_RELAY="$relay_iroh" \
-    -e TILO_TAKE_WORK_DEVICE="$relay_key" \
-    -e TILO_TAKE_WORK_ENDPOINT="$relay_endpoint" \
+    -e TILO_TAKE_WORK_SERVER="$relay_iroh" \
+    -e TILO_TAKE_WORK_DEVICE="$server_key" \
+    -e TILO_TAKE_WORK_ENDPOINT="$server_endpoint" \
     "$image" >/dev/null
   say "$pod and the placer are up: workspaces' VMs run here, joining the relay at $relay_iroh"
 }
@@ -387,20 +387,20 @@ status() {
   fi
 }
 
-# What the relay reads to place here, and to answer Browser's page actions:
+# What the server reads to place here, and to answer Browser's page actions:
 # nothing while the host is down.
-relay_env() {
+server_env() {
   podman container exists "$host_container" 2>/dev/null || return 0
-  local relay_endpoint
-  relay_endpoint=$(relay_device | json_field relay_service_node_id)
+  local server_endpoint
+  server_endpoint=$(server_device | json_field server_node_id)
   cat <<ENV
 TILO_HOSTED_PLACER=127.0.0.1:$place_port
-TILO_HOSTED_MEMBERS=$relay_secrets/vm-host-members.json
+TILO_HOSTED_MEMBERS=$server_secrets/vm-host-members.json
 TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
-TILO_HOSTED_PLANS=$relay_secrets/vm-host-plans.json
-TILO_HOSTED_BROWSER_ACTIONS=$relay_workspaces/lounge/relay/browser-actions.jsonl
-TILO_HOSTED_BROWSER_RELAY=$relay_endpoint@$relay_iroh
+TILO_HOSTED_PLANS=$server_secrets/vm-host-plans.json
+TILO_HOSTED_BROWSER_ACTIONS=$server_workspaces/lounge/server/browser-actions.jsonl
+TILO_HOSTED_BROWSER_SERVER=$server_endpoint@$relay_iroh
 ENV
 }
 
@@ -408,6 +408,6 @@ case ${1:-} in
   up) up ;;
   down) down ;;
   status) status ;;
-  env) relay_env ;;
+  env) server_env ;;
   *) fail 'usage: vm-host.sh up|down|status|env' ;;
 esac

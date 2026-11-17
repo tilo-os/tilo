@@ -121,7 +121,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host(&owner, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -265,7 +265,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         now.checked_add(3_600_000_000_000).unwrap(),
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();

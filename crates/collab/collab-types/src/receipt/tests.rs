@@ -115,9 +115,9 @@ fn decide(person: &str, claims: &[ChangeClaim]) -> Result<Receipt, ReceiptRefusa
 
 tilo_test_env::scenario! {
     /// What a receiver decides from an op's claims: the grant, the units, the changes named and the kind each action names.
-    fn the_relay_admits_only_granted_actions_whose_claims_name_their_changes;
+    fn the_server_admits_only_granted_actions_whose_claims_name_their_changes;
 
-    phase the_relay_refuses_an_action_the_author_is_not_granted;
+    phase the_server_refuses_an_action_the_author_is_not_granted;
     {
         let rename = [claim(1, verb("rename", None), vec![Vec::new()])];
         assert_eq!(decide("ada", &rename), Ok(Receipt::Admit));
@@ -148,7 +148,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_relay_refuses_a_granted_action_that_writes_another_unit;
+    phase the_server_refuses_a_granted_action_that_writes_another_unit;
     {
         let add = verb("add-comment", None);
         let comments = vec![PathStep::Field("comments".into())];
@@ -236,9 +236,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase claims_derived_from_real_changes_pass_the_relay;
+    phase claims_derived_from_real_changes_pass_the_server;
     // The author's device claims each change from the entry the executor wrote
-    // into it; the relay reads the claims and the change hashes, never the
+    // into it; the server reads the claims and the change hashes, never the
     // content.
     {
         let mut doc = AutoCommit::new();

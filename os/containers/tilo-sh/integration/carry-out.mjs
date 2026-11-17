@@ -16,7 +16,7 @@
 //      writable takes it) and once as the browser's own download. The
 //      renderer's memory is sampled all the while.
 //
-// usage: node carry-out.mjs SITE RELAY OUT_DIR DOWNLOADS FILE... [--folder NAME] [--save NAME] [--follow LINK]
+// usage: node carry-out.mjs SITE SERVER OUT_DIR DOWNLOADS FILE... [--folder NAME] [--save NAME] [--follow LINK]
 //
 // Each FILE is a local file whose name is the name of a file at the root of
 // the workspace's tree, with the same bytes; --folder names a folder at the
@@ -40,7 +40,7 @@ const saveName = option('--save');
 const follow = option('--follow');
 const [site, relay, out, downloadsArg, ...fileArgs] = argv;
 if (!site || !relay || !out || !downloadsArg || !fileArgs.length) {
-  console.error('usage: node carry-out.mjs SITE RELAY OUT_DIR DOWNLOADS FILE... [--folder NAME] [--save NAME] [--follow LINK]');
+  console.error('usage: node carry-out.mjs SITE SERVER OUT_DIR DOWNLOADS FILE... [--folder NAME] [--save NAME] [--follow LINK]');
   process.exit(2);
 }
 const downloads = resolve(downloadsArg);
@@ -48,7 +48,7 @@ mkdirSync(out, {recursive: true});
 mkdirSync(downloads, {recursive: true});
 const files = fileArgs.map(path => ({path: resolve(path), name: basename(path), size: statSync(path).size}));
 const saving = files.find(file => file.name === saveName) ?? [...files].sort((a, b) => b.size - a.size)[0];
-const report = {site, relay, files: files.map(({name, size}) => ({name, size}))};
+const report = {site, server, files: files.map(({name, size}) => ({name, size}))};
 
 const sha256 = path => new Promise((done, fail) => {
   const hash = createHash('sha256');
@@ -117,7 +117,7 @@ console.error('ok: on the shell');
 // Open Files by its link, as following a link to an app opens it: the
 // workspace the page joined, and the app in it.
 const workspace = await until(`(() => {
-  const kept = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(relay).origin)}];
+  const kept = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(server).origin)}];
   return kept?.workspace ?? '';
 })()`, 'joining the workspace');
 report.workspace = workspace;

@@ -54,7 +54,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -150,7 +150,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     closed.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A device certificate `root`'s person makes for `device`, as a new visitor's page does.
@@ -206,7 +206,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -401,7 +401,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     );
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// The entry of a device that has no root at hand: what it holds is all it can enter under.

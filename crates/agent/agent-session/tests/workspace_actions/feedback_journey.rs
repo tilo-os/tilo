@@ -95,7 +95,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let state = crate::support::scratch_dir();
     let hosted = start(&identity, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Feedback fixture")
@@ -104,7 +104,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
     let person = hex::encode(identity.verifying_key().to_bytes());
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -214,7 +214,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     drop(queued);
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     let restored = start(&identity, &host, state.path()).await;
     let mut returning =
         Browser::open_workspace(&restored, &device, &host, &workspace.workspace).await;
@@ -236,7 +236,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     returning.peer.close();
     drop(restored.web);
     restored.agents.shutdown();
-    restored.relay.shutdown().await;
+    restored.server.shutdown().await;
 }
 
 /// A review model the workspace's host lends: what the host names it.
@@ -284,14 +284,14 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     )
     .await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Reviewed feedback")
         .await
         .unwrap();
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -338,7 +338,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
     browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A commenter files a report through the owner's submit action: it runs
@@ -361,14 +361,14 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Commenter feedback")
         .await
         .unwrap();
     hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .prepare_application(
@@ -458,7 +458,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// File a report, waiting out an owner still joining the workspace.

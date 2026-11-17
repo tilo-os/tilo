@@ -14,7 +14,7 @@
 )]
 
 // A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the relay host's own is.
+// is that worker, as the server host's own is.
 tilo_automerge_isolate::test_worker!();
 
 #[path = "support/native.rs"]

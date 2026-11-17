@@ -4,7 +4,7 @@
 //! production encoding: edits are Automerge changes signed and admitted by a
 //! `StatePeer`, classified by the host retention rule and published as
 //! retained deltas; presence is the shell's own `NeighbourMsg`, wrapped by
-//! `RelayCoeditSession::publish_presence`. The input is deterministic: the
+//! `ServerCoeditSession::publish_presence`. The input is deterministic: the
 //! same text, the same backspaces, the same pointer path, every run.
 
 use std::collections::HashMap;
@@ -23,12 +23,12 @@ use tokio::task::JoinHandle;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
-use tilo_server::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_server::{Inbound, ServerClient, ServerCoeditSession};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
 
-use crate::relay_process::Setup;
+use crate::server_process::Setup;
 use collab_types::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 
@@ -60,7 +60,7 @@ const DIAL_BATCH: usize = 32;
 /// Bounds a subscription that never gets ready: only a hang reaches it.
 const READY: Duration = Duration::from_secs(120);
 /// A published presence sample nobody received by now was superseded by a
-/// later one on the relay (coalesced), and is forgotten.
+/// later one on the server (coalesced), and is forgotten.
 const PRESENCE_FORGET: Duration = Duration::from_secs(2);
 /// Unreceived presence samples kept before the forgotten ones are swept.
 const PRESENCE_SWEEP: usize = 4_096;
@@ -110,7 +110,7 @@ struct PendingPresence {
 /// Every workspace and member of a run, and what they observed.
 pub struct Fleet {
     user_public_key: [u8; 32],
-    relay: Device,
+    server: Device,
     workspaces: Vec<Workspace>,
     /// Latencies are kept only while this is set.
     pub measuring: AtomicBool,
@@ -124,7 +124,7 @@ pub struct Fleet {
 }
 
 impl Fleet {
-    /// Mint a user, the relay's device and `members` devices in workspaces
+    /// Mint a user, the server's device and `members` devices in workspaces
     /// of `workspace_size`, and seed each workspace's document.
     pub fn enrol(members: usize, workspace_size: usize) -> anyhow::Result<Arc<Self>> {
         let (user_sk, user) = UserIdentity::generate("Hosting cost bench", 1);
@@ -143,7 +143,7 @@ impl Fleet {
             sign_device_cert(&mut cert, &user_sk).map_err(|error| anyhow!("{error}"))?;
             Ok(Device { sk, cert })
         };
-        let relay = enrol("relay".into(), DeviceCapabilities::member())?;
+        let server = enrol("server".into(), DeviceCapabilities::member())?;
         let mut workspaces = Vec::new();
         let mut enrolled = 0;
         while enrolled < members {
@@ -164,7 +164,7 @@ impl Fleet {
         }
         Ok(Arc::new(Self {
             user_public_key: user.public_key,
-            relay,
+            server,
             workspaces,
             measuring: AtomicBool::new(false),
             edits: AtomicU64::new(0),
@@ -181,13 +181,13 @@ impl Fleet {
         self.workspaces.len()
     }
 
-    /// The relay process's identity and workspaces.
-    pub fn relay_setup(&self, state: &Path) -> Setup {
+    /// The server process's identity and workspaces.
+    pub fn server_setup(&self, state: &Path) -> Setup {
         Setup {
             state_root: state.to_path_buf(),
             user_public_key: self.user_public_key,
-            relay_secret_key: self.relay.sk.to_bytes(),
-            relay_cert: self.relay.cert.clone(),
+            server_secret_key: self.server.sk.to_bytes(),
+            server_cert: self.server.cert.clone(),
             workspaces: self
                 .workspaces
                 .iter()
@@ -201,12 +201,12 @@ impl Fleet {
         }
     }
 
-    /// Dial the relay as every member and wait until each is
+    /// Dial the server as every member and wait until each is
     /// subscribed; each session's receiver then runs until it closes.
     pub async fn connect(
         self: &Arc<Self>,
-        relay: &EndpointAddr,
-        relay_device: [u8; 32],
+        server: &EndpointAddr,
+        server_device: [u8; 32],
     ) -> anyhow::Result<Vec<Member>> {
         let mut joins = Vec::new();
         for (workspace_index, workspace) in self.workspaces.iter().enumerate() {
@@ -220,9 +220,9 @@ impl Fleet {
                 .iter()
                 .map(|&(workspace, member)| {
                     let fleet = self.clone();
-                    let relay = relay.clone();
+                    let server = server.clone();
                     tokio::spawn(
-                        async move { fleet.join(workspace, member, relay, relay_device).await },
+                        async move { fleet.join(workspace, member, server, server_device).await },
                     )
                 })
                 .collect();
@@ -240,8 +240,8 @@ impl Fleet {
         self: Arc<Self>,
         workspace_index: usize,
         member: usize,
-        relay: EndpointAddr,
-        relay_device: [u8; 32],
+        server: EndpointAddr,
+        server_device: [u8; 32],
     ) -> anyhow::Result<Member> {
         let (workspace_id, cert, sk) = {
             let workspace = self.workspaces.get(workspace_index).context("workspace")?;
@@ -250,17 +250,17 @@ impl Fleet {
         };
         let device_public_key = cert.device_public_key;
         let endpoint = Endpoint::builder(presets::Minimal).bind().await?;
-        let client = RelayClient::connect_v2_to_enrolled_home_peer(
+        let client = ServerClient::connect_v2_to_enrolled_home_peer(
             endpoint,
-            relay,
+            server,
             self.user_public_key,
-            relay_device,
+            server_device,
             cert,
             sk,
             RevocationList::new(),
         )
         .await?;
-        let session = Arc::new(RelayCoeditSession::join(
+        let session = Arc::new(ServerCoeditSession::join(
             client,
             workspace_id,
             device_public_key,
@@ -270,7 +270,7 @@ impl Fleet {
                 match session.recv().await {
                     Some(Inbound::Ready { .. }) => return Ok(()),
                     Some(_) => {}
-                    None => return Err(anyhow!("the relay closed a subscription")),
+                    None => return Err(anyhow!("the server closed a subscription")),
                 }
             }
         })
@@ -335,7 +335,7 @@ impl Fleet {
     }
 
     /// Note that a member received the presence `body`. Only samples the
-    /// relay forwarded arrive; one it coalesced away never does.
+    /// server forwarded arrive; one it coalesced away never does.
     fn presence_received(&self, body: &[u8]) {
         let now = Instant::now();
         let (sent, timed) = {
@@ -429,7 +429,7 @@ impl Workspace {
 
 /// Drain one session, timing every edit, pointer move and caret another
 /// member published.
-async fn receive(fleet: Arc<Fleet>, session: Arc<RelayCoeditSession>) {
+async fn receive(fleet: Arc<Fleet>, session: Arc<ServerCoeditSession>) {
     while let Some(inbound) = session.recv().await {
         match inbound {
             Inbound::Delta { data, .. } => fleet.received(&data),
@@ -443,7 +443,7 @@ async fn receive(fleet: Arc<Fleet>, session: Arc<RelayCoeditSession>) {
 /// session.
 pub struct Member {
     pub index: usize,
-    pub session: Arc<RelayCoeditSession>,
+    pub session: Arc<ServerCoeditSession>,
     fleet: Arc<Fleet>,
     sk: SigningKey,
     peer: StatePeer,
@@ -464,7 +464,7 @@ impl Member {
         fleet: Arc<Fleet>,
         workspace: &Workspace,
         device: &Device,
-        session: Arc<RelayCoeditSession>,
+        session: Arc<ServerCoeditSession>,
     ) -> anyhow::Result<Self> {
         let peer = workspace.seed.clone();
         let mut doc = AutoCommit::load(&peer.document(APP, RECORD).context("seeded document")?)?;

@@ -9,7 +9,7 @@
 //!    tree to the store, which packs it into a `tool` image bound to the
 //!    runtime, signs and keeps it.
 //!
-//! Nothing here needs a session or a display; a relay's compute worker
+//! Nothing here needs a session or a display; a server's compute worker
 //! drives the same [`Builder`] as a device does.
 
 use std::collections::HashMap;

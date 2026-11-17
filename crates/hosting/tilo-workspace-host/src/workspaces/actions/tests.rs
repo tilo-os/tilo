@@ -5,7 +5,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use serde_json::{Map, Value, json};
@@ -206,13 +206,13 @@ fn offered_in_catalogue(verbs: impl IntoIterator<Item = &'static str>) -> Vec<St
 async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
 
-    // The relay's person runs every action the provider serves, on the
+    // The server's person runs every action the provider serves, on the
     // workspace's own governance resource, removing and banning included: their
     // own request confirms it.
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
@@ -266,7 +266,7 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
     assert_eq!(moderator, offered_in_catalogue([NAME, governance::UNBAN]));
 
-    // An agent governs nothing, even on the relay person's own key, and a
+    // An agent governs nothing, even on the server person's own key, and a
     // workspace that carries no governed workspace offers nothing.
     let agent = Caller::delegated_agent("writer", owner.user_public_key, owner.device_public_key);
     assert!(offered(&host, workspace_id, &agent).await.is_empty());
@@ -275,19 +275,19 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
             .await
             .is_empty()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
 
     // The desktop's invitation: seconds take precedence over the hours an
-    // older relay would read, for exactly the person and name it asked.
+    // older server would read, for exactly the person and name it asked.
     let guest = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
         .verifying_key()
         .to_bytes();
@@ -329,15 +329,15 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
             .contains(&timed.expires_at_ns),
         "{timed:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn invitations_run_through_the_workspaces_own_methods() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
@@ -422,15 +422,15 @@ async fn invitations_run_through_the_workspaces_own_methods() {
     )
     .await;
     assert_eq!(elsewhere, Err(ActionHostError::UnknownAction));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_editor_invites_up_to_her_own_role_and_no_further() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
@@ -460,7 +460,7 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
         matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
         "{above:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -471,8 +471,8 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
 async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
@@ -582,15 +582,15 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     .await
     .unwrap();
     assert_eq!(made["administrator"], json!(true));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn destructive_governance_waits_for_the_person() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -658,15 +658,15 @@ async fn destructive_governance_waits_for_the_person() {
         Err(ActionHostError::UnknownAction)
     );
 
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn the_owners_own_request_confirms_removing_a_member() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
@@ -691,7 +691,7 @@ async fn the_owners_own_request_confirms_removing_a_member() {
             .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -727,8 +727,8 @@ async fn a_host_without_apps_answers_only_its_workspaces_governance() {
 async fn a_member_who_may_install_bots_asks_the_workspaces_host_for_one_and_takes_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let standup = json!({ "entry": "so.tilo.bots.standup", "version": "1.2.0" });
@@ -831,7 +831,7 @@ async fn a_member_who_may_install_bots_asks_the_workspaces_host_for_one_and_take
         .await,
         Err(ActionHostError::InvalidRequest { .. })
     ));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A member gives the host only a secret a connector is known to take, and
@@ -989,8 +989,8 @@ async fn a_developer_installs_its_own_build(
 async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let publisher = hex::encode(ada.user_public_key);
@@ -1034,7 +1034,7 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
             .unwrap()
             .is_empty()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// `request` of the person's own settings, asked by the device `device`
@@ -1176,8 +1176,8 @@ async fn no_other_administrator_reads_a_persons_secrets() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1255,8 +1255,8 @@ async fn no_agent_reaches_a_persons_model_providers() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let added = ask_own(
@@ -1307,7 +1307,7 @@ async fn no_agent_reaches_a_persons_model_providers() {
         .unwrap();
     assert_eq!(after, before);
     assert_eq!(after["providers"][0]["configured"], json!(true), "{after}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A provider `person` links as `adding` says, its `key` kept and its models
@@ -1393,8 +1393,8 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1475,7 +1475,7 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
             "{refused:?}"
         );
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A host calls a provider on its own network only with its operator's
@@ -1487,8 +1487,8 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let (fake, adding) = provider_of_two_keys();
@@ -1523,7 +1523,7 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
     .expect("an answer that says why not");
     assert_eq!(uncalled["problem"], json!("not-allowed"), "{uncalled}");
     assert!(fake.drain_requests().is_empty());
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// What a service on this device's own network says to whoever asks it.

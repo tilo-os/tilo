@@ -2,20 +2,20 @@
 //! it (`docs/hosted-browser.md`, "What the session in the VM is handed").
 //!
 //! The session in a workspace's VM is started at the first browser action, so it
-//! holds nothing of its own: the relay placement record on its standard input is the workspace it
+//! holds nothing of its own: the server placement record on its standard input is the workspace it
 //! joins, the record whose Browser window it opens, and the device certificate and key it joins
-//! as. It is a device of the workspace like any other — the relay lists it, and its window is
+//! as. It is a device of the workspace like any other — the server lists it, and its window is
 //! published, subscribed and acted on as a window on anyone's computer is — and it does nothing
 //! else a person's session does on start: no onboarding, no Lounge, no other app.
 //!
 //! The session reports what it became on its standard output, one [`Report`] per line: [`READY`]
 //! once the identity it was handed is the one it runs as, [`UP`] with the window's provider once
 //! the window publishes, and [`USED`] whenever the page is used. The host that started it counts
-//! its idle limit from that, and hands the provider to the relay, which routes page actions to it.
+//! its idle limit from that, and hands the provider to the server, which routes page actions to it.
 //!
 //! The window also holds departures nobody asked for — a page posting on its own, a download it
 //! started — and nobody stands in front of it to allow them. The session reports each one the
-//! window publishes ([`SEND_HELD`], by the id it is published with) to the relay's device, which
+//! window publishes ([`SEND_HELD`], by the id it is published with) to the server's device, which
 //! puts it to the person and answers with their word: their allow runs that one request as their
 //! own, and a denial runs [`KEEP_HELD`] instead, leaving the page as it was filled.
 //!
@@ -59,7 +59,7 @@ const KEEP_HELD: &str = tilo_actions::remote::browser::KEEP_HELD;
 /// The most held requests one page of the window's catalogue is read for:
 /// the window itself bounds what it holds at once, so one page names them all.
 const HELD_PAGE: u32 = 64;
-/// How long the invitation the relay answers the join with stays redeemable.
+/// How long the invitation the server answers the join with stays redeemable.
 const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How far behind the host this session's clock may read and still wait for it
 /// to reach the certificate it was handed: a guest resumed from a template's
@@ -109,10 +109,10 @@ pub fn shares_by_default() -> bool {
     Holds::marked().is_some()
 }
 
-/// The session in a workspace's VM: the identity it was handed, the join it asked of its relay,
+/// The session in a workspace's VM: the identity it was handed, the join it asked of its server,
 /// and the window it holds.
 pub struct HostedBrowser {
-    /// The relay's placement record: what this session joins, opens and is.
+    /// The server's placement record: what this session joins, opens and is.
     material: Material,
     /// What it holds: Browser's window, or the Linux apps it is told to start.
     holds: Holds,
@@ -122,19 +122,19 @@ pub struct HostedBrowser {
     /// way to reach the loop.
     told_wake: std::sync::Arc<std::sync::Mutex<Option<tilo_service::Wake>>>,
     reports: Reports,
-    /// What wakes the session's loop when the relay answers or the page is used.
+    /// What wakes the session's loop when the server answers or the page is used.
     waking: Option<tilo_service::Wake>,
     arrived: std::sync::mpsc::Receiver<Arrived>,
     sender: std::sync::mpsc::Sender<Arrived>,
     /// The session's broker, while it serves one: what the window publishes,
     /// and what the requests it holds are answered through.
     broker: Option<std::sync::Arc<AppBrokerState>>,
-    /// Where the workspace's host is asked about a page: the relay's device,
+    /// Where the workspace's host is asked about a page: the server's device,
     /// which puts the person's answer to them.
     hosted: Option<std::sync::Arc<dyn HostedWorkspaces>>,
     /// Who sits here, as this session's own actions name them.
     person: String,
-    /// The held requests the relay has been told about, by the id the window
+    /// The held requests the server has been told about, by the id the window
     /// published them with: each is put to the person once.
     held: HashSet<u32>,
     join: Join,
@@ -272,9 +272,9 @@ impl crate::window_share::ShareGovernor for HostGoverns {
     }
 }
 
-/// What reached the loop from the tasks that watch the relay and the shell.
+/// What reached the loop from the tasks that watch the server and the shell.
 enum Arrived {
-    /// The relay answered the join: the invitation text to redeem, or why it did not.
+    /// The server answered the join: the invitation text to redeem, or why it did not.
     Invitation(Result<String, String>),
     /// An action ran on the window's page.
     PageAction,
@@ -305,9 +305,9 @@ struct Held {
 
 /// How far the join has come.
 enum Join {
-    /// The relay has not been asked yet.
+    /// The server has not been asked yet.
     Waiting,
-    /// The relay was asked, and what it answers is on its way: the invitation is redeemed by the
+    /// The server was asked, and what it answers is on its way: the invitation is redeemed by the
     /// session's own join, which settles the workspace on the shell.
     Asking,
 }
@@ -326,13 +326,13 @@ enum Window {
 }
 
 impl HostedBrowser {
-    /// The session, joining as the device `material`, the relay's placement record
+    /// The session, joining as the device `material`, the server's placement record
     /// names: its identity is taken here, before anything reads this device of itself, and `ready`
     /// is reported. `reports` is where the session says what it became.
     ///
     /// # Errors
     ///
-    /// The material is not the relay's, or the identity it names is not one this device may take.
+    /// The material is not the server's, or the identity it names is not one this device may take.
     pub fn take(material: &str, reports: Reports) -> Result<Self, String> {
         Self::take_holding(material, Holds::Browser, reports)
     }
@@ -344,7 +344,7 @@ impl HostedBrowser {
     /// As [`Self::take`].
     pub fn take_holding(material: &str, holds: Holds, reports: Reports) -> Result<Self, String> {
         let material: Material = serde_json::from_str(material.trim())
-            .map_err(|error| format!("the material is not the relay's: {error}"))?;
+            .map_err(|error| format!("the material is not the server's: {error}"))?;
         take_identity(&material)?;
         let (sender, arrived) = std::sync::mpsc::channel();
         let mut hosted = Self {
@@ -370,7 +370,7 @@ impl HostedBrowser {
         Ok(hosted)
     }
 
-    /// Wake the session's loop with `wake` when the relay answers the join or the page is used.
+    /// Wake the session's loop with `wake` when the server answers the join or the page is used.
     pub(crate) fn waking(&mut self, wake: tilo_service::Wake) {
         *self
             .told_wake
@@ -456,7 +456,7 @@ impl HostedBrowser {
         });
     }
 
-    /// What the session does each pass: redeem the invitation the relay answered with, open the
+    /// What the session does each pass: redeem the invitation the server answered with, open the
     /// record's window once the shell holds the workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
@@ -552,7 +552,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Redeem what the relay answered the join with: the invitation text through the session's own
+    /// Redeem what the server answered the join with: the invitation text through the session's own
     /// join, the path a pasted invitation takes.
     fn take_arrived(&mut self, shared: &Shared) {
         let arrived: Vec<Arrived> = self.arrived.try_iter().collect();
@@ -566,7 +566,7 @@ impl HostedBrowser {
                     }
                 }
                 Arrived::Invitation(Err(reason)) => {
-                    tracing::warn!(%reason, "the relay did not let this session into the workspace");
+                    tracing::warn!(%reason, "the server did not let this session into the workspace");
                 }
                 Arrived::PageAction => self.used(),
                 Arrived::Launch(launch) => self.launches.push(launch),
@@ -592,20 +592,20 @@ impl HostedBrowser {
         }
     }
 
-    /// Ask its relay to enter the device into the workspace, once: as the device the
+    /// Ask its server to enter the device into the workspace, once: as the device the
     /// material certifies, it answers with an invitation, which the session redeems.
     ///
-    /// The relay is reached at the address the material names, which is where this VM reaches
-    /// it; the invitation names the relay where it sees itself, its own loopback. Once the relay
+    /// The server is reached at the address the material names, which is where this VM reaches
+    /// it; the invitation names the server where it sees itself, its own loopback. Once the server
     /// answered there, the session's endpoint dials it there too, so the join and everything
-    /// after it reach the relay this session did.
+    /// after it reach the server this session did.
     fn join(&mut self, shared: &Shared) {
         if !matches!(self.join, Join::Waiting) {
             return;
         }
         self.join = Join::Asking;
         let Ok(runtime) = tilo_rt::try_app() else {
-            tracing::warn!("the workspace is not joined: no task to ask the relay on");
+            tracing::warn!("the workspace is not joined: no task to ask the server on");
             return;
         };
         let material = self.material.clone();
@@ -617,7 +617,7 @@ impl HostedBrowser {
             if answer.is_ok()
                 && let Some(reached) = &reached
             {
-                reached.note(&material.relay);
+                reached.note(&material.server);
             }
             if arrived.send(Arrived::Invitation(answer)).is_err() {
                 return;
@@ -659,7 +659,7 @@ impl HostedBrowser {
     }
 
     /// The provider the session's broker lists this session's window under: the
-    /// app the session started, on the record the relay opened it on. `None`
+    /// app the session started, on the record the server opened it on. `None`
     /// while the broker lists no such window yet.
     fn window_provider(&self) -> Option<u64> {
         self.broker.as_ref()?.window_provider(
@@ -854,7 +854,7 @@ fn say_on_stdout(report: &Report) {
 }
 
 /// Take `material`'s device as this session's own: the key it signs with, and the certificate the
-/// relay issued for it, where every part of the session that reads this device of itself reads it.
+/// server issued for it, where every part of the session that reads this device of itself reads it.
 fn take_identity(material: &Material) -> Result<(), String> {
     let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
     paths
@@ -880,7 +880,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
     tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
     // A guest resumed from its template's snapshot wakes with the clock that
-    // snapshot was taken at, behind the host's: the certificate the relay issued
+    // snapshot was taken at, behind the host's: the certificate the server issued
     // this moment is there "not yet valid". The host sets the guest's clock as
     // it wakes it; should it still read a little behind, this session waits for
     // the clock to reach its certificate rather than ending without an identity.
@@ -910,10 +910,10 @@ fn take_identity(material: &Material) -> Result<(), String> {
             ));
         }
     }
-    // The person the workspace belongs to, as a record this device holds of them: the relay hands
+    // The person the workspace belongs to, as a record this device holds of them: the server hands
     // over their public key, and every part of the session that presents this device's person in a
     // workspace reads that person from this login's identity records. The record carries no root:
-    // what signs here is the device certificate the relay issued.
+    // what signs here is the device certificate the server issued.
     let directory = runtime_identity::identity_dir_from_env()
         .map_err(|error| format!("this device's identity directory is not known: {error}"))?;
     let record = runtime_identity::public_member_record(
@@ -930,7 +930,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
         return Err(format!("the person's record was not taken: {error}"));
     }
     // The person's devices this device trusts are the ones their fleet lists, and an app's identity
-    // service answers only while this device is one of them: the certificate the relay issued is
+    // service answers only while this device is one of them: the certificate the server issued is
     // listed, as a device enrolled at this login lists its own.
     tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
         .and_then(|fleet| fleet.register_current_device(&user))
@@ -938,24 +938,24 @@ fn take_identity(material: &Material) -> Result<(), String> {
     Ok(())
 }
 
-/// Ask its relay to enter the session's device into the workspace, the way a member
-/// device asks to enter a workspace its relay hosts, and answer the invitation text it redeems.
+/// Ask its server to enter the session's device into the workspace, the way a member
+/// device asks to enter a workspace its server hosts, and answer the invitation text it redeems.
 async fn invitation(material: &Material) -> Result<String, String> {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .map_err(|error| format!("the session reached no network: {error}"))?;
     let joined = async {
-        let client = tilo_server_session::RelayClient::connect(
+        let client = tilo_server_session::ServerClient::connect(
             endpoint.clone(),
-            material.relay.clone(),
+            material.server.clone(),
             material.user_public_key,
             material.device.clone(),
             material.key()?,
             tilo_user_identity::RevocationList::new(),
         )
         .await
-        .map_err(|error| format!("the session could not reach its relay: {error}"))?;
+        .map_err(|error| format!("the session could not reach its server: {error}"))?;
         tilo_server_session::workspaces::enter_invitation(
             &client,
             &material.workspace,
@@ -1086,7 +1086,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tilo_server_protocol::WorkspaceId;
 
-    /// What a relay hands a session: a device of the workspace's person that
+    /// What a server hands a session: a device of the workspace's person that
     /// the host certified with its stand-in.
     fn material() -> Material {
         let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
@@ -1121,7 +1121,7 @@ mod tests {
             record: "browser-1".into(),
             device,
             secret,
-            relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            server: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
             user_public_key: user,
             account: "acct-1".into(),
         }
@@ -1204,7 +1204,7 @@ mod tests {
                     issuer: None,
                 },
                 secret: [0; 32],
-                relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+                server: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
                 user_public_key: [1; 32],
                 account: "acct".into(),
             },

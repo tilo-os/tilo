@@ -40,8 +40,8 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_agent_session::workspace_actions::{AskedInTurn, AsksInConversation, WorkspaceActions};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_protocol::WorkspaceId;
 use tilo_resource::Resource as _;
+use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 use ui::permissions::MemberId;
 

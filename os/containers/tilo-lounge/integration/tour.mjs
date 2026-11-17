@@ -1,5 +1,5 @@
 // A newcomer's tour of the web page, for a person to look at: the built
-// bundle in headless Chromium against the Lounge's relay, walked through the
+// bundle in headless Chromium against the Lounge's server, walked through the
 // screens a first-time visitor meets — the arrival, the shell, the search,
 // each everyday app, a note written and renamed, Settings and History — then
 // again in the dark appearance and at a phone's width. Every screen is kept as
@@ -12,7 +12,7 @@
 // `claude` that only records how it was asked, and the agent then works in the
 // workspace through `tilo mcp` while the tab is looked at.
 //
-// usage: node tour.mjs SITE_URL RELAY_ORIGIN OUT_DIR [TILO_BIN SITE_CA]
+// usage: node tour.mjs SITE_URL SERVER_ORIGIN OUT_DIR [TILO_BIN SITE_CA]
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -22,18 +22,18 @@ import {clock} from './timing.mjs';
 
 const [site, relay, out, tiloBin, siteCa] = process.argv.slice(2);
 if (!site || !relay || !out) {
-  console.error('usage: node tour.mjs SITE_URL RELAY_ORIGIN OUT_DIR');
+  console.error('usage: node tour.mjs SITE_URL SERVER_ORIGIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
 const mark = clock();
-// The site's and the relay's own certificates: the tour's browser loads these
+// The site's and the server's own certificates: the tour's browser loads these
 // and nothing else, as a person's browser loads what it trusts.
 const siteCertificate = await servedCertificate(site);
-const relayCertificate = await servedCertificate(relay);
-const browser = await launch({args: [pinnedCertificates([siteCertificate, relayCertificate])]});
+const serverCertificate = await servedCertificate(server);
+const browser = await launch({args: [pinnedCertificates([siteCertificate, serverCertificate])]});
 mark('the browser started');
-const report = {site, relay, screens: [], problems: []};
+const report = {site, server, screens: [], problems: []};
 // The screens are numbered as they are taken, across the three appearances, so
 // a listing of them reads in the order a newcomer met the site.
 let shotNo = 0;
@@ -59,7 +59,7 @@ if (bundle && !pageApps?.applications?.length) {
 const pageHas = name => !pageApps?.applications || pageApps.applications.some(app => app.name === name);
 
 // The computer the agent runs on, as agent-setup.mjs sets it up: its own home,
-// a `claude` that records how it was asked to add Tilo's tools, and the relay's
+// a `claude` that records how it was asked to add Tilo's tools, and the server's
 // test certificate beside the site's.
 let agentEnv = null;
 if (tiloBin) {
@@ -70,14 +70,14 @@ if (tiloBin) {
 printf '{"mcpServers":{"tilo":{"type":"stdio","command":"${tiloBin}","args":["mcp"],"env":{}}}}\\n' > "$HOME/.claude.json"
 `);
   chmodSync(join(computer, 'bin', 'claude'), 0o755);
-  writeFileSync(join(computer, 'relay.pem'), relayCertificate.certificate);
+  writeFileSync(join(computer, 'server.pem'), serverCertificate.certificate);
   agentEnv = {
     PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
     HOME: computer,
     XDG_STATE_HOME: join(computer, 'state'),
     XDG_CONFIG_HOME: join(computer, 'config'),
     CLAUDECODE: '1',
-    TILO_TEST_CA_FILE: `${siteCa}:${join(computer, 'relay.pem')}`,
+    TILO_TEST_CA_FILE: `${siteCa}:${join(computer, 'server.pem')}`,
   };
 }
 const tilo = args => new Promise(resolve => {

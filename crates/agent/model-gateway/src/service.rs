@@ -1,6 +1,6 @@
 //! Per-user hosted model gateway.
 //!
-//! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
+//! This is a narrow OpenAI-compatible/Anthropic server for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 #[cfg(feature = "local-models")]

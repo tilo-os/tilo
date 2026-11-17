@@ -1,7 +1,7 @@
 //! A member seals a write to a record the workspace's governor holds, as every
 //! member of a workspace whose channels a node takes part in does. The governor keeps
 //! the ciphertext as the record's history and goes on governing: the next
-//! person is still let in, and so is one after the relay restarts.
+//! person is still let in, and so is one after the server restarts.
 use super::*;
 use collab_types::ContentRetention;
 use key_group::{KeyGroup, MemberKey};
@@ -47,14 +47,14 @@ fn sealed(
 /// `person`'s `device` redeems an invitation to `workspace` that `issuer` issues;
 /// its replica, from the bootstrap alone.
 pub(super) async fn join(
-    relay: &Relay,
+    server: &Server,
     issuer: &TestDevice,
     workspace: &str,
     person: &TestUser,
     device: &TestDevice,
     request_id: [u8; 32],
 ) -> Result<StatePeer, String> {
-    let invitation = invite(relay, issuer, workspace, Role::Editor, person.user_pk).await;
+    let invitation = invite(server, issuer, workspace, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -84,7 +84,7 @@ pub(super) async fn join(
         .map_err(|error| error.to_string())?;
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(
-            TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
+            TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?,
             SystemTime::now(),
         )
@@ -101,11 +101,18 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspace = create_and_enter(&relay, &laptop, "Lounge").await;
-    let mut bob_peer = join(&relay, &laptop, &workspace.workspace, &bob, &phone, [7; 32])
-        .await
-        .unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspace = create_and_enter(&server, &laptop, "Lounge").await;
+    let mut bob_peer = join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &bob,
+        &phone,
+        [7; 32],
+    )
+    .await
+    .unwrap();
     let mut alice_peer = StatePeer::new(
         &workspace.workspace,
         host.cert.clone(),
@@ -114,8 +121,8 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         SystemTime::now(),
     )
     .unwrap();
-    let alice_session = session(&relay, &laptop, workspace.workspace_id).await;
-    let bob_session = session(&relay, &phone, workspace.workspace_id).await;
+    let alice_session = session(&server, &laptop, workspace.workspace_id).await;
+    let bob_session = session(&server, &phone, workspace.workspace_id).await;
     let mut presence = Vec::new();
     receive_until(
         "Alice's replica admits Bob",
@@ -125,7 +132,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
     )
     .await;
-    crate::common::wait_until_subscribed(&relay, workspace.workspace_id, &phone.device_pubkey())
+    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
     // Alice's first write makes the record, and the governor holds it.
@@ -147,7 +154,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     .await;
 
     // Bob's write leaves his device sealed; the governor takes it in.
-    let workspaces = relay.workspaces().unwrap();
+    let workspaces = server.workspaces().unwrap();
     let mut followed = workspaces.document_writes();
     let group = KeyGroup::create(
         collab_types::WorkspaceId::parse(&workspace.workspace).unwrap(),
@@ -193,7 +200,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let carol = TestUser::fresh("Carol");
     let tablet = carol.enrol("carol-tablet", DeviceCapabilities::member());
     join(
-        &relay,
+        &server,
         &laptop,
         &workspace.workspace,
         &carol,
@@ -219,15 +226,22 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // Reopened, the governor replays the sealed write and still lets people in.
     alice_session.close().await;
     drop(bob_client);
-    relay.shutdown().await;
-    let relay = start(state.path(), &alice, &host).await;
+    server.shutdown().await;
+    let server = start(state.path(), &alice, &host).await;
     let dan = TestUser::fresh("Dan");
     let watch = dan.enrol("dan-watch", DeviceCapabilities::member());
-    join(&relay, &laptop, &workspace.workspace, &dan, &watch, [9; 32])
-        .await
-        .expect("a reopened workspace with a sealed record keeps nobody out");
+    join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &dan,
+        &watch,
+        [9; 32],
+    )
+    .await
+    .expect("a reopened workspace with a sealed record keeps nobody out");
     assert!(is_member(
-        &relay
+        &server
             .workspaces()
             .unwrap()
             .summary(&workspace.workspace)
@@ -236,5 +250,5 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
             .members,
         dan.user_pk
     ));
-    relay.shutdown().await;
+    server.shutdown().await;
 }

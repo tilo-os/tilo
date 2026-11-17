@@ -4,7 +4,7 @@
 //! Every Tilo host has one external surface. A key of the person (another of
 //! their devices, an agent's grant, a server key of theirs) opens a session
 //! with the host, enters a workspace there, and runs that workspace's actions
-//! addressed to the host's own device. A relay answers them with its app
+//! addressed to the host's own device. A server answers them with its app
 //! workers; a person's device answers them with its own action broker, which
 //! is what [`KeySessions`] puts behind the host
 //! ([`HostConfig::apps`](tilo_workspace_host::host::HostConfig::apps)).

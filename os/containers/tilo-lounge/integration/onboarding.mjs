@@ -27,9 +27,9 @@
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK
+// usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK
 //
-// SITE is the web entry's origin (the site people visit), RELAY the workspace
+// SITE is the web entry's origin (the site people visit), SERVER the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
 // and every page's screenshots and console live there), TILO_BIN the `tilo`
 // command an agent runs, and STACK os/containers/tilo-sh/stack.sh of the stack
@@ -43,9 +43,9 @@ import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
-const [site, relay, work, tiloBin, stack] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !stack) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN STACK');
+const [site, server, work, tiloBin, stack] = process.argv.slice(2);
+if (!site || !server || !work || !tiloBin || !stack) {
+  console.error('usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK');
   process.exit(2);
 }
 // The mail sink the stack points the entry at (`stack.sh mail` reads the same).
@@ -53,12 +53,12 @@ const mailDir = join(work, 'state', 'mail');
 const computer = join(work, 'computer');
 mkdirSync(mailDir, {recursive: true});
 const mark = clock();
-const report = {site, relay, at: new Date().toISOString(), steps: []};
+const report = {site, server, at: new Date().toISOString(), steps: []};
 const browsers = [];
 const said = [];
 
 /** Where the host is as the pages know it: a workspace is stored per origin. */
-const hostOrigin = new URL(relay).origin;
+const hostOrigin = new URL(server).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 

@@ -22,8 +22,8 @@ use tilo_action_policy::{
 };
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
-use tilo_server_session::workspaces::RemoveMemberRequest;
 use tilo_resource::Resource as _;
+use tilo_server_session::workspaces::RemoveMemberRequest;
 use tilo_user_identity::DeviceCert;
 
 use crate::moderation::{ReplicaApi, files_a_report};
@@ -337,9 +337,9 @@ fn chat_api<'a>(
 
 /// The record `doc` holds, read as this build's `R` once it is brought up to
 /// `R`'s storage version by the app's own migration
-/// ([`tilo_resource::evolution::migrate`]). A workspace an older relay or older
-/// devices wrote is read, never refused: a newer relay starts on an older
-/// relay's state. The migration deletes nothing and rewrites no id, and it
+/// ([`tilo_resource::evolution::migrate`]). A workspace an older server or older
+/// devices wrote is read, never refused: a newer server starts on an older
+/// server's state. The migration deletes nothing and rewrites no id, and it
 /// is the same change every device migrating the record makes.
 ///
 /// # Errors

@@ -1,4 +1,4 @@
-//! A person sets a workspace up once on the relay, as tilo.sh hosts it, and
+//! A person sets a workspace up once on the server, as tilo.sh hosts it, and
 //! branches it per customer through the API: the branch holds every note with
 //! its history and the files they name, leaves the workspace's conversations
 //! and its other people behind, is listed among the person's workspaces only
@@ -7,8 +7,8 @@
 //! fails make none.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{
-    OnRelay, accept_invitation, api_on_relay, approved_key, headers, json_of,
+use super::api_on_server::{
+    OnServer, accept_invitation, api_on_server, approved_key, headers, json_of,
 };
 use super::hosted_documents::application_pdf;
 use super::*;
@@ -71,15 +71,15 @@ impl Key<'_> {
     }
 }
 
-/// A person on `on_relay`, their page and a key reaching all their workspaces.
-pub(super) async fn person(on_relay: &OnRelay, name: &str) -> (SigningKey, String) {
+/// A person on `on_server`, their page and a key reaching all their workspaces.
+pub(super) async fn person(on_server: &OnServer, name: &str) -> (SigningKey, String) {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
     let page = enrol(
         &root,
         &format!("{name}'s browser"),
         DeviceCapabilities::member(),
     );
-    let token = approved_key(on_relay, &root, &page, &format!("{name}'s backend")).await;
+    let token = approved_key(on_server, &root, &page, &format!("{name}'s backend")).await;
     (root, token)
 }
 
@@ -150,13 +150,13 @@ async fn conversations(workspaces: &Workspaces, workspace: &str) -> Vec<(String,
         .collect()
 }
 
-/// The people `workspace` has now, but the relay's operator, who governs it.
+/// The people `workspace` has now, but the server's operator, who governs it.
 async fn people(
     workspaces: &Workspaces,
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     workspace: &str,
 ) -> BTreeSet<[u8; 32]> {
-    let operator = on_relay.operator.verifying_key().to_bytes();
+    let operator = on_server.operator.verifying_key().to_bytes();
     workspaces
         .summary(workspace)
         .await
@@ -221,10 +221,10 @@ async fn a_branch_holds_the_workspace_and_goes_on_apart() {
     reason = "one template's story, from its making to a customer's branch of it going its own way"
 )]
 async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap().clone();
-    let (ada, token) = person(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let workspaces = on_server.hosted.server.workspaces().unwrap().clone();
+    let (ada, token) = person(&on_server, "Ada").await;
     let backend = Key { api: &api, token };
     let ada = ada.verifying_key().to_bytes();
 
@@ -284,7 +284,7 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
         )
         .await;
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
-    accept_invitation(&on_relay, invited["link"].as_str().unwrap(), &rosa, "Rosa").await;
+    accept_invitation(&on_server, invited["link"].as_str().unwrap(), &rosa, "Rosa").await;
     let rosa = rosa.verifying_key().to_bytes();
     holds_note(&workspaces, &source, "Checklist").await;
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -296,7 +296,7 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(
-        people(&workspaces, &on_relay, &source).await,
+        people(&workspaces, &on_server, &source).await,
         BTreeSet::from([ada, rosa])
     );
     // The template's note is kept in the first part of its notes.
@@ -393,7 +393,7 @@ async fn a_customers_branch_holds_the_template_and_goes_on_apart() {
     // in it, and it is hers.
     assert_eq!(conversations(&workspaces, &branch).await, Vec::new());
     assert_eq!(
-        people(&workspaces, &on_relay, &branch).await,
+        people(&workspaces, &on_server, &branch).await,
         BTreeSet::from([ada])
     );
     assert!(workspaces.owns(&ada, &branch));
@@ -470,10 +470,10 @@ async fn only_its_owner_branches_a_workspace_and_a_failed_branch_leaves_nothing(
     reason = "every way of asking for a branch that makes one, or none"
 )]
 async fn only_its_owners_key_branches_and_a_failed_branch_leaves_nothing() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let workspaces = on_relay.hosted.relay.workspaces().unwrap().clone();
-    let (_, token) = person(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let workspaces = on_server.hosted.server.workspaces().unwrap().clone();
+    let (_, token) = person(&on_server, "Ada").await;
     let backend = Key {
         api: &api,
         token: token.clone(),
@@ -537,8 +537,8 @@ async fn only_its_owners_key_branches_and_a_failed_branch_leaves_nothing() {
             &json!({"role": "editor"}),
         )
         .await;
-    let (rosa, rosa_token) = person(&on_relay, "Rosa").await;
-    accept_invitation(&on_relay, invited["link"].as_str().unwrap(), &rosa, "Rosa").await;
+    let (rosa, rosa_token) = person(&on_server, "Rosa").await;
+    accept_invitation(&on_server, invited["link"].as_str().unwrap(), &rosa, "Rosa").await;
     let reviewer = Key {
         api: &api,
         token: rosa_token,
@@ -600,7 +600,7 @@ async fn only_its_owners_key_branches_and_a_failed_branch_leaves_nothing() {
             .await
             .iter()
             .any(|summary| summary.name == "Onboarding: Umbrella"),
-        "the relay governs nothing of it"
+        "the server governs nothing of it"
     );
     assert!(made.try_recv().is_err(), "no branch was made");
     // The template is as it was.

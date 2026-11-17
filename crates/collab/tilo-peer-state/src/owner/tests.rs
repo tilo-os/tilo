@@ -66,7 +66,7 @@ fn enrolled_with(
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(governor),
+                TransportOrigin::RetainedServerDelta(governor),
                 message,
                 now,
             )
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
         assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
     }
 
-    phase a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted;
+    phase a_write_its_server_host_refused_leaves_the_replica_and_every_answer_is_counted;
     {
         let joined = enrolled();
         let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
             .owner
             .receive(
                 joined.workspace,
-                TransportOrigin::RetainedRelayDelta(governor),
+                TransportOrigin::RetainedServerDelta(governor),
                 message,
                 joined.now,
             )
@@ -794,7 +794,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )
@@ -987,7 +987,7 @@ tilo_test_env::scenario! {
     // Native publication classifies through the one host classifier browser
     // peers use, so a sealed checkpoint is a checkpoint to it there too. A
     // member still never replaces the record's retained checkpoint under its own
-    // relay author: the sealed checkpoint leaves as a delta after it, while a
+    // server author: the sealed checkpoint leaves as a delta after it, while a
     // cleartext snapshot stays a checkpoint the member never releases.
     {
         use neighbour_wire::{Retention, retention};

@@ -250,7 +250,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
     );
 }
 
-/// Two of the person's devices on one local network, whose relay is unreachable and which ask no
+/// Two of the person's devices on one local network, whose server is unreachable and which ask no
 /// directory: each is told only the other's key, finds it on the network, and what is copied on one
 /// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
 /// network, is neither dialled nor named. The three discover on this machine's loopback, so the
@@ -298,7 +298,7 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
         "the two devices found each other on the local network"
     );
     let now = tilo_clock::unix_now_ms();
-    let text = "copied with no relay";
+    let text = "copied with no server";
     let copy = ClipboardEntry::shareable(
         ClipboardPayload::Text(text.to_owned()),
         laptop.id.clone(),

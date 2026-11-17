@@ -1,6 +1,6 @@
 [Unit]
 Description=Tilo host first-boot — consume enrollment token and mint device cert
-Documentation=file:///usr/share/doc/tilo/relay.md
+Documentation=file:///usr/share/doc/tilo/server.md
 After=network-online.target
 Wants=network-online.target
 Before=tilo-server.service tilo-fs-replica.service

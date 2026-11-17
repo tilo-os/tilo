@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
             .collect();
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(editor_cert.device_public_key),
+                TransportOrigin::ServerDelta(editor_cert.device_public_key),
                 NeighbourMsg::SyncResp {
                     changes: changed,
                     workspace,
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
     {
         let (mut peer, authority_key, _, _, now) = seeded();
         let (guest_key, guest) = admitted_guest(&mut peer, &authority_key, now);
-        let origin = TransportOrigin::RelayDelta(guest_key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(guest_key.verifying_key().to_bytes());
 
         // The guest's device publishes a frame while it is a member.
         let mut guest_peer = peer.clone();
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
         let heads = workspace_doc.get_heads();
         crate::members::put_op(&mut workspace_doc, &op).unwrap();
         peer.receive_from(
-            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
                 changes: workspace_doc
                     .get_changes(&heads)
@@ -574,7 +574,7 @@ tilo_test_env::scenario! {
         assert!(receiver.rows().is_empty());
     }
 
-    phase retained_relay_replay_accepts_certified_document_after_live_freshness_window;
+    phase retained_server_replay_accepts_certified_document_after_live_freshness_window;
     {
         let (mut governor, authority, _, browser_cert, authored_at) = seeded();
         let replayed_at = authored_at + Duration::from_secs(301);
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
             replayed_at,
         )
         .unwrap();
-        let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
+        let origin = TransportOrigin::RetainedServerDelta(authority.verifying_key().to_bytes());
 
         for message in governor
             .publication_mut()
@@ -630,7 +630,7 @@ tilo_test_env::scenario! {
         assert!(
             fresh
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     bootstrap[1].clone(),
                     now
                 )
@@ -639,7 +639,7 @@ tilo_test_env::scenario! {
         );
         fresh
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 bootstrap[0].clone(),
                 now,
             )
@@ -648,7 +648,7 @@ tilo_test_env::scenario! {
         assert!(
             fresh
                 .receive_from(
-                    TransportOrigin::RelayDelta(bc.device_public_key),
+                    TransportOrigin::ServerDelta(bc.device_public_key),
                     old.clone(),
                     now
                 )
@@ -668,7 +668,7 @@ tilo_test_env::scenario! {
         assert!(
             reload
                 .receive_from(
-                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(b.verifying_key().to_bytes()),
                     old,
                     now
                 )
@@ -717,7 +717,7 @@ tilo_test_env::scenario! {
         for message in bootstrap {
             fresh
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     message,
                     now,
                 )
@@ -743,7 +743,7 @@ tilo_test_env::scenario! {
         .unwrap();
         fresh
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 bootstrap[0].clone(),
                 now,
             )
@@ -761,7 +761,7 @@ tilo_test_env::scenario! {
         assert!(
             fresh
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     mismatch,
                     now
                 )
@@ -772,7 +772,7 @@ tilo_test_env::scenario! {
         assert!(fresh.rows().is_empty());
         fresh
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 bootstrap[1].clone(),
                 now,
             )
@@ -811,7 +811,7 @@ tilo_test_env::scenario! {
         .unwrap();
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 legacy,
                 now,
             )
@@ -819,7 +819,7 @@ tilo_test_env::scenario! {
         assert!(
             receiver
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     messages[1].clone(),
                     now
                 )
@@ -860,7 +860,7 @@ tilo_test_env::scenario! {
         {
             receiver
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     message,
                     now,
                 )
@@ -873,14 +873,14 @@ tilo_test_env::scenario! {
             .unwrap();
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 fresh[0].clone(),
                 now,
             )
             .unwrap();
         let outcome = receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 fresh[1].clone(),
                 now,
             )
@@ -906,7 +906,7 @@ tilo_test_env::scenario! {
             delayed,
         )
         .unwrap();
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         receiver
             .receive_from(origin, stale[0].clone(), delayed)
             .unwrap();
@@ -965,7 +965,7 @@ tilo_test_env::scenario! {
             .publish_incremental(app, record, document.save_after(&before), &author_key, now)
             .unwrap();
 
-        let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(author_key.verifying_key().to_bytes());
         let mut receiver = receiver;
         let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
         assert!(outcome.deferred);
@@ -1022,7 +1022,7 @@ tilo_test_env::scenario! {
         // Only the governance arrives.
         joiner
             .receive_from(
-                TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a_key.verifying_key().to_bytes()),
                 NeighbourMsg::SyncResp { changes, workspace },
                 now,
             )
@@ -1579,7 +1579,7 @@ tilo_test_env::scenario! {
         let mut receiver = base;
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(authority),
+                TransportOrigin::ServerDelta(authority),
                 left.workspace_message(),
                 now,
             )
@@ -1587,7 +1587,7 @@ tilo_test_env::scenario! {
         let accepted = receiver.durable().unwrap();
         let error = receiver
             .receive_from(
-                TransportOrigin::RelayDelta(authority),
+                TransportOrigin::ServerDelta(authority),
                 right.workspace_message(),
                 now,
             )
@@ -1653,7 +1653,7 @@ tilo_test_env::scenario! {
                 .collect(),
             workspace: workspace.clone(),
         };
-        let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
+        let from = TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes());
         let receive = |first: NeighbourMsg, second: NeighbourMsg| {
             let mut receiver = base.clone();
             receiver.receive_from(from, first, now).unwrap();
@@ -1746,7 +1746,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
     legacy.commit_edit("fixture", "invitation_receipts_v1");
     base.receive_from(
-        TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+        TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
             changes: legacy
                 .get_changes(&before)
@@ -1835,14 +1835,14 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let mut merged = base;
     merged
         .receive_from(
-            TransportOrigin::RelayDelta(authority),
+            TransportOrigin::ServerDelta(authority),
             left.workspace_message(),
             now,
         )
         .unwrap();
     merged
         .receive_from(
-            TransportOrigin::RelayDelta(authority),
+            TransportOrigin::ServerDelta(authority),
             right.workspace_message(),
             now,
         )
@@ -1895,7 +1895,7 @@ tilo_test_env::scenario! {
         {
             receiver
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     message,
                     now,
                 )
@@ -1913,7 +1913,7 @@ tilo_test_env::scenario! {
         }
         let outcome = receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 encrypted,
                 now,
             )
@@ -1931,7 +1931,7 @@ tilo_test_env::scenario! {
         assert!(
             restored
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     messages[1].clone(),
                     now
                 )
@@ -2022,7 +2022,7 @@ tilo_test_env::scenario! {
         assert_eq!(floors, governor.replay_floors());
         let outcome = existing
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 governor.workspace_message(),
                 now,
             )
@@ -2049,7 +2049,7 @@ tilo_test_env::scenario! {
         assert!(
             governor
                 .receive_from(
-                    TransportOrigin::RelayDelta(new_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(new_key.verifying_key().to_bytes()),
                     message,
                     now
                 )
@@ -2350,7 +2350,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     {
         receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 msg,
                 now,
             )
@@ -2436,7 +2436,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let before = restored.document("test.app", "tab:1");
     let held = restored
         .receive_from(
-            TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(b.verifying_key().to_bytes()),
             op.clone(),
             now,
         )
@@ -2455,7 +2455,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     assert!(
         restored
             .receive_from(
-                TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(b.verifying_key().to_bytes()),
                 op,
                 now
             )
@@ -2490,7 +2490,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
             {
                 receiver
                     .receive_from(
-                        TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                        TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                         msg,
                         now,
                     )
@@ -2506,7 +2506,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         if existing {
             receiver
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     messages[0].clone(),
                     now,
                 )
@@ -2530,7 +2530,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
             collab_types::sign_op(envelope, &b).unwrap();
         }
         let encrypted_outcome = receiver
-            .receive_from(TransportOrigin::RelayDelta(author), encrypted, now)
+            .receive_from(TransportOrigin::ServerDelta(author), encrypted, now)
             .unwrap();
         assert_eq!(encrypted_outcome.deferred, !existing);
         if existing {
@@ -2552,7 +2552,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         }
         let outcome = receiver
             .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                 messages[0].clone(),
                 now,
             )
@@ -2578,7 +2578,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         assert!(
             restored
                 .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(a.verifying_key().to_bytes()),
                     messages[1].clone(),
                     now
                 )

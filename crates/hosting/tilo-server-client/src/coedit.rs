@@ -3,7 +3,7 @@
 //! [`AttributedPresence`] inside an `Envelope::RetiredPresence`, and the
 //! [`Inbound`] events a session surfaces. Browser and native peers share
 //! these; the relay session that speaks them over iroh
-//! (`tilo_server_session::coedit::RelayCoeditSession`) lives in
+//! (`tilo_server_session::coedit::ServerCoeditSession`) lives in
 //! `tilo-server-session`.
 //!
 //! Presence carries its author inside the payload because the host's
@@ -58,7 +58,7 @@ impl CoeditPayload {
     }
 }
 
-// Only the native relay peer retains coedit history.
+// Only the native server peer retains coedit history.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[doc(hidden)]
@@ -110,7 +110,7 @@ pub fn retention_view(bytes: &[u8]) -> Option<([u8; 32], RetentionKind, &[u8])> 
 ///
 /// `Envelope::RetiredPresence` has no author field — the host forwards the
 /// opaque body. The publisher wraps its device public key around toolkit
-/// presence `body`; the governing relay stamps device attribution from the
+/// presence `body`; the governing server stamps device attribution from the
 /// authenticated publishing connection before forwarding. The receiver recovers it
 /// in [`Inbound::Presence`]. (Document deltas ride
 /// `Envelope::Delta::author_device_public_key` instead and need no
@@ -159,7 +159,7 @@ pub enum Inbound {
     /// persisted; dropped if no peer is subscribed.
     Presence {
         /// Publishing device's public key, recovered from the
-        /// [`AttributedPresence`] wrapper, stamped by the governing relay for
+        /// [`AttributedPresence`] wrapper, stamped by the governing server for
         /// a publishing device. The host's presence envelope
         /// carries no author slot, so this is the only place the
         /// attribution survives — the toolkit maps it onto the
@@ -170,7 +170,7 @@ pub enum Inbound {
         payload: Vec<u8>,
     },
     /// A remote-action frame another device of the workspace addressed to
-    /// this one, relayed because there was no direct route. The relay
+    /// this one, relayed because there was no direct route. The server
     /// stamped the sender from its authenticated connection; the frame is
     /// the same bytes the direct route would have carried.
     RemoteAction {
@@ -180,7 +180,7 @@ pub enum Inbound {
         frame: Vec<u8>,
     },
     /// A piece of a record's content another device of the workspace
-    /// addressed to this one. The relay stamped the sender from its
+    /// addressed to this one. The server stamped the sender from its
     /// authenticated connection.
     DocumentContent {
         /// The sending device's public key.
@@ -256,10 +256,10 @@ pub enum VoiceEvent {
     Calls(Result<Vec<tilo_server_protocol::voice::CallSummary>, String>),
 }
 
-/// Failure modes for `RelayCoeditSession` operations.
+/// Failure modes for `ServerCoeditSession` operations.
 #[derive(Debug)]
 pub enum CoeditError {
-    /// The underlying relay connection is gone (the client's outbound
+    /// The underlying server connection is gone (the client's outbound
     /// channel was closed). Mirrors the toolkit's fire-and-forget
     /// contract: the caller re-syncs on reconnect.
     Disconnected,
@@ -273,7 +273,7 @@ pub enum CoeditError {
 impl std::fmt::Display for CoeditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoeditError::Disconnected => f.write_str("relay co-edit session disconnected"),
+            CoeditError::Disconnected => f.write_str("server co-edit session disconnected"),
             CoeditError::Encode(error) => write!(f, "co-edit payload encode failed: {error}"),
         }
     }

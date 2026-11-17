@@ -2,7 +2,7 @@
 //! lists the run while the session lasts.
 
 use tilo_server_protocol::Envelope;
-use tilo_server_session::RelayClient;
+use tilo_server_session::ServerClient;
 
 use super::Task;
 use crate::remote::NOT_CONNECTED;
@@ -16,7 +16,7 @@ impl Task {
         &mut self,
         label: String,
         done: AgentSessionCompletion,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         // A session is one agent's run: the host refuses another, so the first is the one kept.
         self.agent_session.get_or_insert_with(|| label.clone());
@@ -41,7 +41,7 @@ impl Task {
     /// agent it declared: the host knows it per connection, and what a session
     /// that came back asked without it would be the person's. Its answer is
     /// nobody's to wait for. `false` when the session could not take it.
-    pub(super) fn declare_agent_run_again(&mut self, client: &RelayClient) -> bool {
+    pub(super) fn declare_agent_run_again(&mut self, client: &ServerClient) -> bool {
         let Some(label) = self.agent_session.clone() else {
             return true;
         };

@@ -37,7 +37,7 @@ thumbnails for every workspace in `/etc/tilo/home-peer.toml`. Which workspaces i
 holds is up to the workspaces: a workspace's governor adds the home peer as one of the
 workspace's hosts.
 
-`ReplicationIntent::FullWorkspace` is backed by the composite host. The relay
+`ReplicationIntent::FullWorkspace` is backed by the composite host. The server
 reads the replica's aggregate freshness proof for every advertisement and
 withdraws full-content capacity until every configured workspace is complete.
 See
@@ -100,7 +100,7 @@ the network learns the endpoint id. Invite addresses work without it.
 
 ## Cost model
 
-What a relay costs per active member is measured, not estimated:
+What a server costs per active member is measured, not estimated:
 
 - **Egress counters.** The daemon counts every byte it writes to a peer
   session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
@@ -116,14 +116,14 @@ What a relay costs per active member is measured, not estimated:
   one-character edit on the production path, frame by frame, with byte
   budgets, and the live egress counter checked against the frames the
   subscribers read.
-- **Load bench** (`examples/relay_load`, run by
+- **Load bench** (`examples/server_load`, run by
   `tools/ci/perf-scheduled.sh hosting`): 100 members in workspaces of four, each typing 30
-  characters, then pointing for four seconds at 30 Hz (which the relay
+  characters, then pointing for four seconds at 30 Hz (which the server
   forwards one frame per move, in the order it was posted), then idle, every
-  minute, against one relay process. It records CPU-seconds, resident MiB and
+  minute, against one server process. It records CPU-seconds, resident MiB and
   egress bytes per member-hour; packets per member-hour, from the
   members' own QUIC connection counters (datagrams they sent and of
-  those the ones carrying data, datagrams the relay sent and of those the
+  those the ones carrying data, datagrams the server sent and of those the
   ones carrying only acknowledgements), so the same bytes in more packets
   fail a budget too; fan-out latency, and the workspace
   store's fsyncs per committed edit (`store::fsyncs`; the durability
@@ -142,7 +142,7 @@ What a relay costs per active member is measured, not estimated:
   writer and separately checks complete network delivery without a timed budget.
 
 ```bash
-cargo run --release -p tilo-server --example relay_load -- \
+cargo run --release -p tilo-server --example server_load -- \
   --members 100 --minutes 10 --out target/hosting
 python3 tools/perf/record.py env --profile release --renderer none \
   --virtualization none --runner local > target/hosting/env.json

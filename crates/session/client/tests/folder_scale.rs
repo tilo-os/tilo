@@ -310,7 +310,7 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
     );
     let state = super::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let company = workspaces.create("Company").await.unwrap();
     workspaces
         .publish(
@@ -323,7 +323,7 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let index = route(&company.workspace, 0);

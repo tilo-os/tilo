@@ -1,6 +1,6 @@
 //! Where a task's tilolang programs run: the tilolang host of one task, started over a socket of
 //! its own, for any API whose workspace hosts programs — a desktop session's MCP server, a
-//! device's, or the API server's over a workspace the relay keeps.
+//! device's, or the API server's over a workspace the server keeps.
 //!
 //! The host holds no authority: it decides nothing and writes no record, and everything its
 //! programs read or change comes back over the program connection to the API, which does it as

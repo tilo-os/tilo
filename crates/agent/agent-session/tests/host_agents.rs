@@ -39,7 +39,7 @@ use tilo_actions::remote::InvokeArgument;
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::certify::{ApproverReply, ConfirmationAnswer};
-use tilo_server::daemon::Relay;
+use tilo_server::daemon::Server;
 use tilo_server_client::Approver;
 use tilo_server_protocol::agents::{
     AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION, REVOKE_ACTION,
@@ -75,7 +75,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
 /// Stop the host, after checking it carried nothing in the clear.
 async fn stop(hosted: Hosted) {
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace())
         .await
@@ -89,14 +89,18 @@ async fn stop(hosted: Hosted) {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// The laptop: a root holder answering every agent request with the
 /// agent's certificate and the delegation of exactly what was proposed. The
 /// questions an agent puts to its person are the test's to answer.
-fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::task::JoinHandle<()> {
-    Laptop::new([], Unlisted::Pending).spawn(relay, root, laptop)
+fn approve_agents(
+    server: &Server,
+    root: SigningKey,
+    laptop: &Device,
+) -> tokio::task::JoinHandle<()> {
+    Laptop::new([], Unlisted::Pending).spawn(server, root, laptop)
 }
 
 impl Browser {
@@ -170,7 +174,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     // 1. One consent step: the page asks, the laptop approves the agent
@@ -266,7 +270,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let resumed = browser
         .until("the agent to resume", |status| {
@@ -323,7 +327,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let after = browser.status().await;
     let info = after.agents.iter().find(|agent| agent.id == grant).unwrap();
@@ -548,7 +552,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     browser.put_layout();
 
@@ -706,7 +710,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
 
@@ -807,7 +811,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
@@ -889,14 +893,14 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
 /// The person's own device: a root holder's approver session that answers
 /// the questions the host's agents put to their person, as the test says,
 /// and the endpoint it lives on.
-async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpoint, Approver) {
+async fn person_device(server: &Server, laptop: &Device) -> (iroh::endpoint::Endpoint, Approver) {
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .unwrap();
     let approver = Approver::connect(
         &endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         laptop.cert.clone(),
         &laptop.key,
         &RevocationList::new(),
@@ -970,8 +974,8 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
-    let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
+    let (_endpoint, mut device) = person_device(&hosted.server, &laptop).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     let grant = approved_grant(&mut browser, "Careful", &[EBOOK]).await;
@@ -1148,7 +1152,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let _approver = approve_agents(&hosted.server, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;
     let poster = approved_grant(&mut browser, "Poster", &[CHAT]).await;

@@ -1,5 +1,5 @@
 //! A certified workspace's documents in the page: every record a mount has open
-//! and the workspace's desktop, replicated through the relay session in host
+//! and the workspace's desktop, replicated through the server session in host
 //! order.
 //!
 //! One [`Joined`] exists per started peer and joined workspace. It owns an event

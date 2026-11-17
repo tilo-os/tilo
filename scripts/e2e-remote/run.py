@@ -1386,7 +1386,7 @@ class Run:
         it and says so: that the window runs on B, on A's screen, and that it is not shared with
         the workspace, as A's session reads it."""
         # How long after the first picture the share is read again: longer than a live session that
-        # lost its relay takes to say so, and than the wait before it asks the relay again.
+        # lost its server takes to say so, and than the wait before it asks the server again.
         stays_live_s = 20
         def shell(box: Box) -> dict:
             dump = box.vm.state()
@@ -1746,14 +1746,14 @@ class Run:
                            "know which device hosts the tab")
                 elif closed:
                     letter, stands = closed
-                    relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                    server = stands.get("server_name") or stands.get("server") or "no device"
                     why = (f"the workspace's live session is not open on {letter} "
-                           f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+                           f"({stands.get('state')}, through {server}): {stands.get('waiting_for')}")
                 elif unasked and not asked and not seen["received_on_a"]:
                     why = ("the live session is open on both and B's was never asked for the window's "
                            f"track, so B captures nothing: A's live session runs through "
-                           f"{(seen['live_on_a'] or {}).get('relay')}, B's through "
-                           f"{(seen['live_on_b'] or {}).get('relay')}; A watches "
+                           f"{(seen['live_on_a'] or {}).get('server')}, B's through "
+                           f"{(seen['live_on_b'] or {}).get('server')}; A watches "
                            f"{res.facts['watching_on_a'][:300]}")
                 elif not seen["received_on_a"]:
                     heard = ("B names A as viewing it" if viewers
@@ -1819,9 +1819,9 @@ class Run:
                 letter, stands = closed
                 stands = stands or {"state": "unpublished",
                                     "waiting_for": "its session publishes no live session"}
-                relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                server = stands.get("server_name") or stands.get("server") or "no device"
                 why = (f"the workspace's live session is not open on {letter} "
-                       f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+                       f"({stands.get('state')}, through {server}): {stands.get('waiting_for')}")
             elif sent is None:
                 why = "B no longer says it shares the window"
             elif sent.get("streaming") is not True:
@@ -1935,7 +1935,7 @@ class Run:
         the sessions say. What the hosting device shares is a change of the governance it keeps
         itself, with no host to hand it on: the direction in which a share never arrived. When
         the share ends the window is still A's on both shells."""
-        # As in E14: longer than a live session that lost its relay takes to say so.
+        # As in E14: longer than a live session that lost its server takes to say so.
         stays_live_s = 20
         a_key = (a.identity.get("this_device") or {}).get("device", "")
 
@@ -2201,9 +2201,9 @@ class Run:
                            "know which device hosts the tab")
                 elif closed:
                     letter, stands = closed
-                    relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                    server = stands.get("server_name") or stands.get("server") or "no device"
                     why = (f"the workspace's live session is not open on {letter} "
-                           f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+                           f"({stands.get('state')}, through {server}): {stands.get('waiting_for')}")
                 elif not seen["received_on_b"]:
                     why = ("B watches the window and nothing of it reached B over the workspace's "
                            f"live session: B watches {res.facts['watching_on_b'][:300]}; A shares "
@@ -2245,9 +2245,9 @@ class Run:
             why = None
             if closed:
                 letter, stands = closed
-                relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                server = stands.get("server_name") or stands.get("server") or "no device"
                 why = (f"the workspace's live session is not open on {letter} "
-                       f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+                       f"({stands.get('state')}, through {server}): {stands.get('waiting_for')}")
             elif sent is None:
                 why = "A no longer says it shares the window"
             elif sent.get("streaming") is not True:

@@ -1,12 +1,12 @@
 //! Token buckets per person (user root) for a public host: a guest who
 //! sends too much gets refusals, never a disconnect, and nobody else
-//! notices. The relay's own user (its host device, and the bots a
+//! notices. The server's own user (its host device, and the bots a
 //! host-held root delegated) is never limited; callers skip it. A person
 //! changing what is theirs ([`Ownership::Owner`]) spends a budget of its own,
 //! far larger than a guest's, so pacing guests never paces an owner's
 //! backend.
 //!
-//! The relay has no blob upload path: content travels as record content
+//! The server has no blob upload path: content travels as record content
 //! routed point to point, so the content budget meters those bytes.
 
 use std::collections::HashMap;

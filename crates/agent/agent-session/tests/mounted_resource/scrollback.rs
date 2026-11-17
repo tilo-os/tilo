@@ -92,7 +92,7 @@ pub async fn run(bundle: &str) {
     let reader = enrol(&bob, "fixture-reader", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Scrollback acceptance").await.unwrap();
     let mut native = Browser::open_workspace(&hosted, &writer, &host, &workspace.workspace).await;
 
@@ -302,7 +302,7 @@ pub async fn run(bundle: &str) {
     .await;
     native.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     assert!(
         result.expect("bounded scrollback journey").success(),
         "scrollback journey failed"

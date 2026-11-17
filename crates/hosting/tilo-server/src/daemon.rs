@@ -2,7 +2,7 @@
 //! `tilo-server/1`, runs the auth handshake, hands off to
 //! [`crate::peer::run_peer`].
 //!
-//! Also exposes the `Relay` struct so integration tests can spin up
+//! Also exposes the `Server` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
 use std::collections::HashSet;
@@ -19,14 +19,14 @@ use tokio::task::JoinHandle;
 
 use tilo_user_identity::{RevocationList, verify_revocation_entry};
 
-use crate::config::RelayConfig;
+use crate::config::ServerConfig;
 
 /// Names the folder the keys of people's sealed stores are kept under, apart
 /// from the state folder: what an operator sets so that a copy or a backup
 /// of the state alone opens nobody's sign-ins, keys or vault items.
 const PEOPLE_KEYS_ENV: &str = "TILO_PEOPLE_KEYS";
 use crate::handshake::{EndpointTrust, LiveIdentity};
-use crate::host::RelayProtocol;
+use crate::host::ServerProtocol;
 use crate::metrics::Metrics;
 use crate::peer::{WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace};
 use crate::policy::TrustPolicy;
@@ -74,9 +74,9 @@ impl ReplicaProof {
     }
 }
 
-/// Failure modes for `Relay::start`.
+/// Failure modes for `Server::start`.
 #[derive(Debug, thiserror::Error)]
-pub enum RelayError {
+pub enum ServerError {
     /// Iroh endpoint bind / accept.
     #[error("iroh: {0}")]
     Iroh(String),
@@ -95,12 +95,12 @@ pub enum RelayError {
     /// Governed workspace admission could not be reconciled safely.
     #[error("governed access: {0}")]
     GovernedAccess(String),
-    /// An additional endpoint protocol conflicts with the relay router.
+    /// An additional endpoint protocol conflicts with the server router.
     #[error("protocol registration: {0}")]
     ProtocolRegistration(String),
 }
 
-impl From<crate::host::HostError> for RelayError {
+impl From<crate::host::HostError> for ServerError {
     fn from(error: crate::host::HostError) -> Self {
         use crate::host::HostError;
         match error {
@@ -116,8 +116,8 @@ impl From<crate::host::HostError> for RelayError {
     }
 }
 
-/// The identity a relay runs with: a host's.
-pub use crate::host::HostIdentity as RelayIdentity;
+/// The identity a server runs with: a host's.
+pub use crate::host::HostIdentity as ServerIdentity;
 
 /// `identity` with the root-signed revocations persisted at `state_root`
 /// applied, each verified: what a host reads when it starts, so a device its
@@ -128,10 +128,10 @@ pub use crate::host::HostIdentity as RelayIdentity;
 /// Returns an error if the log cannot be read, or holds an entry that does
 /// not verify or contradicts one already in `identity`.
 pub fn with_persisted_revocations(
-    identity: RelayIdentity,
+    identity: ServerIdentity,
     state_root: &std::path::Path,
-) -> anyhow::Result<RelayIdentity> {
-    let RelayIdentity {
+) -> anyhow::Result<ServerIdentity> {
+    let ServerIdentity {
         user_public_key,
         device_signing_key,
         device_cert,
@@ -140,9 +140,9 @@ pub fn with_persisted_revocations(
     for entry in crate::store::load_revocations(state_root)? {
         revocations
             .insert(entry)
-            .context("verify persisted relay revocation")?;
+            .context("verify persisted server revocation")?;
     }
-    Ok(RelayIdentity {
+    Ok(ServerIdentity {
         user_public_key,
         device_signing_key,
         device_cert,
@@ -150,10 +150,10 @@ pub fn with_persisted_revocations(
     })
 }
 
-/// What an embedder plugs into a relay it starts.
+/// What an embedder plugs into a server it starts.
 struct Servers {
     /// Answers remote-action frames addressed to this host, see
-    /// [`Relay::start_with_app_serving`].
+    /// [`Server::start_with_app_serving`].
     app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Classifies co-edit bodies.
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
@@ -169,24 +169,24 @@ impl Servers {
     }
 }
 
-/// A running relay. Prefer [`Relay::shutdown`]; dropping the handle also
+/// A running server. Prefer [`Server::shutdown`]; dropping the handle also
 /// stops the daemon and its background tasks, but leaves peers to
 /// notice by timeout.
-pub struct Relay {
+pub struct Server {
     pub endpoint: Endpoint,
     /// Iroh router that wires the ALPN → protocol handler.
     router: Router,
-    /// The workspace host this relay is: its workspaces, the handshake that
+    /// The workspace host this server is: its workspaces, the handshake that
     /// admits their members and every member's session.
     sessions: crate::host::HostSessions,
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    /// The relay's live session, which its browsers serve and its devices dial.
+    /// The server's live session, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
     pub(crate) live_origin: Option<crate::web::live::LiveOrigin>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
-    /// (per-handle) when the `Relay` drops.
+    /// (per-handle) when the `Server` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
     /// Effective same-identity replication and serving policy, safe to expose
     /// to the shell/fs orchestrators because service claims were intersected
@@ -196,7 +196,7 @@ pub struct Relay {
     full_replica: ReplicaProof,
     /// What the routes a page asks before its session answer with.
     web: Box<WebContext>,
-    /// The workspaces this relay governs; absent when it hosts no workspace authority.
+    /// The workspaces this server governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// What this host keeps for each workspace it serves.
     content: Arc<tilo_content::WorkspaceStores>,
@@ -208,25 +208,25 @@ pub struct Relay {
     /// holds no channel keys.
     _workspace_keys: Option<Arc<crate::workspace_keys::KeyService>>,
     /// What puts its workspaces' questions about running commands unattended
-    /// to people: the relay's confirmations, held here so that its workspaces
+    /// to people: the server's confirmations, held here so that its workspaces
     /// hold them only weakly and nothing of the relay outlives it.
     _asks_people: Arc<crate::certification::CertificationProtocol>,
     /// The packet relay this host runs for the pages it serves, when it runs
-    /// one ([`RelayConfig::packet_relay`]).
-    packet_server: Option<iroh_relay::server::Server>,
+    /// one ([`ServerConfig::packet_relay`]).
+    iroh_packet_relay: Option<iroh_relay::server::Server>,
 }
 
-/// The relay state the page's pre-session routes answer with.
+/// The server state the page's pre-session routes answer with.
 #[derive(Clone)]
 pub(crate) struct WebContext {
-    pub(crate) relay: RelayProtocol,
+    pub(crate) server: ServerProtocol,
     #[cfg(feature = "web")]
     pub(crate) certification: crate::certification::CertificationProtocol,
     /// The device of the session beside this node, once named.
     pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
-impl Relay {
+impl Server {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
@@ -260,7 +260,7 @@ impl Relay {
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
-/// `Relay` tears down every outbound attach reconnect task.
+/// `Server` tears down every outbound attach reconnect task.
 struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -269,7 +269,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-impl Drop for Relay {
+impl Drop for Server {
     fn drop(&mut self) {
         // Stop reconnect loops before closing the shared endpoint.  An
         // explicit close also tells connected peers about a host shutdown
@@ -277,7 +277,7 @@ impl Drop for Relay {
         if let Ok(mut tasks) = self.background_tasks.lock() {
             tasks.clear();
         }
-        // `Relay` is normally dropped inside Tokio, but Drop must remain safe
+        // `Server` is normally dropped inside Tokio, but Drop must remain safe
         // in synchronous teardown and after a runtime has already stopped.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let endpoint = self.endpoint.clone();
@@ -290,7 +290,7 @@ impl Drop for Relay {
 
 /// Cheap clone-able handle for admin/observer callers.
 #[derive(Clone)]
-pub struct RelayHandle {
+pub struct ServerHandle {
     /// Reachability info a peer can dial.
     pub node_addr: EndpointAddr,
     /// Metrics view — read-only.
@@ -300,11 +300,11 @@ pub struct RelayHandle {
     full_replica: ReplicaProof,
 }
 
-/// Verify `cert`'s device's delegation against the relay's user `own_user`
-/// and put it in the relay's agent register, replacing an earlier one: what
+/// Verify `cert`'s device's delegation against the server's user `own_user`
+/// and put it in the server's agent register, replacing an earlier one: what
 /// confines an agent to its delegated workspaces from its next envelope on. Both
-/// paths that tell a relay about an agent come here
-/// ([`Relay::register_agent`], `RelayAgentLink::register`), so neither can
+/// paths that tell a server about an agent come here
+/// ([`Server::register_agent`], `ServerAgentLink::register`), so neither can
 /// register one the other leaves unconfined.
 ///
 /// # Errors
@@ -330,7 +330,7 @@ pub(crate) fn register_agent_in(
     Ok(())
 }
 
-impl Relay {
+impl Server {
     /// Start on an explicitly selected packet relay without public address lookup.
     ///
     /// Device certificate validation, workspace membership and relay/1 framing
@@ -339,10 +339,10 @@ impl Relay {
     /// # Errors
     /// Returns the same identity, storage and endpoint errors as [`Self::start`].
     pub async fn start_with_relay_mode(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
+        cfg: ServerConfig,
+        identity: ServerIdentity,
         relay_mode: iroh::RelayMode,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
             cfg,
             identity,
@@ -355,27 +355,27 @@ impl Relay {
         .await
     }
 
-    /// Start relay services on an already-bound endpoint and compose any
+    /// Start server services on an already-bound endpoint and compose any
     /// number of caller-owned protocols into the same router. This is the
-    /// production shell path: relay state/action traffic, workspace joining,
+    /// production shell path: server state/action traffic, workspace joining,
     /// surfaces, and personal-fabric protocols retain one stable node address
     /// and one shutdown lifecycle.
     ///
-    /// Ownership of `endpoint` transfers to the returned relay. Calling
+    /// Ownership of `endpoint` transfers to the returned server. Calling
     /// [`Self::shutdown`] closes the router and invokes every additional
     /// handler's shutdown hook.
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::ProtocolRegistration`] if an ALPN is empty,
+    /// Returns [`ServerError::ProtocolRegistration`] if an ALPN is empty,
     /// duplicates another additional protocol, or collides with a protocol
-    /// owned by the relay.
+    /// owned by the server.
     pub async fn start_on_endpoint_with_protocols(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
+        cfg: ServerConfig,
+        identity: ServerIdentity,
         endpoint: Endpoint,
         protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
             cfg,
             identity,
@@ -397,20 +397,20 @@ impl Relay {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::Identity`] if `identity` fails validation
+    /// Returns [`ServerError::Identity`] if `identity` fails validation
     /// (bad signature, wrong chain, revoked, or not host-capable),
-    /// [`RelayError::Io`] if the state root can't be created,
-    /// [`RelayError::Store`] if the persistent iroh secret can't be
-    /// loaded, and [`RelayError::Iroh`] if
+    /// [`ServerError::Io`] if the state root can't be created,
+    /// [`ServerError::Store`] if the persistent iroh secret can't be
+    /// loaded, and [`ServerError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
-    pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+    pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
         Self::start_with_app_serving(cfg, identity, None).await
     }
 
-    /// [`Relay::start`], with an optional app action server that answers remote-action
+    /// [`Server::start`], with an optional app action server that answers remote-action
     /// frames addressed to this host.
     ///
-    /// The relay links no apps; a process that hosts them passes an app action server
+    /// The server links no apps; a process that hosts them passes an app action server
     /// here. Supplying one makes `app_serving` available, still subject to
     /// the configuration requesting it and the certificate authorising it.
     /// When the effective services leave `app_serving` off, the app action server is
@@ -418,12 +418,12 @@ impl Relay {
     ///
     /// # Errors
     ///
-    /// The same as [`Relay::start`].
+    /// The same as [`Server::start`].
     pub async fn start_with_app_serving(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
+        cfg: ServerConfig,
+        identity: ServerIdentity,
         app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
             cfg,
             identity,
@@ -436,16 +436,16 @@ impl Relay {
         .await
     }
 
-    /// Start an app-serving host with an explicit transport relay policy.
+    /// Start an app-serving host with an explicit transport server policy.
     ///
     /// # Errors
-    /// The same as [`Relay::start`].
+    /// The same as [`Server::start`].
     pub async fn start_with_app_serving_and_relay_mode(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
+        cfg: ServerConfig,
+        identity: ServerIdentity,
         app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
         relay_mode: iroh::RelayMode,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
             cfg,
             identity,
@@ -458,17 +458,17 @@ impl Relay {
         .await
     }
 
-    /// [`Relay::start`], judging how recent the full-replica status stamp
+    /// [`Server::start`], judging how recent the full-replica status stamp
     /// is by `replica_clock` instead of the wall clock.
     ///
     /// # Errors
     ///
-    /// The same as [`Relay::start`].
+    /// The same as [`Server::start`].
     pub async fn start_with_replica_clock(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
+        cfg: ServerConfig,
+        identity: ServerIdentity,
         replica_clock: Arc<dyn Clock>,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
             cfg,
             identity,
@@ -489,14 +489,14 @@ impl Relay {
         reason = "ordered startup preserves native identity, policy and task ownership"
     )]
     async fn start_inner(
-        mut cfg: RelayConfig,
-        identity: RelayIdentity,
+        mut cfg: ServerConfig,
+        identity: ServerIdentity,
         relay_mode: Option<iroh::RelayMode>,
         endpoint: Option<Endpoint>,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         servers: Servers,
         replica_clock: Arc<dyn Clock>,
-    ) -> Result<Self, RelayError> {
+    ) -> Result<Self, ServerError> {
         let Servers {
             app_serving,
             shell_payloads,
@@ -510,14 +510,14 @@ impl Relay {
             .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
-        validate_relay_identity(&identity)?;
+        validate_server_identity(&identity)?;
         if cfg.work.takes_nothing() {
-            return Err(RelayError::Identity(
+            return Err(ServerError::Identity(
                 "a device that takes no work serves no workspace".into(),
             ));
         }
-        // The composite process starts relay + filesystem protocols; live
-        // workspace control uses relay's non-retained presence track, and app
+        // The composite process starts server + filesystem protocols; live
+        // workspace control uses server's non-retained presence track, and app
         // serving needs an app action server supplied by an embedding process.
         let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
         available_services.app_serving = app_serving.is_some();
@@ -540,7 +540,7 @@ impl Relay {
                 let (server, url) = spawn_packet_relay(addr).await?;
                 let url = match &cfg.packet_relay_url {
                     Some(published) => published.parse().map_err(|error| {
-                        RelayError::Iroh(format!("packet relay URL {published}: {error}"))
+                        ServerError::Iroh(format!("packet relay URL {published}: {error}"))
                     })?,
                     None => url,
                 };
@@ -548,7 +548,7 @@ impl Relay {
                 (Some(server), Some(iroh::RelayMode::Custom(url.into())))
             }
             Some(_) => {
-                return Err(RelayError::Iroh(
+                return Err(ServerError::Iroh(
                     "a host runs its own packet relay or is given one, not both".into(),
                 ));
             }
@@ -569,9 +569,9 @@ impl Relay {
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
-        // A relay whose device may own workspaces takes part in every channel of
+        // A server whose device may own workspaces takes part in every channel of
         // the workspaces it governs, as one key holder beside their members; a
-        // relay whose device may not keeps no channel keys at all.
+        // server whose device may not keeps no channel keys at all.
         let workspace_keys = (governs_workspaces
             && identity.device_cert.capabilities.holds_workspace_keys())
         .then(|| {
@@ -583,7 +583,7 @@ impl Relay {
         .transpose()?
         .map(Arc::new);
         // Where this host is dialled — what each workspace's governance names of
-        // it, and what a link it hands out carries — is the relay, which the
+        // it, and what a link it hands out carries — is the server, which the
         // endpoint knows only once it has connected to one. The workspaces opened
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
@@ -620,7 +620,7 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
-        // The live session belongs to the relay: every key holder, a page
+        // The live session belongs to the server: every key holder, a page
         // included, reaches it over the relay's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
@@ -664,7 +664,7 @@ impl Relay {
             )));
         }
         let web = Box::new(WebContext {
-            relay: handler.clone(),
+            server: handler.clone(),
             #[cfg(feature = "web")]
             certification: certification.clone(),
             node_session: Arc::default(),
@@ -707,7 +707,7 @@ impl Relay {
             if enrolled_server {
                 crate::servers::enroll(governed, &identity.device_cert)
                     .await
-                    .map_err(|error| RelayError::Identity(format!("admin workspace: {error}")))?;
+                    .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
             }
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,
@@ -766,14 +766,14 @@ impl Relay {
             content_links: Arc::default(),
             _workspace_keys: workspace_keys,
             _asks_people: asks_people,
-            packet_server: packet_relay,
+            iroh_packet_relay: packet_relay,
         })
     }
 
-    /// Whether this relay currently counts `device` as subscribed to
+    /// Whether this server currently counts `device` as subscribed to
     /// `workspace_id`.
     ///
-    /// This is the relay's own belief, which is what routing acts on: a
+    /// This is the server's own belief, which is what routing acts on: a
     /// device is here from the moment its `Subscribe` is accepted until
     /// the connection closes, and a delta published in between is fanned
     /// out to it rather than queued. There is no way to learn a peer has
@@ -783,10 +783,10 @@ impl Relay {
         self.sessions.is_subscribed(workspace_id, device).await
     }
 
-    /// Stop the relay and tell every peer it has gone.
+    /// Stop the server and tell every peer it has gone.
     ///
     /// Dropping the handle also stops it, but abandons the QUIC
-    /// connections rather than closing them: each peer keeps this relay
+    /// connections rather than closing them: each peer keeps this server
     /// as a live subscriber until its own idle timeout, and for that
     /// whole window fans out to a connection nobody reads instead of
     /// queueing for store-and-forward. Deltas in that window are neither
@@ -797,10 +797,10 @@ impl Relay {
         // fresh connection while the endpoint is closing.
         lock_background_tasks(&self.background_tasks).clear();
         if let Err(error) = self.router.shutdown().await {
-            tracing::debug!(%error, "relay router shutdown task failed");
+            tracing::debug!(%error, "server router shutdown task failed");
         }
         self.sessions.shutdown().await;
-        if let Some(packet_relay) = std::mem::take(&mut self.packet_server)
+        if let Some(packet_relay) = std::mem::take(&mut self.iroh_packet_relay)
             && let Err(error) = packet_relay.shutdown().await
         {
             tracing::debug!(%error, "packet relay shutdown task failed");
@@ -808,8 +808,8 @@ impl Relay {
     }
 
     /// Cheap external handle.
-    pub fn handle(&self) -> RelayHandle {
-        RelayHandle {
+    pub fn handle(&self) -> ServerHandle {
+        ServerHandle {
             node_addr: self.endpoint.addr(),
             metrics: self.sessions.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
@@ -818,16 +818,16 @@ impl Relay {
     }
 
     /// Tell the host that the device `cert` certifies is an agent: verify
-    /// its root-signed delegation against this relay's user and confine the
+    /// its root-signed delegation against this server's user and confine the
     /// device to the delegated workspaces from its next envelope on, then put it
-    /// on the roster of each workspace this relay governs that the delegation
+    /// on the roster of each workspace this server governs that the delegation
     /// names, as an approved grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
     /// Once this returns, those workspaces admit it. Replaces an earlier
     /// delegation of the same device.
     ///
     /// # Errors
     ///
-    /// The delegation is not this relay's user's, names another device, or
+    /// The delegation is not this server's user's, names another device, or
     /// does not verify.
     #[cfg_attr(
         not(feature = "agents"),
@@ -842,8 +842,8 @@ impl Relay {
         delegation: tilo_server_protocol::delegation::Delegation,
     ) -> Result<(), String> {
         register_agent_in(
-            &self.web.relay.agents,
-            &self.web.relay.identity.user_public_key,
+            &self.web.server.agents,
+            &self.web.server.identity.user_public_key,
             cert,
             &delegation,
         )?;
@@ -858,7 +858,7 @@ impl Relay {
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
-    /// what a peer needs to dial this relay.
+    /// what a peer needs to dial this server.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
     }
@@ -869,19 +869,19 @@ impl Relay {
         self.endpoint.clone()
     }
 
-    /// The compactor keeping this relay's retained document channels short.
+    /// The compactor keeping this server's retained document channels short.
     pub fn compactor(&self) -> &crate::compaction::Compactor {
-        &self.web.relay.compactor
+        &self.web.server.compactor
     }
 
-    /// The local sockets the relay's endpoint is bound to.
+    /// The local sockets the server's endpoint is bound to.
     #[must_use]
     pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
         self.endpoint.bound_sockets()
     }
 
     /// Atomically replace the native governor's exact member devices and the
-    /// user roots those devices need at the relay handshake. This is a
+    /// user roots those devices need at the server handshake. This is a
     /// trusted, server-local reconciliation API: roots open only the global
     /// handshake, while the exact device set continues to check this workspace.
     ///
@@ -893,9 +893,9 @@ impl Relay {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::GovernedAccess`] when called for an `allow_any`
-    /// relay or with a state root other than the relay's configured root, and
-    /// [`RelayError::Store`] when workspace initialization or durable
+    /// Returns [`ServerError::GovernedAccess`] when called for an `allow_any`
+    /// server or with a state root other than the server's configured root, and
+    /// [`ServerError::Store`] when workspace initialization or durable
     /// replacement fails.
     pub async fn replace_governed_workspace_access(
         &self,
@@ -903,7 +903,7 @@ impl Relay {
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
         state_root: PathBuf,
-    ) -> Result<(), RelayError> {
+    ) -> Result<(), ServerError> {
         Ok(self
             .sessions
             .replace_governed_workspace_access(workspace_id, pinned, access, state_root)
@@ -926,14 +926,14 @@ impl Relay {
         )
     }
 
-    /// The workspaces this relay governs, when it hosts the workspace authority.
+    /// The workspaces this server governs, when it hosts the workspace authority.
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
     }
 
-    /// The devices this relay certified for its browser environments, and the
-    /// one record each reaches ([`crate::environment`]): what the relay
+    /// The devices this server certified for its browser environments, and the
+    /// one record each reaches ([`crate::environment`]): what the server
     /// confines each environment to when it places it, and what every app action server of
     /// its workspaces asks before it lets one in.
     #[must_use]
@@ -955,7 +955,7 @@ impl Relay {
         Arc::clone(&self.content_links)
     }
 
-    /// Where this relay keeps its state.
+    /// Where this server keeps its state.
     #[cfg(feature = "web")]
     pub(crate) fn state_root(&self) -> &std::path::Path {
         &self.sessions.state_root
@@ -966,7 +966,7 @@ impl Relay {
         self.sessions.identity.user_public_key
     }
 
-    /// In-process access to the records of the workspaces this relay hosts,
+    /// In-process access to the records of the workspaces this server hosts,
     /// for a service embedded in the host process.
     #[must_use]
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
@@ -974,49 +974,49 @@ impl Relay {
     }
 }
 
-/// A home-peer workspace's filesystem ticket and the relay workspaces it
+/// A home-peer workspace's filesystem ticket and the server workspaces it
 /// backs.
-fn home_peer_relay_workspaces(
+fn home_peer_server_workspaces(
     workspace: &fs::full_replica::HomePeerBundle,
-) -> Result<(fs::Ticket, Vec<WorkspaceId>), RelayError> {
+) -> Result<(fs::Ticket, Vec<WorkspaceId>), ServerError> {
     let ticket = fs::Ticket::decode(&workspace.ticket)
-        .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
-    let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+        .map_err(|error| ServerError::Identity(format!("invalid home-peer ticket: {error}")))?;
+    let server_workspace_ids = if workspace.server_workspace_ids.is_empty() {
         // Bundles exported before workspace bindings existed have one stable
         // fallback shard. New enrollment always writes explicit ids.
         vec![crate::WorkspaceId::from(ticket.workspace_id())]
     } else {
-        workspace.relay_workspace_ids.clone()
+        workspace.server_workspace_ids.clone()
     };
-    Ok((ticket, relay_workspace_ids))
+    Ok((ticket, server_workspace_ids))
 }
 
 /// Check the home-peer bundle the filesystem worker consumes and, when there
-/// is one, serve full-content replication. Which workspaces this relay holds is
+/// is one, serve full-content replication. Which workspaces this server holds is
 /// not the bundle's to say: the workspaces' own governance admits it as one of
 /// their hosts.
-fn import_home_peer(cfg: &mut RelayConfig) -> Result<(), RelayError> {
+fn import_home_peer(cfg: &mut ServerConfig) -> Result<(), ServerError> {
     if !cfg.home_peer_bundle.exists() {
         return Ok(());
     }
     let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
     let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
-        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+        .map_err(|error| ServerError::Identity(format!("invalid home-peer bundle: {error}")))?;
     fs::full_replica::validate_home_peer_set(&bundle)
-        .map_err(|error| RelayError::Identity(error.to_string()))?;
+        .map_err(|error| ServerError::Identity(error.to_string()))?;
     if bundle.status_file != cfg.full_replica_status {
-        return Err(RelayError::Identity(
-            "home-peer status path differs from relay status path".into(),
+        return Err(ServerError::Identity(
+            "home-peer status path differs from server status path".into(),
         ));
     }
     for workspace in &bundle.workspaces {
-        home_peer_relay_workspaces(workspace)?;
+        home_peer_server_workspaces(workspace)?;
     }
     cfg.services.full_content_replication = true;
     Ok(())
 }
 
-impl RelayHandle {
+impl ServerHandle {
     /// Services safe to advertise at this instant.  The filesystem proof is
     /// read for every advertisement, so an edit immediately withdraws the
     /// full-content claim until its new blobs are resident.
@@ -1028,7 +1028,7 @@ impl RelayHandle {
 
     /// Filesystem endpoints that proved complete residency in the current
     /// heartbeat. Consumers use these for blob and namespace protocols while
-    /// retaining `node_addr` for relay traffic.
+    /// retaining `node_addr` for server traffic.
     pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
         self.full_replica
             .current()
@@ -1051,12 +1051,12 @@ impl RelayHandle {
     }
 }
 
-/// Derive the relay transport key from the enrolled device secret. The relay
+/// Derive the server transport key from the enrolled device secret. The server
 /// application handshake still proves possession of the certified device key;
-/// this domain-separated transport key prevents the relay and filesystem
+/// this domain-separated transport key prevents the server and filesystem
 /// processes from publishing competing address records for one Iroh `NodeId`.
-pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
-    tilo_server_protocol::relay_service_node_id(&device_key.to_bytes())
+pub fn server_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
+    tilo_server_protocol::server_node_id(&device_key.to_bytes())
 }
 
 /// Run this host's own iroh packet relay on `addr`: the server, and the URL
@@ -1064,30 +1064,30 @@ pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32]
 /// through a relay, and the host advertises this one in its signed address.
 async fn spawn_packet_relay(
     addr: std::net::SocketAddr,
-) -> Result<(iroh_relay::server::Server, iroh_base::RelayUrl), RelayError> {
+) -> Result<(iroh_relay::server::Server, iroh_base::RelayUrl), ServerError> {
     let mut config = iroh_relay::server::ServerConfig::default();
     config.relay = Some(iroh_relay::server::RelayConfig::new(addr));
     let server = iroh_relay::server::Server::spawn(config)
         .await
-        .map_err(|error| RelayError::Iroh(format!("packet relay: {error}")))?;
+        .map_err(|error| ServerError::Iroh(format!("packet relay: {error}")))?;
     let serving = server
         .http_addr()
-        .ok_or_else(|| RelayError::Iroh("the packet relay serves no address".into()))?;
+        .ok_or_else(|| ServerError::Iroh("the packet relay serves no address".into()))?;
     let url: iroh_base::RelayUrl = format!("http://{serving}")
         .parse()
-        .map_err(|error| RelayError::Iroh(format!("packet relay URL: {error}")))?;
+        .map_err(|error| ServerError::Iroh(format!("packet relay URL: {error}")))?;
     Ok((server, url))
 }
 
-/// Bind the relay protocol with a domain-separated transport key. This is one
+/// Bind the server protocol with a domain-separated transport key. This is one
 /// physical certified device, not a second user identity: protocol auth uses
 /// `device_key` and its device certificate after QUIC connects.
 async fn bind_endpoint(
-    cfg: &RelayConfig,
+    cfg: &ServerConfig,
     device_key: &ed25519_dalek::SigningKey,
     relay_mode: Option<iroh::RelayMode>,
-) -> Result<Endpoint, RelayError> {
-    let secret = iroh::SecretKey::from_bytes(&tilo_server_protocol::relay_service_secret(
+) -> Result<Endpoint, ServerError> {
+    let secret = iroh::SecretKey::from_bytes(&tilo_server_protocol::server_node_secret(
         &device_key.to_bytes(),
     ));
     let builder = match relay_mode {
@@ -1098,21 +1098,21 @@ async fn bind_endpoint(
         .transport_config(tilo_server_client::host::transport())
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
-        .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
+        .map_err(|e| ServerError::Iroh(format!("invalid iroh listen address: {e}")))?
         .bind()
         .await
-        .map_err(|e| RelayError::Iroh(e.to_string()))
+        .map_err(|e| ServerError::Iroh(e.to_string()))
 }
 
-fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
+fn validate_additional_alpn(alpn: &[u8]) -> Result<(), ServerError> {
     let reserved: &[&[u8]] = &[ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN];
     if alpn.is_empty() {
-        return Err(RelayError::ProtocolRegistration(
+        return Err(ServerError::ProtocolRegistration(
             "additional ALPN must not be empty".into(),
         ));
     }
     if reserved.contains(&alpn) {
-        return Err(RelayError::ProtocolRegistration(format!(
+        return Err(ServerError::ProtocolRegistration(format!(
             "{} is reserved by tilo-server",
             String::from_utf8_lossy(alpn)
         )));
@@ -1122,18 +1122,18 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
 
 fn validate_additional_protocols(
     protocols: &[(Vec<u8>, Box<dyn DynProtocolHandler>)],
-) -> Result<(), RelayError> {
+) -> Result<(), ServerError> {
     validate_additional_alpns(protocols.iter().map(|(alpn, _)| alpn.as_slice()))
 }
 
 fn validate_additional_alpns<'a>(
     alpns: impl IntoIterator<Item = &'a [u8]>,
-) -> Result<(), RelayError> {
+) -> Result<(), ServerError> {
     let mut seen = HashSet::new();
     for alpn in alpns {
         validate_additional_alpn(alpn)?;
         if !seen.insert(alpn) {
-            return Err(RelayError::ProtocolRegistration(format!(
+            return Err(ServerError::ProtocolRegistration(format!(
                 "{} is registered more than once",
                 String::from_utf8_lossy(alpn)
             )));
@@ -1143,10 +1143,10 @@ fn validate_additional_alpns<'a>(
 }
 
 /// Spawn the revocation-refresh loop and the metrics-persist loop,
-/// returning the abort-on-drop handle list `Relay` owns.
+/// returning the abort-on-drop handle list `Server` owns.
 fn spawn_background_tasks(
-    cfg: &RelayConfig,
-    identity: &RelayIdentity,
+    cfg: &ServerConfig,
+    identity: &ServerIdentity,
     metrics: &Arc<Metrics>,
     live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
@@ -1261,7 +1261,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
         loop {
             interval.tick().await;
             if let Err(error) = crate::store::save_metrics(&state_root, &live_metrics.snapshot()) {
-                tracing::warn!(%error, "could not persist relay metrics snapshot");
+                tracing::warn!(%error, "could not persist server metrics snapshot");
             }
         }
     })
@@ -1270,7 +1270,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
 /// Lock the attach task list, recovering the inner `Vec` if the
 /// mutex was poisoned by an earlier panic rather than propagating one
 /// here — losing track of a reconnect task would leak it past the
-/// owning `Relay`'s lifetime.
+/// owning `Server`'s lifetime.
 fn lock_background_tasks(
     tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
 ) -> std::sync::MutexGuard<'_, Vec<AbortOnDrop>> {
@@ -1283,10 +1283,10 @@ fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: J
     lock_background_tasks(tasks).push(AbortOnDrop(task));
 }
 
-fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
+fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError> {
     crate::host::validate_host_device_identity(identity)?;
     if !identity.device_cert.capabilities.can_own_workspaces {
-        return Err(RelayError::Identity(
+        return Err(ServerError::Identity(
             "the certificate is not a device of the person".into(),
         ));
     }
@@ -1307,8 +1307,8 @@ struct DiscoveryProtocol {
 }
 
 impl DiscoveryProtocol {
-    fn trust(&self) -> crate::workspace_access::RelayTrust<'_> {
-        crate::workspace_access::RelayTrust {
+    fn trust(&self) -> crate::workspace_access::ServerTrust<'_> {
+        crate::workspace_access::ServerTrust {
             revocations: &self.identity.revocations,
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
@@ -1379,7 +1379,7 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                // The person's servers are written in their admin workspace, which only a relay
+                // The person's servers are written in their admin workspace, which only a server
                 // that runs workspaces' agents keeps.
                 #[cfg(not(feature = "agents"))]
                 return Err(AcceptError::from_err(std::io::Error::other(
@@ -1468,7 +1468,7 @@ impl ProtocolHandler for ManagementProtocol {
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
                 device_public_key: self.identity.cert.device_public_key,
-                relay_endpoint: self.endpoint.addr(),
+                server_endpoint: self.endpoint.addr(),
                 label: label.trim().to_string(),
                 files_ready,
                 services,
@@ -1540,7 +1540,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         }
-        // A discovery request is scoped to a relay workspace. Do not turn the
+        // A discovery request is scoped to a server workspace. Do not turn the
         // host into a global filesystem endpoint directory for arbitrary
         // authenticated peers.
         let workspace = self
@@ -1564,7 +1564,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         };
         if !permitted {
             return Err(AcceptError::from_err(std::io::Error::other(
-                "workspace is not bound or not authorised on this relay",
+                "workspace is not bound or not authorised on this server",
             )));
         }
         let mut profile = (*self.mesh_profile).clone();
@@ -1588,7 +1588,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             .and_then(|set| {
                 let sole_workspace = same_owner && set.workspaces.len() == 1;
                 set.workspaces.into_iter().find(|bundle| {
-                    bundle.relay_workspace_ids.contains(&request.workspace_id) || sole_workspace
+                    bundle.server_workspace_ids.contains(&request.workspace_id) || sole_workspace
                 })
             })
             .map(|bundle| bundle.ticket)
@@ -1615,7 +1615,7 @@ impl ProtocolHandler for DiscoveryProtocol {
     }
 }
 
-/// The relay frame codec, re-exported under the daemon path older callers use.
+/// The server frame codec, re-exported under the daemon path older callers use.
 pub use crate::frame::{read_frame, write_frame};
 
 #[cfg(test)]
@@ -1630,7 +1630,7 @@ mod tests {
         DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
     };
 
-    fn identity(capabilities: DeviceCapabilities) -> RelayIdentity {
+    fn identity(capabilities: DeviceCapabilities) -> ServerIdentity {
         let (root, user) = UserIdentity::generate("test user", 1);
         let (device_signing_key, device) = DeviceIdentity::generate("test host", 2);
         let mut device_cert = DeviceCert {
@@ -1644,7 +1644,7 @@ mod tests {
             issuer: None,
         };
         sign_device_cert(&mut device_cert, &root).unwrap();
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user.public_key,
             device_signing_key,
             device_cert,
@@ -1661,21 +1661,21 @@ mod tests {
 
         phase valid_host_identity_passes_startup_validation;
         {
-            validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap();
+            validate_server_identity(&identity(DeviceCapabilities::member())).unwrap();
         }
 
-        phase an_agent_grant_cannot_start_a_relay;
+        phase an_agent_grant_cannot_start_a_server;
         {
             let error =
-                validate_relay_identity(&identity(DeviceCapabilities::nothing())).unwrap_err();
+                validate_server_identity(&identity(DeviceCapabilities::nothing())).unwrap_err();
             assert!(error.to_string().contains("not a device"));
         }
 
         phase mismatched_device_key_is_rejected_at_startup;
         {
-            let mut relay = identity(DeviceCapabilities::member());
-            relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-            let error = validate_relay_identity(&relay).unwrap_err();
+            let mut server = identity(DeviceCapabilities::member());
+            server.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let error = validate_server_identity(&server).unwrap_err();
             assert!(error.to_string().contains("does not match"));
         }
 
@@ -1696,14 +1696,14 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     members: Vec::new(),
-                    relay_workspace_ids: vec![WorkspaceId::from_u128(42)],
+                    server_workspace_ids: vec![WorkspaceId::from_u128(42)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let mut config = RelayConfig {
+            let mut config = ServerConfig {
                 home_peer_bundle: bundle_path,
                 full_replica_status: status,
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             };
 
             import_home_peer(&mut config).unwrap();
@@ -1713,7 +1713,7 @@ mod tests {
 
     /// Write `status` as the full replica does, once, and return a clock
     /// stopped at its stamp: the proof stays as recent as when it was written
-    /// however long starting the relay or answering a discovery takes.
+    /// however long starting the server or answering a discovery takes.
     fn publish_status(
         path: &std::path::Path,
         status: &fs::full_replica::FullReplicaStatus,
@@ -1796,36 +1796,36 @@ mod tests {
         reason = "the end-to-end discovery regression keeps host, client, and filesystem assertions in one readable protocol scenario"
     )]
     async fn advertised_endpoints_are_the_hosted_services_own() {
-        // Phase `composite_relay_clamps_only_unhosted_service_advertisements`.
+        // Phase `composite_server_clamps_only_unhosted_service_advertisements`.
         {
             let state = tempfile::tempdir().unwrap();
-            let relay = Relay::start(
-                RelayConfig {
+            let server = Server::start(
+                ServerConfig {
                     state_root: state.path().to_path_buf(),
                     services: crate::mesh::ServiceCapabilities::personal_server(),
-                    ..RelayConfig::default()
+                    ..ServerConfig::default()
                 },
                 identity(DeviceCapabilities::member()),
             )
             .await
             .unwrap();
 
-            let services = relay.handle().mesh_profile().services;
+            let services = server.handle().mesh_profile().services;
             assert!(services.workspace_replication);
-            assert!(services.inbound_relay);
+            assert!(services.inbound_server);
             assert!(!services.full_content_replication);
             assert!(!services.app_serving);
             assert!(!services.compute);
-            assert!(services.remote_control_relay);
-            relay.shutdown().await;
+            assert!(services.remote_control_server);
+            server.shutdown().await;
         }
         // Phase `ready_profile_serializes_the_direct_filesystem_endpoint`.
         {
             let temp = tempfile::tempdir().unwrap();
             let status_path = temp.path().join("full-replica.json");
-            let relay_identity = identity(DeviceCapabilities::member());
+            let server_identity = identity(DeviceCapabilities::member());
             let filesystem_endpoint = EndpointAddr::new(
-                iroh::SecretKey::from_bytes(&relay_identity.device_signing_key.to_bytes()).public(),
+                iroh::SecretKey::from_bytes(&server_identity.device_signing_key.to_bytes()).public(),
             )
             .with_ip_addr("127.0.0.1:43210".parse().unwrap());
             let mut status = fs::full_replica::FullReplicaStatus::syncing();
@@ -1835,27 +1835,27 @@ mod tests {
                 .filesystem_endpoints
                 .push(filesystem_endpoint.clone());
             let status_clock = publish_status(&status_path, &status);
-            let relay = Relay::start_with_replica_clock(
-                RelayConfig {
-                    state_root: temp.path().join("relay-state"),
+            let server = Server::start_with_replica_clock(
+                ServerConfig {
+                    state_root: temp.path().join("server-state"),
                     full_replica_status: status_path.clone(),
                     services: crate::mesh::ServiceCapabilities::home_peer(),
-                    ..RelayConfig::default()
+                    ..ServerConfig::default()
                 },
-                relay_identity,
+                server_identity,
                 status_clock,
             )
             .await
             .unwrap();
 
-            let profile = relay.handle().mesh_profile();
+            let profile = server.handle().mesh_profile();
             let wire = serde_json::to_vec(&profile).unwrap();
             let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
             assert_eq!(published.content_endpoint(), Some(filesystem_endpoint));
             assert!(published.services.full_content_replication);
-            relay.shutdown().await;
+            server.shutdown().await;
         }
-        // Phase `authenticated_discovery_returns_filesystem_not_relay_endpoint`.
+        // Phase `authenticated_discovery_returns_filesystem_not_server_endpoint`.
         {
             let temp = tempfile::tempdir().unwrap();
             let (root, user) = UserIdentity::generate("owner", 1);
@@ -1920,22 +1920,22 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     members: Vec::new(),
-                    relay_workspace_ids: vec![WorkspaceId::from_u128(0)],
+                    server_workspace_ids: vec![WorkspaceId::from_u128(0)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let relay = Relay::start_with_replica_clock(
-                RelayConfig {
-                    state_root: temp.path().join("relay"),
+            let server = Server::start_with_replica_clock(
+                ServerConfig {
+                    state_root: temp.path().join("server"),
                     full_replica_status: status_path.clone(),
                     home_peer_bundle: bundle_path,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.
                     packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                    ..RelayConfig::default()
+                    ..ServerConfig::default()
                 },
-                RelayIdentity {
+                ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: host_key,
                     device_cert: host_cert,
@@ -1946,14 +1946,14 @@ mod tests {
             .await
             .unwrap();
             assert_ne!(
-                relay.node_addr().id.as_bytes(),
+                server.node_addr().id.as_bytes(),
                 host.public_key.as_slice(),
-                "relay transport discovery must not collide with the filesystem node"
+                "server transport discovery must not collide with the filesystem node"
             );
             let client_endpoint = test_server::direct_endpoint().await;
-            let discovered = crate::client::RelayClient::discover_content_endpoint(
+            let discovered = crate::client::ServerClient::discover_content_endpoint(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
@@ -1964,10 +1964,10 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(discovered, filesystem);
-            assert_ne!(discovered, relay.node_addr());
-            let registration = crate::client::RelayClient::discover_content_peer(
+            assert_ne!(discovered, server.node_addr());
+            let registration = crate::client::ServerClient::discover_content_peer(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
@@ -1982,9 +1982,9 @@ mod tests {
             assert_eq!(advertised_ticket.node, owner_endpoint);
             assert_ne!(advertised_ticket.node, registration.endpoint);
             assert_eq!(advertised_ticket.workspace, workspace);
-            let auto_bound = crate::client::RelayClient::discover_content_peer(
+            let auto_bound = crate::client::ServerClient::discover_content_peer(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 WorkspaceId::from_u128(99),
                 user.public_key,
                 host.public_key,
@@ -1996,7 +1996,7 @@ mod tests {
             .unwrap();
             assert_eq!(auto_bound.endpoint, filesystem);
             assert!(
-                relay
+                server
                     .sessions
                     .workspaces
                     .lock()
@@ -2005,9 +2005,9 @@ mod tests {
             );
             let wrong_device = [0x55; 32];
             assert!(
-                crate::client::RelayClient::discover_content_endpoint(
+                crate::client::ServerClient::discover_content_endpoint(
                     &client_endpoint,
-                    relay.node_addr(),
+                    server.node_addr(),
                     WorkspaceId::from_u128(0),
                     user.public_key,
                     wrong_device,
@@ -2021,9 +2021,9 @@ mod tests {
                 .await
                 .is_err()
             );
-            let status = crate::client::RelayClient::manage_home_peer(
+            let status = crate::client::ServerClient::manage_home_peer(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -2036,9 +2036,9 @@ mod tests {
             assert_eq!(status.label, "home");
             assert!(status.files_ready);
             assert!(
-                crate::client::RelayClient::manage_home_peer(
+                crate::client::ServerClient::manage_home_peer(
                     &client_endpoint,
-                    relay.node_addr(),
+                    server.node_addr(),
                     user.public_key,
                     host.public_key,
                     client_cert.clone(),
@@ -2052,9 +2052,9 @@ mod tests {
                 .is_err()
             );
             assert!(
-                crate::client::RelayClient::manage_home_peer(
+                crate::client::ServerClient::manage_home_peer(
                     &client_endpoint,
-                    relay.node_addr(),
+                    server.node_addr(),
                     user.public_key,
                     host.public_key,
                     admin_cert.clone(),
@@ -2067,9 +2067,9 @@ mod tests {
                 .await
                 .is_err()
             );
-            let renamed = crate::client::RelayClient::manage_home_peer(
+            let renamed = crate::client::ServerClient::manage_home_peer(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 user.public_key,
                 host.public_key,
                 admin_cert.clone(),
@@ -2085,13 +2085,13 @@ mod tests {
             // The name is the server's entry in its person's admin workspace,
             // which the enrolled host made and entered itself into: no file of
             // the host's own keeps it.
-            let governed = relay.workspaces().unwrap();
+            let governed = server.workspaces().unwrap();
             let servers = crate::servers::read(governed).await.unwrap();
             assert_eq!(
                 servers.active(&host.public_key).unwrap().label,
                 "Living workspace NAS"
             );
-            assert!(!temp.path().join("relay/home-peer-name").exists());
+            assert!(!temp.path().join("server/home-peer-name").exists());
             let mut revocation = tilo_user_identity::RevocationEntry {
                 user_public_key: user.public_key,
                 revoked_device_public_key: host.public_key,
@@ -2100,9 +2100,9 @@ mod tests {
                 signature: [0; 64],
             };
             tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
-            let removed = crate::client::RelayClient::manage_home_peer(
+            let removed = crate::client::ServerClient::manage_home_peer(
                 &client_endpoint,
-                relay.node_addr(),
+                server.node_addr(),
                 user.public_key,
                 host.public_key,
                 admin_cert.clone(),
@@ -2113,9 +2113,9 @@ mod tests {
             .await
             .unwrap();
             assert!(removed.decommissioned);
-            assert!(temp.path().join("relay/decommissioned").exists());
+            assert!(temp.path().join("server/decommissioned").exists());
             assert!(
-                crate::servers::read(relay.workspaces().unwrap())
+                crate::servers::read(server.workspaces().unwrap())
                     .await
                     .unwrap()
                     .active(&host.public_key)
@@ -2123,9 +2123,9 @@ mod tests {
                 "a decommissioned server is retired among its person's servers"
             );
             assert!(
-                crate::client::RelayClient::manage_home_peer(
+                crate::client::ServerClient::manage_home_peer(
                     &client_endpoint,
-                    relay.node_addr(),
+                    server.node_addr(),
                     user.public_key,
                     host.public_key,
                     admin_cert,
@@ -2137,16 +2137,16 @@ mod tests {
                 .is_err()
             );
             client_endpoint.close().await;
-            relay.shutdown().await;
+            server.shutdown().await;
         }
     }
 
     #[test]
-    fn additional_protocol_rejects_relay_owned_alpns() {
+    fn additional_protocol_rejects_server_owned_alpns() {
         for alpn in [ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN] {
             assert!(matches!(
                 validate_additional_alpn(alpn),
-                Err(RelayError::ProtocolRegistration(_))
+                Err(ServerError::ProtocolRegistration(_))
             ));
         }
         validate_additional_alpn(b"tilo-workspace-join/1").unwrap();
@@ -2155,7 +2155,7 @@ mod tests {
                 b"tilo-workspace-join/1".as_slice(),
                 b"tilo-workspace-join/1".as_slice(),
             ]),
-            Err(RelayError::ProtocolRegistration(_))
+            Err(ServerError::ProtocolRegistration(_))
         ));
     }
 }

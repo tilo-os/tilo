@@ -198,7 +198,7 @@ test-server = { path = "../../dev/test-server" }
 test-http = { path = "../../dev/test-http" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
-# `tilolang repl`, driven in process against a workspace the relay hosts.
+# `tilolang repl`, driven in process against a workspace the server hosts.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
@@ -218,7 +218,7 @@ tokio = { workspace = true, features = ["full"] }
 tilo-reference = { path = "../../collab/reference" }
 # The desktop's search over a workspace's record index, as a person finds a record.
 tilo-desktop-search = { path = "../../session/desktop-search" }
-# The subscriber the `api-on-relay` example traces with.
+# The subscriber the `api-on-server` example traces with.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]

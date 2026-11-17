@@ -14,7 +14,7 @@
 //!   <total µs> <max µs>` line per step and second.
 //!
 //! Both are off unless the target is enabled (a capacity run does, such as the
-//! relay load bench, `crates/hosting/tilo-server/examples/relay_load`): a
+//! server load bench, `crates/hosting/tilo-server/examples/server_load`): a
 //! production host pays one disabled-callsite check per phase and reads no
 //! clock.
 
@@ -61,7 +61,7 @@ fn windows() -> &'static Mutex<BTreeMap<&'static str, Window>> {
     WINDOWS.get_or_init(|| {
         // One reporter for the process, started by the first window.
         let _ = std::thread::Builder::new()
-            .name("relay-timings".into())
+            .name("server-timings".into())
             .spawn(|| {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));

@@ -595,7 +595,7 @@ not run it yet.
 
 When it ran again the pictures crossed and then stopped: the device relaying
 the live session turned the sharing device away, and went on doing so through a
-restart of either session. A relay turns away a device whose keys are behind
+restart of either session. A server turns away a device whose keys are behind
 its own, and the sharing device's were. The host had been stopped and copied
 a second time; back on, it admitted the new copy, which moved the
 workspace's keys one epoch on, and it said that change once, to the members
@@ -604,7 +604,7 @@ site that hosts a workspace keeps each channel's newest frame and replays it
 to a member that comes back; a device that hosts one kept none. It now hands
 each member that links what its channels hold of the workspace, so a member
 that was away when the keys moved follows them when it is back, and the
-relay's check is as it was. The relay says why it turned a device away, in
+server's check is as it was. The server says why it turned a device away, in
 its journal and in its own reading of the workspace's live session (`turned_away`),
 and the device it turned away says which epoch's keys it presented
 (`presented`): the two side by side name a refusal that read alike on both
@@ -697,7 +697,7 @@ happens to the one beyond it.
 - **Devices in a workspace's live session: each hears thirty-two others.** A
   shared window, presence and a call travel the workspace's live session, and
   a live session reads the devices in it one by one: three tracks of each, which
-  the reading device and the relay hold open for as long as the device is
+  the reading device and the server hold open for as long as the device is
   there. Thirty-three devices of one workspace therefore all hear each
   other (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`). A device
   beyond that is in the live session and is heard by whoever has room for it. A
@@ -706,10 +706,10 @@ happens to the one beyond it.
   (`unheard_why`: `reading-bound`) and in the person's words (`not_heard`),
   and reads them once one it hears has gone. The number is what a further
   device costs, not what the transport allows. Measured with every device
-  and the relay in one process, each device a device hears holds about 250
+  and the server in one process, each device a device hears holds about 250
   KiB: 277 MiB for thirty-three devices that all hear each other, a
   gibibyte for sixty-four and 4.3 GiB for a hundred and twenty-eight, and
-  the relay is a member's own device. The carrier allows an admitted
+  the server is a member's own device. The carrier allows an admitted
   connection the streams thirty-two devices take, 344 bidirectional and
   640 unidirectional (`MAX_BI_STREAMS`, `MAX_UNI_STREAMS` in
   `crates/collab/tilo-live/src/native.rs`): twice the tracks read, since a
@@ -720,29 +720,29 @@ happens to the one beyond it.
   for the live session alone allow the same. Before that a connection is allowed
   four of each (`PREFACE_BI_STREAMS`, `PREFACE_UNI_STREAMS`) on an endpoint
   bound for the live session, and what its transport allows on a session's. The
-  relay admits no fixed number of sessions: who is in the live session is the
+  server admits no fixed number of sessions: who is in the live session is the
   workspace's membership, which has no count of its own (one person's
   devices are 256 at most, `MAX_DEVICES` in
   `crates/collab/tilo-peer-state/src/state/personal.rs`).
-- **Sessions a live session's relay is admitting: sixteen at once, four of them at
+- **Sessions a live session's server is admitting: sixteen at once, four of them at
   most of one endpoint, and four more of strangers** (`MAX_ADMITTING`,
   `MAX_ADMITTING_OF_ONE`, `MAX_ADMITTING_STRANGERS` in
-  `crates/collab/tilo-live/src/relay.rs`). That is what a relay holds for
+  `crates/collab/tilo-live/src/server.rs`). That is what a server holds for
   devices it has not judged yet, each for no longer than its preface and
   its setup may take. One more is closed at once as busy, with nothing of
   it read and nobody judged: that is no refusal. An endpoint that none of
   the workspaces the relaying session read names as a device waits in the
-  four places for strangers, so whoever reaches the relay and says nothing
+  four places for strangers, so whoever reaches the server and says nothing
   holds those and none of the sixteen, and no endpoint holds more than
   four places whatever it opens. Who is admitted is what it was: every
   session is judged by its grant, wherever it waited. The device that was
   told busy asks again after a second, then two, four and eight, and every
   fifteen from then on, each wait up to a quarter shorter by the device's
   own key (`retry_wait` in `crates/session/session/src/live.rs`), so that
-  the devices a relay turned back in one moment do not come back in one
-  moment, and is taken in once the relay has room. Until then its live session
-  reads as told busy by the relay, by name (`relay-busy`), never as
-  refused, the relay lists nobody as turned away, and a live session that was
+  the devices a server turned back in one moment do not come back in one
+  moment, and is taken in once the server has room. Until then its live session
+  reads as told busy by the server, by name (`server-busy`), never as
+  refused, the server lists nobody as turned away, and a live session that was
   open before keeps its session while it dials.
 
 What checks this: the runtime's tests reach its endpoint's sixty-four
@@ -762,23 +762,23 @@ that follows. The Browser's tests fill a tab's eight waiting turns and
 drive a tab past sixty-four actors, while one of them waits and after one
 of them was forgotten, and read the record, its history, who set each field
 and the review screen. The live session's tests
-stand thirty-three devices in one workspace's live session through a relay their
+stand thirty-three devices in one workspace's live session through a server their
 endpoints reach with four streams until they are admitted, and read that
 every one hears every other; with thirty-six, that each hears thirty-two,
 counts three as not heard, and hears everyone again once three have gone.
-They hold sixteen sessions of a workspace's devices in a relay's admission
+They hold sixteen sessions of a workspace's devices in a server's admission
 and read what the next is told, before and after one of the sixteen is
 through, and that devices the workspace does not hold wait in places of
 their own and are refused once judged; they open sixteen silent sessions
 from endpoints nobody knows and read that sixteen devices of the workspace
 are all taken in at once meanwhile; they open sixteen sessions from one
 device and read that it holds four places; and they cut the carrier of a
-live session whose relay is at its bound and read that it dials until it is
+live session whose server is at its bound and read that it dials until it is
 carried again. Two real sessions run the stranger case: one is started
-against the relay of the session hosting its workspace while sixteen
-endpoints nobody knows hold that relay, and is in the live session at once, never
+against the server of the session hosting its workspace while sixteen
+endpoints nobody knows hold that server, and is in the live session at once, never
 told busy. The session's own tests read the access, the state and the
-words, English and German, of a live session whose relay was busy and of one that
+words, English and German, of a live session whose server was busy and of one that
 does not hear every device, the latter from a live session with three devices
 more than it reads.
 
@@ -853,7 +853,7 @@ down.
   crossed and the watching tab kept the card of a window still arriving,
   while both sessions read as if it were pictured. The session handed that
   tab's tile the page's objects in the live session's framing, which the tile cannot
-  read; that is closed, and two sessions on one relay now carry a page from
+  read; that is closed, and two sessions on one server now carry a page from
   the window to the watching tab in a test. The step reads the page's text
   off the watching shell rather than take the sessions' word for it. When it
   ran with that, the page still did not come: the watching shell asked for
@@ -904,23 +904,23 @@ down.
   session and the endpoints of two more devices on one machine, not by
   machines, and nothing keeps a place at the server for each device.
   Thirty-three devices that all hear each other, a
-  live session past its bound and a relay at its admission bound have run in
+  live session past its bound and a server at its admission bound have run in
   tests on one machine, never on real ones, and no real session has been
-  told busy by a real relay in a test: since endpoints nobody knows no
-  longer hold a relay's places, only sixteen of a workspace's own devices
+  told busy by a real server in a test: since endpoints nobody knows no
+  longer hold a server's places, only sixteen of a workspace's own devices
   asking at once fill them, which is sixteen sessions with a shell each.
   The live session's bound of thirty-two devices heard is what a device costs
   today, not what a workspace may hold. Each device read is three
-  subscriptions on the reading device and on the relay, so a live session grows
-  with the square of its devices; what takes that away is the relay
+  subscriptions on the reading device and on the server, so a live session grows
+  with the square of its devices; what takes that away is the server
   carrying every device's presence on one track of its own, and a call's
   audio asked for only while a call runs, and neither is built. Past the
   bound, who a device hears is whoever it came to first, not whom its
-  person works with. A relay's memory is bounded by no number of
+  person works with. A server's memory is bounded by no number of
   sessions: each admitted device reads up to thirty-two. A device of this
-  build under a relay of an earlier one is allowed about a hundred streams
+  build under a server of an earlier one is allowed about a hundred streams
   where it asks for up to two hundred, and from about thirty devices on
-  the further ones are then neither read nor counted. The relay's reading
+  the further ones are then neither read nor counted. The server's reading
   does not say how often it was at its bound, and each admission and each
   change of a workspace's membership reads that membership once for every
   device in the live session. An actor that answers a hold is remembered

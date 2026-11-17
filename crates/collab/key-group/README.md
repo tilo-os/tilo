@@ -70,7 +70,7 @@ history.
 - **Current state first, history on demand.** A joiner loads the latest
   snapshot, which is sealed like any other op and retained by hosts as a
   checkpoint through the clear `ContentRetention` class in the metadata.
-  Older ops stay with the broker's durable history and the relay, and are
+  Older ops stay with the broker's durable history and the server, and are
   paged in newest-first through the existing scrollback request.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
@@ -259,11 +259,11 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
-- **Workspaces a node governs** have no committed routes. A node is a relay
+- **Workspaces a node governs** have no committed routes. A node is a server
   whose certificate lets it host and own workspaces; it takes part in the
   workspaces of the workspaces it governs. A desktop session enrolled in such a
   workspace serves each route as a workspace: its apps ask for keys, seal and
-  open, and its sealed writes go to the relay as the device's own, never
+  open, and its sealed writes go to the server as the device's own, never
   through the governor. A company node's own session is such a member: a
   device of the node's person with its own key and certificate, which enters
   every workspace of the person's workspace list the node hosts, as the list
@@ -289,7 +289,7 @@ workspace's content only as a **service member**
   key holder removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
 
-The relay and the action broker need no change: they route and retain
+The server and the action broker need no change: they route and retain
 ciphertext and MLS control material without decoding either.
 
 ### Security properties as shipped
@@ -298,7 +298,7 @@ ciphertext and MLS control material without decoding either.
   brokers see signed envelope metadata (author, artifact, op class, retention
   class, workspace, epoch, seq, timestamp) and ciphertext. They never see
   content and never hold a content key. An end-to-end test asserts that no
-  byte the relay stores contains the plaintext.
+  byte the server stores contains the plaintext.
 - **Membership follows the workspace ACL and the certified device set.** No
   separate workspace membership list can drift from permissions.
 - **Joiners read all history** through the key history in their Welcome.

@@ -15,7 +15,7 @@
 //!   can dial it too, which is how the page's way is tested.
 //!
 //! Over iroh the endpoint's TLS says who the device is; over WebTransport the
-//! device proves it with the relay handshake on the link's first stream,
+//! device proves it with the server handshake on the link's first stream,
 //! where a conversation needs to know (the session's own, and the live session's).
 //! Either way the bytes above a link are the same.
 
@@ -81,7 +81,7 @@ impl Purpose {
 /// reused for every link after (and by the live session, [`Self::endpoint`]):
 /// a device speaks to its host as one endpoint. A device that already runs
 /// an endpoint under its key lends it ([`Self::from_endpoint`]), so it never
-/// binds a second one: a relay holds one connection per endpoint id and
+/// binds a second one: a server holds one connection per endpoint id and
 /// drops the older of two, which cut the other endpoint off. Over
 /// WebTransport each link is a session of its own.
 pub struct Dialer {

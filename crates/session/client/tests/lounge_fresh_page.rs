@@ -80,11 +80,14 @@ fn entrypoint() -> std::path::PathBuf {
         })
 }
 
-/// A PATH holding the relay this run built, so the image's `exec tilo-server`
+/// A PATH holding the server this run built, so the image's `exec tilo-server`
 /// runs it.
-fn relay_on_path() -> std::ffi::OsString {
-    let relay = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
-    let programs = relay.parent().expect("the relay's directory").to_path_buf();
+fn server_on_path() -> std::ffi::OsString {
+    let server = tilo_test_env::sibling_binary("tilo-server", "tilo-server");
+    let programs = server
+        .parent()
+        .expect("the server's directory")
+        .to_path_buf();
     let mut paths = vec![programs];
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
@@ -200,7 +203,7 @@ impl Lounge {
             // here holds a port no one is bound to.
             .env("TILO_WORKSPACES_LINK", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LINK_ORIGIN", "https://127.0.0.1:0")
-            .env("PATH", relay_on_path())
+            .env("PATH", server_on_path())
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
             // without the Discord, mail and model secrets: this run starts no
             // bridge that needs them.

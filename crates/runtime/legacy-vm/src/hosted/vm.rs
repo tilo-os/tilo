@@ -85,7 +85,7 @@ pub struct Settings {
     /// internet. A relay on the host's own loopback (a local stack) is reached through
     /// [`super::network::HOST_LOOPBACK`]; anywhere else the VM dials it as it is. `None`: the host
     /// serves no Browser.
-    pub relay: Option<Endpoint>,
+    pub server: Option<Endpoint>,
     /// Where the templates a new VM is cloned from are kept, one per size. Only jailed VMs are
     /// cloned: a jail names a VM's disk and sockets at the same path for every VM, which a snapshot
     /// records. `None`: every new VM boots cold.
@@ -551,7 +551,7 @@ impl HostedVm {
                     sockets,
                     guest: guest.as_ref(),
                 },
-                settings.relay,
+                settings.server,
             )
         } else {
             let argv = if self.restoring {
@@ -692,7 +692,7 @@ impl HostedVm {
 
     /// Set a restored guest's clock from the host's. A clone resumes with the clock its template was
     /// snapshotted at, which is behind the host's by however long the template has been kept: a
-    /// certificate the relay issued this moment is then "not yet valid" inside the VM, and the
+    /// certificate the server issued this moment is then "not yet valid" inside the VM, and the
     /// session that scans it refuses its own identity. What reads a clock in the guest — the
     /// session's identity, its history, a program's timestamps — reads the host's time instead.
     fn set_guest_clock(&self) {

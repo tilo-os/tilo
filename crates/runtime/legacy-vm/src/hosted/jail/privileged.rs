@@ -23,9 +23,9 @@ pub struct Start {
     pub memory_mib: u32,
     /// Boot from `/vm/firecracker.json`; else wait for a snapshot.
     pub boot: bool,
-    /// The one destination besides the internet the VM's network allows: the relay its browser
+    /// The one destination besides the internet the VM's network allows: the server its browser
     /// session joins through.
-    pub relay: Option<Endpoint>,
+    pub server: Option<Endpoint>,
 }
 
 fn os(what: &str) -> io::Error {
@@ -233,7 +233,7 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     }
     cgroup_parent(config).step("making the VMs' cgroup")?;
     if let Some(net) = &config.network {
-        connect(config, net, slot, start.relay)?;
+        connect(config, net, slot, start.server)?;
     }
 
     // The jail's directories, in a mount namespace of this process's: the
@@ -359,7 +359,7 @@ fn connect(
     config: &JailConfig,
     net: &super::NetworkConfig,
     slot: u32,
-    relay: Option<Endpoint>,
+    server: Option<Endpoint>,
 ) -> io::Result<()> {
     let (vm, net_uid) = (config.vm_uid(slot), config.net_uid(slot));
     let net_dir = config.net_dir(slot);
@@ -408,7 +408,7 @@ fn connect(
     };
     let blocked = config.blocked().map_err(io::Error::other)?;
     tilo_egress::nft::Netfilter::new(netfilter)?
-        .install_guest(&network::guest_filter(&blocked, relay))
+        .install_guest(&network::guest_filter(&blocked, server))
         .map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -427,7 +427,7 @@ fn connect(
         holder,
         &pid_file,
         net.resolver,
-        relay,
+        server,
     )?;
     std::fs::write(cgroup.join("cgroup.procs"), pasta.to_string())
         .step("moving pasta into its cgroup")?;
@@ -577,9 +577,9 @@ fn spawn_pasta(
     holder: u32,
     pid_file: &Path,
     resolver: Ipv4Addr,
-    relay: Option<Endpoint>,
+    server: Option<Endpoint>,
 ) -> io::Result<u32> {
-    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver, relay);
+    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver, server);
     let host = host.as_raw_fd();
     let mut command = std::process::Command::new(binary);
     command

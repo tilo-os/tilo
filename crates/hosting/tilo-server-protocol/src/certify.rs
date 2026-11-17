@@ -1,4 +1,4 @@
-//! Relay-mediated device certification on its own ALPN.
+//! Server-mediated device certification on its own ALPN.
 //!
 //! A device without a certificate cannot pass the [`auth`](crate::auth)
 //! handshake, so it asks for one here. Two kinds of connection share the

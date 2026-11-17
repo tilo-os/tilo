@@ -142,7 +142,7 @@ fn take_published(owner: &NativeWorkspaceOwner, from: &NativeWorkspaceOwner, dev
         owner
             .receive(
                 workspace_id(),
-                TransportOrigin::RelayDelta(device),
+                TransportOrigin::ServerDelta(device),
                 message,
                 SystemTime::now(),
             )
@@ -161,8 +161,8 @@ fn take_frames<'a>(
         .collect();
     for (bytes, retention) in frames {
         let origin = match retention {
-            Retention::Checkpoint => TransportOrigin::RetainedRelayDelta(publisher),
-            Retention::Delta => TransportOrigin::RelayDelta(publisher),
+            Retention::Checkpoint => TransportOrigin::RetainedServerDelta(publisher),
+            Retention::Delta => TransportOrigin::ServerDelta(publisher),
         };
         owner
             .receive(

@@ -1,7 +1,7 @@
 //! Agents on this host (feature `agents`): the link between the server and
 //! `tilo-agent-session`'s [`AgentHost`].
 //!
-//! [`RelayAgentLink`] is what the supervisor asks of the relay:
+//! [`ServerAgentLink`] is what the supervisor asks of the server:
 //!
 //! - **Approval.** A new grant is a certification request for a fresh agent
 //!   key, queued by the host itself with the person's [`DelegateProposal`]. A
@@ -20,7 +20,7 @@
 //!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
 //!   approved answer, and a question nobody answers in time is refused.
 //!
-//! [`start`] wires both into a relay: the supervisor answers the agent
+//! [`start`] wires both into a server: the supervisor answers the agent
 //! vocabulary as the host's app action server, and the host's own agents
 //! reach it over iroh.
 
@@ -47,7 +47,7 @@ use tilo_user_identity::{
 
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
-use crate::daemon::{Relay, RelayError, RelayIdentity};
+use crate::daemon::{Server, ServerError, ServerIdentity};
 use crate::peer::AgentRegistry;
 use tilo_content::WorkspaceStores;
 use tilo_lock::RwLockRecover as _;
@@ -60,7 +60,7 @@ const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
-pub struct RelayAgentLink {
+pub struct ServerAgentLink {
     user_public_key: [u8; 32],
     certification: CertificationProtocol,
     agents: AgentRegistry,
@@ -69,23 +69,23 @@ pub struct RelayAgentLink {
     runtime: tokio::runtime::Handle,
 }
 
-impl Relay {
-    /// The link an [`AgentHost`] supervises this relay's agents through.
-    /// Call it inside the runtime the relay runs on.
+impl Server {
+    /// The link an [`AgentHost`] supervises this server's agents through.
+    /// Call it inside the runtime the server runs on.
     #[must_use]
-    pub fn agent_link(&self) -> RelayAgentLink {
+    pub fn agent_link(&self) -> ServerAgentLink {
         let web = self.web_context();
-        RelayAgentLink {
-            user_public_key: web.relay.identity.user_public_key,
+        ServerAgentLink {
+            user_public_key: web.server.identity.user_public_key,
             certification: web.certification.clone(),
-            agents: web.relay.agents.clone(),
+            agents: web.server.agents.clone(),
             workspaces: self.workspaces().cloned(),
             runtime: tokio::runtime::Handle::current(),
         }
     }
 }
 
-impl RelayAgentLink {
+impl ServerAgentLink {
     /// Bring agent `device`'s place on the rosters of the governed workspaces in
     /// line with the register, off the caller's thread. `cert` is the
     /// agent's certificate when it was just approved or restored.
@@ -98,7 +98,7 @@ impl RelayAgentLink {
     }
 }
 
-impl AgentHostLink for RelayAgentLink {
+impl AgentHostLink for ServerAgentLink {
     fn request_approval(
         &self,
         key: &SigningKey,
@@ -164,7 +164,7 @@ impl AgentHostLink for RelayAgentLink {
     }
 
     fn approver(&self, delegation: &Delegation) -> Option<Approver> {
-        Some(Arc::new(RelayApprover {
+        Some(Arc::new(ServerApprover {
             certification: self.certification.clone(),
             delegation: delegation.clone(),
             runtime: self.runtime.clone(),
@@ -175,13 +175,13 @@ impl AgentHostLink for RelayAgentLink {
 /// The person's side of one agent's actions that ask first: each is a
 /// question on the person's approving devices, put the way their grants
 /// are approved. It runs nothing itself.
-struct RelayApprover {
+struct ServerApprover {
     certification: CertificationProtocol,
     delegation: Delegation,
     runtime: tokio::runtime::Handle,
 }
 
-impl RelayApprover {
+impl ServerApprover {
     /// The question `request` puts to the person, when `caller` is this
     /// approver's agent.
     fn question(
@@ -241,7 +241,7 @@ impl RelayApprover {
     }
 }
 
-impl ActionHost for RelayApprover {
+impl ActionHost for ServerApprover {
     fn query(
         &self,
         _: &Caller,
@@ -358,13 +358,13 @@ pub enum HostShells {
 }
 
 impl HostShells {
-    /// Ask VM hosts' members, if any, as `relay`'s own device, and have the
+    /// Ask VM hosts' members, if any, as `server`'s own device, and have the
     /// workspaces' machines branched and deleted with them.
-    fn serve_from(&self, relay: &Relay) {
-        if let (Self::Placed(placed), Some(workspaces)) = (self, relay.workspaces()) {
-            placed.ask_from(workspaces.action_service(), relay.endpoint());
+    fn serve_from(&self, server: &Server) {
+        if let (Self::Placed(placed), Some(workspaces)) = (self, server.workspaces()) {
+            placed.ask_from(workspaces.action_service(), server.endpoint());
         }
-        if let (Some(machines), Some(workspaces)) = (self.machines(), relay.workspaces()) {
+        if let (Some(machines), Some(workspaces)) = (self.machines(), server.workspaces()) {
             workspaces.machines(machines);
         }
     }
@@ -803,8 +803,8 @@ fn placed_when_ready(
     pending
 }
 
-/// The relay's own device, as the workspace actions service joins its workspaces.
-struct RelayRecordsLink {
+/// The server's own device, as the workspace actions service joins its workspaces.
+struct ServerRecordsLink {
     user_public_key: [u8; 32],
     host_device: HostDevice,
     workspaces: Option<crate::workspaces::Workspaces>,
@@ -819,7 +819,7 @@ struct RelayRecordsLink {
     certification: CertificationProtocol,
 }
 
-impl RelayRecordsLink {
+impl ServerRecordsLink {
     /// The person a turn of this server acts for, and where their own store
     /// is kept, when `caller` is such a turn's agent: one a person's own
     /// session was handed to, working inside a turn. Nothing else is decided
@@ -837,7 +837,7 @@ impl RelayRecordsLink {
     }
 }
 
-impl WorkspaceDocumentsLink for RelayRecordsLink {
+impl WorkspaceDocumentsLink for ServerRecordsLink {
     /// What stands for the person the turn acts for, read from their own
     /// store on this server now: for the turn's own agent and nobody else.
     fn stands(
@@ -1038,7 +1038,7 @@ impl WorkspaceDocumentsLink for RelayRecordsLink {
 
     /// What the workspace's host keeps ([`crate::workspaces::Workspaces::kept_content`]):
     /// a bridged person's avatar its bots fetched, a file or a feedback
-    /// report's picture a member posted. A relay keeping no content for the
+    /// report's picture a member posted. A server keeping no content for the
     /// workspace answers none, which refuses an appearance naming an avatar.
     fn content_blob(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.as_ref()?;
@@ -1067,83 +1067,83 @@ fn app_catalogue(
     Arc::new(move || catalogue().placing(placed).placing(linux))
 }
 
-/// Start `cfg`'s relay serving its workspaces' records to pages, without the agent supervisor:
+/// Start `cfg`'s server serving its workspaces' records to pages, without the agent supervisor:
 /// the host mounts a record of an app in `catalogue` (this machine's
 /// registry when `None`) and runs an action on it for whoever the workspace's
 /// policy lets ask, as it does beside agents in [`start`]. Its workspaces'
-/// reporters may have `feedback_reviewer` look over their reports. Answers the relay and the
+/// reporters may have `feedback_reviewer` look over their reports. Answers the server and the
 /// action service it serves the records with, which the agents the host runs for its workspaces
 /// ([`crate::workspace_agents`]) act through.
 ///
 /// # Errors
-/// Why the relay did not start.
+/// Why the server did not start.
 pub async fn start_serving_documents(
-    cfg: crate::RelayConfig,
-    identity: RelayIdentity,
+    cfg: crate::ServerConfig,
+    identity: ServerIdentity,
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
-) -> Result<(Relay, WorkspaceActions), RelayError> {
+) -> Result<(Server, WorkspaceActions), ServerError> {
     start_serving_documents_and_events(cfg, identity, catalogue, feedback_reviewer, shell, browsers)
         .await
-        .map(|(relay, actions, _)| (relay, actions))
+        .map(|(server, actions, _)| (server, actions))
 }
 
 /// [`start_serving_documents`], answering also with the events this host runs for its people
 /// ([`crate::workspace_bots::events`]): their scheduled work and what waits for something to
-/// happen, kept under the relay's state and run from its start, with no device of theirs on. The
-/// relay answers their actions for a person's device and page; whoever runs the people's agents
+/// happen, kept under the server's state and run from its start, with no device of theirs on. The
+/// server answers their actions for a person's device and page; whoever runs the people's agents
 /// hands the same events to their turns ([`crate::workspace_agents::HostAgents::with_events`]).
-/// None where the relay governs no workspaces.
+/// None where the server governs no workspaces.
 ///
 /// # Errors
-/// Why the relay did not start.
+/// Why the server did not start.
 pub async fn start_serving_documents_and_events(
-    mut cfg: crate::RelayConfig,
-    identity: RelayIdentity,
+    mut cfg: crate::ServerConfig,
+    identity: ServerIdentity,
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<
     (
-        Relay,
+        Server,
         WorkspaceActions,
         Option<crate::workspace_bots::events::PersonEvents>,
     ),
-    RelayError,
+    ServerError,
 > {
     let host_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
-    let server = Arc::new(WorkspaceRecordsServer {
+    let app_server = Arc::new(WorkspaceRecordsServer {
         actions: WorkspaceActions::new(catalogue),
         stores: crate::content::stores(&cfg.state_root),
         browsers: browsers.clone(),
         events: Arc::default(),
     });
     let web_entry = cfg.web_entry.clone();
-    let relay = Relay::start_with_app_serving(cfg, identity, Some(server.clone())).await?;
+    let server = Server::start_with_app_serving(cfg, identity, Some(app_server.clone())).await?;
     attach_resources(
-        &server.actions,
-        &relay,
+        &app_server.actions,
+        &server,
         &host_cert,
         web_entry,
         (feedback_reviewer, shell, browsers),
     )?;
-    let events = relay.workspaces().cloned().map(|workspaces| {
+    let events = server.workspaces().cloned().map(|workspaces| {
         crate::workspace_bots::events::PersonEvents::start(
             workspaces,
             events_state,
-            Some(server.actions.clone()),
+            Some(app_server.actions.clone()),
         )
     });
     if let Some(events) = &events {
-        let _ = server.events.set(events.clone());
+        let _ = app_server.events.set(events.clone());
     }
-    Ok((relay, server.actions.clone(), events))
+    Ok((server, app_server.actions.clone(), events))
 }
 
 /// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into
@@ -1167,25 +1167,25 @@ async fn with_notes(
     held
 }
 
-/// Give `workspaces` the records `relay` holds, joined as its own device.
+/// Give `workspaces` the records `server` holds, joined as its own device.
 fn attach_resources(
     actions: &WorkspaceActions,
-    relay: &Relay,
+    server: &Server,
     host_cert: &DeviceCert,
     web_entry: Option<String>,
     (feedback_reviewer, shell, browsers): Lent,
-) -> Result<(), RelayError> {
+) -> Result<(), ServerError> {
     if let Some(shell) = &shell {
-        shell.serve_from(relay);
+        shell.serve_from(server);
     }
     if let Some(browsers) = &browsers {
         // A session in a workspace's VM joins as a device of the person's,
         // which a stand-in certifies: the one this host keeps for them, else
         // a host that is itself one.
-        let user = relay.workspace_documents().user_public_key();
-        let (key, cert) = relay.stand_in(&user).unwrap_or_else(|| {
+        let user = server.workspace_documents().user_public_key();
+        let (key, cert) = server.stand_in(&user).unwrap_or_else(|| {
             (
-                relay.workspace_documents().signing_key().clone(),
+                server.workspace_documents().signing_key().clone(),
                 host_cert.clone(),
             )
         });
@@ -1196,22 +1196,22 @@ fn attach_resources(
             // The sessions in the environments dial this host from a machine
             // that reaches the public internet and nothing of this network:
             // the address they are given is the public one.
-            relay: crate::hosted_browser::relay_address().map_err(RelayError::Identity)?,
-            workspaces: relay.workspaces().cloned(),
-            environments: relay.web_context().relay.environments.clone(),
+            server: crate::hosted_browser::server_address().map_err(ServerError::Identity)?,
+            workspaces: server.workspaces().cloned(),
+            environments: server.web_context().server.environments.clone(),
             runtime: tokio::runtime::Handle::current(),
-            certification: relay.confirmations(),
-            hand: relay.hand(),
+            certification: server.confirmations(),
+            hand: server.hand(),
         });
         // The VM hosts start the sessions when this host's own device asks.
-        if let Some(workspaces) = relay.workspaces() {
-            browsers.ask_from(workspaces.action_service(), relay.endpoint());
+        if let Some(workspaces) = server.workspaces() {
+            browsers.ask_from(workspaces.action_service(), server.endpoint());
         }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     // A workspace's notes are also `.md` files in its folder: a write to its notebook or
     // its folder brings the two into step, on this host, which holds both.
-    if let Some(workspaces) = relay.workspaces() {
+    if let Some(workspaces) = server.workspaces() {
         let mut writes = workspaces.document_writes();
         let workspaces = workspaces.clone();
         let actions = actions.clone();
@@ -1250,55 +1250,55 @@ fn attach_resources(
         });
     }
     actions
-        .attach(Arc::new(RelayRecordsLink {
+        .attach(Arc::new(ServerRecordsLink {
             shell,
-            user_public_key: relay.workspace_documents().user_public_key(),
-            workspaces: relay.workspaces().cloned(),
-            browser_origin: Arc::clone(&relay.browser_origin),
+            user_public_key: server.workspace_documents().user_public_key(),
+            workspaces: server.workspaces().cloned(),
+            browser_origin: Arc::clone(&server.browser_origin),
             web_entry,
             feedback_reviewer,
-            stores: relay.content(),
-            content_links: relay.content_links(),
-            certification: relay.web_context().certification.clone(),
+            stores: server.content(),
+            content_links: server.content_links(),
+            certification: server.web_context().certification.clone(),
             host_device: HostDevice {
-                endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
-                key: relay.workspace_documents().signing_key().clone(),
+                endpoint: HostEndpoint::iroh(server.node_addr(), host_cert.clone()),
+                key: server.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
         }))
-        .map_err(RelayError::Identity)
+        .map_err(ServerError::Identity)
 }
 
-/// Start `cfg`'s relay with an agent supervisor as its app action server,
+/// Start `cfg`'s server with an agent supervisor as its app action server,
 /// then start the supervisor's agents: those the state directory says were
 /// running resume.
 pub async fn start(
-    cfg: crate::RelayConfig,
-    identity: RelayIdentity,
+    cfg: crate::ServerConfig,
+    identity: ServerIdentity,
     options: AgentOptions,
-) -> Result<(Relay, AgentHost), RelayError> {
+) -> Result<(Server, AgentHost), ServerError> {
     start_inner(cfg, identity, options, None).await
 }
 
-/// Start the app-serving host with an explicit transport relay policy.
+/// Start the app-serving host with an explicit transport server policy.
 ///
 /// # Errors
 /// The same as [`start`].
 pub async fn start_with_relay_mode(
-    cfg: crate::RelayConfig,
-    identity: RelayIdentity,
+    cfg: crate::ServerConfig,
+    identity: ServerIdentity,
     options: AgentOptions,
     relay_mode: iroh::RelayMode,
-) -> Result<(Relay, AgentHost), RelayError> {
+) -> Result<(Server, AgentHost), ServerError> {
     start_inner(cfg, identity, options, Some(relay_mode)).await
 }
 
 async fn start_inner(
-    mut cfg: crate::RelayConfig,
-    identity: RelayIdentity,
+    mut cfg: crate::ServerConfig,
+    identity: ServerIdentity,
     options: AgentOptions,
     relay_mode: Option<iroh::RelayMode>,
-) -> Result<(Relay, AgentHost), RelayError> {
+) -> Result<(Server, AgentHost), ServerError> {
     let host_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let content = crate::content::stores(&cfg.state_root);
@@ -1309,7 +1309,7 @@ async fn start_inner(
         Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
-    let server = Arc::new(HostActionsServer {
+    let host_actions = Arc::new(HostActionsServer {
         host: HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
             actions: WorkspaceActions::new(catalogue),
@@ -1318,26 +1318,26 @@ async fn start_inner(
         browsers: options.browsers.clone(),
     });
     let web_entry = cfg.web_entry.clone();
-    let relay = match relay_mode {
+    let server = match relay_mode {
         Some(mode) => {
-            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(server.clone()), mode)
+            Server::start_with_app_serving_and_relay_mode(cfg, identity, Some(host_actions.clone()), mode)
                 .await?
         }
-        None => Relay::start_with_app_serving(cfg, identity, Some(server.clone())).await?,
+        None => Server::start_with_app_serving(cfg, identity, Some(host_actions.clone())).await?,
     };
     attach_resources(
-        &server.host.actions,
-        &relay,
+        &host_actions.host.actions,
+        &server,
         &host_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
     )?;
-    drop(server);
+    drop(host_actions);
     agents
         .start(
-            HostEndpoint::iroh(relay.node_addr(), host_cert),
-            Arc::new(relay.agent_link()),
+            HostEndpoint::iroh(server.node_addr(), host_cert),
+            Arc::new(server.agent_link()),
         )
-        .map_err(RelayError::Identity)?;
-    Ok((relay, agents))
+        .map_err(ServerError::Identity)?;
+    Ok((server, agents))
 }

@@ -6,7 +6,7 @@
 //! more pages of its directory the more notes it holds.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{api_on_relay, approved_key};
+use super::api_on_server::{api_on_server, approved_key};
 use super::*;
 use serde_json::json;
 use std::sync::Arc;
@@ -76,11 +76,11 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
     ));
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting))
         .expect("the test process's only subscriber");
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Notes mover").await;
+    let key = approved_key(&on_server, &ada, &page, "Notes mover").await;
     let mut backend = Mcp {
         api: &api,
         path: "/mcp".into(),

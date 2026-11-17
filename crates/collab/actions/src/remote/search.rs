@@ -72,7 +72,7 @@ pub const FOUND_FILE: &str = "file";
 /// A host's search of what its workspace holds, as it offers it to a caller
 /// who asks by words. A desktop answers with its one search, the palette's
 /// ranking, the same results in the same order; a host with no desktop (a
-/// relay's workspace) ranks the records it holds by what they say. Either
+/// server's workspace) ranks the records it holds by what they say. Either
 /// way the search lives where the records are, so an answer comes back
 /// later, as an action's does, and a caller across the wire asks the same
 /// search ([`super::RemoteActionMessage::SearchRequest`]).

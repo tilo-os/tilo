@@ -229,7 +229,7 @@ impl InboundGovernance {
 }
 
 /// Where the group protocol's messages travel: the workspace transport of the
-/// host (the desktop session's network, the runtime's relay sessions).
+/// host (the desktop session's network, the runtime's server sessions).
 pub trait GovernanceTransport {
     /// Hand one message to the transport. `false` when it was not accepted.
     fn publish(&self, message: NeighbourMsg) -> bool;

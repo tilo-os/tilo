@@ -6,7 +6,7 @@
 services:
   tilo-server:
     image: ${TILO_SERVER_IMAGE:-registry.tilo.so/tilo/tilo-server:latest}
-    command: ["--config", "/etc/tilo/relay.toml", "run"]
+    command: ["--config", "/etc/tilo/server.toml", "run"]
     restart: unless-stopped
     environment:
       TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
@@ -21,7 +21,7 @@ services:
       # private key in this directory or image.
       - ./identity:/var/lib/tilo:Z
       # CRDT snapshots, offline pending queues, metrics, and the stable Iroh
-      # endpoint secret. Back this volume up as relay state.
+      # endpoint secret. Back this volume up as server state.
       - tilo-server-state:/var/lib/tilo-server:Z
       - tilo-full-replica:/var/lib/tilo/full-replica:Z
     healthcheck:

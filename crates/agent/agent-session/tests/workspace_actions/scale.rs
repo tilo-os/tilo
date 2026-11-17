@@ -1,13 +1,13 @@
 //! A small company's workspace at real size, worked through the API the way
 //! an agent moving it in does: a notebook of 1,000 notes, each a page of
 //! Markdown, and a tracker of 500 issues, every one made through the record's
-//! own action on the relay host. Listing, reading, finding and a write
+//! own action on the server host. Listing, reading, finding and a write
 //! followed by a read each answer in a time that does not grow with how much
 //! the records hold, a listing pages through every row with an honest cursor,
 //! and a tracker's listing names each kind's actions once.
 
 use super::api::ISSUER;
-use super::api_on_relay::{api_on_relay, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -142,13 +142,13 @@ const CALL_BUDGET: Duration = Duration::from_millis(1500);
 async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     let notes = count("TILO_SCALE_NOTES", 1000);
     let issues = count("TILO_SCALE_ISSUES", 500);
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
     let agent = V1 {
         api: &api,
-        token: approved_key(&on_relay, &ada, &browser, "Mover").await,
+        token: approved_key(&on_server, &ada, &browser, "Mover").await,
     };
     let (status, made, _) = agent
         .send(

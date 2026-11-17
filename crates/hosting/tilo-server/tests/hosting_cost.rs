@@ -2,13 +2,13 @@
 //!
 //! One-character edits take the production path end to end: the toolkit's
 //! Automerge change, `PeerPublicationMut::publish_incremental`, the host retention
-//! classifier, `RelayCoeditSession::publish_retained_delta` on a real
-//! `RelayClient`, and the relay's authenticated ingress, retention and
-//! fan-out. A subscriber reads the frames the relay actually writes it, whose
+//! classifier, `ServerCoeditSession::publish_retained_delta` on a real
+//! `ServerClient`, and the server's authenticated ingress, retention and
+//! fan-out. A subscriber reads the frames the server actually writes it, whose
 //! deltas arrive coded against the previous one and are rebuilt by the
 //! production session reader; each delta's uncoded frame (the one a coded
 //! delta rebuilds) is measured beside it. Afterwards the test walks the
-//! relay's state root.
+//! server's state root.
 //!
 //! It prints one `HOSTING_COST key=value …` line for the cost model.
 //! It checks only deterministic byte counts, as docs/measurements/performance.md
@@ -49,7 +49,7 @@ use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_server::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
+use crate::common::{TestDevice, TestServer, TestUser, client_endpoint, publisher, spawn_server};
 use tilo_server::WorkspaceId;
 
 const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000625";
@@ -61,7 +61,7 @@ const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.sheets", "tab:0000000000000003"),
     ("so.tilo.code-editor", "tab:0000000000000004"),
 ];
-/// Eight words in each document: every keystroke is a durable relay commit,
+/// Eight words in each document: every keystroke is a durable server commit,
 /// whose barriers take a tenth of a second or more on a busy CI disk. What
 /// is guarded is the size of single frames, which more keystrokes repeat:
 /// 1,000 of them took 5 to 16 minutes and measured 2 to 3 B more at the
@@ -81,7 +81,7 @@ const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 570;
 /// the gesture's full entry in its compact form: measured 599 B, held to
 /// the 697 B of the frame before changes named their actions.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
-/// Ceiling for the median keystroke frame as the relay writes it, coded
+/// Ceiling for the median keystroke frame as the server writes it, coded
 /// against the author's previous keystroke on the same document. Measured
 /// on Linux CI: 157 B against 482 B uncoded, plus 15 %.
 const BUDGET_CODED_FRAME_P50_BYTES: u64 = 181;
@@ -107,7 +107,7 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Counted<R> {
 }
 
 /// A subscriber reading through the production session reader, which
-/// rebuilds coded deltas, and counting the bytes the relay wrote for each.
+/// rebuilds coded deltas, and counting the bytes the server wrote for each.
 struct CodedSubscriber {
     _endpoint: iroh::Endpoint,
     _connection: iroh::endpoint::Connection,
@@ -117,8 +117,8 @@ struct CodedSubscriber {
 }
 
 impl CodedSubscriber {
-    async fn open(relay: &TestRelay, device: &TestDevice) -> Self {
-        let (endpoint, connection, send, recv) = subscribe(relay, device).await;
+    async fn open(server: &TestServer, device: &TestDevice) -> Self {
+        let (endpoint, connection, send, recv) = subscribe(server, device).await;
         let read = Arc::new(AtomicU64::new(0));
         let mut subscriber = Self {
             _endpoint: endpoint,
@@ -157,9 +157,9 @@ impl CodedSubscriber {
     }
 }
 
-/// Dial the relay as `device`, authenticate and subscribe.
+/// Dial the server as `device`, authenticate and subscribe.
 async fn subscribe(
-    relay: &TestRelay,
+    server: &TestServer,
     device: &TestDevice,
 ) -> (
     iroh::Endpoint,
@@ -169,7 +169,7 @@ async fn subscribe(
 ) {
     let endpoint = client_endpoint().await;
     let connection = endpoint
-        .connect(relay.relay.node_addr(), tilo_server::ALPN)
+        .connect(server.server.node_addr(), tilo_server::ALPN)
         .await
         .unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
@@ -320,7 +320,7 @@ fn footprint(root: &Path) -> Footprint {
     out
 }
 
-/// Bytes the relay has written to `device`'s connected session.
+/// Bytes the server has written to `device`'s connected session.
 fn session_bytes(metrics: &tilo_server::metrics::Metrics, device: [u8; 32]) -> u64 {
     let sessions: Vec<_> = metrics
         .session_egress()
@@ -347,9 +347,9 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let coding = user.enrol("subscriber", DeviceCapabilities::member());
     let members = [author.device_pubkey(), coding.device_pubkey()];
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        user.enrol("relay", DeviceCapabilities::member()),
+        user.enrol("server", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
@@ -395,14 +395,14 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         })
         .collect();
 
-    let mut coded_peer = CodedSubscriber::open(&relay, &coding).await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let mut coded_peer = CodedSubscriber::open(&server, &coding).await;
+    let publisher = publisher(&server, &user, &author, WORKSPACE).await;
 
-    let store = relay
+    let store = server
         .state_root
         .join("workspaces")
         .join(WORKSPACE.to_string());
-    let metrics = relay.relay.handle().metrics;
+    let metrics = server.server.handle().metrics;
     let egress_before = metrics.snapshot();
     let session_bytes_before = session_bytes(&metrics, coding.device_pubkey());
     let mut change_bytes = Vec::with_capacity(KEYSTROKES);
@@ -481,7 +481,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let after = footprint(&store);
     let warm = warm.unwrap();
 
-    // The relay's egress counters account for exactly the frames the
+    // The server's egress counters account for exactly the frames the
     // subscriber read: live fan-out in total and for this workspace, and the
     // subscriber's own session.
     let egress_after = metrics.snapshot();
@@ -522,7 +522,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     );
     assert!(
         !store.join("log.jsonl").exists(),
-        "the relay must not keep a per-delta append log"
+        "the server must not keep a per-delta append log"
     );
 
     let change_bytes = sorted(change_bytes);
@@ -589,5 +589,5 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     );
 
     publisher.close().await;
-    relay.relay.shutdown().await;
+    server.server.shutdown().await;
 }

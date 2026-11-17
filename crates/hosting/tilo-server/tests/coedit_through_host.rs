@@ -3,7 +3,7 @@
 //! The toolkit's co-edit deltas (`ui::collaboration`'s
 //! `SyncIncremental` frames, carrying Automerge incrementals) are
 //! bridged onto the host's `Envelope` transport by
-//! [`tilo_server::RelayCoeditSession`]. These tests prove that once
+//! [`tilo_server::ServerCoeditSession`]. These tests prove that once
 //! co-edit rides the host:
 //!
 //!   1. a live edit fans out to an online peer, and
@@ -13,7 +13,7 @@
 //!
 //! Convergence is asserted on genuine Automerge documents (identical
 //! `get_heads()` + identical rendered text), on the real
-//! `Relay`/`RelayCoeditSession` path — no mocks of the host or the
+//! `Server`/`ServerCoeditSession` path — no mocks of the host or the
 //! bridge.
 
 #![allow(
@@ -28,10 +28,10 @@ use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use tilo_server::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_server::{Inbound, ServerClient, ServerCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_server_on};
 use tilo_server::WorkspaceId;
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
@@ -61,7 +61,7 @@ fn retained_count(state_root: &std::path::Path, workspace: WorkspaceId) -> usize
 
 /// Drain `session` until an `Inbound::Delta` arrives, applying each
 /// received delta to `doc`. Returns once a document delta has landed.
-async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
+async fn recv_delta_into(session: &ServerCoeditSession, doc: &mut AutoCommit) {
     for _ in 0..8 {
         let inbound = tilo_test_env::within("recv timeout", session.recv())
             .await
@@ -103,7 +103,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         let state = tempfile::tempdir().unwrap();
         let host_dev = user.enrol("home-server", DeviceCapabilities::member());
-        let host = Box::pin(spawn_relay_on(
+        let host = Box::pin(spawn_server_on(
             state.path(),
             &user,
             host_dev,
@@ -114,7 +114,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let addr = host.node_addr();
 
         // Both peers connect and join the workspace's co-edit session.
-        let a_client = RelayClient::connect(
+        let a_client = ServerClient::connect(
             client_endpoint().await,
             addr.clone(),
             user.user_pk,
@@ -124,9 +124,9 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         )
         .await
         .expect("A connect");
-        let a_session = RelayCoeditSession::join(a_client, WS, a.device_pubkey()).unwrap();
+        let a_session = ServerCoeditSession::join(a_client, WS, a.device_pubkey()).unwrap();
 
-        let b_client = RelayClient::connect(
+        let b_client = ServerClient::connect(
             client_endpoint().await,
             addr,
             user.user_pk,
@@ -136,7 +136,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         )
         .await
         .expect("B connect");
-        let b_session = RelayCoeditSession::join(b_client, WS, b.device_pubkey()).unwrap();
+        let b_session = ServerCoeditSession::join(b_client, WS, b.device_pubkey()).unwrap();
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
@@ -183,7 +183,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
         //      connected. ----
         let host1_dev = user.enrol("home-server", DeviceCapabilities::member());
-        let host1 = Box::pin(spawn_relay_on(
+        let host1 = Box::pin(spawn_server_on(
             &state_root,
             &user,
             host1_dev,
@@ -206,7 +206,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         );
 
         let host2_dev = user.enrol("home-server-2", DeviceCapabilities::member());
-        let host2 = Box::pin(spawn_relay_on(
+        let host2 = Box::pin(spawn_server_on(
             &state_root,
             &user,
             host2_dev,
@@ -251,7 +251,7 @@ async fn publish_offline_coedit(
     ws: WorkspaceId,
     state_root: &std::path::Path,
 ) -> AutoCommit {
-    let a_client = RelayClient::connect(
+    let a_client = ServerClient::connect(
         client_endpoint().await,
         addr1,
         user.user_pk,
@@ -261,7 +261,7 @@ async fn publish_offline_coedit(
     )
     .await
     .expect("A connect");
-    let a_session = RelayCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
+    let a_session = ServerCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
     match tilo_test_env::within("A Ready timeout", a_session.recv())
         .await
@@ -303,7 +303,7 @@ async fn catch_up_first_connection(
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
 ) -> AutoCommit {
-    let b_client = RelayClient::connect(
+    let b_client = ServerClient::connect(
         client_endpoint().await,
         addr2,
         user.user_pk,
@@ -313,7 +313,7 @@ async fn catch_up_first_connection(
     )
     .await
     .expect("B connect after restart");
-    let b_session = RelayCoeditSession::join(b_client, ws, b.device_pubkey()).unwrap();
+    let b_session = ServerCoeditSession::join(b_client, ws, b.device_pubkey()).unwrap();
 
     // B drains its offline queue through the bridge and converges — even
     // though A and B were never online together and the host restarted.
@@ -367,8 +367,8 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::member());
-    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
-    let client = RelayClient::connect(
+    let host = spawn_server_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
+    let client = ServerClient::connect(
         client_endpoint().await,
         host.node_addr(),
         user.user_pk,
@@ -378,7 +378,7 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     )
     .await
     .expect("connect");
-    let session = RelayCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
+    let session = ServerCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(2), session.recv())
             .await

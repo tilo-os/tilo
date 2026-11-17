@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
             timeout: 1,
             workspace_cache: temp.path(),
             acl: temp.path(),
-            relay_workspace_ids: &[],
+            server_workspace_ids: &[],
             expected_device: None,
             expected_service: None,
             kind: EnrollmentKind::HomePeer,
@@ -336,7 +336,7 @@ fn personal_payload(
     ResponsePayload {
         nonce,
         recipient_device_public_key: cert.device_public_key,
-        relay_service_node_id: [8; 32],
+        server_node_id: [8; 32],
         cert,
         home_peer_toml: None,
         public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
@@ -382,7 +382,7 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
     ResponsePayload {
         nonce: [3; 16],
         recipient_device_public_key: [7; 32],
-        relay_service_node_id: [8; 32],
+        server_node_id: [8; 32],
         cert,
         home_peer_toml: Some("status_file = '/var/lib/tilo/full-replica/status.json'".into()),
         public_identity_json: None,
@@ -480,7 +480,7 @@ tilo_test_env::scenario! {
             timeout: 1,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
+            server_workspace_ids: &[],
             expected_device: None,
             expected_service: None,
             kind: EnrollmentKind::HomePeer,
@@ -552,7 +552,7 @@ tilo_test_env::scenario! {
         let request = Request {
             token: "reusable-secret-token".into(),
             device_public_key: [7; 32],
-            relay_service_node_id: [8; 32],
+            server_node_id: [8; 32],
             label: "NAS".into(),
             kind: EnrollmentKind::HomePeer,
         };
@@ -741,7 +741,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         let payload = ResponsePayload {
             nonce: [1; 16],
             recipient_device_public_key: cert.device_public_key,
-            relay_service_node_id: [8; 32],
+            server_node_id: [8; 32],
             cert: cert.clone(),
             home_peer_toml: None,
             public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
@@ -815,12 +815,12 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         let other = HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(other_cert.device_public_key),
-            relay_service_node_id: hex::encode([65; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([65; 32]),
+            server_endpoint: None,
             label: other_cert.device_label.clone(),
             user_public_key: hex::encode(other_cert.user_public_key),
             device_cert: Some(other_cert),
-            relay_workspace_ids: vec![WorkspaceId::from_u128(7)],
+            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
         };
         tilo_files::native::atomic::write_creating_parent(
             &tilo_server::home_peer_registry_path(identity_root.path()),
@@ -857,12 +857,12 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         let mut registration = HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(cert.device_public_key),
-            relay_service_node_id: hex::encode([83; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([83; 32]),
+            server_endpoint: None,
             label: cert.device_label.clone(),
             user_public_key: hex::encode(cert.user_public_key),
             device_cert: Some(cert),
-            relay_workspace_ids: vec![WorkspaceId::from_u128(7)],
+            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
         };
         let registry = |registration: &HomePeerRegistration| {
             tilo_server::checked_home_peers(&serde_json::to_vec(&[registration]).unwrap())
@@ -1027,7 +1027,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     new_paths.ensure_directories().unwrap();
     tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device).unwrap();
     let expected_device = hex::encode(new_device.verifying_key().to_bytes());
-    let expected_service = hex::encode(tilo_server::daemon::relay_service_node_id(&new_device));
+    let expected_service = hex::encode(tilo_server::daemon::server_node_id(&new_device));
 
     let server_root = approver_root.path().to_path_buf();
     let server_identities = approver_identities.path().to_path_buf();
@@ -1040,7 +1040,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             timeout: 60,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
+            server_workspace_ids: &[],
             expected_device: Some(&expected_device),
             expected_service: Some(&expected_service),
             kind: EnrollmentKind::PersonalDevice,
@@ -1104,7 +1104,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     )
     .unwrap();
     assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0].relay_service_node_id, hex::encode([43; 32]));
+    assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
     let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
     let identity = runtime_identity::load_from_path(record).unwrap();
     assert!(
@@ -1199,7 +1199,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let new_paths = IdentityPaths::under(new_root.path());
     new_paths.ensure_directories().unwrap();
     tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device).unwrap();
-    let service = tilo_server::daemon::relay_service_node_id(&new_device);
+    let service = tilo_server::daemon::server_node_id(&new_device);
 
     // What the member found nearby, proposed to the key holder, who asks
     // its person and signs.
@@ -1244,7 +1244,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         timeout: 1,
         workspace_cache: std::path::Path::new(""),
         acl: std::path::Path::new(""),
-        relay_workspace_ids: &[],
+        server_workspace_ids: &[],
         expected_device: None,
         expected_service: None,
         kind: EnrollmentKind::PersonalDevice,
@@ -1266,7 +1266,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             timeout: 60,
             workspace_cache: std::path::Path::new(""),
             acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
+            server_workspace_ids: &[],
             expected_device: Some(&expected_device),
             expected_service: Some(&expected_service),
             kind: EnrollmentKind::PersonalDevice,
@@ -1493,9 +1493,9 @@ tilo_test_env::scenario! {
             json[0]["device_node_id"],
             hex::encode(cert.device_public_key)
         );
-        assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
+        assert_eq!(json[0]["server_node_id"], hex::encode([8; 32]));
         assert_eq!(
-            json[0]["relay_workspace_ids"],
+            json[0]["server_workspace_ids"],
             serde_json::json!([
                 "00000000-0000-0000-0000-000000000002",
                 "00000000-0000-0000-0000-000000000009"
@@ -1723,7 +1723,7 @@ fn sample_request() -> Request {
         device_public_key: ed25519_dalek::SigningKey::from_bytes(&[7; 32])
             .verifying_key()
             .to_bytes(),
-        relay_service_node_id: [8; 32],
+        server_node_id: [8; 32],
         label: "NAS".into(),
         kind: EnrollmentKind::HomePeer,
     }
@@ -1786,7 +1786,7 @@ tilo_test_env::scenario! {
         let mut solicitation = PairSolicitation {
             magic: PAIR_MAGIC,
             device_public_key: server.verifying_key().to_bytes(),
-            relay_service_node_id: [8; 32],
+            server_node_id: [8; 32],
             label: "NAS".into(),
             kind: EnrollmentKind::HomePeer,
         };

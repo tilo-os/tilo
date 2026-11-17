@@ -231,7 +231,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     hears(&reloaded, &route(), "after the reload").await;
     reloaded.close();
     laptop_peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -267,7 +267,7 @@ async fn a_declined_device_gets_no_certificate() {
         answer_pairing(&approver, &root, waiting.request_digest, true).await,
         Err(CertifyError::Denied(_))
     ));
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A request for `person` from a new `device` that waits `wait_ns` at most.
@@ -322,7 +322,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspace = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Lounge")
@@ -467,7 +467,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .unwrap();
     assert_eq!(outcome, CertificationOutcome::Expired);
     assert!(pending_pairings(&approver, &dave).await.unwrap().is_empty());
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -565,7 +565,7 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
     ));
     let (cert, _, _) = phone.answer().await.unwrap();
     assert_eq!(cert, honest, "the device holds the first answer");
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -576,7 +576,7 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspace = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Lounge")
@@ -633,7 +633,7 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
     )
     .await;
     let summary = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .summary(&workspace.workspace)
@@ -661,5 +661,5 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
     phone_peer.close();
     laptop.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

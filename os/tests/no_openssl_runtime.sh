@@ -220,12 +220,12 @@ if sed -e "/rpm -q --qf.*openssl sbsigntools/d" \
        -e '/^[[:space:]]*openvpn NetworkManager-openvpn openssh/d' \
        -e '/^[[:space:]]*ModemManager fwupd .*xargs/d' <<<"$host_runtime" \
     | grep -Eq '^[[:space:]]+(NetworkManager-openvpn|ModemManager|fwupd)[[:space:]\\]'; then
-  bad 'headless relay image installs VPN/modem/firmware stacks outside its appliance role'
+  bad 'headless server image installs VPN/modem/firmware stacks outside its appliance role'
 elif ! grep -Fq "rpm -q --qf '%{NAME}\\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core" \
       <<<"$host_runtime"; then
-  bad 'headless relay does not purge avoidable OpenSSL consumers inherited from its base'
+  bad 'headless server does not purge avoidable OpenSSL consumers inherited from its base'
 else
-  ok 'headless relay excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
+  ok 'headless server excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
 fi
 
 runtime_source_roots=("$repo/os/usr" "$repo/apps" "$repo/crates")
@@ -309,16 +309,16 @@ for manifest in \
   fi
 done
 
-relay_container="$repo/os/containers/tilo-server/Containerfile"
-relay_entrypoint="$repo/os/containers/tilo-server/tilo-home-peer"
-relay_binaries="$repo/tools/ci/publish/server-binaries.sh"
-if grep -Fq 'openssl-libs coreutils dnf5' "$relay_container" \
-  && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$relay_container" \
-  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$relay_binaries" \
-  && grep -Fq '#!/usr/bin/busybox sh' "$relay_entrypoint"; then
-  ok 'standalone relay verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
+server_container="$repo/os/containers/tilo-server/Containerfile"
+server_entrypoint="$repo/os/containers/tilo-server/tilo-home-peer"
+server_binaries="$repo/tools/ci/publish/server-binaries.sh"
+if grep -Fq 'openssl-libs coreutils dnf5' "$server_container" \
+  && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$server_container" \
+  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$server_binaries" \
+  && grep -Fq '#!/usr/bin/busybox sh' "$server_entrypoint"; then
+  ok 'standalone server verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
 else
-  bad 'standalone relay runtime does not enforce its OpenSSL-free minimal surface'
+  bad 'standalone server runtime does not enforce its OpenSSL-free minimal surface'
 fi
 
 grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \

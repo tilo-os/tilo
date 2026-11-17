@@ -120,7 +120,7 @@ tilo-content = { path = "../../system/content" }
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission API it answers with: the engine's own membership.
-# The relay session a joined workspace syncs through.
+# The server session a joined workspace syncs through.
 tilo-server-session = { path = "../../hosting/tilo-server-session" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
@@ -182,7 +182,7 @@ collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
-# A relay on this machine's loopback, which is what a test's devices relay through.
+# A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../dev/test-server" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }

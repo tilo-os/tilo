@@ -2,7 +2,7 @@
 # tilo.sh on this machine: the Lounge relay, the API server, the web entry
 # and (where the machine can) the Linux VM host, from this checkout, started
 # with production's entrypoints and the environment production's manifests
-# give them (tilo/infra apps/tilo-sh-relay, apps/tilo-api,
+# give them (tilo/infra apps/tilo-sh-server, apps/tilo-api,
 # apps/tilo-web, apps/tilo-sh-vm-host), with only the public names turned
 # into this machine's loopback ports. By default the whole stack — every
 # program, the build, the state — runs on the build server, in this checkout's
@@ -43,7 +43,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       fake Discord and points the Lounge's Discord sign-in and bridge at
       it. --fresh wipes the state first (a new Lounge, a new entry).
   stack.sh restart NAME  after a code change: rebuild NAME and start it again,
-                         the rest left running (relay, api, web, tls,
+                         the rest left running (server, api, web, tls,
                          discord, releases; not with --images). The web
                          rebuilds its bundle, the others their programs
   stack.sh env
@@ -51,7 +51,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       then tilo keys create "My backend", the Python SDK (Tilo()), the TS SDK
       (new Tilo()) and an agent's MCP client all reach the local API server.
   stack.sh status        what runs, at which address, and whether it answers
-  stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases,
+  stack.sh logs NAME     a service's log (server, tls, api, web, discord, releases,
                          mail), or \`remote\` for the stack's own log when it runs on
                          the build server
   stack.sh mail          the mail the entry sent (wait-list confirmations,
@@ -60,7 +60,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          the Lounge's first owner and a key for them, no
                          browser: a person whose root the stack keeps in its
                          own state (made once, the same person after), whom
-                         the relay starts with as its owner, as production's
+                         the server starts with as its owner, as production's
                          TILO_WORKSPACES_OWNERS names its own, approves an API
                          key on the spot. Prints export TILO_API_KEY=…, so
                          eval "$(stack.sh owner --here)" holds it; stack.sh env
@@ -113,8 +113,8 @@ TILO_SH_REMOTE=0 runs everything here instead (needed for --images and the VM
 host, and for \`check\`).
 
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
-  relay     tilo-server workspace through the Lounge image's entrypoint, as tilo.sh's
-            relay
+  server     tilo-server workspace through the Lounge image's entrypoint, as tilo.sh's
+            server
   tls       production's Caddy and Caddyfile in front of it, plain HTTP:
             http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
             (live-eu1.tilo.sh)
@@ -126,10 +126,10 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             serves tilo.sh: http://tilo.localhost:BASE+20. Every address
             is plain HTTP on this machine, which browsers treat as secure,
             so any browser opens it with no certificate step; WebTransport
-            reaches the relay with the short-lived certificate it pins by
+            reaches the server with the short-lived certificate it pins by
             hash
   vm-host   the VM host image (Firecracker): a workspace's Linux programs and
-            its Browser run in its VM here, and the relay places it on this
+            its Browser run in its VM here, and the server places it on this
             host. It is privileged, so it runs as root over its own state
             (TILO_SH_VM_HOST_STATE, /var/lib/tilo-sh-local-vm) through sudo;
             skipped, with the reason, where /dev/kvm or root is missing. It
@@ -168,7 +168,7 @@ Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
                     (tilo-api, and fake-discord for --discord)
-  TILO_SH_LOUNGE    the relay's laid-out context, as lounge-context.sh makes it
+  TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
                     it (site/, install.sh): the web builds no bundle then
@@ -195,12 +195,12 @@ die() { printf 'tilo-sh: %s\n' "$*" >&2; exit 1; }
 # -- where everything is -----------------------------------------------------
 
 base=${TILO_SH_PORT_BASE:-24100}
-relay_port=$base               # Caddy: the relay's public origin (eu1.tilo.sh)
+server_port=$base               # Caddy: the relay's public origin (eu1.tilo.sh)
 plain_port=$((base + 1))       # the relay's origin-forwarding listener (9780)
 packet_port=$((base + 2))      # the relay's packet relay (8443)
 routes_port=$((base + 3))      # the relay's own routes (8790): /mode, /avatars, /discord/callback
 iroh_port=$((base + 4))        # the relay's iroh endpoint, UDP (7704)
-relay_web_port=$((base + 5))   # the relay's own dev TLS listener, which nothing here uses
+server_web_port=$((base + 5))   # the relay's own dev TLS listener, which nothing here uses
 live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
 link_port=$((base + 8))        # the relay's WebTransport listener, UDP: how pages reach it
@@ -216,8 +216,8 @@ discord_control_port=$((base + 42))
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
 # trust or click through (a browser asks about a certificate only for the page
-# it opens, never for the calls that page makes to the relay).
-relay_origin=http://127.0.0.1:$relay_port
+# it opens, never for the calls that page makes to the server).
+server_origin=http://127.0.0.1:$server_port
 live_origin=http://127.0.0.1:$live_port
 api_origin=http://localhost:$api_port
 # A name of its own under localhost, not an address: a passkey's relying
@@ -240,7 +240,7 @@ people_keys=${TILO_SH_PEOPLE_KEYS:-$state-keys}
 prefix=tilo-sh-local
 [[ $base == 24100 ]] || prefix=tilo-sh-local-$base
 # This checkout's commit. A copy that is not a git checkout (the build server's
-# mirror) is told it, so what the stack lays out and the relay reports is the
+# mirror) is told it, so what the stack lays out and the server reports is the
 # commit its sources are from.
 commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "${TILO_SH_REMOTE_COMMIT:-unknown}")
 
@@ -329,7 +329,7 @@ if [[ -n ${TILO_SH_PROGRAMS:-} ]]; then
 else
   programs=$native/programs
 fi
-# The relay's laid-out context, as lounge-context.sh makes it (below).
+# The server's laid-out context, as lounge-context.sh makes it (below).
 lounge=${TILO_SH_LOUNGE:-}
 # The one trust bundle Tilo's programs read (crates/system/tilo-native-certs).
 ca_path=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
@@ -371,7 +371,7 @@ claim_state() {
   local owner svc
   owner=$(cat "$state/checkout" 2>/dev/null || true)
   if [[ -n $owner && $owner != "$repo" && ${TILO_SH_TAKE_OVER:-0} != 1 ]]; then
-    for svc in tls relay api web; do
+    for svc in tls server api web; do
       running "$svc" && die "the stack in $state runs from $owner, not this checkout ($repo): give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE, or TILO_SH_TAKE_OVER=1 to take that one over"
     done
   fi
@@ -432,7 +432,7 @@ load_archive() {
   printf '%s' "$tag"
 }
 
-# Production's Caddy (apps/tilo-sh-relay/deployment.yaml's tls container).
+# Production's Caddy (apps/tilo-sh-server/deployment.yaml's tls container).
 caddy_image=docker.io/library/caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
 # -- the services -----------------------------------------------------------
@@ -469,38 +469,38 @@ not_answered() { # WHAT WHY
   die "$what $2; stack.sh logs ${what%% *}"
 }
 
-# The relay answers /mode from its start: "starting" while it opens every
+# The server answers /mode from its start: "starting" while it opens every
 # workspace its state holds (a minute, for one that holds a repository's
 # files, as the image's does), then "up" once people get in. It is waited for
 # while it says it is starting and runs; one that stopped, or that does not
 # answer at all, fails at once.
-wait_relay_up() {
+wait_server_up() {
   local what='relay (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
   local said deadline=$((SECONDS + 30))
-  until said=$(curl -sS --max-time 2 "$url" 2>/dev/null) && [[ $said == *'"relay":"up"'* ]]; do
-    running relay || not_answered "$what" 'stopped before it served'
-    [[ $said == *'"relay":"starting"'* ]] || ((SECONDS < deadline)) \
+  until said=$(curl -sS --max-time 2 "$url" 2>/dev/null) && [[ $said == *'"server":"up"'* ]]; do
+    running server || not_answered "$what" 'stopped before it served'
+    [[ $said == *'"server":"starting"'* ]] || ((SECONDS < deadline)) \
       || not_answered "$what" "did not answer at $url within 30s"
     sleep 0.5
   done
 }
 
-# The relay's environment: apps/tilo-sh-relay/deployment.yaml, its names
+# The server's environment: apps/tilo-sh-server/deployment.yaml, its names
 # turned into this stack's addresses, its secrets into throwaway local ones.
-relay_env() {
+server_env() {
   local env=(
     TILO_WORKSPACES_PERSISTENT=lounge
     TILO_WORKSPACES_NAME=Lounge
     "TILO_WORKSPACES_DESCRIPTION=The Tilo community: chat, notes and a shared desktop"
     TILO_WORKSPACES_DEFAULT_ROLE=editor
     TILO_WORKSPACES_LAYOUT=shared
-    "TILO_WORKSPACES_SERVER_ORIGIN=$relay_origin"
+    "TILO_WORKSPACES_SERVER_ORIGIN=$server_origin"
     "TILO_WORKSPACES_LIVE=127.0.0.1:$packet_port"
     "TILO_WORKSPACES_IROH_LISTEN=127.0.0.1:$iroh_port"
     "TILO_WORKSPACES_LIVE_ORIGIN=$live_origin"
     "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
     "TILO_WORKSPACES_SITE_ORIGINS=$site_origin"
-    # The site is plain http on this machine: the relay's local mode, in which
+    # The site is plain http on this machine: the server's local mode, in which
     # its entry mails links to such a page (production's is https).
     TILO_WORKSPACES_LOCAL=1
     "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
@@ -515,7 +515,7 @@ relay_env() {
     # loopback only.
     "TILO_WORKSPACES_SERVER_PLAIN=127.0.0.1:$plain_port"
     "TILO_WORKSPACES_HTTP=127.0.0.1:$routes_port"
-    "TILO_WORKSPACES_WEB=127.0.0.1:$relay_web_port"
+    "TILO_WORKSPACES_WEB=127.0.0.1:$server_web_port"
     "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
     "TILO_WORKSPACES_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
@@ -523,7 +523,7 @@ relay_env() {
   # (stack.sh owner KEY), join, and a stranger leaves an address on its wait
   # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
   # checks whose visitors arrive as strangers. A service started again later
-  # (`restart relay`) serves the entry the stack was brought up with, which its
+  # (`restart server`) serves the entry the stack was brought up with, which its
   # state keeps: the restart carries no environment of the up that made it.
   local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
   # The Lounge's first owner: the stack's own person, as production's
@@ -582,7 +582,7 @@ api_env() {
     "TILO_API_LISTEN=127.0.0.1:$api_port" \
     "TILO_API_ORIGIN=$api_origin" \
     "TILO_API_WEB_ENTRY=$site_origin" \
-    "TILO_API_HOST=$relay_origin" \
+    "TILO_API_HOST=$server_origin" \
     "TILO_API_STATE=$api_state/api.json"
 }
 
@@ -593,13 +593,13 @@ api_env() {
 web_env() {
   local workspace=$1 info=$2
   printf '%s\n' \
-    "TILO_WEB_HOME_HOST=127.0.0.1:$relay_port" \
+    "TILO_WEB_HOME_HOST=127.0.0.1:$server_port" \
     "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
     "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
-    "TILO_WEB_HOME_ENTRY=$relay_origin/peer/v1/directory/$workspace/" \
+    "TILO_WEB_HOME_ENTRY=$server_origin/peer/v1/directory/$workspace/" \
     TILO_WEB_HOME_FEEDBACK=c_feedback \
-    "TILO_WEB_DIRECTORY=$relay_origin/peer/v1/directory" \
+    "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
     "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \
     "TILO_RELEASES_ORIGIN=http://127.0.0.1:$releases_port/tilo-cli"
 }
@@ -625,9 +625,9 @@ trust_bundle() {
   die 'this machine has no CA bundle at /etc/pki/ca-trust or /etc/ssl/certs'
 }
 
-# The mail service the relay's entry posts to, here a sink that keeps each mail as a
+# The mail service the server's entry posts to, here a sink that keeps each mail as a
 # file under the state (stack.sh mail lists them) and sends nothing. Started
-# before the relay, whose entry mails as soon as someone leaves an address.
+# before the server, whose entry mails as soon as someone leaves an address.
 start_mail() {
   local log=$state/logs/mail.log
   [[ -f $state/mail.pid ]] && kill "$(cat "$state/mail.pid")" 2>/dev/null || true
@@ -677,7 +677,7 @@ invite_link() {
 
 # The Lounge's workspace id, once it runs.
 lounge_id() {
-  local id_file=$state/relay/lounge/workspace-id
+  local id_file=$state/server/lounge/workspace-id
   [[ -s $id_file ]] || die "the Lounge is not running ($id_file); stack.sh up first"
   cat "$id_file"
 }
@@ -735,7 +735,7 @@ as_owner() {
 }
 
 # The user public key of the stack's own person, made the first time: the
-# Lounge's first owner, which the relay is started with (TILO_WORKSPACES_OWNERS),
+# Lounge's first owner, which the server is started with (TILO_WORKSPACES_OWNERS),
 # as production's deployment names its own.
 stack_person() {
   local made
@@ -872,31 +872,31 @@ vm_host_blocker() {
 
 # vm-host RUN…: os/containers/tilo-sh/vm-host.sh, as root when this stack is
 # not, over the VM host's own state; the images t built for this checkout, and
-# the relay this stack runs (its device, its root, the secrets it mounts).
+# the server this stack runs (its device, its root, the secrets it mounts).
 # A caller that names the images itself (t's checks hand them their outputs)
 # has them used as named, archive or directory.
 vm_host() {
   local sudo=()
   [[ $EUID == 0 ]] || sudo=(sudo -n)
   # The enrolment program the caller named, else the one `up` settled on, which
-  # it leaves in the state: a later `vm_host env` reads the relay's device with
+  # it leaves in the state: a later `vm_host env` reads the server's device with
   # it, in a shell that has nothing else of `up`.
   local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
-  # Where the relay that places here reads what the host writes for it: the
+  # Where the server that places here reads what the host writes for it: the
   # image's volumes with --images, the stack's own state natively.
   local secrets_view=/run/secrets workspaces_view=/run/tilo-workspaces
-  if [[ $mode == native ]]; then secrets_view=$state/secrets workspaces_view=$state/relay; fi
+  if [[ $mode == native ]]; then secrets_view=$state/secrets workspaces_view=$state/server; fi
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_SH_TILO_ENROLL=$enrol" \
-    "TILO_SH_RELAY_SECRETS=$state/secrets" \
-    "TILO_SH_RELAY_SECRETS_VIEW=$secrets_view" \
-    "TILO_SH_RELAY_WORKSPACES_VIEW=$workspaces_view" \
-    "TILO_SH_RELAY_ROOT=$state/secrets/workspace-root-lounge" \
-    "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
-    "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
+    "TILO_SH_SERVER_SECRETS=$state/secrets" \
+    "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
+    "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
+    "TILO_SH_SERVER_ROOT=$state/secrets/workspace-root-lounge" \
+    "TILO_SH_SERVER_STATE=$state/server/lounge/server" \
+    "TILO_SH_SERVER_IROH=127.0.0.1:$iroh_port" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     "TILO_SH_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-}" \
     bash "$here/vm-host.sh" "$@" 9>&-
@@ -959,22 +959,22 @@ seed() {
       || die 'could not build the seeder; or set TILO_SH_SEEDER'
   fi
   local members
-  members=$(curl -fsS -X POST "$relay_origin/peer/v1/directory" \
+  members=$(curl -fsS -X POST "$server_origin/peer/v1/directory" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspaces"][0]["members"])')
   local want=$((${TILO_SH_SEED_MEMBERS:-300} - members))
   if ((want > 0)); then
     say "seeding $want members through the Lounge's entry"
-    "$seeder" "$relay_origin" "$workspace" "$want" > "$out/members.json" \
+    "$seeder" "$server_origin" "$workspace" "$want" > "$out/members.json" \
       || die 'seeding the members failed'
   fi
   say 'seeding the history: a member posts chat through the API server'
-  node "$here/integration/person.mjs" "$site_origin" "$relay_origin" "$out/poster" \
+  node "$here/integration/person.mjs" "$site_origin" "$server_origin" "$out/poster" \
     --key 'Lounge history' --tilo "$(find_tilo)" --api "$api_origin" > "$out/poster.json" \
     || die "the poster did not get a key (see $out/poster)"
   local key
   key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$out/poster.json")
-  # The relay's records live in its volume, which the container's user owns.
-  sdk_python "$here/integration/seed-history.py" "$api_origin" "$key" "$state/relay/lounge/relay" \
+  # The server's records live in its volume, which the container's user owns.
+  sdk_python "$here/integration/seed-history.py" "$api_origin" "$key" "$state/server/lounge/server" \
     "${TILO_SH_SEED_MESSAGES:-200}" > "$out/history.json" || die 'seeding the history failed'
   printf '%s members, %s\n' "$((members + (want > 0 ? want : 0)))" "$(cat "$out/history.json")" > "$out/done"
   say "seeded: $(cat "$out/done")"
@@ -985,7 +985,7 @@ seed() {
 # The same services as plain processes: the programs t builds for this
 # checkout, each started the way its image starts it (the image's entrypoint
 # where it has one), with the image's ENV and the manifest's variables
-# (relay_env, api_env, web_env), only the paths that live in the image
+# (server_env, api_env, web_env), only the paths that live in the image
 # moved under the stack's state.
 
 # containerfile_env FILE: the ENV the final stage of FILE sets, one NAME=VALUE
@@ -1149,7 +1149,7 @@ bundle_stage() {
 # themselves, since the next build rewrites the files it changed in place
 # while a service runs from these. Copy-on-write where the file system shares
 # blocks. A program that did not change keeps its file, so what is laid out
-# from it (the relay's context, the CLI's release) is kept too; one that did
+# from it (the server's context, the CLI's release) is kept too; one that did
 # is renamed into place, and a service running the old one keeps it.
 copy_programs() {
   local from=$1 file
@@ -1169,7 +1169,7 @@ made_from() {
   { printf '%s\n' "$commit"; stat -L -c '%n %s %Y %i' "$@"; } | sha256sum | cut -c1-16
 }
 
-# The relay's files as the image's context lays them out (lounge-context.sh,
+# The server's files as the image's context lays them out (lounge-context.sh,
 # the image's own build step): the programs, the bots, the app surfaces from
 # the apps' history and the product font catalog (lounge-fonts.sh, once).
 # TILO_SH_LOUNGE names a context laid out already, which is what a check hands
@@ -1186,7 +1186,7 @@ lay_out_lounge() {
       say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
       bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
     fi
-    # Laid out again only when what it is made from changed: the relay's
+    # Laid out again only when what it is made from changed: the server's
     # programs, the catalog, the files the image's context takes and this
     # commit, whose history the app surfaces come from.
     local stamp container=$repo/os/containers/tilo-lounge
@@ -1196,7 +1196,7 @@ lay_out_lounge() {
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-server ]]; then
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
         bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
-        || die 'could not lay out the relay (lounge-context.sh)'
+        || die 'could not lay out the server (lounge-context.sh)'
       printf '%s\n' "$stamp" > "$native/lounge.made-from"
     fi
     lounge=$native/lounge
@@ -1259,7 +1259,7 @@ bundle_whole() {
 # -- t's builds ---------------------------------------------------------------
 # With TILO_SH_BUILD=t the programs and the desktop bundle are what t's
 # checks build: tilo-sh-programs (every program, in one lounge-check
-# build), lounge-fonts (the relay's font catalog) and web-desktop-check-bundle
+# build), lounge-fonts (the server's font catalog) and web-desktop-check-bundle
 # (the bundle without its whole-program link: the compile, wasm-bindgen, the
 # split and wasm-opt, all on t). Each check is cached by what it read, so a
 # change reruns the checks it reaches and nothing else, and this machine only
@@ -1328,9 +1328,9 @@ lay_out_web() {
   fi
   local bundle=${TILO_SH_BUNDLE:-$native/bundle}
   bundle_whole "$bundle" || die "no whole desktop bundle at $bundle (build.json and pkg/tilo_browser_runtime{.js,_bg.wasm}); stack.sh restart web builds one"
-  # The page and the relay speak one protocol only when they come from one
-  # commit: a page built before a change to setup codes, served beside a relay
-  # built after it, showed codes the relay never knew.
+  # The page and the server speak one protocol only when they come from one
+  # commit: a page built before a change to setup codes, served beside a server
+  # built after it, showed codes the server never knew.
   local built
   built=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("revision", ""))' "$bundle/build.json")
   [[ $built == "$commit" || $commit == unknown || ${TILO_SH_BUNDLE_ANY_COMMIT:-0} == 1 ]] \
@@ -1421,7 +1421,7 @@ private_env() {
     "XDG_DATA_HOME=$home/data" "XDG_STATE_HOME=$home/state" "XDG_CACHE_HOME=$home/cache" \
     "TMPDIR=$home/tmp" "PATH=$2:/usr/bin:/bin" LANG=C.UTF-8
   [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
-  # The relay reads its own log filter, not RUST_LOG.
+  # The server reads its own log filter, not RUST_LOG.
   [[ -z ${TILO_SERVER_LOG:-} ]] || printf 'TILO_SERVER_LOG=%s\n' "$TILO_SERVER_LOG"
   [[ -z ${RUST_BACKTRACE:-} ]] || printf 'RUST_BACKTRACE=%s\n' "$RUST_BACKTRACE"
 }
@@ -1464,7 +1464,7 @@ start_native_tls() {
   # and config where the container mounts them.
   { private_env tls "$(dirname "$caddy")"
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
-      "TILO_SH_RELAY_PORT=$relay_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
+      "TILO_SH_SERVER_PORT=$server_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
       "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
       "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port"
   } > "$runs/tls.env"
@@ -1472,19 +1472,19 @@ start_native_tls() {
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
-start_native_relay() {
+start_native_server() {
   local lounge=${lounge:-$native/lounge}
-  { private_env relay "$lounge/bin"
+  { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_WORKSPACES_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets" \
+      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets" \
       "TILO_PEOPLE_KEYS=$people_keys"
-    # Where the image keeps the app surfaces the relay publishes at start,
+    # Where the image keeps the app surfaces the server publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
-    relay_env
-  } > "$runs/relay.env"
-  run_native relay "$state/relay" sh "$lounge/entrypoint.sh"
+    server_env
+  } > "$runs/server.env"
+  run_native server "$state/server" sh "$lounge/entrypoint.sh"
 }
 
 start_native_api() {
@@ -1496,25 +1496,25 @@ start_native_api() {
 
 # Who the Lounge's host is and where its page dials it, which the web entry
 # hands its page (TILO_WEB_HOME_HOST_INFO): what `tilo-server page-host` prints
-# for the running relay, asked at its public origin, as production's operator
-# asks it to set apps/tilo-web. LOUNGE is the relay's image with --images.
+# for the running server, asked at its public origin, as production's operator
+# asks it to set apps/tilo-web. LOUNGE is the server's image with --images.
 page_host() {
   local image=${1:-}
   if [[ $mode == images ]]; then
     podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-server \
-      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$image" page-host "$relay_origin"
+      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$image" page-host "$server_origin"
   else
-    local relay=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-server
+    local server=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-server
     env -i PATH=/usr/bin:/bin "HOME=$runs" \
       bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
-      "$relay" page-host "$relay_origin"
+      "$server" page-host "$server_origin"
   fi
 }
 
 start_native_web() {
   local workspace=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
   caddy=$(find_caddy)
-  info=$(page_host) || die 'the relay did not say who it is (tilo-server page-host)'
+  info=$(page_host) || die 'the server did not say who it is (tilo-server page-host)'
 
   { private_env web "$(dirname "$caddy")"
     image_env_here "$container/Containerfile" \
@@ -1553,9 +1553,9 @@ start_native_discord() {
 # something else: every wait here is local, and one that runs past it says
 # which step and where to read why, instead of hanging on the whole check's
 # timeout.
-wait_relay() {
-  wait_relay_up
-  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30
+wait_server() {
+  wait_server_up
+  wait_for 'tls (the server through Caddy)' "$server_origin/mode" 30
 }
 
 wait_api() { wait_for 'API server (its health check)' "http://127.0.0.1:$api_port/health" 20; }
@@ -1572,25 +1572,25 @@ native_preflight() {
     else command -v "${cargo%% *}" >/dev/null || die "needs $cargo, which builds the programs (TILO_SH_CARGO names another cargo drop-in)"; fi
   fi
   command -v bwrap >/dev/null \
-    || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the relay and the API server the local trust bundle'
+    || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the server and the API server the local trust bundle'
   [[ -f $ca_path ]] || die "this machine has no trust bundle at $ca_path, the one path Tilo's programs read"
 }
 
-# The relay's own device, which its VM host's member takes the workspaces' runs
-# from: made before either starts, so the relay starts once with the host
+# The server's own device, which its VM host's member takes the workspaces' runs
+# from: made before either starts, so the server starts once with the host
 # already placed.
 host_device_key() {
-  [[ -s $state/relay/lounge/relay/host-device.key ]] && return 0
-  mkdir -p "$state/relay/lounge/relay"
+  [[ -s $state/server/lounge/server/host-device.key ]] && return 0
+  mkdir -p "$state/server/lounge/server"
   local key
   key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-  (umask 077 && printf "$(printf '%s' "$key" | sed 's/../\\x&/g')" > "$state/relay/lounge/relay/host-device.key")
+  (umask 077 && printf "$(printf '%s' "$key" | sed 's/../\\x&/g')" > "$state/server/lounge/server/host-device.key")
 }
 
 up_native() {
   local discord=$1 began=$SECONDS phase=$SECONDS
   native_preflight
-  mkdir -p "$state"/{logs,relay,secrets,api,tls/caddy,tls/config} "$native" "$runs"
+  mkdir -p "$state"/{logs,server,secrets,api,tls/caddy,tls/config} "$native" "$runs"
   # The bundle builds beside the programs, on every bring-up: what did not
   # change is kept, so an unchanged one takes seconds. On the build server both
   # are one command; from t, two runs of checks at once.
@@ -1633,7 +1633,7 @@ up_native() {
   if [[ -z $vm_skipped ]]; then
     [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || die 'TILO_SH_IMAGE_VM_HOST names no VM host image'
     [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || die 'TILO_SH_HOSTED_GUEST names no guest image'
-    enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
+    enroll=$(find_enroll)  # read by server_env, so the stack's own is used
     printf '%s\n' "$enroll" > "$state/vm-host-enroll"
     host_device_key
     say 'starting the VM host (Firecracker, as root)'
@@ -1641,11 +1641,11 @@ up_native() {
     say "vm-host up ($((SECONDS - phase))s)"
     phase=$SECONDS
   fi
-  start_native_relay
-  wait_relay
+  start_native_server
+  wait_server
   local workspace
-  workspace=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
-  say "relay ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
+  workspace=$(cat "$state/server/lounge/workspace-id") || die 'the server kept no workspace id'
+  say "server ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
   phase=$SECONDS
   start_native_api
   wait_api
@@ -1659,22 +1659,22 @@ up_native() {
 
 restart() {
   local name=${1:-}
-  [[ -n $name ]] || die 'restart NAME: relay, api, web, tls, discord or releases'
+  [[ -n $name ]] || die 'restart NAME: server, api, web, tls, discord or releases'
   [[ $mode == native ]] || die 'restart rebuilds the native stack; the images run as built: stack.sh up --images again'
   native_preflight
-  # What the relay reads of the operator's secrets, on a stack whose state was
+  # What the server reads of the operator's secrets, on a stack whose state was
   # kept before this checkout made it: restarting one part must not need a
   # whole `up` first.
   make_secrets
   local began=$SECONDS
   if running discord; then discord_api=http://127.0.0.1:$discord_rest_port; fi
   case $name in
-    relay)
+    server)
       build_programs
-      stop_native relay
+      stop_native server
       lay_out_lounge
-      start_native_relay
-      wait_relay ;;
+      start_native_server
+      wait_server ;;
     api)
       build_programs
       stop_native api
@@ -1684,24 +1684,24 @@ restart() {
       build_bundle
       stop_native web
       lay_out_web
-      start_native_web "$(cat "$state/relay/lounge/workspace-id")"
+      start_native_web "$(cat "$state/server/lounge/workspace-id")"
       wait_web ;;
     tls)
       start_native_tls
-      wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 ;;
+      wait_for 'tls (the server through Caddy)' "$server_origin/mode" 30 ;;
     discord)
       build_programs
       start_native_discord
-      say 'the relay reads the Discord settings when it starts: stack.sh restart relay points a relay started without it here' ;;
+      say 'the server reads the Discord settings when it starts: stack.sh restart server points a server started without it here' ;;
     releases)
       build_programs
       lay_out_releases ;;
-    *) die "restart takes relay, api, web, tls, discord or releases, not $name" ;;
+    *) die "restart takes server, api, web, tls, discord or releases, not $name" ;;
   esac
   say "$name restarted in $((SECONDS - began))s"
 }
 
-# The operator's secrets, as the relay's Secret holds them: a throwaway
+# The operator's secrets, as the server's Secret holds them: a throwaway
 # workspace root, made once. Who is an owner is the workspace's own governance
 # from then on.
 make_secrets() {
@@ -1770,7 +1770,7 @@ up() {
 
   printf '%s\n' "$((SECONDS - began))" > "$state/bring-up-seconds"
   if [[ -n $seed && $remote != 1 ]]; then
-    seed "$(cat "$state/relay/lounge/workspace-id")"
+    seed "$(cat "$state/server/lounge/workspace-id")"
   fi
   say "up in $((SECONDS - began))s ($mode)"
   if [[ $remote == 1 ]]; then status_remote; else status; fi
@@ -1799,7 +1799,7 @@ up_images() {
   # this account's files. In a VM as root, check-in-vm.sh runs it as a user.
   [[ $EUID != 0 ]] || die 'run it as a regular user (rootless podman), not root'
   local began=$SECONDS
-  mkdir -p "$state"/{logs,relay,secrets,api,tls/caddy,tls/config}
+  mkdir -p "$state"/{logs,server,secrets,api,tls/caddy,tls/config}
 
   local lounge api web
   lounge=$(image LOUNGE image-lounge /lounge/image.oci.tar)
@@ -1811,13 +1811,13 @@ up_images() {
   use_mode images
   echo "${TILO_SH_ADMISSION:-invite}" > "$state/admission"
   make_secrets
-  # The relay's own device, which its VM host's member takes the workspaces'
-  # runs from: made here, before either starts, so the relay starts once with
+  # The server's own device, which its VM host's member takes the workspaces'
+  # runs from: made here, before either starts, so the server starts once with
   # the host already placed.
   host_device_key
 
-  # The VM host, when this machine can run it and the relay root is there: it
-  # is root's, and it starts before the relay so the relay reads where to
+  # The VM host, when this machine can run it and the server root is there: it
+  # is root's, and it starts before the server so the server reads where to
   # place a workspace from the start.
   vm_skipped=$(vm_host_blocker)
   if [[ -z $vm_skipped ]]; then
@@ -1826,7 +1826,7 @@ up_images() {
     # the host unpacks it onto its own state disk.
     [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || image VM_HOST image-vm-host image.oci.tar >/dev/null
     [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
-    enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
+    enroll=$(find_enroll)  # read by server_env, so the stack's own is used
     printf '%s\n' "$enroll" > "$state/vm-host-enroll"
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
@@ -1837,13 +1837,13 @@ up_images() {
   fi
   start_mail
 
-  # The relay's TLS, first: the API server trusts its CA.
+  # The server's TLS, first: the API server trusts its CA.
   cp "$here/Caddyfile" "$state/tls/Caddyfile"
   local tls_user=()
   mapfile -d '' tls_user < <(as_user 10001)
   start tls --network host --read-only "${tls_user[@]}" \
     --env XDG_DATA_HOME=/data --env XDG_CONFIG_HOME=/config \
-    --env "TILO_SH_RELAY_PORT=$relay_port" \
+    --env "TILO_SH_SERVER_PORT=$server_port" \
     --env "TILO_SH_LIVE_PORT=$live_port" --env "TILO_SH_PACKET_PORT=$packet_port" \
     --env "TILO_SH_ROUTES_PORT=$routes_port" --env "TILO_SH_PLAIN_PORT=$plain_port" \
     --env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
@@ -1852,26 +1852,26 @@ up_images() {
     -v "$state/tls/caddy:/data/caddy:Z" -v "$state/tls/config:/config:Z" \
     "$caddy_image" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 
-  # The relay: the Lounge image, as the deployment runs it (uid 10001, a
+  # The server: the Lounge image, as the deployment runs it (uid 10001, a
   # read-only root, the state volume, the secrets read-only, a /tmp).
-  # The relay reaches its own live origin through Caddy (its endpoint's home
-  # relay), so it trusts the local CA as production trusts Cloudflare's: in
+  # The server reaches its own live origin through Caddy (its endpoint's home
+  # server), so it trusts the local CA as production trusts Cloudflare's: in
   # the bundle at the path every Tilo client, iroh's included, reads.
   trust_bundle
-  local relay_args=()
-  mapfile -d '' relay_args < <(relay_env | env_args)
-  local relay_user=()
-  mapfile -d '' relay_user < <(as_user 10001)
-  start relay --network host --read-only --tmpfs /tmp "${relay_user[@]}" \
-    -v "$state/relay:/run/tilo-workspaces:Z" -v "$state/secrets:/run/secrets:ro,Z" \
+  local server_args=()
+  mapfile -d '' server_args < <(server_env | env_args)
+  local server_user=()
+  mapfile -d '' server_user < <(as_user 10001)
+  start server --network host --read-only --tmpfs /tmp "${server_user[@]}" \
+    -v "$state/server:/run/tilo-workspaces:Z" -v "$state/secrets:/run/secrets:ro,Z" \
     -v "$state/trust-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z" \
     --env "TILO_SOURCE_REVISION=local-$commit" \
-    "${relay_args[@]}" "$lounge"
-  wait_relay_up
-  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60
+    "${server_args[@]}" "$lounge"
+  wait_server_up
+  wait_for 'tls (the server through Caddy)' "$server_origin/mode" 60
   local workspace
-  workspace=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
-  say "relay ready: the Lounge is $workspace ($((SECONDS - began))s)"
+  workspace=$(cat "$state/server/lounge/workspace-id") || die 'the server kept no workspace id'
+  say "server ready: the Lounge is $workspace ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.
   local api_args=()
@@ -1885,11 +1885,11 @@ up_images() {
   wait_for 'API server (its health check)' "http://127.0.0.1:$api_port/health" 60
 
   # The web entry: its image listens on 8080 alone, so it gets its own
-  # network, published on the port tls serves the site from, from which it reaches the relay's
+  # network, published on the port tls serves the site from, from which it reaches the server's
   # plain listener (its shelf) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
-  info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-server page-host)'
+  info=$(page_host "$lounge") || die 'the server did not say who it is (tilo-server page-host)'
   mapfile -d '' web_args < <(web_env "$workspace" "$info" | env_args)
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
@@ -1926,14 +1926,14 @@ down() {
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
-  for name in web releases api relay tls discord; do
+  for name in web releases api server tls discord; do
     stop_native "$name"
   done
   if vm_host_running; then
     vm_host down || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'
   fi
   if command -v podman >/dev/null; then
-    for name in web api relay tls; do
+    for name in web api server tls; do
       podman_ rm -f -t 10 "$prefix-$name" >/dev/null 2>&1 || true
     done
   fi
@@ -1943,8 +1943,8 @@ down() {
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
-    podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
-      || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
+    podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
+      || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
@@ -1955,12 +1955,12 @@ down() {
 status() {
   local svc url
   printf '%-9s %-8s %s\n' service state address
-  for svc in "tls|$relay_origin/mode" "relay|http://127.0.0.1:$routes_port/mode" \
+  for svc in "tls|$server_origin/mode" "server|http://127.0.0.1:$routes_port/mode" \
     "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
     local name=${svc%%|*} probe=${svc#*|} shown answer args=()
     case $name in
-      tls) shown="$relay_origin (relay), $live_origin (live session)" ;;
-      relay) shown="the Lounge, behind tls" ;;
+      tls) shown="$server_origin (server), $live_origin (live session)" ;;
+      server) shown="the Lounge, behind tls" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
     esac
@@ -1981,7 +1981,7 @@ status() {
     printf '%-9s %-8s %s\n' discord up "http://127.0.0.1:$discord_rest_port (control http://127.0.0.1:$discord_control_port)"
   fi
   if [[ $mode == native ]]; then
-    printf '\nRunning this checkout'"'"'s programs; after a change, %s restart relay (or api, web, …).\n' "$0"
+    printf '\nRunning this checkout'"'"'s programs; after a change, %s restart server (or api, web, …).\n' "$0"
   else
     printf '\nRunning the images (up --images).\n'
   fi
@@ -2038,11 +2038,11 @@ supervisor_pid() {
     && printf '%s' "$pid"
 }
 
-# The ports this machine keeps: the relay's public origin and the addresses a
+# The ports this machine keeps: the server's public origin and the addresses a
 # page dials, the API server the SDKs and agents use, the web entry and the
 # releases, the mail sink, and the fake Discord when one runs.
 forward_tcp() {
-  printf '%s\n' "$relay_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
 }
 
 # The page reaches the relay over QUIC (WebTransport, then iroh), which ssh
@@ -2151,12 +2151,12 @@ wait_remote_up() {
 status_remote() {
   local svc name probe shown answer args pid
   printf '%-9s %-8s %s\n' service state address
-  for svc in "tls|$relay_origin/mode" "relay|http://127.0.0.1:$routes_port/mode" \
+  for svc in "tls|$server_origin/mode" "server|http://127.0.0.1:$routes_port/mode" \
     "api|$api_origin/health" "web|$site_health"; do
     name=${svc%%|*} probe=${svc#*|} args=()
     case $name in
-      tls) shown="$relay_origin (relay), $live_origin (live origin)" ;;
-      relay) shown="the Lounge, behind tls" ;;
+      tls) shown="$server_origin (server), $live_origin (live origin)" ;;
+      server) shown="the Lounge, behind tls" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin"; args=(-H "$site_host_header") ;;
     esac
@@ -2266,7 +2266,7 @@ case $cmd in
   status) status ;;
   env) print_env ;;
   restart) restart "$@" ;;
-  logs) [[ -n ${1:-} ]] || die 'logs NAME: relay, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
+  logs) [[ -n ${1:-} ]] || die 'logs NAME: server, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
   mail) list_mail ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;

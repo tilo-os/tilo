@@ -580,7 +580,7 @@ mod tests {
                         .owner()
                         .receive(
                             workspace_id,
-                            tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                            tilo_peer_state::TransportOrigin::RetainedServerDelta(
                                 cert.device_public_key,
                             ),
                             postcard::from_bytes(bytes).expect("a workspace change"),

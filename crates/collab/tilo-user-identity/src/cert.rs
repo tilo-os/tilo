@@ -738,7 +738,7 @@ impl DeviceCapabilities {
 
     /// Whether a workspace governed by a device with these capabilities has
     /// that governor hold the workspace's keys, wherever it runs (a person's
-    /// device or a relay): the workspace's records are then sealed, and each
+    /// device or a server): the workspace's records are then sealed, and each
     /// member opens them itself. The workspace host and every member decide
     /// this the same way.
     #[must_use]

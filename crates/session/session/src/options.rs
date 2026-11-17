@@ -144,7 +144,7 @@ pub struct Options {
     pub sync: Option<Rc<sync::Client>>,
     /// What this device's endpoint relays through. `None` : the person's setting
     /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their shell uses. `Some`
-    /// is a test's own: a relay on this machine's loopback, so nothing it does leaves the machine.
+    /// is a test's own: a server on this machine's loopback, so nothing it does leaves the machine.
     pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.

@@ -576,7 +576,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the workspace writes under.
     peer.write_as_workspace_host();
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
+    let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
@@ -605,7 +605,7 @@ fn follow(peer: &mut StatePeer, author: [u8; 32], body: &[u8], now: SystemTime) 
     if matches!(message, NeighbourMsg::AppDocument { .. }) {
         return false;
     }
-    match peer.receive_from(TransportOrigin::RetainedRelayDelta(author), message, now) {
+    match peer.receive_from(TransportOrigin::RetainedServerDelta(author), message, now) {
         Ok(outcome) => outcome.changed || outcome.metadata_changed,
         Err(error) => {
             tracing::debug!(workspace = %peer.workspace_id(), %error, "a governance change was not taken in");

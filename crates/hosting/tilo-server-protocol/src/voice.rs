@@ -1,4 +1,4 @@
-//! Voice calls in the workspaces a relay governs.
+//! Voice calls in the workspaces a server governs.
 //!
 //! A call belongs to a workspace's governance: the workspace's governor records each
 //! call, bound to one voice channel of a chat record, with the directions its
@@ -17,8 +17,8 @@
 //! a [`VoiceGrant`]: its participation and the roster of everyone in the call.
 //! It repeats the join with its participation every [`HEARTBEAT`]; a
 //! participation not heard from for [`PARTICIPATION_TTL`] ends. When the
-//! roster changes, the relay sends each remaining member a fresh
-//! grant. The call's media does not travel through the relay: the members'
+//! roster changes, the server sends each remaining member a fresh
+//! grant. The call's media does not travel through the server: the members'
 //! devices publish it on the workspace's live session (`tilo-live`), which the
 //! workspace's keys seal.
 //!
@@ -33,7 +33,7 @@
 //! has a camera on, shares a screen or is muted before any picture arrives.
 //!
 //! Browser and native devices use the same envelopes: a browser session is
-//! one more peer of the relay.
+//! one more peer of the server.
 
 use std::time::Duration;
 

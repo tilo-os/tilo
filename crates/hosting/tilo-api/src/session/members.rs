@@ -152,7 +152,7 @@ impl Session {
     ) -> Result<Value, Outcome> {
         let id = self
             .connection
-            .relay()
+            .server()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
@@ -433,7 +433,7 @@ impl crate::Server {
             |error| {
                 tracing::info!(%error, "the site kept no invitation; handing over its text");
                 let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
-                // The route names the relay, as the site's own workspace
+                // The route names the server, as the site's own workspace
                 // links do: without it the page asks the site itself for
                 // the workspace's host, which it is not.
                 let host = host.unwrap_or_default();

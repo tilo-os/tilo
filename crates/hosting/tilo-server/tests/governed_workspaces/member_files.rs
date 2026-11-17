@@ -12,12 +12,14 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use neighbour_wire::content::{PIECE_PATIENCE_MS, PIECES_PER_ANSWER};
-use tilo_server::workspace_bots::attachments::{AttachmentLimits, Referenced, WorkspaceAttachments};
+use tilo_server::workspace_bots::attachments::{
+    AttachmentLimits, Referenced, WorkspaceAttachments,
+};
 
 /// A workspace where Alice's laptop hosts a Lounge, her home device keeps the
 /// members' files, and Bob's phone is in it with `workspace`'s id.
 struct Workspace {
-    relay: Relay,
+    server: Server,
     listing: WorkspaceListing,
     host: TestDevice,
     laptop: TestDevice,
@@ -38,13 +40,13 @@ impl Workspace {
         let state = tempfile::tempdir().unwrap();
         // A public host: every visitor has the member budgets.
         let budgets = tilo_server::member_limits::MemberLimitsConfig::default();
-        let relay = crate::common::start_relay(
-            RelayConfig {
+        let server = crate::common::start_server(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
                 member_limits: Some(budgets),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: alice.user_pk,
                 device_signing_key: host.sk.clone(),
                 device_cert: host.cert.clone(),
@@ -53,22 +55,29 @@ impl Workspace {
         )
         .await
         .unwrap();
-        let workspace = create_and_enter(&relay, &laptop, "Lounge").await;
-        super::sealed_documents::join(&relay, &laptop, &workspace.workspace, &bob, &phone, [5; 32])
-            .await
-            .unwrap();
+        let workspace = create_and_enter(&server, &laptop, "Lounge").await;
+        super::sealed_documents::join(
+            &server,
+            &laptop,
+            &workspace.workspace,
+            &bob,
+            &phone,
+            [5; 32],
+        )
+        .await
+        .unwrap();
         let keeper = WorkspaceAttachments::new(
-            relay.workspaces().unwrap().clone(),
+            server.workspaces().unwrap().clone(),
             workspace.workspace.clone(),
             host.device_pubkey(),
-            relay.content().get(&workspace.workspace).unwrap(),
+            server.content().get(&workspace.workspace).unwrap(),
             state.path().join("attachments.json"),
             limits,
         );
         let kept: std::sync::Arc<dyn tilo_server::workspaces::ContentKeeper> = keeper.clone();
-        relay.workspaces().unwrap().keep_content(&kept);
+        server.workspaces().unwrap().keep_content(&kept);
         Self {
-            relay,
+            server,
             listing: workspace,
             host,
             laptop,
@@ -105,10 +114,10 @@ fn asks_for(payload: &[u8], hash: &str) -> bool {
 
 /// Bob's page answers `ask` with the pieces the host lacks of `file`, as every
 /// key holder answers them ([`neighbour_wire::content::answer`]), and leaves
-/// out one piece when `lost` says the relay's route drops it. How many pieces
+/// out one piece when `lost` says the server's route drops it. How many pieces
 /// it sent.
 fn answer_window(
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     (host, phone): (&TestDevice, &TestDevice),
     ask: &[u8],
     file: &[u8],
@@ -139,7 +148,7 @@ fn answer_window(
 /// that completes it does instead of asking.
 async fn next_ask(
     workspace: &Workspace,
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     hash: &str,
 ) -> Option<(Vec<u8>, Duration)> {
     let began = Instant::now();
@@ -163,7 +172,7 @@ async fn next_ask(
 /// `lost`'s piece once: the windows it took, and how long it took.
 async fn send_until_kept(
     workspace: &Workspace,
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     file: &[u8],
     hash: &str,
     lost: bool,
@@ -218,18 +227,18 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     let hash = blake3::hash(&file).to_hex().to_string();
     let bob_id = tilo_resource::MemberId::person(hex::encode(workspace.bob.user_pk));
     let session = session(
-        &workspace.relay,
+        &workspace.server,
         &workspace.phone,
         workspace.listing.workspace_id,
     )
     .await;
     crate::common::wait_until_subscribed(
-        &workspace.relay,
+        &workspace.server,
         workspace.listing.workspace_id,
         &workspace.phone.device_pubkey(),
     )
     .await;
-    // The host asks again for what a window left missing, as the relay runs
+    // The host asks again for what a window left missing, as the server runs
     // its keeper.
     tokio::spawn(std::sync::Arc::clone(&workspace.keeper).run());
 
@@ -240,10 +249,10 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     );
     assert!(windows > 1, "the file crosses in windows of pieces");
     assert_eq!(workspace.keeper.kept_for(&hash), Some(bob_id));
-    workspace.relay.shutdown().await;
+    workspace.server.shutdown().await;
 }
 
-/// A piece the relay's content route loses on the way to the host does not
+/// A piece the server's content route loses on the way to the host does not
 /// leave the file unfinished until someone writes again: the host asks again
 /// within [`PIECE_PATIENCE_MS`] of the last piece it got, naming what it
 /// holds, and the piece the page answers with completes it.
@@ -265,13 +274,13 @@ async fn a_piece_lost_on_the_way_is_asked_for_again_within_a_second() {
     let hash = blake3::hash(&file).to_hex().to_string();
     let bob_id = tilo_resource::MemberId::person(hex::encode(workspace.bob.user_pk));
     let session = session(
-        &workspace.relay,
+        &workspace.server,
         &workspace.phone,
         workspace.listing.workspace_id,
     )
     .await;
     crate::common::wait_until_subscribed(
-        &workspace.relay,
+        &workspace.server,
         workspace.listing.workspace_id,
         &workspace.phone.device_pubkey(),
     )
@@ -292,7 +301,7 @@ async fn a_piece_lost_on_the_way_is_asked_for_again_within_a_second() {
         took < Duration::from_secs(8),
         "a lost piece costs a re-ask, not a minute: {took:?}"
     );
-    workspace.relay.shutdown().await;
+    workspace.server.shutdown().await;
 }
 
 /// Every file under `root`, read whole.
@@ -322,7 +331,7 @@ fn served(workspace: &Workspace, requester: u64, address: &str) -> Vec<u8> {
     .unwrap();
     let mut whole = Vec::new();
     for frame in workspace
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .content_answer(&workspace.listing.workspace, &want)
@@ -362,13 +371,13 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
     assert!(!sealed.windows(39).any(|w| w == &picture[..39]));
 
     let session = session(
-        &workspace.relay,
+        &workspace.server,
         &workspace.phone,
         workspace.listing.workspace_id,
     )
     .await;
     crate::common::wait_until_subscribed(
-        &workspace.relay,
+        &workspace.server,
         workspace.listing.workspace_id,
         &workspace.phone.device_pubkey(),
     )
@@ -431,7 +440,7 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
     let carol = TestUser::fresh("Carol");
     let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
     super::sealed_documents::join(
-        &workspace.relay,
+        &workspace.server,
         &workspace.laptop,
         &workspace.listing.workspace,
         &carol,
@@ -445,5 +454,5 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
         .put_public(&served(&workspace, 9, &address))
         .unwrap();
     assert_eq!(carol_store.read(&reference), Some(picture));
-    workspace.relay.shutdown().await;
+    workspace.server.shutdown().await;
 }

@@ -24,7 +24,7 @@ use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::app_serving::AppActionServer;
-use crate::client::{ClientError, RelayClient};
+use crate::client::{ClientError, ServerClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
@@ -127,8 +127,8 @@ pub struct HostSessions {
     governed_access_update: Arc<AsyncMutex<()>>,
     pub state_root: PathBuf,
     pub(crate) shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
-    /// The relay ALPN's handler, and every session's context.
-    pub handler: RelayProtocol,
+    /// The server ALPN's handler, and every session's context.
+    pub handler: ServerProtocol,
     /// Ends the in-process sessions when the host shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
     /// The watch that lets its workspaces' membership be read from memory until
@@ -148,7 +148,7 @@ impl HostSessions {
     /// Open a host's sessions and, when `governs`, its workspaces. `wrap` gives
     /// the app action server every session answers remote actions with, from the
     /// workspaces and the host's own app action server (its governance and apps): a
-    /// relay answers compute placement around it.
+    /// server answers compute placement around it.
     ///
     /// # Errors
     ///
@@ -200,7 +200,7 @@ impl HostSessions {
                 state_root: cfg.state_root.clone(),
                 shell_payloads: cfg.shell_payloads.clone(),
             });
-        let handler = RelayProtocol {
+        let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
             identity: live.clone(),
@@ -345,7 +345,7 @@ impl HostSessions {
         }
         if state_root != self.state_root {
             return Err(HostError::GovernedAccess(
-                "state root does not match the running relay".into(),
+                "state root does not match the running server".into(),
             ));
         }
         self.access_writer()
@@ -369,14 +369,14 @@ impl HostSessions {
     ///
     /// # Errors
     ///
-    /// As [`RelayClient::connect_v2_over_stream`]: the host refused the
+    /// As [`ServerClient::connect_v2_over_stream`]: the host refused the
     /// device, or the handshake failed.
     pub(crate) async fn connect_local(
         &self,
         cert: DeviceCert,
         key: ed25519_dalek::SigningKey,
         revocations: RevocationList,
-    ) -> Result<RelayClient, ClientError> {
+    ) -> Result<ServerClient, ClientError> {
         let (client, server) = tokio::io::duplex(LOCAL_SESSION_BUFFER);
         let (server_read, server_write) = tokio::io::split(server);
         let handler = self.handler.clone();
@@ -393,7 +393,7 @@ impl HostSessions {
             }
         });
         let (client_read, client_write) = tokio::io::split(client);
-        RelayClient::connect_v2_over_stream(
+        ServerClient::connect_v2_over_stream(
             client_read,
             client_write,
             self.identity.cert.device_public_key,
@@ -475,7 +475,7 @@ fn host_handlers(
     ]
 }
 
-/// The workspaces' own ALPNs on a relay's router, beside its session ALPN.
+/// The workspaces' own ALPNs on a server's router, beside its session ALPN.
 pub fn workspaces_protocols(
     sessions: &HostSessions,
     workspaces: &crate::workspaces::Workspaces,
@@ -624,7 +624,7 @@ impl WorkspaceHost {
         cert: DeviceCert,
         key: ed25519_dalek::SigningKey,
         revocations: RevocationList,
-    ) -> Result<RelayClient, ClientError> {
+    ) -> Result<ServerClient, ClientError> {
         self.sessions.connect_local(cert, key, revocations).await
     }
 
@@ -686,7 +686,7 @@ impl WorkspaceHost {
     /// What the workspaces took in of their members' writes is written
     /// through to their files first: that write-through is deferred, so a
     /// host stopped without this would end with a record a member wrote only
-    /// in memory. A start replays what the relay retains, but it takes a
+    /// in memory. A start replays what the server retains, but it takes a
     /// write only into a record its governor already holds
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
     pub async fn shutdown(self) {
@@ -799,13 +799,13 @@ impl GovernedAccessWriter {
         self.handshake_trust.forget(workspace_id);
     }
 
-    /// The adapter the relay opens workspaces with.
+    /// The adapter the server opens workspaces with.
     pub(crate) const fn shell_payloads(&self) -> &Arc<dyn crate::payloads::ShellPayloads> {
         &self.shell_payloads
     }
 
-    /// Whether what the relay decides `workspace_id`'s changes against holds
-    /// what `device` may do. A workspace this relay has not opened yet is
+    /// Whether what the server decides `workspace_id`'s changes against holds
+    /// what `device` may do. A workspace this server has not opened yet is
     /// projected by the settle that opens it, so it counts as holding it.
     pub(crate) async fn projects_access(
         &self,
@@ -1031,13 +1031,13 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
     roots
 }
 
-/// Bundle of identity material a host needs to run. The relay daemon's
+/// Bundle of identity material a host needs to run. The server daemon's
 /// `main.rs` loads it from
 /// [`tilo_user_identity::persist`] and passed in explicitly so the
 /// integration tests can wire a `tempdir`-based identity.
 #[derive(Clone)]
 pub struct HostIdentity {
-    /// The user root pubkey the relay chains to.
+    /// The user root pubkey the server chains to.
     pub user_public_key: [u8; 32],
     pub device_signing_key: ed25519_dalek::SigningKey,
     /// This device's signed cert (issued by the user root).
@@ -1069,7 +1069,7 @@ pub fn validate_host_device_identity(identity: &HostIdentity) -> Result<(), Host
 
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
-pub struct RelayProtocol {
+pub struct ServerProtocol {
     pub workspaces: WorkspaceRegistry,
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub identity: LiveIdentity,
@@ -1102,10 +1102,10 @@ pub struct RelayProtocol {
     pub(crate) holds_for_others: bool,
 }
 
-impl RelayProtocol {
-    /// This relay's certificate and agent trust.
-    pub fn trust(&self) -> crate::workspace_access::RelayTrust<'_> {
-        crate::workspace_access::RelayTrust {
+impl ServerProtocol {
+    /// This server's certificate and agent trust.
+    pub fn trust(&self) -> crate::workspace_access::ServerTrust<'_> {
+        crate::workspace_access::ServerTrust {
             revocations: &self.identity.revocations,
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
@@ -1114,7 +1114,7 @@ impl RelayProtocol {
         }
     }
 
-    /// Whether `user` is the person this relay runs for, or is admitted by a
+    /// Whether `user` is the person this server runs for, or is admitted by a
     /// workspace it serves: who its certification queue takes requests from.
     pub async fn admits(&self, user: [u8; 32]) -> bool {
         crate::workspace_access::admits_person(
@@ -1125,7 +1125,7 @@ impl RelayProtocol {
         .await
     }
 
-    /// The peer context a session of this relay runs with.
+    /// The peer context a session of this server runs with.
     pub fn peer_context(&self) -> PeerContext {
         PeerContext {
             workspaces: self.workspaces.clone(),
@@ -1151,19 +1151,19 @@ impl RelayProtocol {
     }
 }
 
-impl std::fmt::Debug for RelayProtocol {
+impl std::fmt::Debug for ServerProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RelayProtocol")
+        f.write_str("ServerProtocol")
     }
 }
 
-impl ProtocolHandler for RelayProtocol {
+impl ProtocolHandler for ServerProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.accept_streams(connection).await
     }
 }
 
-impl RelayProtocol {
+impl ServerProtocol {
     /// Take `connection`'s first stream and serve its sessions on a task of
     /// their own, so the iroh router can accept the next connection.
     async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
@@ -1187,7 +1187,7 @@ impl RelayProtocol {
     }
 
     /// Prove which member device opened a stream that does not say so itself
-    /// (a WebTransport session's first): the relay handshake under the live
+    /// (a WebTransport session's first): the server handshake under the live
     /// policy, as every session opens with.
     ///
     /// # Errors
@@ -1214,7 +1214,7 @@ impl RelayProtocol {
 
     /// Serve every session `link` carries, each on a stream of its own, until
     /// it closes: what a WebTransport session at the session path is, as a
-    /// connection on the relay ALPN is.
+    /// connection on the server ALPN is.
     pub async fn serve_link(&self, link: tilo_server_client::link::Link) {
         let binding = link.offer_binding().await;
         let Ok(first) = link.accept_bi().await else {
@@ -1229,7 +1229,7 @@ impl RelayProtocol {
 /// on any of them is bound to `binding`
 /// ([`tilo_server_client::link::Link::offer_binding`]).
 async fn serve_streams(
-    ctx: RelayProtocol,
+    ctx: ServerProtocol,
     connection: tilo_server_client::link::Link,
     binding: Option<[u8; 32]>,
     first: (
@@ -1257,11 +1257,11 @@ async fn serve_streams(
             }))
             .await;
             if let Err(error) = result {
-                tracing::debug!("relay session ended: {error}");
+                tracing::debug!("server session ended: {error}");
             }
             let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
             if last {
-                connection.close("relay session ended");
+                connection.close("server session ended");
             }
         });
     }
@@ -1277,7 +1277,7 @@ async fn serve_streams(
     reason = "the context is a set of shared handles moved into the peer session it runs"
 )]
 async fn serve_session<R, W>(
-    ctx: RelayProtocol,
+    ctx: ServerProtocol,
     mut recv: R,
     mut send: W,
     binding: Option<[u8; 32]>,

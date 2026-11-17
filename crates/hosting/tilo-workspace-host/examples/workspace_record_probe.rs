@@ -1,4 +1,4 @@
-//! Read a workspace record a relay wrote (version 4), field by field, to say
+//! Read a workspace record a server wrote (version 4), field by field, to say
 //! exactly which field a build's decoder stops at.
 //!
 //! usage: `workspace_document_probe FILE`

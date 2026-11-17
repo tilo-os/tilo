@@ -9,7 +9,7 @@
 //! opens the Browser window on the record the open made, so the window is
 //! live and published like any other.
 //!
-//! This module is what the relay does about it:
+//! This module is what the server does about it:
 //!
 //! - **Place** ([`HostedBrowsers::place`]): after `app.so.tilo.browser#open`
 //!   made a record, certify a device for the session scoped to the
@@ -21,7 +21,7 @@
 //!   window reaches this host (an agent's calls go to the workspace's
 //!   host device) and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
-//!   agent's run for the person it acts for. The relay runs none of it. A
+//!   agent's run for the person it acts for. The server runs none of it. A
 //!   listing of the window is handed over the same way, and the workspace's
 //!   own listing names the window among its publishers
 //!   ([`HostedBrowsers::listed`]), so a caller finds it as it finds any
@@ -58,18 +58,18 @@
 //!   the person did not allow is never counted.
 //!
 //! - **Stop** ([`HostedBrowsers::stopped`]): the environment's device is
-//!   refused on every protocol first — its entry in the relay's register says it
+//!   refused on every protocol first — its entry in the server's register says it
 //!   stopped, before anything is delisted, so a delisting that fails leaves it
 //!   refused rather than open — then the session in the VM is ended, its
 //!   device delisted, and every connection it had is cut. The register says so
-//!   on disk too, so a relay that restarts keeps it refused until the
+//!   on disk too, so a server that restarts keeps it refused until the
 //!   certificate it was given expires.
 //!
 //! What starts and stops sessions is the hosted-VM service's
 //! ([`BrowserSessions`]): this host places, routes and counts, and stops an
 //! environment when its session here ends ([`RECONNECT`] after the last one
 //! went, unless the device is back by then): the signal is the device's own
-//! sessions to this relay, so a session that dies is heard wherever it ran,
+//! sessions to this server, so a session that dies is heard wherever it ran,
 //! and the certificate's expiry bounds whatever is missed.
 
 use std::collections::{BTreeMap, HashMap};
@@ -226,18 +226,18 @@ pub const DEVICE_LABEL: &str = "Browser";
 /// else — no cluster-internal, private or link-local address answers it — so
 /// a host that places sessions names the address they reach it at, and
 /// never its own local one.
-pub const RELAY_ENV: &str = "TILO_HOSTED_BROWSER_RELAY";
+pub const SERVER_ENV: &str = "TILO_HOSTED_BROWSER_SERVER";
 
 /// Where the sessions in this host's browser sessions reach it: the
-/// address [`RELAY_ENV`] names, which the host must set to serve them.
+/// address [`SERVER_ENV`] names, which the host must set to serve them.
 ///
 /// # Errors
 ///
 /// Nothing is named, or what is named is not `KEY@HOST:PORT`.
-pub fn relay_address() -> Result<EndpointAddr, String> {
-    let named = std::env::var(RELAY_ENV).map_err(|_| {
+pub fn server_address() -> Result<EndpointAddr, String> {
+    let named = std::env::var(SERVER_ENV).map_err(|_| {
         format!(
-            "a host that places Browser sets {RELAY_ENV} to the address its \
+            "a host that places Browser sets {SERVER_ENV} to the address its \
              sessions reach it at (KEY@HOST:PORT): their network reaches no private one"
         )
     })?;
@@ -373,9 +373,9 @@ pub struct Authority {
     /// That stand-in's own signing key.
     pub key: SigningKey,
     /// Where the session joins the workspace.
-    pub relay: EndpointAddr,
+    pub server: EndpointAddr,
     pub workspaces: Option<crate::workspaces::Workspaces>,
-    /// The relay's environments' devices, confined to the record each was
+    /// The server's environments' devices, confined to the record each was
     /// placed for ([`crate::environment`]): what every protocol of the workspace
     /// asks before it lets one in, or hands it a change.
     pub environments: crate::environment::EnvironmentRegistry,
@@ -575,7 +575,7 @@ impl HostedBrowsers {
         })?;
         // The address their sessions reach this host at is part of serving
         // them: a host that cannot say it fails here, not at the first open.
-        relay_address()?;
+        server_address()?;
         let account = sessions.account().to_owned();
         Ok(Some(Self::new(
             Box::new(sessions),
@@ -696,7 +696,7 @@ impl HostedBrowsers {
         self.route_as(workspace_id, caller, None, message)
     }
 
-    /// [`Self::route`], with the certificate the relay's handshake verified
+    /// [`Self::route`], with the certificate the server's handshake verified
     /// for the caller's device: a key whose person let it operate web pages
     /// ([`DeviceCapabilities::browser_pages`]) has its page actions of
     /// [`OPERATING_ACTIONS`] answered for them here, as their own answer
@@ -1174,7 +1174,7 @@ impl HostedBrowsers {
     }
 
     /// Where a frame this host hands over after its own answer goes: the
-    /// relay's own delivery to the device holding the window.
+    /// server's own delivery to the device holding the window.
     fn hand(&self) -> Option<crate::app_serving::Hand> {
         let authority = self.authority.lock_recover();
         Some(authority.as_ref()?.hand.clone())
@@ -1332,15 +1332,15 @@ impl HostedBrowsers {
                 record: record.to_owned(),
                 device: device.clone(),
                 secret,
-                relay: authority.relay.clone(),
+                server: authority.server.clone(),
                 user_public_key: authority.user_public_key,
                 account: self.account.clone(),
             };
             (device, material)
         };
         // Confine the device to that record before it can ask for anything
-        // and before the workspace lists it: the register is the relay's own
-        // state, written down here, so a relay that restarts still confines
+        // and before the workspace lists it: the register is the server's own
+        // state, written down here, so a server that restarts still confines
         // it. The device itself is asked nothing.
         let until_ns = device
             .expires_at_ns
@@ -1426,7 +1426,7 @@ impl HostedBrowsers {
                 record: record.to_owned(),
                 device: device.clone(),
                 secret,
-                relay: authority.relay.clone(),
+                server: authority.server.clone(),
                 user_public_key: authority.user_public_key,
                 account: self.account.clone(),
             };
@@ -2557,7 +2557,7 @@ mod tests {
             .remove(ACCOUNT_ENV)
             .remove(ACTIONS_LOG_ENV)
             .remove(PLANS_ENV)
-            .remove(RELAY_ENV);
+            .remove(SERVER_ENV);
         assert!(
             HostedBrowsers::from_env().unwrap().is_none(),
             "a host with no placer places no Browser"
@@ -2580,7 +2580,7 @@ mod tests {
         env.set(ACTIONS_LOG_ENV, dir.path().join("actions.jsonl"))
             .set(PLANS_ENV, dir.path().join("plans.json"));
         let error = HostedBrowsers::from_env().err().unwrap();
-        assert!(error.contains(RELAY_ENV), "{error}");
+        assert!(error.contains(SERVER_ENV), "{error}");
 
         // All of them: this host places its workspaces' Browser.
         let key = hex::encode(
@@ -2588,7 +2588,7 @@ mod tests {
                 .verifying_key()
                 .to_bytes(),
         );
-        env.set(RELAY_ENV, format!("{key}@127.0.0.1:7704"));
+        env.set(SERVER_ENV, format!("{key}@127.0.0.1:7704"));
         assert!(HostedBrowsers::from_env().unwrap().is_some());
     }
 }

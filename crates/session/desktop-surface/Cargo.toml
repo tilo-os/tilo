@@ -17,7 +17,7 @@ autotests = false
 [features]
 # Another device's shared window, decoded into its tile on this desktop. On by
 # default for every desktop that draws windows; a screenless host that links
-# this surface (a relay, an agent's member) turns it off and links neither
+# this surface (a server, an agent's member) turns it off and links neither
 # the media stack nor a decoder.
 default = ["peer-view"]
 peer-view = [
@@ -102,7 +102,7 @@ workspace-hack = { version = "0.1" }
 # Another device's shared window: the decoder that turns its units into
 # pictures, the colour that tone-maps an HDR stream to this display, and the
 # share's own rule for the input a viewer sends back. All four run the media stack, which has no wasm32 build and which a host
-# without a screen (a relay, an agent's member) never presents. They are
+# without a screen (a server, an agent's member) never presents. They are
 # the `peer-view` feature's, so such a host links this surface without them.
 tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"], optional = true }
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"], optional = true }

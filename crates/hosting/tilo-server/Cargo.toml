@@ -43,7 +43,7 @@ path = "src/home_peer_control/main.rs"
 name = "tilo-approve"
 path = "src/approve.rs"
 
-# The host / relay daemon.
+# The host / server daemon.
 #
 # `tilo-server` is the WAN transport + host tier of the sync/host model:
 # an authenticated iroh endpoint that any of the user's devices dial
@@ -53,7 +53,7 @@ path = "src/approve.rs"
 # disk under `pending/<peer_id>/` and delivered on next connect.
 #
 # Design axioms:
-# - Same identity model as devices — the relay holds a device
+# - Same identity model as devices — the server holds a device
 #   keypair + a signed cert issued by the user's root. Every inbound
 #   peer must present a valid cert chaining to the same user identity.
 # - Mostly a store-and-forward peer, not a passive one. Device deltas are
@@ -70,7 +70,7 @@ path = "src/approve.rs"
 #   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
 #   workspace merge like any other automerge peers.
-# - Fully in-process testable — `Relay::start` binds a random-port
+# - Fully in-process testable — `Server::start` binds a random-port
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
@@ -80,25 +80,25 @@ tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
-# Remote-action vocabulary: the relay routes these frames between devices and,
+# Remote-action vocabulary: the server routes these frames between devices and,
 # only when an app action server is supplied, answers them through ActionHost.
 tilo-actions = { path = "../../collab/actions" }
 # Handshake and wire messages plus the mesh, configuration, registry and
-# metrics records shared with the relay's clients; re-exported so the daemon's
+# metrics records shared with the server's clients; re-exported so the daemon's
 # own module paths stay unchanged.
 tilo-server-protocol = { path = "../tilo-server-protocol" }
-# Both ends of every relay stream use its frame codec.
+# Both ends of every server stream use its frame codec.
 tilo-server-client = { path = "../tilo-server-client" }
-# The session clients (relay, co-edit, anti-entropy, workspace administration and
+# The session clients (server, co-edit, anti-entropy, workspace administration and
 # workspace join): the daemon dials other relays with them and re-exports them
 # under its historic paths. Clients depend on that crate, not on this one.
 tilo-server-session = { path = "../tilo-server-session" }
-# Delivery, private-action, agent-read, v2 live and join records the relay carries.
+# Delivery, private-action, agent-read, v2 live and join records the server carries.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
-# fallback out of the box, so the relay is reachable from any device
+# fallback out of the box, so the server is reachable from any device
 # without extra infrastructure. `crates/system/fs/` already depends on iroh-blobs, so
 # unifying on iroh here means one transport stack across CRDT-op fanout
 # and content hydration.
@@ -237,10 +237,10 @@ tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 # `watch`: the daemon follows membership files `tilo-server-admin` edits.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-# Home-peer configuration is one signed filesystem bundle; the relay imports
+# Home-peer configuration is one signed filesystem bundle; the server imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
-# A workspace's files as the record that carries them: the relay reads a
+# A workspace's files as the record that carries them: the server reads a
 # governed workspace's tree to learn which content its files are made of.
 fs-protocol = { path = "../../system/fs-protocol" }
 # A file the folder mount wrote is a manifest of chunks: a link to it reads
@@ -251,14 +251,14 @@ crc32fast.workspace = true
 # The scope of a workspace's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
-# The workspace-join exchange every governor answers, over this relay's workspaces.
+# The workspace-join exchange every governor answers, over this server's workspaces.
 collab-types = { path = "../../collab/collab-types" }
 # A node takes part in the encrypted channels of the workspaces it governs, through
 # the one channel service every device runs.
 key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The workspace host every device runs, which the relay embeds. Every relay build
+# The workspace host every device runs, which the server embeds. Every server build
 # follows the sealed records of the workspaces it governs and opens them with
 # the channels' keys it holds there, whether or not it serves pages.
 tilo-workspace-host = { path = "../tilo-workspace-host", features = ["web"] }
@@ -334,17 +334,17 @@ path = "tests/held_memory.rs"
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
-# What an active member costs a relay in CPU, memory and egress:
+# What an active member costs a server in CPU, memory and egress:
 # the scheduled job's `hosting` group (tools/ci/perf-scheduled.sh).
-# An example, not a binary, so relay images that build `--bins` leave it out.
+# An example, not a binary, so server images that build `--bins` leave it out.
 [[example]]
-name = "relay_load"
+name = "server_load"
 test = true
 
 # A one-off: moves a host's content into one store per workspace at the
 # upgrade that gave each workspace its own.
 [[example]]
-name = "move_relay_content"
+name = "move_server_content"
 required-features = ["web"]
 test = true
 

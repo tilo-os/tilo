@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
 }
 
 /// A session beside its device's own dials its host from the endpoint the device already runs
-/// and binds none of its own: the device's key names one endpoint, at its relay and everywhere.
+/// and binds none of its own: the device's key names one endpoint, at its server and everywhere.
 #[tokio::test]
 async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     let root = SigningKey::from_bytes(&[1; 32]);

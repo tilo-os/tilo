@@ -4,7 +4,7 @@
 //! both host in step with it.
 //!
 //! The session dials through the same handshake and client every device
-//! uses, says which workspaces it carries (`PeerRelayHello`), and subscribes
+//! uses, says which workspaces it carries (`PeerServerHello`), and subscribes
 //! to those both sides host. Subscribing replays everything the upstream
 //! retains of each, as it does for any host that keeps a whole workspace, and
 //! live fan-out carries every later change. Inbound changes are admitted
@@ -33,7 +33,7 @@ use std::time::Duration;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use tilo_lock::RwLockRecover as _;
-use tilo_server_session::client::RelayClient;
+use tilo_server_session::client::ServerClient;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -172,10 +172,10 @@ impl HostDialer {
         }
     }
 
-    async fn dial(&self, upstream: &Upstream) -> Result<RelayClient, String> {
+    async fn dial(&self, upstream: &Upstream) -> Result<ServerClient, String> {
         let identity = &self.identity;
         let revocations = identity.revocations.read_recover().clone();
-        RelayClient::connect_v2_to_enrolled_home_peer(
+        ServerClient::connect_v2_to_enrolled_home_peer(
             self.endpoint.clone(),
             upstream.addr.clone(),
             upstream.person,
@@ -227,11 +227,11 @@ impl HostDialer {
         clippy::significant_drop_tightening,
         reason = "the session borrows the client and the workspaces and is driven by the select until it ends; it holds no lock"
     )]
-    async fn run_session(&self, client: &RelayClient, hello: bool) -> Result<(), String> {
+    async fn run_session(&self, client: &ServerClient, hello: bool) -> Result<(), String> {
         let hosted_local = self.carried().await;
         let intersection = if hello {
             client
-                .send(Envelope::PeerRelayHello {
+                .send(Envelope::PeerServerHello {
                     hosted_workspaces: hosted_local.clone(),
                 })
                 .map_err(|_| "outbound closed".to_string())?;
@@ -247,7 +247,7 @@ impl HostDialer {
         let lease = AttachLease(Arc::new(AtomicBool::new(true)));
         let (failed, mut failures) = tokio::sync::mpsc::channel(1);
         let source = crate::peer::StateSource::leased(
-            client.relay_peer.clone(),
+            client.server_peer.clone(),
             client.outbound.clone(),
             failed,
             self.identity.revocations.clone(),
@@ -259,10 +259,10 @@ impl HostDialer {
             let workspace = self.workspaces.lock().await.get(id).cloned();
             if let Some(workspace) = workspace {
                 let mut runtime = workspace.lock().await;
-                runtime.note_attached_host(client.relay_peer.device_public_key);
+                runtime.note_attached_host(client.server_peer.device_public_key);
                 if let Some(previous) = runtime
                     .outbound_leases
-                    .insert(client.relay_peer.device_public_key, lease.0.clone())
+                    .insert(client.server_peer.device_public_key, lease.0.clone())
                 {
                     previous.store(false, Ordering::SeqCst);
                 }
@@ -305,16 +305,16 @@ impl Drop for AttachLease {
     }
 }
 
-/// Wait for the upstream's `PeerRelayHello` and intersect it with what this
+/// Wait for the upstream's `PeerServerHello` and intersect it with what this
 /// host carries. The upstream answers a hello with its own before anything
 /// else of the session; anything else first is logged and skipped.
 async fn negotiate_intersection(
-    client: &RelayClient,
+    client: &ServerClient,
     hosted_local: &[WorkspaceId],
 ) -> Result<Vec<WorkspaceId>, String> {
     loop {
         match client.recv().await {
-            Some(Envelope::PeerRelayHello { hosted_workspaces }) => {
+            Some(Envelope::PeerServerHello { hosted_workspaces }) => {
                 let local: std::collections::HashSet<WorkspaceId> =
                     hosted_local.iter().copied().collect();
                 return Ok(hosted_workspaces
@@ -332,7 +332,7 @@ async fn negotiate_intersection(
 
 /// A connected attach session.
 struct Session<'a> {
-    client: &'a RelayClient,
+    client: &'a ServerClient,
     workspaces: &'a WorkspaceRegistry,
     source: &'a crate::peer::StateSource,
     metrics: &'a Arc<Metrics>,

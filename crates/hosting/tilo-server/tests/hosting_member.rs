@@ -3,7 +3,7 @@
 //! whom the workspace's governance admits as that governance changes, carries
 //! members' changes to every other holder, and stops when detached.
 
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -39,7 +39,7 @@ where
 }
 
 /// Whether `client`'s holder admits it to `workspace_id`.
-async fn admitted(client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+async fn admitted(client: &ServerClient, workspace_id: WorkspaceId) -> bool {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     loop {
         match client.recv().await.expect("the session stays open") {
@@ -387,9 +387,9 @@ async fn three_holders_keep_carrying_changes_when_one_goes_away() {
 
 /// Send `body`, `author`'s change, on `from` and expect it on `to`.
 async fn carried(
-    from: &RelayClient,
+    from: &ServerClient,
     author: &crate::common::TestDevice,
-    to: &RelayClient,
+    to: &ServerClient,
     workspace_id: WorkspaceId,
     body: &[u8],
 ) {
@@ -428,8 +428,8 @@ async fn session_at(
     person: &TestUser,
     host_device: &crate::common::TestDevice,
     host: &crate::common::Hosted,
-) -> RelayClient {
-    RelayClient::connect_v2_to_enrolled_home_peer(
+) -> ServerClient {
+    ServerClient::connect_v2_to_enrolled_home_peer(
         crate::common::device_endpoint(device).await,
         host.host.node_addr(),
         person.user_pk,
@@ -444,7 +444,7 @@ async fn session_at(
 
 /// The device that authored the change `body` once `client` receives it;
 /// the workspace's own changes before it are passed over.
-async fn change_author(client: &RelayClient, body: &[u8]) -> [u8; 32] {
+async fn change_author(client: &ServerClient, body: &[u8]) -> [u8; 32] {
     tilo_test_env::within("the change arrives", async {
         loop {
             if let Envelope::Delta {
@@ -463,7 +463,7 @@ async fn change_author(client: &RelayClient, body: &[u8]) -> [u8; 32] {
 
 /// `author`'s change `body` to `workspace_id`, sent on `client`.
 fn send_change(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     author: &crate::common::TestDevice,
     body: &[u8],
@@ -491,16 +491,16 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
-    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let server = site.enrol("server", DeviceCapabilities::member());
     let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
-    let refusing = host_on(&site, &relay, WorkSetting::own_person()).await;
+    let refusing = host_on(&site, &server, WorkSetting::own_person()).await;
     let refused = workspaces
         .attach_host(
             &workspace.workspace,
             &laptop.cert,
-            relay.device_pubkey(),
+            server.device_pubkey(),
             refusing.host.node_addr(),
         )
         .await;
@@ -534,7 +534,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
-    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let server = site.enrol("server", DeviceCapabilities::member());
     let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
@@ -546,17 +546,17 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let mut takes = WorkSetting::own_person();
     takes.from =
         tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = host_on(&site, &relay, takes.clone()).await;
+    let holder = host_on(&site, &server, takes.clone()).await;
     let hint = workspaces
         .attach_host(
             &workspace.workspace,
             &laptop.cert,
-            relay.device_pubkey(),
+            server.device_pubkey(),
             holder.host.node_addr(),
         )
         .await
         .unwrap();
-    assert_eq!(hint.host, relay.cert);
+    assert_eq!(hint.host, server.cert);
     let hosts = workspaces.hosts(&workspace.workspace).await.unwrap();
     assert_eq!(hosts.len(), 2, "the governor and the other person's host");
 
@@ -570,7 +570,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         .await
         .unwrap();
     assert!(admitted(&local, workspace.workspace_id).await);
-    let on_holder = session_at(&phone, &site, &relay, &holder).await;
+    let on_holder = session_at(&phone, &site, &server, &holder).await;
     tilo_test_env::within(
         "the holder admits the member its governor admitted",
         async {
@@ -602,8 +602,8 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     // The holder restarts and holds the workspace again from its own record.
     drop(on_holder);
     let state = holder.stop_keeping().await;
-    let holder = crate::common::host_in(&site, &relay, takes, state).await;
-    let again = session_at(&phone, &site, &relay, &holder).await;
+    let holder = crate::common::host_in(&site, &server, takes, state).await;
+    let again = session_at(&phone, &site, &server, &holder).await;
     tilo_test_env::within("the restarted holder admits the member", async {
         while !admitted(&again, workspace.workspace_id).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -622,14 +622,14 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
             .detach_host(
                 &workspace.workspace,
                 &laptop.cert,
-                relay.device_pubkey(),
+                server.device_pubkey(),
                 None
             )
             .await
             .unwrap(),
         "the holder confirms it stopped"
     );
-    let gone = session_at(&phone, &site, &relay, &holder).await;
+    let gone = session_at(&phone, &site, &server, &holder).await;
     assert!(!admitted(&gone, workspace.workspace_id).await);
 
     drop((again, gone, local));
@@ -651,7 +651,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
-    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let server = site.enrol("server", DeviceCapabilities::member());
     let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
@@ -659,7 +659,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         .enter(&workspace.workspace, &phone.cert)
         .await
         .unwrap();
-    let holder = host_on(&site, &relay, WorkSetting::own_person()).await;
+    let holder = host_on(&site, &server, WorkSetting::own_person()).await;
     let at_site = holder.host.workspaces();
     assert!(
         at_site
@@ -673,7 +673,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         workspaces.attach_host(
             &workspace.workspace,
             &laptop.cert,
-            relay.device_pubkey(),
+            server.device_pubkey(),
             holder.host.node_addr(),
         )
     };
@@ -695,7 +695,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         .await
         .unwrap();
     let hint = attach().await.unwrap();
-    assert_eq!(hint.host, relay.cert);
+    assert_eq!(hint.host, server.cert);
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         2
@@ -710,7 +710,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         .await
         .unwrap();
     assert!(admitted(&local, workspace.workspace_id).await);
-    let on_holder = session_at(&phone, &site, &relay, &holder).await;
+    let on_holder = session_at(&phone, &site, &server, &holder).await;
     tilo_test_env::within("the site admits the workspace's member", async {
         while !admitted(&on_holder, workspace.workspace_id).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

@@ -10,18 +10,18 @@ use tilo_server_session::workspaces::govern::{self, WorkspaceLink};
 
 use super::*;
 
-/// The workspace's link as its host publishes it, reached on the socket the relay listens on:
-/// a device pushing from this machine dials the address the workspace announces, so a test's relay
+/// The workspace's link as its host publishes it, reached on the socket the server listens on:
+/// a device pushing from this machine dials the address the workspace announces, so a test's server
 /// is reached on the loopback address of the port it bound, never through the host's own
 /// outside address.
-fn workspace_link(relay: &tilo_server::Relay, workspace: &WorkspaceSummary) -> WorkspaceLink {
-    let port = relay
+fn workspace_link(server: &tilo_server::Server, workspace: &WorkspaceSummary) -> WorkspaceLink {
+    let port = server
         .bound_sockets()
         .first()
-        .expect("the relay's endpoint listens somewhere")
+        .expect("the server's endpoint listens somewhere")
         .port();
     WorkspaceLink {
-        relay: relay.node_addr().id,
+        server: server.node_addr().id,
         direct: Some(std::net::SocketAddr::from((
             std::net::Ipv4Addr::LOCALHOST,
             port,
@@ -56,11 +56,11 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_work
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspaces = relay.workspaces().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Lounge").await.unwrap();
-    super::members::admit(&relay, &host, &laptop, &workspace.workspace).await;
-    let link: WorkspaceLink = workspace_link(&relay, &workspace)
+    super::members::admit(&server, &host, &laptop, &workspace.workspace).await;
+    let link: WorkspaceLink = workspace_link(&server, &workspace)
         .to_string()
         .parse()
         .unwrap();
@@ -162,7 +162,7 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_work
             .unwrap()
             .is_empty()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Two versions of the fixture app's surface: the second adds a field.
@@ -223,11 +223,11 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspaces = relay.workspaces().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Lounge").await.unwrap();
-    super::members::admit(&relay, &host, &laptop, &workspace.workspace).await;
-    super::members::admit(&relay, &host, &phone, &workspace.workspace).await;
+    super::members::admit(&server, &host, &laptop, &workspace.workspace).await;
+    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
     let who = hex::encode(laptop.cert.user_public_key);
     workspaces
         .put_workspace_grants(
@@ -255,7 +255,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         SystemTime::now(),
     )
     .unwrap();
-    let bob_session = session(&relay, &phone, workspace.workspace_id).await;
+    let bob_session = session(&server, &phone, workspace.workspace_id).await;
     let mut presence = Vec::new();
     receive_until(
         "Bob is in the workspace",
@@ -265,7 +265,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         |peer, _| role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor),
     )
     .await;
-    crate::common::wait_until_subscribed(&relay, workspace.workspace_id, &phone.device_pubkey())
+    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "v1").unwrap();
@@ -288,7 +288,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
 
     // Ada hands the workspace her v2 package and makes it the workspace's version.
     let package = b"a developer's v2 build of the fixture app".repeat(9000);
-    let link = workspace_link(&relay, &workspace);
+    let link = workspace_link(&server, &workspace);
     let client = govern::connect(&link, laptop.cert.clone(), laptop.sk.clone())
         .await
         .unwrap();
@@ -411,5 +411,5 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         }
     })
     .await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }

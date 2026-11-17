@@ -1,10 +1,10 @@
-//! A session in a browser environment: the relay hands it a workspace, a record and a device, and
+//! A session in a browser environment: the server hands it a workspace, a record and a device, and
 //! it joins as that device, opens Browser on the record, and says what it became
 //! (`docs/hosted-browser.md`, "What the session in the VM is handed").
 //!
-//! The environment's home is fresh every boot, so the identity the relay certifies is the only one
-//! this session has, and the join is the relay's own: it asks the relay to enter it into the
-//! workspace, redeems the invitation the relay answers with, and holds the workspace as any device
+//! The environment's home is fresh every boot, so the identity the server certifies is the only one
+//! this session has, and the join is the server's own: it asks the server to enter it into the
+//! workspace, redeems the invitation the server answers with, and holds the workspace as any device
 //! does. The window is a package's, mapped by a client of this test's own as a toolkit's window
 //! maps: the session opens Browser through the launcher the way it opens any app.
 
@@ -36,13 +36,13 @@ use collab_types::WorkspaceId;
 
 /// The app whose window a browser environment holds.
 const BROWSER: &str = "so.tilo.browser";
-/// The record the window opens on: the Browser record the relay placed.
+/// The record the window opens on: the Browser record the server placed.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
 
 /// What the session said, in order: every report line it printed.
 type Said = Arc<Mutex<Vec<String>>>;
 
-/// The material the relay hands a browser environment's session: the workspace `workspace` of
+/// The material the server hands a browser environment's session: the workspace `workspace` of
 /// `site`, the record to open, and the device `device` certifies.
 fn material(
     site: &Site,
@@ -63,12 +63,12 @@ fn material(
         record: record.to_owned(),
         device,
         secret: key.to_bytes(),
-        relay: site.node_addr(),
+        server: site.node_addr(),
         user_public_key: person.public,
         account: "acct_ada".to_owned(),
     };
     (
-        serde_json::to_string(&material).expect("the material is the relay's"),
+        serde_json::to_string(&material).expect("the material is the server's"),
         Handed(root),
     )
 }
@@ -173,7 +173,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
         "the identity it was handed is its own before anything else happens"
     );
 
-    // It asks the relay to enter it, redeems the invitation, and holds the workspace as the shell
+    // It asks the server to enter it, redeems the invitation, and holds the workspace as the shell
     // holds any device's.
     crate::common::until(&mut session, "the workspace is held", |session| {
         holds(session, &site.workspace)
@@ -202,10 +202,10 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
 }
 
 #[test]
-fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
+fn a_session_whose_workspace_the_server_does_not_let_it_into_opens_nothing() {
     let person = Person::new("Ada");
     let site = Site::start(&person, "Browser");
-    // Another workspace of the site's person, which this environment is not placed in: the relay
+    // Another workspace of the site's person, which this environment is not placed in: the server
     // refuses the entry, so no window is ever opened on the record the material names.
     let other = "11111111-2222-4333-8444-555555555555";
     let (handed, _root) = material(
@@ -232,7 +232,7 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
     });
     assert!(
         joined.is_none(),
-        "the workspace it was handed is not one the relay lets it into"
+        "the workspace it was handed is not one the server lets it into"
     );
     assert!(
         crate::common::steps_within(&mut session, Duration::from_secs(15), |_| {

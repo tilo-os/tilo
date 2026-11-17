@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # The Tilo API server (crates/hosting/tilo-api): the MCP
 # endpoint an agent adds with `claude mcp add --transport http tilo
-# https://mcp.tilo.sh`. It runs beside the relay, behind the relay's Caddy,
+# https://mcp.tilo.sh`. It runs beside the server, behind the server's Caddy,
 # which terminates TLS; the server itself serves plain HTTP.
 #
 # Everything it is configured with comes from the environment (README.md), so
@@ -12,7 +12,7 @@
 # Nothing here compiles: t builds the server (tools/ci/publish/server-binaries.sh,
 # the check api-binaries) and this build lays the binary out with the
 # base and the packages it runs against, from the same frozen snapshot and
-# mirrored base as the relay (tools/ci/publish/api-build.sh).
+# mirrored base as the server (tools/ci/publish/api-build.sh).
 
 # ---- Frozen RPM repo (cross-time reproducibility) ---------------------------
 # The package set every Tilo server image installs from, as
@@ -22,7 +22,7 @@ ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 # ---- Runtime -----------------------------------------------------------------
-# Fedora's minimal base, the same runtime base as the relay: a C library, the
+# Fedora's minimal base, the same runtime base as the server: a C library, the
 # certificates, and the server, with no package manager to run in its place. Pinned
 # by digest on registry.fedoraproject.org, which keeps superseded digests;
 # quay.io prunes them, so a pin there stops resolving.

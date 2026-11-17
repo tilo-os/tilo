@@ -5,14 +5,14 @@
 //! and record ids, the Automerge actor, the signed op's artifact, author and
 //! attestation. Only the timestamps, the change's own bytes and the
 //! signature differ. Each session remembers the last delta frame it received
-//! from each author on each route in each workspace (a *slot*), and the relay
+//! from each author on each route in each workspace (a *slot*), and the server
 //! writes the next one as [`DeltaSegment`]s: ranges copied from that frame and the bytes in
 //! between. The frame the session rebuilds is the
 //! [`super::EnvelopeV2::UnsignedDelta`] payload it would have received
 //! uncoded, byte for byte, so nothing past the session reader changes and
 //! every signature inside it verifies as before.
 //!
-//! [`DeltaEncoder`] is the relay's half and the session reader's
+//! [`DeltaEncoder`] is the server's half and the session reader's
 //! [`DeltaSlots`] the receiver's. Both see every coded frame of one session
 //! in order, so their tables never diverge; a frame that is not coded
 //! touches no slot.
@@ -26,7 +26,7 @@ use tilo_server_protocol::transport::Envelope;
 use super::{CODED_DELTA_KIND, UNSIGNED_DELTA_KIND};
 use collab_types::WorkspaceId;
 
-/// Slots one session's delta coding remembers: the relay reuses the least
+/// Slots one session's delta coding remembers: the server reuses the least
 /// recently used one beyond this, and a reader refuses a higher index.
 pub const MAX_DELTA_SLOTS: usize = 64;
 
@@ -61,7 +61,7 @@ pub enum DeltaSegment {
 /// bytes; deltas that start alike share a slot.
 pub const DELTA_ROUTE_BYTES: usize = 33;
 
-/// Whose deltas a slot holds on the relay: one author's on one route in one
+/// Whose deltas a slot holds on the server: one author's on one route in one
 /// workspace. Only the encoder sees it; the wire carries the session's slot index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeltaSlotKey {
@@ -71,7 +71,7 @@ pub struct DeltaSlotKey {
     pub route: [u8; DELTA_ROUTE_BYTES],
 }
 
-/// The relay's half of one session's delta slots. It assigns each
+/// The server's half of one session's delta slots. It assigns each
 /// [`DeltaSlotKey`] a session slot (reusing the least recently used one past
 /// [`MAX_DELTA_SLOTS`]) and codes each delta frame against what the session
 /// holds there. It belongs to exactly one session and must code every

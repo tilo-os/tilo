@@ -9,7 +9,7 @@
 //! session's loop and the action broker for an application — never blocks on a LAN window that may
 //! stay open for minutes. One step runs at a time: discovery and approval listen on the same LAN
 //! port.
-//! An approval names a device this session discovered, with the relay service it announced: a
+//! An approval names a device this session discovered, with the server service it announced: a
 //! caller cannot admit a key it merely names. Rejecting forgets the candidate and stops waiting on
 //! its approval; the helper's own LAN window bounds the privileged child.
 //! Who may pair is decided by the API the step arrives through, before it reaches this engine:
@@ -70,12 +70,12 @@ pub(crate) const APPROVE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "service",
         ParamType::Text,
-        "The relay service node id discovery answered with the device, 64 hex characters.",
+        "The server service node id discovery answered with the device, 64 hex characters.",
     ),
     ActionParam::optional(
         "workspace_ids",
         ParamType::Array,
-        "For a home peer, the ids of the workspaces it keeps. Defaults to the relay configuration's.",
+        "For a home peer, the ids of the workspaces it keeps. Defaults to the server configuration's.",
     ),
     ActionParam::required(
         "confirm",
@@ -359,7 +359,7 @@ impl Pairing {
             let (role, candidate) = flights.candidates.get(&approval.device).ok_or_else(|| {
                 "no device with that key was discovered here; discover it first".to_string()
             })?;
-            if *role != approval.role || candidate.relay_service_node_id != approval.service {
+            if *role != approval.role || candidate.server_node_id != approval.service {
                 return Err("that is not the device discovered with this key".into());
             }
             let label = candidate.label.clone();
@@ -781,7 +781,7 @@ mod tests {
     fn announced(device: &str, service: &str) -> Vec<u8> {
         serde_json::json!({
             "device_node_id": device,
-            "relay_service_node_id": service,
+            "server_node_id": service,
             "label": "Phone",
             "verification_code": "123456",
         })

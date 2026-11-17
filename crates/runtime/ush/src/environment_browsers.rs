@@ -1,7 +1,7 @@
 //! A workspace's Browser, opened in the workspace's VM on the member device
 //! that runs it (`docs/hosted-browser.md`).
 //!
-//! The member device answers the relay's ask by asking this host's hosted-VM
+//! The member device answers the server's ask by asking this host's hosted-VM
 //! service (`legacy_vm::hosted`, the one that runs the workspace's VM) over
 //! its socket ([`Request::OpenBrowser`]) to start the browser session in that
 //! VM, and waits while it says the host is full.

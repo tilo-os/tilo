@@ -761,7 +761,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .checked_sub(start)
             .ok_or(ServiceError::PartialTooLarge)?;
         let mut reported = start;
-        let mut relay = |written: u64| {
+        let mut server = |written: u64| {
             reported = start.saturating_add(written);
             progress(reported);
         };
@@ -769,7 +769,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             0
         } else {
             self.transport
-                .resume(url, start, maximum, &mut relay, &mut file)?
+                .resume(url, start, maximum, &mut server, &mut file)?
         };
         file.sync_all()?;
         let total = start

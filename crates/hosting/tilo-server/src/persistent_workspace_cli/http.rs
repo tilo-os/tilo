@@ -144,7 +144,7 @@ async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>
     let Some(http) = routes.serving.get() else {
         // Still opening its workspaces: not ready for people, but alive.
         let mut starting = json(&serde_json::json!({
-            "relay": "starting",
+            "server": "starting",
             "revision": routes.revision,
         }));
         *starting.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
@@ -160,8 +160,8 @@ async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     match parts.as_slice() {
         ["mode"] => json(&serde_json::json!({
-            // The relay serves: its workspaces are open and people get in.
-            "relay": "up",
+            // The server serves: its workspaces are open and people get in.
+            "server": "up",
             "revision": routes.revision,
         })),
         ["avatars", name] => avatar(http, name).await,
@@ -384,7 +384,7 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
-            format!("{{\"relay\":\"starting\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
+            format!("{{\"server\":\"starting\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
         );
         assert!(
             http.serving
@@ -417,7 +417,7 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
-            format!("{{\"relay\":\"up\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
+            format!("{{\"server\":\"up\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
         );
         for path in [
             "/",

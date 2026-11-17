@@ -188,7 +188,7 @@ pub enum Entered {
     Admitted {
         /// The workspace's UUID.
         workspace: String,
-        /// Its relay workspace.
+        /// Its server workspace.
         workspace_id: WorkspaceId,
         /// Its name.
         name: String,

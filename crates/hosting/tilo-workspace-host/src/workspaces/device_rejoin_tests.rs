@@ -2,7 +2,7 @@
 //! of a device it knows, and whom it admits instead.
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use super::tests::{governor, signed_pre_admission, test_host};
@@ -52,8 +52,8 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let root = SigningKey::from_bytes(&rand::random());
     let certify = |device: &SigningKey, issued_at_ns: u64, capabilities: DeviceCapabilities| {
@@ -139,5 +139,5 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         1,
         "one person, whatever devices they came with"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }

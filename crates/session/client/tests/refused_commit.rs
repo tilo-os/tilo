@@ -150,7 +150,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     )
     .await;
     let board = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create_workspace("Board", Some(WORKSPACE))
@@ -228,5 +228,5 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         "nothing is left outstanding"
     );
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

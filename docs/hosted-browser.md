@@ -1,6 +1,6 @@
 # Hosted Browser
 
-A workspace hosted on a relay that sells Linux machines (tilo.sh) opens
+A workspace hosted on a server that sells Linux machines (tilo.sh) opens
 Browser like any other app. Its pages run in the workspace's own VM, the one
 its Linux programs run in, and every member sees them live in the workspace.
 Agents drive them through Browser's page actions.
@@ -32,7 +32,7 @@ GPU) with Browser and the Chromium engine runtime it requires.
   session and holds no identity; each clone's session is handed its
   workspace's at the hand-off, the VM generation ID reseeds each clone's
   randomness when it is restored, and its clock is set from the host's as it
-  wakes, so the certificate the relay issued moments earlier is valid there.
+  wakes, so the certificate the server issued moments earlier is valid there.
 - **Logins persist per workspace.** The profile (cookies, storage) is kept
   among the workspace's own files on the VM host
   (`.tilo/browser/profile.tar.gz`), which sync, encrypted, through the
@@ -41,13 +41,13 @@ GPU) with Browser and the Chromium engine runtime it requires.
   and Chromium's caches are never saved.
 
 The session is **a device of the workspace**, and the narrowest one there
-is: the relay certifies a fresh device for it, confines it to that workspace
+is: the server certifies a fresh device for it, confines it to that workspace
 and that window's record (see [Isolation](#isolation)), and refuses it once
 the session stops. Only a stand-in may certify a device, and the workspace's
 customer gives the host none, so the session is a device of the **host's own
 person**, the one whose root the deployment holds (its root file): the host
 makes itself that person's stand-in at start and certifies its sessions with
-it. That device sits in the customer's workspace, but the relay confines it
+it. That device sits in the customer's workspace, but the server confines it
 to the one Browser record and its page track; page actions on it still run
 as the calling agent, for the workspace's person. It opens the Browser window
 on the workspace's Browser record, so the window is live, published and
@@ -64,8 +64,8 @@ open before anything is installed.
 
 - **Opening one** is `app.so.tilo.linux#open` naming the app's desktop file
   (`linux#open app=org.gnome.TextEditor`), from a window or an agent's key.
-  The relay places it as it places Browser: the open makes the workspace's
-  `so.tilo.linux` record, the relay asks the placer for the workspace's VM
+  The server places it as it places Browser: the open makes the workspace's
+  `so.tilo.linux` record, the server asks the placer for the workspace's VM
   host and that host's member device to start the app
   (`tilo_actions::remote::linux_apps`), and the member asks its hosted-VM
   service (`Request::OpenApp`).
@@ -83,12 +83,12 @@ open before anything is installed.
   opens: members see it in their windows, in the desktop app and on the web
   page, and those the workspace lets edit drive it with their
   keyboard and pointer. The session does not write the share itself: it asks
-  the relay (`tilo_actions::remote::environment_device`), which writes the
+  the server (`tilo_actions::remote::environment_device`), which writes the
   share's grants as the workspace's governor, as it writes a web page's share,
   once it has checked the window's id was minted under that device's own
   salt — a confined device shares its own windows and nobody else's. Its frames travel the
   workspace's live session, the same MoQ path a call's pictures take, through
-  the relay; keys, pointer, scroll, text and clipboard go back to the window
+  the server; keys, pointer, scroll, text and clipboard go back to the window
   the same way.
 - **It ends** when its last window closed and the idle limit passed, at the
   device certificate's two hours, or when the VM sleeps.
@@ -112,7 +112,7 @@ command.
 - **What leaves the VM** is what leaves any device in the workspace: the
   Browser record's changes, action answers, the page's display list for the
   members viewing it, and, for `capture-page`, a picture of the page.
-- **Egress is the public internet and the relay.** The hosted VM network
+- **Egress is the public internet and the server.** The hosted VM network
   drops private, shared, link-local (the metadata endpoint), loopback,
   multicast and reserved networks and Azure's platform address. Every VM is
   given exactly one more destination, the relay its session joins through
@@ -122,24 +122,24 @@ command.
 - **Limits** are the VM's: its size's CPU and memory in the jail's cgroup,
   200 Mbit/s each way.
 - **The session's device reaches one record and one page.** A page may hold
-  the device's key, so the relay confines it to what its window is: the one
+  the device's key, so the server confines it to what its window is: the one
   Browser record the open made (`tilo_workspace_host::environment`), decided where
-  the relay certifies the device. In the state protocol it is replayed and
+  the server certifies the device. In the state protocol it is replayed and
   handed only that record's channel and may write no other; on the live
   session it publishes its own device namespace (its presence, its
   windows and its pages) and is offered no one else's track; a remote action
-  it sends is refused unless it answers the page action the relay handed it
-  or asks the relay about itself (below). It still receives the workspace's
-  own document (the layout, which a session needs to join) and the relay's
+  it sends is refused unless it answers the page action the server handed it
+  or asks the server about itself (below). It still receives the workspace's
+  own document (the layout, which a session needs to join) and the server's
   governance and sealed checkpoint frames, none of which it can open beyond
   its record, and what it writes of that document — its view, a grant — is
-  neither kept nor forwarded. This is the relay's register beside the
+  neither kept nor forwarded. This is the server's register beside the
   agent register, not a delegation and not a certificate capability.
 - **It is lent its own streams' keys, and holds no one else's.** Whatever
   the device publishes on the live session is sealed, and the workspace's media
   keys open every call, presence and window of the workspace, so the device
-  is never given them. It asks the relay instead, which certified it and
-  holds the workspace's keys: the relay derives, at the workspace group's
+  is never given them. It asks the server instead, which certified it and
+  holds the workspace's keys: the server derives, at the workspace group's
   current epoch, the per-sender keys of that one device's
   presence, window and page streams (`key_group::SenderMediaKeys`),
   exactly the keys a member derives to open them, seals them to the device's
@@ -148,27 +148,27 @@ command.
   with them (`tilo_live::frame::LiveKeys::Sender`) and opens nothing with
   them: no other device's stream, and no stream of its own beyond those.
   When the workspace's membership moves the epoch, the live session is cut and joins
-  again on the keys the relay lends then.
+  again on the keys the server lends then.
 - **The residual risk is the key itself:** the workspace's own agent has sudo
   in the VM and can copy the browser device's key. What it gets reaches only
   the Browser record and its page track (no power the agent does not already
   have there) and is refused on every protocol once the environment stops, or at
-  most two hours later, when the certificate ends; the relay keeps that
+  most two hours later, when the certificate ends; the server keeps that
   refusal in its own state, so a restart neither widens it nor forgives it.
-  The relay sees the stop from the device's own sessions, and cuts their
+  The server sees the stop from the device's own sessions, and cuts their
   connections.
 
 ## Placement and routing
 
-The relay places a workspace's Browser where its shells run
+The server places a workspace's Browser where its shells run
 ([`placed_shells.rs`](../crates/hosting/tilo-server/src/placed_shells.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
    key calling `app.so.tilo.browser#open`. The workspace lists Browser among
    its apps like any other, and the host opens the workspace's Browser record
-   for it. The relay asks the placer for the host of the workspace's VM;
+   for it. The server asks the placer for the host of the workspace's VM;
    while every host is full the open waits and says so once.
-2. The relay asks that host's member device, over the action service, to open
+2. The server asks that host's member device, over the action service, to open
    Browser, handing it the material below. The member asks its hosted-VM
    service, which wakes the VM and starts the session.
 3. The session joins the workspace and opens the window; opening Browser
@@ -184,15 +184,15 @@ session's standard input as one line:
 | `workspace`, `workspace_id` | The workspace it joins. |
 | `record` | The Browser record to open the window on. |
 | `device`, `secret` | Its device certificate and signing key: its identity. |
-| `relay` | The relay's endpoint, at the one address the VM reaches it by (the VM host rewrites the address, nothing else). |
+| `relay` | The server's endpoint, at the one address the VM reaches it by (the VM host rewrites the address, nothing else). |
 | `user_public_key` | The person the workspace belongs to. |
-| `account` | Who pays, as the relay counts it. |
+| `account` | Who pays, as the server counts it. |
 
 It reports on its standard output: `ready`, then `up <provider>` once the
 window is live (an agent names it `browser@<provider>`), then `used` whenever
 the page is used.
 
-An agent's calls go to the workspace host's device. So the relay lists
+An agent's calls go to the workspace host's device. So the server lists
 the hosted Browser window among what runs in the workspace, as it lists the
 records it serves itself, and forwards what is addressed to the window — a
 listing of what it offers, a page action — to the device holding it, as it
@@ -206,11 +206,11 @@ The window opens for an agent rather than for the person: it browses as a
 visitor, on a fresh profile of the VM's own, so an agent reads and fills the
 page it opened without anyone being asked, and what acts on the page still
 asks. Nobody stands in front of a window in a VM, so the session there
-refuses a page action for want of the person's answer, and the relay puts
+refuses a page action for want of the person's answer, and the server puts
 the question to the person's approving devices itself
 (`CertificationProtocol::confirm`, five minutes for this one invocation)
 while the caller waits: a caller needs nothing beyond asking and following
-what it asked for. Allowed, the relay hands the same invocation to the
+what it asked for. Allowed, the server hands the same invocation to the
 window again with the person's answer signed by its own device key; the
 session accepts an answer from the host that certified it, for its own
 person, and runs the action once. Denied or unanswered, the invocation ends
@@ -244,14 +244,14 @@ it as the wait it is — `send-held-request` and `keep-held-request` of
 it as the argument a caller names. The number is the window's own, one per
 hold: a request and a download the engine counts alike are two holds with two
 numbers. The session in the VM reports each hold the window publishes to the
-relay, naming that invocation. The departure travels with the row, so the
+server, naming that invocation. The departure travels with the row, so the
 question names what leaves and not only a name for it: the page it leaves
 from, what it sends and where (`send the form to https://visa.example
 (POST)`), and the filled page as a picture the window kept in the workspace's
-content store, which the person's device draws before they allow it. The relay
+content store, which the person's device draws before they allow it. The server
 puts it to the person as it puts any page action, and their answer comes back
 to the session as the confirmation their allow runs it with: the same approval
-the relay signs for a page action, for that one request. Denied or unanswered,
+the server signs for a page action, for that one request. Denied or unanswered,
 the session runs `keep-held-request` instead and the page stays as it was
 filled. A person's own window holds none of this: what they click leaves as
 they click it.
@@ -265,7 +265,7 @@ A key can carry the authority to operate the pages its workspaces' Browser
 holds without asking each time: the person ticks **Operate web pages in
 Browser** where they make the key (it is ticked unless they say no, and a key
 minted from a key keeps its answer), and the key's certificate carries it.
-Holding it, the relay answers for the person on the page actions that
+Holding it, the server answers for the person on the page actions that
 operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
 `press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
 signing the same approval a person's own answer would, so the window runs one
@@ -299,7 +299,7 @@ video is streamed.
 Per action, not per VM:
 
 - **Browser actions** are counted per account and billing period in the
-  relay's log. The plans file sets the free allowance
+  server's log. The plans file sets the free allowance
   (`sells.browser_free_actions`: 300 a month on tilo.sh). Past it, an account
   without a card is refused with `no_payment_method` and one next step,
   `add_payment_method`. An action the person did not allow is never counted.
@@ -357,7 +357,7 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 A host that places workspaces (`tilo-server workspace … --workspace-documents`) serves
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
-`TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions
+`TILO_HOSTED_BROWSER_SERVER` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
 stand-in from it at start (`workspace --root-file`), and keeps it in its state.

@@ -6,12 +6,12 @@
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
 //!   key dials that device's MCP server ([`crate::devices`]), which admits
-//!   it as the person's relay does (`tilo_workspace_host::workspace_access`): a
+//!   it as the person's server does (`tilo_workspace_host::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
 //!   device asks it. The device serves the agent's MCP itself, with its own
 //!   presence and history, so this side carries the lines.
-//! - **A dedicated host** (a relay) hosts it: the key opens a session with the
+//! - **A dedicated host** (a server) hosts it: the key opens a session with the
 //!   host as one of the person's devices and enters the workspace as every
 //!   device does ([`tilo_session_client::device::Device::enter_workspace`]): the
 //!   host invites it in on that session and it redeems the invitation there.

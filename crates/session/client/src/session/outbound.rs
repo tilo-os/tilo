@@ -9,7 +9,7 @@
 
 use super::{
     Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, DocumentRoute, Envelope, FailureKind,
-    OwnershipEntry, RelayClient, Task,
+    OwnershipEntry, ServerClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_server_protocol::WorkspaceId;
@@ -247,7 +247,7 @@ impl Task {
     pub(super) fn send_ownership(
         &mut self,
         workspace_id: WorkspaceId,
-        client: &RelayClient,
+        client: &ServerClient,
     ) -> bool {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;

@@ -69,7 +69,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     );
     let state = super::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -82,7 +82,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let host_at = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let files = DocumentRoute {

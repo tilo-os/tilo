@@ -391,7 +391,7 @@ impl TestGovernor {
     /// workspace host does between checkpoints: the governance changes and every
     /// changed record, retained after the last publication, instead of the
     /// workspace's whole checkpoint re-signed. Each checkpoint replaces its
-    /// lineage on the relay, a few fsyncs; a governor that re-signed one per
+    /// lineage on the server, a few fsyncs; a governor that re-signed one per
     /// admitted edit queued more of them than a loaded runner's disk keeps
     /// up with. The first commit is a whole checkpoint.
     pub fn commit_changes(&mut self) -> Result<(), String> {

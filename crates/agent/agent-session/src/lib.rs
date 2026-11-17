@@ -18,7 +18,7 @@
 //!   keys; the host admits what a worker returns before it signs it
 //!   ([`worker`]).
 //! - **Edits.** Each action's Automerge change is committed through the
-//!   agent's relay session and ordered by the host with everyone else's;
+//!   agent's server session and ordered by the host with everyone else's;
 //!   browsers receive it live, attributed to the agent ([`member`]).
 //! - **Presence.** The agent publishes the record it focuses and a
 //!   member of kind agent on the live session; browsers show it there,

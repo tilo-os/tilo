@@ -49,7 +49,7 @@ fn kept_log() -> JoinLog {
             invitee_name: Some("Ana".into()),
             expires_at_ns: u64::MAX,
             transport: vec![TransportHint {
-                kind: "relay".into(),
+                kind: "server".into(),
                 opaque_json: "{}".into(),
                 host: issuer.clone(),
                 service_public_key: [6; 32],

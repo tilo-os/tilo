@@ -1,6 +1,6 @@
 //! Workspaces of a person's own on this host: made whenever they ask
 //! ([`HostOperation::CreateOwnWorkspace`]), any number of them, governed here
-//! like every workspace this relay governs, with the person as each one's
+//! like every workspace this server governs, with the person as each one's
 //! administrator.
 //!
 //! Every host that serves persistently keeps them, with what each person may

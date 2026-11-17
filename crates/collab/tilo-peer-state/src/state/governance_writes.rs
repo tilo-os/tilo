@@ -100,7 +100,7 @@ impl StatePeer {
         let workspace = self.core.workspace.clone();
         let outcome = self
             .receive_from(
-                TransportOrigin::RelayDelta(key.device_public_key()),
+                TransportOrigin::ServerDelta(key.device_public_key()),
                 NeighbourMsg::SyncResp { changes, workspace },
                 now,
             )

@@ -1,4 +1,4 @@
-//! Host side of relay-mediated device certification
+//! Host side of server-mediated device certification
 //! ([`crate::certify`], ALPN `tilo-device-certify/1`).
 //!
 //! The host only carries and checks. A requester's signed
@@ -762,7 +762,7 @@ impl CertificationProtocol {
     ) -> Result<(), AcceptError> {
         // The owner's devices that may admit devices approve everything;
         // any other device of a person this host serves answers only that
-        // person's questions. Checked before the relay signs anything for
+        // person's questions. Checked before the server signs anything for
         // the approver: the certificate first, then whose device it is.
         let peer = self
             .identity
@@ -1023,8 +1023,8 @@ async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError
     Ok(())
 }
 
-/// The relay's confirmations as its workspaces reach them: weakly, since the
-/// confirmations hold the workspaces, and a relay that stopped asks nobody.
+/// The server's confirmations as its workspaces reach them: weakly, since the
+/// confirmations hold the workspaces, and a server that stopped asks nobody.
 pub(crate) struct AsksThroughConfirmations(pub(crate) std::sync::Weak<CertificationProtocol>);
 
 /// Whether a workspace runs commands unattended is asked as an agent's

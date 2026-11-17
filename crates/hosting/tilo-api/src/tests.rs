@@ -2,7 +2,7 @@
 //! registers, sends the person to their Tilo (which these tests play: it
 //! signs the challenge with a device of the person and certifies the
 //! grant's key with their root), and redeems the code with its PKCE
-//! verifier. What a grant then does in workspaces is the relay's, which
+//! verifier. What a grant then does in workspaces is the server's, which
 //! `tilo-agent-session`'s `api` test drives through the server.
 
 use super::*;
@@ -155,7 +155,7 @@ fn server() -> Arc<Server> {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
             // Nothing here reaches a workspace, so nothing dials it.
-            hosts: vec!["https://relay.tilo.test".into()],
+            hosts: vec!["https://server.tilo.test".into()],
         },
         Store::in_memory(),
     )
@@ -1093,7 +1093,7 @@ fn server_in_front_of(site: &str) -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: site.into(),
-            hosts: vec!["https://relay.tilo.test".into()],
+            hosts: vec!["https://server.tilo.test".into()],
         },
         Store::in_memory(),
     )
@@ -1139,29 +1139,29 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
     );
 }
 
-/// A relay busy with the person's changes ran nothing: the server answers it
-/// typed as `rate_limited`, with the wait the relay said, never as a refusal
+/// A server busy with the person's changes ran nothing: the server answers it
+/// typed as `rate_limited`, with the wait the server said, never as a refusal
 /// the caller must act on.
 #[test]
-fn a_busy_relay_answers_rate_limited_with_its_wait() {
+fn a_busy_server_answers_rate_limited_with_its_wait() {
     let busy = tilo_actions::remote::ActionHostError::Busy {
         retry_after_ms: 480,
     };
-    let relay = relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&busy));
+    let server = server::ServerError::from(tilo_session_client::device::HostRefusal::of(&busy));
     assert_eq!(
-        relay,
-        relay::RelayError::RateLimited {
+        server,
+        server::ServerError::RateLimited {
             retry_after_ms: 480
         }
     );
-    let answered = account::answer(true, "account/workspaces#create", account::refused(&relay));
+    let answered = account::answer(true, "account/workspaces#create", account::refused(&server));
     let error = &answered["structuredContent"]["error"];
     assert_eq!(error["code"], "rate_limited", "{answered}");
     assert_eq!(error["retry_after_ms"], 480, "{answered}");
     assert_eq!(answered["isError"], true);
 }
 
-/// A workspace operation the relay refused is read by its case, never by its
+/// A workspace operation the server refused is read by its case, never by its
 /// words: one that is not the person's own is not theirs, and a branch that
 /// could not take everything names the part that did not come.
 #[test]
@@ -1171,17 +1171,17 @@ fn a_workspace_refusal_is_read_by_its_case() {
         let error = tilo_actions::remote::ActionHostError::Refused {
             reason: refusal.to_reason(),
         };
-        relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&error))
+        server::ServerError::from(tilo_session_client::device::HostRefusal::of(&error))
     };
     assert_eq!(
         refused(Refusal::NotYourOwn),
-        relay::RelayError::RefusedWorkspace(Refusal::NotYourOwn)
+        server::ServerError::RefusedWorkspace(Refusal::NotYourOwn)
     );
     let part = "the record plan of so.tilo.notes";
     let not_made = refused(Refusal::BranchNotMade { part: part.into() });
     assert_eq!(
         not_made,
-        relay::RelayError::RefusedWorkspace(Refusal::BranchNotMade { part: part.into() })
+        server::ServerError::RefusedWorkspace(Refusal::BranchNotMade { part: part.into() })
     );
     let answered = account::answer(
         true,
@@ -1199,7 +1199,7 @@ fn a_workspace_refusal_is_read_by_its_case() {
 }
 
 /// Where the site keeps no invitation, the link carries the invitation's
-/// text after a route that names the relay, as the site's own workspace
+/// text after a route that names the server, as the site's own workspace
 /// links do, so following it reaches the workspace's host.
 #[tokio::test]
 async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
@@ -1208,7 +1208,7 @@ async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
     let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
     let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
     assert!(
-        link.starts_with(&format!("{site}/#/@relay.tilo.test/w/{workspace}?invite=")),
+        link.starts_with(&format!("{site}/#/@server.tilo.test/w/{workspace}?invite=")),
         "{link}"
     );
 }

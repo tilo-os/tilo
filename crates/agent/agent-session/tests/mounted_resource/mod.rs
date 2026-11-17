@@ -121,7 +121,7 @@ pub async fn run() {
     );
     let state = crate::support::scratch_dir();
     let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces
         .create("Mounted resource acceptance")
         .await
@@ -357,7 +357,7 @@ pub async fn run() {
         let barrier = native.peer.barrier().unwrap();
         barrier.recv().unwrap().unwrap();
         let retained = hosted
-            .relay
+            .server
             .workspace_documents()
             .retained(workspace.workspace_id)
             .await
@@ -375,11 +375,11 @@ pub async fn run() {
         native.peer.close();
         hosted.agents.shutdown();
         drop(hosted.web);
-        hosted.relay.shutdown().await;
+        hosted.server.shutdown().await;
         hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
         println!("MOUNTED_RESOURCE_STAGE={{\"stage\":\"remote-encrypted-source-host-restarted\"}}");
     }
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let reader_identity = hex::encode(recipient.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
@@ -537,7 +537,7 @@ pub async fn run() {
     .await;
     native.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
     assert!(
         result.expect("bounded mounted journey").success(),
         "mounted journey failed"

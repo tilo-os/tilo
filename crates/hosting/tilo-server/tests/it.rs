@@ -75,10 +75,10 @@ mod placed_shell;
 mod presence_batching;
 #[path = "record_content_routing.rs"]
 mod record_content_routing;
-#[path = "relay_daemon.rs"]
-mod relay_daemon;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
+#[path = "server_daemon.rs"]
+mod server_daemon;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "surface_content.rs"]

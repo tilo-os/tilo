@@ -8,7 +8,7 @@
 //! runs here and answers in JSON without a secret: listing, activating,
 //! removing and protecting an identity; listing the devices trusted under the
 //! workspace's identity and root-signing a revocation; and removing a home
-//! server, whose relay administration signs with the root key too.
+//! server, whose server administration signs with the root key too.
 //!
 //! Who may take a step is decided at the API, before it reaches this engine:
 //! only a person who administers the workspace's identity, and every change
@@ -32,7 +32,7 @@ pub(crate) use tilo_actions::remote::identity_admin::{
     REVOKE, STEPS,
 };
 
-const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
+const SERVER_ADMIN: &str = "/usr/libexec/tilo/tilo-server-admin";
 /// Removing a home server dials it to deliver its decommission; this bounds a server that never
 /// answers.
 const HOME_PEER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -95,7 +95,7 @@ pub(crate) const HOME_PEER_REMOVE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "service",
         ParamType::Text,
-        "The home server's relay service node id, 64 hex characters.",
+        "The home server's server service node id, 64 hex characters.",
     ),
     ActionParam::required(
         "confirm",
@@ -247,7 +247,7 @@ impl IdentityAdmin {
         &SESSION
     }
 
-    /// Identity administration whose relay commands `runner` runs.
+    /// Identity administration whose server commands `runner` runs.
     pub(crate) fn with_runner(runner: Runner) -> Self {
         Self { runner }
     }
@@ -302,18 +302,18 @@ impl IdentityAdmin {
                 confirmed(args, "remove this home server")?;
                 let device = node_id(args.text("device").unwrap_or_default(), "device")?;
                 let service = node_id(args.text("service").unwrap_or_default(), "service")?;
-                self.relay_admin(home_peer_remove_command(store, &device, &service))
+                self.server_admin(home_peer_remove_command(store, &device, &service))
                     .map(Started::Later)
             }
             HOME_PEER_RETRY => self
-                .relay_admin(home_peer_retry_command(store))
+                .server_admin(home_peer_retry_command(store))
                 .map(Started::Later),
             _ => Err(format!("`{step}` is not an identity step")),
         }
     }
 
-    /// Run the relay administration `command` on a worker thread; the answer is what it reported.
-    fn relay_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
+    /// Run the server administration `command` on a worker thread; the answer is what it reported.
+    fn server_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
         let (completer, answer) = pending();
         let runner = Arc::clone(&self.runner);
         std::thread::Builder::new()
@@ -328,28 +328,28 @@ impl IdentityAdmin {
     }
 }
 
-/// The relay command that root-revokes and stops home server `device` serving through `service` .
+/// The server command that root-revokes and stops home server `device` serving through `service` .
 /// The identity directory is the session's own.
 pub(crate) fn home_peer_remove_command(store: &Store, device: &str, service: &str) -> HostCommand {
-    let mut args = relay_args("home-peer-remove", store);
+    let mut args = server_args("home-peer-remove", store);
     args.extend(["--device", device, "--service", service].map(OsString::from));
     HostCommand {
-        program: PathBuf::from(RELAY_ADMIN),
+        program: PathBuf::from(SERVER_ADMIN),
         args,
         timeout: HOME_PEER_TIMEOUT,
     }
 }
 
-/// The relay command that delivers the home-server removals still pending.
+/// The server command that delivers the home-server removals still pending.
 pub(crate) fn home_peer_retry_command(store: &Store) -> HostCommand {
     HostCommand {
-        program: PathBuf::from(RELAY_ADMIN),
-        args: relay_args("home-peer-retry-removals", store),
+        program: PathBuf::from(SERVER_ADMIN),
+        args: server_args("home-peer-retry-removals", store),
         timeout: HOME_PEER_TIMEOUT,
     }
 }
 
-fn relay_args(command: &str, store: &Store) -> Vec<OsString> {
+fn server_args(command: &str, store: &Store) -> Vec<OsString> {
     vec![
         command.into(),
         "--identity-root".into(),
@@ -359,7 +359,7 @@ fn relay_args(command: &str, store: &Store) -> Vec<OsString> {
     ]
 }
 
-/// What a finished relay command reported: its JSON, or an empty object for one that reports
+/// What a finished server command reported: its JSON, or an empty object for one that reports
 /// nothing.
 fn relay_answer(finished: &Finished) -> Answer {
     if !finished.success {
@@ -1076,7 +1076,7 @@ mod tests {
 
         let recorded = commands.lock().expect("commands").clone();
         let expected = |command: &str, tail: &[&str]| HostCommand {
-            program: PathBuf::from(RELAY_ADMIN),
+            program: PathBuf::from(SERVER_ADMIN),
             args: [
                 command,
                 "--identity-root",

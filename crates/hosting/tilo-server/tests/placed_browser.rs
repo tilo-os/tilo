@@ -1,4 +1,4 @@
-//! A workspace's Browser opens in the workspace's VM: the relay asks the placer
+//! A workspace's Browser opens in the workspace's VM: the server asks the placer
 //! which host runs that VM, waits while none has room, then asks that host's
 //! member device over the device action service to open Browser, handing it what the
 //! session joins the workspace with. The member asks the hosted-VM service
@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use legacy_vm::hosted::control::{self, OpenBrowser, Reply, Request};
+use tilo_runtime::standalone::take_work;
 use tilo_server::placed_browsers::{OpenError, PlacedBrowsers};
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;
-use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, TestUser, device_endpoint, host_on};
@@ -32,7 +32,7 @@ struct Opened {
     times: AtomicUsize,
 }
 
-/// The `host:port` an endpoint of this process listens on, as a relay's
+/// The `host:port` an endpoint of this process listens on, as a server's
 /// members file names a member.
 fn address_of(endpoint: &iroh::Endpoint) -> String {
     let socket = endpoint
@@ -103,7 +103,7 @@ fn placer() -> (String, Arc<AtomicUsize>) {
             assert_eq!(
                 (vm.environment.as_str(), vm.size),
                 ("default", legacy_vm::hosted::size::VmSize::Small),
-                "the relay places Browser in the workspace's VM, where its shells run"
+                "the server places Browser in the workspace's VM, where its shells run"
             );
             let reply = if counted.fetch_add(1, Ordering::SeqCst) == 0 {
                 Reply::Busy(legacy_vm::hosted::service::BUSY.into())
@@ -118,7 +118,7 @@ fn placer() -> (String, Arc<AtomicUsize>) {
     (address, asked)
 }
 
-/// A workspace whose VM host runs its VM, and the relay's placed browsers
+/// A workspace whose VM host runs its VM, and the server's placed browsers
 /// asking it.
 struct Placed {
     workspace: String,
@@ -155,7 +155,7 @@ async fn placed() -> Placed {
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Relay::new(
+        take_work::Server::new(
             &hex::encode(shell.device_pubkey()),
             &address_of(hosted.router.endpoint()),
         )

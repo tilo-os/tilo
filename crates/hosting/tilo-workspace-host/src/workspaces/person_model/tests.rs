@@ -79,8 +79,8 @@ fn text_of(answer: &Answer) -> String {
 async fn nothing_linked_is_refused_and_asks_no_provider() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("never said")]);
     workspaces.answer_models_with(scripted.clone());
 
@@ -119,8 +119,8 @@ async fn nothing_linked_is_refused_and_asks_no_provider() {
 async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([
         Reply::text("main thread"),
         Reply::text("a part"),
@@ -197,8 +197,8 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
 async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("the default")]);
     workspaces.answer_models_with(scripted.clone());
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
@@ -254,8 +254,8 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
 async fn a_provider_without_its_key_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let keyless = Linking {
         key: None,
         ..GOOGLE
@@ -286,8 +286,8 @@ async fn a_provider_without_its_key_is_refused() {
 async fn an_address_off_the_public_internet_needs_the_operators_word() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     for (person, endpoint) in [
         ([1; 32], "http://127.0.0.1:8000/v1"),
         ([2; 32], "https://10.0.0.5/v1"),
@@ -336,8 +336,8 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
 async fn the_answer_streams_and_says_what_it_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([
         Reply::text("Good morning, Ada. Two things wait for you.").costing(1_250),
         Reply::tool_call("call-1", "invoke", serde_json::json!({"action": "post"})).costing(90),
@@ -386,8 +386,8 @@ async fn the_answer_streams_and_says_what_it_cost() {
 async fn a_providers_failure_is_the_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces.answer_models_with(ScriptedProvider::answering([Reply::failing(
         ModelError::new(ErrorKind::Authentication),
     )]));
@@ -415,8 +415,8 @@ async fn a_providers_failure_is_the_refusal() {
 async fn a_host_that_speaks_to_no_provider_answers_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces.answer_models_with(Arc::new(NoProvider));
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
     let refused = workspaces
@@ -436,8 +436,8 @@ async fn a_host_that_speaks_to_no_provider_answers_nothing() {
 async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::never(), Reply::never(), Reply::never()]);
     workspaces.answer_models_with(scripted.clone());
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
@@ -500,8 +500,8 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
 async fn a_plain_question_is_answered_in_words() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("yes").costing(12)]);
     workspaces.answer_models_with(scripted.clone());
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
@@ -539,8 +539,8 @@ async fn a_plain_question_is_answered_in_words() {
 async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("A receipt.")]);
     workspaces.answer_models_with(scripted.clone());
     let provider = workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
@@ -606,8 +606,8 @@ async fn nothing_printed_carries_the_key() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let printing = Arc::new(Printing::default());
     workspaces.answer_models_with(printing.clone());
     workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
@@ -657,8 +657,8 @@ fn scout(day: &str, limit_micros: Option<u64>) -> Spender {
 async fn the_days_limit_stops_a_run() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering(std::iter::repeat_n(
         Reply::text("a step").costing(1_200_000),
         4,
@@ -708,11 +708,11 @@ async fn the_days_limit_stops_a_run() {
     assert_eq!(theirs.spent_today_micros, Some(1_200_000));
 
     // The host restarts: the day is still spent.
-    let relay = {
-        relay.shutdown().await;
+    let server = {
+        server.shutdown().await;
         test_host(dir.path(), &key, &owner).await
     };
-    let workspaces = relay.workspaces();
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("a new day").costing(10_000)]);
     workspaces.answer_models_with(scripted.clone());
     let model = workspaces.person_model(ADA, Interaction::Task);
@@ -742,8 +742,8 @@ async fn the_days_limit_stops_a_run() {
 async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering(std::iter::repeat_n(
         Reply::text("a step").costing(400_000),
         3,
@@ -821,8 +821,8 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     const CALLS: u64 = 36;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces.answer_models_with(ScriptedProvider::answering(
         (0..=CALLS).map(|_| Reply::text("a part").costing(1_000)),
     ));

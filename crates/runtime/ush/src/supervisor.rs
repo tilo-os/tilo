@@ -1397,7 +1397,7 @@ fn finish_session(
     match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
-            // How it ended — a relay bridge's status, a local guest's setup
+            // How it ended — a server bridge's status, a local guest's setup
             // report: a terminal that asked reads it before the lease closes,
             // and tells a shell that exited from a connection that was lost
             // or a guest that never started.

@@ -280,7 +280,7 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
         .collect::<Vec<_>>();
     // A peer that never saw the first write receives the second one first.
     let origin = |fixture: &Fixture| {
-        crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key)
+        crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key)
     };
     let mut peer = fixture.governor.peer().clone();
     let held = peer

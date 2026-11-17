@@ -1,7 +1,7 @@
 //! Who is asking at the entry's wait list: a keyed hash of the client address
 //! (no raw address is ever kept) and the per-address windows of the wait
 //! list's acts. Taken from the workspace service's own limits, whose joins the
-//! relay's directory entry answers itself.
+//! server's directory entry answers itself.
 
 use hmac::{Hmac, KeyInit, Mac};
 use std::collections::{HashMap, VecDeque};

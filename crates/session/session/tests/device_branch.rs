@@ -709,7 +709,7 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
                 .any(|title| title == "Before the copy")
         });
     }
-    // A link into the workspace waits for Bob: the laptop stays reachable at its relay through every
+    // A link into the workspace waits for Bob: the laptop stays reachable at its server through every
     // restart, as the boxes are on their network.
     let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
     laptop.stop();

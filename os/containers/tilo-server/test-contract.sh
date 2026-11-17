@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Static contract for the operator-facing composite home-peer deployment.
 #
-# Keep this cheap: t's image-relay check builds the image (tools/ci/publish/relay-build.sh,
+# Keep this cheap: t's image-server check builds the image (tools/ci/publish/server-build.sh,
 # which runs this contract first), while this asserts the Compose artifact includes the
 # complete filesystem replica and the image compiles nothing of its own.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose="$root/compose.yaml"
-config="$root/relay.toml.example"
+config="$root/server.toml.example"
 readme="$root/README.md"
 containerfile="$root/Containerfile"
-build="$root/../../../tools/ci/publish/relay-build.sh"
+build="$root/../../../tools/ci/publish/server-build.sh"
 binaries="$root/../../../tools/ci/publish/server-binaries.sh"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
@@ -50,7 +50,7 @@ need "$readme" "filesystem peer"
 need "$readme" "selected workspace IDs"
 need "$readme" "Pair home server"
 
-# The image packages programs t built: the relay, its admin, its enroll program and the
+# The image packages programs t built: the server, its admin, its enroll program and the
 # filesystem replica come from the staged context, and nothing in the image compiles.
 need "$containerfile" "COPY bin/tilo-server /usr/libexec/tilo/tilo-server"
 need "$containerfile" "COPY bin/tilo-server-admin /usr/libexec/tilo/tilo-server-admin"
@@ -66,13 +66,13 @@ need "$containerfile" "microdnf install -y --setopt=reposdir=/repo --disablerepo
 need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5"
 
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
-# per image: the relay and the replica in one, as the image compiled them before.
+# per image: the server and the replica in one, as the image compiled them before.
 need "$binaries" "packages=(-p tilo-server -p tilo-fs --bins)"
 need "$binaries" "bins=(tilo-server tilo-server-admin tilo-enroll fs)"
 need "$binaries" "export CARGO_PROFILE_RELEASE_LTO=thin"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 
-# The build t runs (image-relay): this contract first; the base and the frozen RPM snapshot are
+# The build t runs (image-server): this contract first; the base and the frozen RPM snapshot are
 # passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
 # the image copies; nothing else enters the context, and a commit time is no input.
 need "$build" "bash os/containers/tilo-server/test-contract.sh"

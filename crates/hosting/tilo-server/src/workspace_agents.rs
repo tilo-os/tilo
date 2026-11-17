@@ -52,8 +52,8 @@ use tilo_model_gateway::host_backend::protocol::{
     ToolResult,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_protocol::WorkspaceId;
 use tilo_resource::Resource as _;
+use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspace_bots::events::PersonEvents;

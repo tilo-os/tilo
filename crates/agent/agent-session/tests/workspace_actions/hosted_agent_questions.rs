@@ -53,7 +53,7 @@ enum Who<'a> {
 /// A server with one person, their assistant on it, and their own model.
 struct Hosted {
     /// The server itself, kept running until the test ends.
-    _server: daemon::Relay,
+    _server: daemon::Server,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
     workspace: String,

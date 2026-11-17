@@ -54,7 +54,7 @@ fn words(index: usize) -> String {
         "sheets",
         "music",
         "photos",
-        "relay",
+        "server",
         "entry",
         "browser",
         "terminal",
@@ -152,7 +152,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let guest_device = enrol(&guest, "pace-guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Paced workspace").await.unwrap();
     // The workspace's chat, as an operator seeds it when the workspace is made
     // (`--seed-app so.tilo.chat`): its record with the channels every chat

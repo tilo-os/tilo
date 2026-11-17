@@ -737,7 +737,7 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
         .spawn();
 
     // B signs as its device but asks from an endpoint keyed by another key,
-    // as a Tilo relay does.
+    // as a Tilo server does.
     let apart = SigningKey::from_bytes(&[30; 32]);
     let b_endpoint = localhost_endpoint(&apart).await;
     let b_action_service = ActionService::new(b.0.clone(), Arc::new(TestHost::new()));

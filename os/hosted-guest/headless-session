@@ -76,7 +76,7 @@ export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
 # The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
 # secrets go to the sealed file store a machine without a Secret Service uses.
 # The identity is the one the material hands it at every start, which is what
-# the relay certifies for each session; the image holds none.
+# the server certifies for each session; the image holds none.
 # The device's keys and certificate live where TILO_IDENTITY_ROOT names; unset,
 # that is the system's /var/lib/tilo, which this unprivileged account may not
 # write, and the session ends before it joins its workspace. A directory of

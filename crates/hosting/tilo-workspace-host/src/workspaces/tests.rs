@@ -1,6 +1,6 @@
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use super::*;
@@ -25,8 +25,8 @@ mod lookup;
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = PreAdmitRequest {
@@ -44,7 +44,7 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
         .find(|pending| pending.invite_id == issued.invite_id)
         .unwrap();
     assert_eq!(invitation.recipient_user_public_key, Some(guest));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A person's device certificate, as a guest's browser makes one.
@@ -70,8 +70,8 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
     let mut redemptions = Vec::new();
     let mut people = Vec::new();
@@ -150,7 +150,7 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
             .unwrap();
         assert_eq!(member.name, format!("Guest {index}"));
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Concurrent pre-admissions share their workspace's writes, and every one of
@@ -161,8 +161,8 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
     use tilo_server_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
     let issued = n0_future::join_all((0..8_u8).map(|index| {
         let workspaces = workspaces.clone();
@@ -185,9 +185,9 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
     }))
     .await;
     let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
-    relay.shutdown().await;
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    server.shutdown().await;
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     for (index, (issued, (_, device_cert))) in issued.iter().zip(&guests).enumerate() {
         let token = u8::try_from(index + 1).unwrap();
         let answer = workspaces
@@ -201,20 +201,20 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
             .await;
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// An entry cut off between committing a device's admission and settling it
 /// (the page that asked closed meanwhile) leaves governance holding the
-/// device while the relay decides its changes against what devices may do, without it.
+/// device while the server decides its changes against what devices may do, without it.
 /// The device's next entry finds it admitted already, and settles what
 /// governance holds before answering, so its changes are decided with it.
 #[tokio::test]
 async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let page = {
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -265,7 +265,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
             .await,
         "the next entry settled the admission"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -273,8 +273,8 @@ async fn every_settled_decision_is_announced_with_its_workspace() {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let mut changes = workspaces.governance_changes();
     let deny_outside = Grant::new(
@@ -302,7 +302,7 @@ async fn every_settled_decision_is_announced_with_its_workspace() {
             .workspace,
         created.workspace
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -378,8 +378,8 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces
         .create("Read-only resource discovery")
         .await
@@ -461,7 +461,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     .await;
     assert_view_reader_refused(&workspaces, created.workspace_id, &caller, &source).await;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// What a workspace's records service answers an agent with follows from who
@@ -473,8 +473,8 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("A workspace's people").await.unwrap();
     let member_key = SigningKey::from_bytes(&[5; 32]);
     let mut member = cert.clone();
@@ -535,7 +535,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
         "a revoked device reads nothing, its certificate in the list or not"
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The workspace's default record a host seeds is the one every member's first
@@ -545,8 +545,8 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
 async fn a_seeded_workspace_default_record_names_the_default_id() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_session::AppCatalogue::native();
     // An app whose windows each show a resource of their own: one that keeps
@@ -576,7 +576,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
             kind
         ))
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -585,8 +585,8 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces
         .create("Native authoring rollover")
         .await
@@ -660,7 +660,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         Some(Some(1)),
         "rollover must publish the new governor mutation into the retained source"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[test]
@@ -827,10 +827,10 @@ async fn legacy_window_write_respects_current_member_grants() {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let (relay, workspaces) = {
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces().clone();
-        (relay, workspaces)
+    let (server, workspaces) = {
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        (server, workspaces)
     };
     let created = workspaces.create("Legacy write restriction").await.unwrap();
     assert_eq!(
@@ -913,20 +913,20 @@ async fn legacy_window_write_respects_current_member_grants() {
          theirs that is not the workspace's is still held to what such a device may do"
     );
     drop(workspaces);
-    crate::workspaces::fixtures::TestHost::shutdown(relay).await;
+    crate::workspaces::fixtures::TestHost::shutdown(server).await;
 }
 
 #[cfg(feature = "agents")]
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay remains live through the policy assertions and its consuming shutdown"
+    reason = "the server remains live through the policy assertions and its consuming shutdown"
 )]
 async fn applications_are_prepared_for_the_current_owner_only() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Private app authoring").await.unwrap();
     let catalogue = tilo_agent_session::AppCatalogue::native();
     Box::pin(assert_canonical_chat_preparation(
@@ -969,7 +969,7 @@ async fn applications_are_prepared_for_the_current_owner_only() {
             .await
             .is_err()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -1060,8 +1060,8 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Shared desktop").await.unwrap();
     let workspace = created.workspace.as_str();
     let read = || workspace_resource(workspaces, workspace, DESKTOP);
@@ -1117,7 +1117,7 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
             .await
             .is_err()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -1130,8 +1130,8 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces
         .create("Native governor authoring")
         .await
@@ -1253,7 +1253,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
         "native view bytes and the governor's voice binding share the committed graph"
     );
     drop(guard);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -1294,13 +1294,13 @@ async fn is_banned(
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay stays live until its consuming shutdown"
+    reason = "the server stays live until its consuming shutdown"
 )]
 async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("plaza").await.unwrap();
     let before = created.generation;
     let renamed = workspaces
@@ -1357,7 +1357,7 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
         governed.path.clone()
     };
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
     let restored = GovernedWorkspace::open(path, &cert, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
@@ -1369,14 +1369,14 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay stays live until its consuming shutdown"
+    reason = "the server stays live until its consuming shutdown"
 )]
 async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
     use tilo_server_session::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = |request_id| RemoveMemberRequest {
@@ -1420,20 +1420,20 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
         .await
         .unwrap();
     assert!(!is_banned(workspaces, &created.workspace, &cert, guest).await);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay stays live until its consuming shutdown"
+    reason = "the server stays live until its consuming shutdown"
 )]
 async fn the_owner_restricts_until_a_time_and_lifts_it() {
     use tilo_server_session::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = |request_id| RemoveMemberRequest {
@@ -1472,21 +1472,21 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
             .is_err(),
         "the owner is never restricted"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// A relay certified with `capabilities`, a workspace it governs, and one of
+/// A server certified with `capabilities`, a workspace it governs, and one of
 /// the workspace's member devices, with the channel route that member asks for.
 struct AskedForKeys {
-    /// The relay's state.
+    /// The server's state.
     state: tempfile::TempDir,
-    relay: crate::workspaces::fixtures::TestHost,
+    server: crate::workspaces::fixtures::TestHost,
     workspaces: Workspaces,
     workspace: String,
     channel: collab_types::WorkspaceId,
 }
 
-/// Start a relay certified with `capabilities`, create a workspace on it, admit
+/// Start a server certified with `capabilities`, create a workspace on it, admit
 /// a member device of the person, and hand the workspace that device's MLS
 /// access request for the workspace's group, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForKeys {
@@ -1501,8 +1501,8 @@ async fn a_member_asks_for_a_channel_through(
 ) -> AskedForKeys {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
-    let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(&dir.path().join("server"), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Sealed").await.unwrap();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
@@ -1536,7 +1536,7 @@ async fn a_member_asks_for_a_channel_through(
         .unwrap();
     AskedForKeys {
         state: dir,
-        relay,
+        server,
         workspaces,
         workspace: created.workspace,
         channel,
@@ -1548,7 +1548,7 @@ impl AskedForKeys {
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {
         let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
-        self.relay
+        self.server
             .workspace_documents()
             .retained(workspace_id)
             .await
@@ -1570,16 +1570,16 @@ impl AskedForKeys {
             })
     }
 
-    /// Shut the relay down, then remove its state.
+    /// Shut the server down, then remove its state.
     async fn shut_down(self) {
         let Self {
             state,
-            relay,
+            server,
             workspaces,
             ..
         } = self;
         drop(workspaces);
-        relay.shutdown().await;
+        server.shutdown().await;
         drop(state);
     }
 }
@@ -1602,18 +1602,18 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     asked.shut_down().await;
 }
 
-/// A member's request that reached the host over the member's relay session
+/// A member's request that reached the host over the member's server session
 /// is kept there already, as the member's own write: the host keeps no copy of
 /// its own. Each request a crowd sent was kept twice, a second job on the
 /// workspace's one-at-a-time queue for every one.
 #[tokio::test]
-async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
+async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
     let asked =
         a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
             .await;
     assert!(
         !asked.retains_the_request().await,
-        "the host kept a second copy of a request its relay keeps as the member's"
+        "the host kept a second copy of a request its server keeps as the member's"
     );
     asked.shut_down().await;
 }
@@ -1627,8 +1627,8 @@ async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
 async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
     let records = workspaces.inner.host.records.clone();
     // The creation's own changes are retained before the owner stalls.
@@ -1698,7 +1698,7 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
             "a published change is retained, after the ones published before it"
         );
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A Complete whose challenge this host does not hold, and whose request it
@@ -1714,8 +1714,8 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let (device, device_cert) = guest_device();
     let issued = workspaces
@@ -1765,7 +1765,7 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
         ),
         "{response:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// `windows`, the layout of `workspace` as `member`'s device minting in
@@ -1856,8 +1856,8 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
 async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
@@ -1921,7 +1921,7 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
         }
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A device of the owner's that is not this host removes a member itself,
@@ -1932,8 +1932,8 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
 async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitations() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (writer, salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let writer_key = SigningKey::from_bytes(&[3; 32]);
@@ -1995,7 +1995,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
 
     let _windows = terminals_opened(&workspaces, &workspace, &writer, salt).await;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A device of the governor's person, certified as a member and admitted to
@@ -2085,8 +2085,8 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
 async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Studio").await.unwrap().workspace;
     let (member, member_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let member_key = SigningKey::from_bytes(&[3; 32]);
@@ -2170,21 +2170,21 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
     drop(governed);
     drop(state);
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A member's windows are the workspace's: the governor takes the change in, and
 /// every member sees the windows.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+    reason = "fires only in some feature sets: the server stays held through the assertions; Server::shutdown consumes it"
 )]
 #[tokio::test]
 async fn the_windows_a_member_opens_are_shared_by_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
@@ -2196,7 +2196,7 @@ async fn the_windows_a_member_opens_are_shared_by_the_workspace() {
     titles.sort();
     assert_eq!(titles, ["ssh prod-db", "~/private/taxes"]);
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// `member`'s change to `workspace`'s layout closing every window it made
@@ -2286,15 +2286,15 @@ fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bo
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+    reason = "fires only in some feature sets: the server stays held through the assertions; Server::shutdown consumes it"
 )]
 #[tokio::test]
 async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     const TITLES: [&str; 2] = ["ssh prod-db", "~/private/taxes"];
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let workspace = created.workspace.clone();
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
@@ -2336,7 +2336,7 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
         .await
         .get(&created.workspace_id)
         .cloned()
-        .expect("the relay hosts the workspace");
+        .expect("the server hosts the workspace");
     let (replayed, archived) = {
         let runtime = workspace.lock().await;
         (
@@ -2361,11 +2361,11 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
                 crate::frame::decode(bytes.get(4..).unwrap_or_default())
                     .is_ok_and(|frame| replayed_frame_carries(&frame, title))
             }),
-            "the relay keeps {title:?} archived for those who held it"
+            "the server keeps {title:?} archived for those who held it"
         );
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A workspace becomes public in the directory: its layout stays what it
@@ -2374,14 +2374,14 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 /// it was listed.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+    reason = "fires only in some feature sets: the server stays held through the assertions; Server::shutdown consumes it"
 )]
 #[tokio::test]
 async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
@@ -2392,7 +2392,7 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
     assert_eq!(
         titles_shared(&workspaces, &workspace).await.len(),
         2,
-        "committed while the relay still took members' windows in"
+        "committed while the server still took members' windows in"
     );
     // Listed in the directory: anyone may come in as an editor.
     workspaces
@@ -2407,10 +2407,10 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
         .await
         .unwrap();
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     assert_eq!(
         titles_shared(&workspaces, &workspace).await.len(),
         2,
@@ -2422,7 +2422,7 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
         .unwrap();
     assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The Lounge, 2026-10-20: a laptop's join completed at the host, but the
@@ -2440,8 +2440,8 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let (laptop, laptop_cert) = guest_device();
     let (complete, first) = entry_join(
@@ -2514,7 +2514,7 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
     assert!(current.certified_roster.contains(&laptop_cert));
     assert!(current.certified_roster.contains(&other_cert));
     assert!(current.certified_roster.contains(&current.host));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A workspace that moves to its person's host keeps its workspace: the host
@@ -2524,8 +2524,8 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
 async fn a_workspace_moved_here_keeps_its_identity() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let workspace = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
     let moved = workspaces
         .create_workspace("Mine", Some(workspace))
@@ -2555,11 +2555,11 @@ async fn a_workspace_moved_here_keeps_its_identity() {
     );
     let fresh = workspaces.create_workspace("Fresh", None).await.unwrap();
     assert_ne!(fresh.workspace, workspace);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A member whose person's root renewed its device certificate proves its
-/// membership with the renewal: the relay holds the renewal in place of the
+/// membership with the renewal: the server holds the renewal in place of the
 /// certificate it replaces, answers the device as the same member with its
 /// role, and refuses the older certificate from then on.
 #[tokio::test]
@@ -2571,8 +2571,8 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let root = SigningKey::from_bytes(&[71; 32]);
     let laptop = SigningKey::from_bytes(&[72; 32]);
@@ -2641,7 +2641,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
         ),
         "the older certificate is refused after the renewal"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// `workspace`'s publication as it stands: whether it was just started over
@@ -2687,14 +2687,14 @@ async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
 /// its history.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay stays held through the assertions; Relay::shutdown consumes it"
+    reason = "the server stays held through the assertions; Server::shutdown consumes it"
 )]
 #[tokio::test]
 async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace.clone();
 
@@ -2794,7 +2794,7 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
         );
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A host that renamed its own governor certificate — the same device key,
@@ -2805,12 +2805,12 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
 async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let created = relay.workspaces().create("Demo").await.unwrap();
-    relay.shutdown().await;
+    let server = test_host(dir.path(), &key, &cert).await;
+    let created = server.workspaces().create("Demo").await.unwrap();
+    server.shutdown().await;
 
     // The same device and capabilities, under another name, signed again by
-    // the workspace's owner root as a relay signs its own certificate.
+    // the workspace's owner root as a server signs its own certificate.
     let mut renamed = tilo_user_identity::DeviceCert {
         device_label: "the same host, renamed".into(),
         ..cert.clone()
@@ -2885,11 +2885,11 @@ async fn a_workspace_names_its_own_host_to_every_member() {
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
+    let server = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
         .await
         .expect("the host opens");
-    let addr = relay.node_addr();
-    let workspaces = relay.workspaces();
+    let addr = server.node_addr();
+    let workspaces = server.workspaces();
     let created = tokio::time::timeout(Duration::from_secs(120), workspaces.create("Demo"))
         .await
         .expect("the workspace is created")
@@ -2913,28 +2913,28 @@ async fn a_workspace_names_its_own_host_to_every_member() {
             .endpoint_addr,
         addr
     );
-    let served = tokio::time::timeout(
+    let governors = tokio::time::timeout(
         Duration::from_secs(120),
         workspaces.hosts(&created.workspace),
     )
     .await
     .expect("the workspace names its hosts")
     .unwrap();
-    assert_eq!(served.len(), 1, "the governor is named once");
-    relay.shutdown().await;
+    assert_eq!(governors.len(), 1, "the governor is named once");
+    server.shutdown().await;
 }
 
-/// Membership as the workspace's signed log makes it, on the relay that hosts
+/// Membership as the workspace's signed log makes it, on the server that hosts
 /// it: a new workspace holds its owner alone, a person who joins through the
 /// entry is a member, one removed is gone and comes back through a new
 /// invitation, and a member's copy of the workspace reaches the membership
-/// the relay holds.
+/// the server holds.
 #[tokio::test]
 async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Plans").await.unwrap().workspace;
     let live = |members: &[tilo_peer_state::Member], person: [u8; 32]| {
         members
@@ -2955,7 +2955,7 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     assert!(live(&members, guest.user_public_key), "{members:?}");
 
     // A member's copy, sent the workspace as it stands, holds the same people.
-    let (relay_policy, copy_policy) = {
+    let (server_policy, copy_policy) = {
         let state = workspaces.workspace(&workspace).await.unwrap();
         let governed = state.lock().await;
         let held = governed.peer().admitted_workspace().unwrap().clone();
@@ -2967,9 +2967,9 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
             tilo_peer_state::workspace::policy_of(&copy, &workspace),
         )
     };
-    assert_eq!(relay_policy, copy_policy);
+    assert_eq!(server_policy, copy_policy);
     assert!(
-        relay_policy
+        server_policy
             .members
             .contains_key(&hex::encode(guest.user_public_key))
     );
@@ -2995,5 +2995,5 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
         "a new invitation admits them again: {members:?}"
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

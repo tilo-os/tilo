@@ -1188,7 +1188,7 @@ p99 = 33.4
 min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
-# Relay hosting cost: crates/hosting/tilo-server/examples/relay_load,
+# Server hosting cost: crates/hosting/tilo-server/examples/server_load,
 # 100 members in workspaces of four, ten measured minutes, one sample per
 # minute; tools/perf/adapters.py hosting-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per
@@ -1201,10 +1201,10 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # a delta resent whole or a presence storm fails at once. CPU and latency
 # share the runner and get the fs check's wider tolerances.
 #
-# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
-# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# Baseline change, 2026-10-11: the nightly runs the server on two CPUs
+# (`server_load --server-cpus 2`, record meta `server_cpus = "2"`), the priced
 # 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
-# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# workers, meta `server_cpus = "all"` or absent). A scratch profile on the same
 # commit (Perf / scheduled 97584) measured 13.9 s CPU per member-hour at
 # four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
 # idle workers woken to steal work, more queueing. The first two-CPU run
@@ -1212,45 +1212,45 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # baseline, so neither series is compared with the other; the ceilings below
 # hold for both.
 
-[kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
+[kpi."hosting.server.cpu_s_per_collab_hour.n100"]
 unit = "s"
 p50 = 62.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 3.0
-source = "relay_load: relay process CPU-seconds per active member-hour"
+source = "server_load: server process CPU-seconds per active member-hour"
 
-[kpi."hosting.relay.rss_mib_per_collab.n100"]
+[kpi."hosting.server.rss_mib_per_collab.n100"]
 unit = "MiB"
 p50 = 2.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
-source = "relay_load: relay resident memory per connected member, above the idle relay"
+source = "server_load: server resident memory per connected member, above the idle server"
 
-[kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
+[kpi."hosting.server.egress_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 12700000.0
 enforce = true
-source = "relay_load: UDP bytes the relay's endpoint sent per active member-hour"
+source = "server_load: UDP bytes the relay's endpoint sent per active member-hour"
 
 [kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 10900000.0
 enforce = true
-source = "relay_load: framed bytes written to peer sessions per active member-hour"
+source = "server_load: framed bytes written to peer sessions per active member-hour"
 
 # Packets (the levers after bytes): a change that sends the same bytes in more
-# packets passes every byte budget, and costs egress, relay CPU and client
+# packets passes every byte budget, and costs egress, server CPU and client
 # radio time all the same. Counted on the members' QUIC connections
-# (`Connection::stats`; loopback, so what they received is what the relay
-# sent). The relay's ACK-only datagrams answer client packets that carried
+# (`Connection::stats`; loopback, so what they received is what the server
+# sent). The server's ACK-only datagrams answer client packets that carried
 # nothing to acknowledge back, so a client sending more packets shows twice.
 #
 # Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
-# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# packets 23,838-23,923, of which data 6,188-6,210; server datagrams
 # 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
 # three vary by under 1 % between rounds, so their ceilings sit about 15 %
 # above, as the byte budgets do; ACK-only datagrams follow timing (which
@@ -1258,31 +1258,31 @@ source = "relay_load: framed bytes written to peer sessions per active member-ho
 # above. Run 97792's base, the bench on the commit before client pointer
 # pacing, measured 27,753 client packets, 9,086 data packets and 10,995
 # ACK-only datagrams: undoing that pacing fails three of the four at once.
-[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+[kpi."hosting.server.client_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 27500.0
 enforce = true
-source = "relay_load: UDP datagrams the members sent the relay per active member-hour"
+source = "server_load: UDP datagrams the members sent the relay per active member-hour"
 
 [kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 7150.0
 enforce = true
-source = "relay_load: member datagrams carrying stream data per active member-hour"
+source = "server_load: member datagrams carrying stream data per active member-hour"
 
-[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+[kpi."hosting.server.datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 30700.0
 enforce = true
-source = "relay_load: UDP datagrams the relay sent the members per active member-hour"
+source = "server_load: UDP datagrams the relay sent the members per active member-hour"
 
 [kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 9700.0
 enforce = true
-source = "relay_load: relay datagrams carrying only acknowledgements per active member-hour"
+source = "server_load: server datagrams carrying only acknowledgements per active member-hour"
 
-[kpi."hosting.relay.fanout_ms.n100"]
+[kpi."hosting.server.fanout_ms.n100"]
 unit = "ms"
 p50 = 30.0
 p99 = 500.0
@@ -1290,10 +1290,10 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one edit, publish to receipt by each other member of the workspace"
+source = "server_load: one edit, publish to receipt by each other member of the workspace"
 
 # Presence delivery: publish to receipt of each pointer move and
-# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# caret the server forwarded. The server paces a pointer to 20 Hz, so a move
 # waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
 # follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
 # 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
@@ -1308,7 +1308,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
+source = "server_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
 
 [kpi."hosting.relay.presence_caret_ms.n100"]
 unit = "ms"
@@ -1318,18 +1318,18 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded caret, publish to receipt by each other member of the workspace"
+source = "server_load: one forwarded caret, publish to receipt by each other member of the workspace"
 
 # File and directory barriers per committed edit: two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured
 # 2.82 before #4047 (Perf / scheduled run 91348) and 2.10 after (run 91404),
 # within 0.4 % per window, so the ceiling sits about 15 % above: a reservation
 # renewed per commit or a resynced ancestor fails at once.
-[kpi."hosting.relay.store_fsyncs_per_edit.n100"]
+[kpi."hosting.server.store_fsyncs_per_edit.n100"]
 unit = "count"
 p50 = 2.4
 enforce = true
-source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
+source = "server_load: workspace-store fsyncs per committed delta (store::fsyncs)"
 
 # Directory entries listed per committed edit: a delta's commit
 # used to list its lineage's whole active generation, so this grew with the
@@ -1337,11 +1337,11 @@ source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)
 # (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
 # every window after (run 92278). It is deterministic, so the ceiling sits
 # just above zero: an edit that lists its history again fails at once.
-[kpi."hosting.relay.store_listed_entries_per_edit.n100"]
+[kpi."hosting.server.store_listed_entries_per_edit.n100"]
 unit = "count"
 p50 = 1.0
 enforce = true
-source = "relay_load: directory entries retention listed per committed delta (store::listed_entries)"
+source = "server_load: directory entries retention listed per committed delta (store::listed_entries)"
 
 # Compaction: each round verified every retained entry's document
 # signature 2-3 times, and every later round again, 23.47 per edit at p50
@@ -1350,33 +1350,33 @@ source = "relay_load: directory entries retention listed per committed delta (st
 # per edit (max 1.14) and 325 ms (run 92377). Checks per edit are nearly
 # deterministic, so their ceiling sits about 35 % above: a round verifying
 # its whole channel again fails at once. CPU shares the runner and gets the
-# relay CPU's tolerances, at about twice the measurement.
-[kpi."hosting.relay.compaction_signature_checks_per_edit.n100"]
+# server CPU's tolerances, at about twice the measurement.
+[kpi."hosting.server.compaction_signature_checks_per_edit.n100"]
 unit = "count"
 p50 = 1.5
 enforce = true
-source = "relay_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
+source = "server_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
 
-[kpi."hosting.relay.compaction_cpu_ms_per_collab_hour.n100"]
+[kpi."hosting.server.compaction_cpu_ms_per_collab_hour.n100"]
 unit = "ms"
 p50 = 700.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 100.0
-source = "relay_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
+source = "server_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
 
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
-[kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+[kpi."hosting.server.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
 p50 = 0.001
-source = "KPI: Relay cost per active member-hour"
+source = "KPI: Server cost per active member-hour"
 
-[kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+[kpi."hosting.server.cost_usd_per_collab_hour.hetzner-cx22.n100"]
 unit = "usd"
 p50 = 0.001
 enforce = true
-source = "KPI: Relay cost per active member-hour"
+source = "KPI: Server cost per active member-hour"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry

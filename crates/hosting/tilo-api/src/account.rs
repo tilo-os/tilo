@@ -11,18 +11,18 @@
 //!
 //! `tilo_ls account` lists them, `tilo_read` reads the lists, `tilo_do` runs
 //! an action, and `tilo_status` follows one that waits for the person. Making
-//! a workspace is the relay's own operation ([`crate::relay`]). Minting a
+//! a workspace is the server's own operation ([`crate::server`]). Minting a
 //! key is a certificate the grant's own key signs for one workspace
 //! ([`tilo_user_identity::prepare_minted_grant`]): narrower than the grant,
 //! ending no later than it and within 90 days, and revoked with it. Creating
 //! a key asks the person, whose device certifies it ([`crate::keys`]); one
 //! reaching all their workspaces lasts until revoked unless `expires_in`
 //! says otherwise. The run waits for them, and `tilo_status` answers the key
-//! once they approve. Deleting a workspace is the relay's own operation too:
+//! once they approve. Deleting a workspace is the server's own operation too:
 //! final, it takes everything the host keeps of it, tells whoever is in it,
 //! and revokes every key that reached only it. The call is the confirmation:
 //! nothing asks the person again, as revoking a key asks nothing. Branching a
-//! workspace of the person's own is the relay's own operation as well: a new
+//! workspace of the person's own is the server's own operation as well: a new
 //! workspace of theirs that starts with everything the source holds but what
 //! is tied to other people, and goes on apart from it; the call answers once
 //! it holds all of it.
@@ -32,7 +32,7 @@
 //! shapes `docs/developers/sdk-wire.md` gives every tool.
 
 use crate::grant_key::GrantKey;
-use crate::relay::{Connection, RelayError};
+use crate::server::{Connection, ServerError};
 use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
 use serde_json::{Value, json};
@@ -115,9 +115,9 @@ pub(crate) fn failed(
     }
 }
 
-pub(crate) fn refused(error: &RelayError) -> Outcome {
+pub(crate) fn refused(error: &ServerError) -> Outcome {
     match error {
-        RelayError::NotFound => failed(
+        ServerError::NotFound => failed(
             "not_found",
             "no such workspace of yours",
             "tilo_do account/workspaces#list names your workspaces",
@@ -125,25 +125,27 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
         // The host's own reason stays in the log: the person reads what they
         // would do about it. A key its workspace records as revoked is told
         // that, so the caller asks the person for another.
-        RelayError::Refused(reason) if reason.contains("key_revoked") => failed(
+        ServerError::Refused(reason) if reason.contains("key_revoked") => failed(
             "key_revoked",
             "this key was revoked",
             "ask the person for a new key",
         ),
-        RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => failed(
+        ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => failed(
             "refused",
             error.to_string(),
             "ask the person whether their plan or workspace rules allow it, then try again",
         ),
-        RelayError::Unavailable(_) => failed("unavailable", error.to_string(), "try again shortly"),
+        ServerError::Unavailable(_) => {
+            failed("unavailable", error.to_string(), "try again shortly")
+        }
         // Nothing that can read the workspace answered: the message says what
         // to do.
-        RelayError::NoHolder => failed(
+        ServerError::NoHolder => failed(
             "unavailable",
             error.to_string(),
             "open Tilo on a device that holds the workspace, then try again",
         ),
-        RelayError::RateLimited { retry_after_ms } => Outcome::Failed {
+        ServerError::RateLimited { retry_after_ms } => Outcome::Failed {
             code: RATE_LIMITED,
             message: error.to_string(),
             next: format!("wait {retry_after_ms} ms and retry the same call"),
@@ -159,14 +161,14 @@ pub(crate) const BRANCH_INCOMPLETE: &str = "branch_incomplete";
 /// The answer to a branch the host could not make whole: none was made, and
 /// the caller reads which part of the source did not come; why stays in the
 /// log, as for every refusal. `None` for any other refusal.
-pub(crate) fn not_branched(error: &RelayError) -> Option<Outcome> {
-    let RelayError::RefusedWorkspace(tilo_server_session::workspaces::Refusal::BranchNotMade {
+pub(crate) fn not_branched(error: &ServerError) -> Option<Outcome> {
+    let ServerError::RefusedWorkspace(tilo_server_session::workspaces::Refusal::BranchNotMade {
         part,
     }) = error
     else {
         return None;
     };
-    tracing::info!(%part, "the relay made no branch");
+    tracing::info!(%part, "the server made no branch");
     Some(failed(
         BRANCH_INCOMPLETE,
         format!("The branch wasn't made: {part} didn't come along. Nothing of it was kept."),
@@ -509,7 +511,7 @@ impl Server {
                 Outcome::Ok(listed) => ("account.keys", listed),
                 other => return answer(structured, path, other),
             },
-            "account/usage" => match key.relay().account(key).await {
+            "account/usage" => match key.server().account(key).await {
                 Ok(account) => ("account.usage", account),
                 Err(error) => return answer(structured, path, refused(&error)),
             },
@@ -622,7 +624,7 @@ impl Server {
                 "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
             );
         };
-        if let Err(error) = key.relay().delete(key, workspace).await {
+        if let Err(error) = key.server().delete(key, workspace).await {
             return refused(&error);
         }
         // Every key that reached only that workspace goes with it.
@@ -730,7 +732,7 @@ impl Server {
             Ok(labels) => labels,
             Err(refused) => return refused,
         };
-        match key.relay().create(key, name, &labels, id).await {
+        match key.server().create(key, name, &labels, id).await {
             Ok(created) => Outcome::Ok(json!({"workspace": created})),
             Err(error) => refused(&error),
         }
@@ -769,7 +771,7 @@ impl Server {
             Ok(labels) => labels,
             Err(refused) => return refused,
         };
-        match key.relay().branch(key, source, name, &labels, id).await {
+        match key.server().branch(key, source, name, &labels, id).await {
             Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
             Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
         }
@@ -806,7 +808,7 @@ impl Server {
         key: &Connection,
         labels: &WorkspaceLabels,
     ) -> Outcome {
-        match key.relay().labelled(key, labels).await {
+        match key.server().labelled(key, labels).await {
             Ok(mut workspaces) => Outcome::Ok({
                 workspaces.retain(|workspace| labelled(workspace, labels));
                 json!({
@@ -913,12 +915,12 @@ impl Server {
                 "account/workspaces#list names them",
             );
         };
-        let found = match connection.relay().workspace(connection, workspace).await {
+        let found = match connection.server().workspace(connection, workspace).await {
             Ok(found) => found,
             Err(error) => return refused(&error),
         };
         let Some(found) = found else {
-            return refused(&RelayError::NotFound);
+            return refused(&ServerError::NotFound);
         };
         let key = &connection.key;
         let name = args
@@ -997,7 +999,7 @@ fn host_rows(server: &crate::Server) -> Value {
     )
 }
 
-pub(crate) fn labelled(workspace: &crate::relay::Workspace, labels: &WorkspaceLabels) -> bool {
+pub(crate) fn labelled(workspace: &crate::server::Workspace, labels: &WorkspaceLabels) -> bool {
     labels
         .iter()
         .all(|(name, value)| workspace.labels.get(name) == Some(value))

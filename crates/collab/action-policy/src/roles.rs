@@ -793,7 +793,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 /// An agent acts for one person, inside a turn that person's message caused
 /// ([`crate::turn::authority`]): it never holds more than that person's role,
 /// and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the
-/// relay governing a workspace, every member admitting its ops, the desktop
+/// server governing a workspace, every member admitting its ops, the desktop
 /// broker hosting a workspace itself — asks [`role`](agent_policy::role) rather
 /// than deciding on its own. A workspace's governor admits only its own
 /// person's agents.

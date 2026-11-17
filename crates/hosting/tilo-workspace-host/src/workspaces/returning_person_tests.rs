@@ -8,7 +8,7 @@
 //! whose delegation is bounded by their membership.
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 #![expect(
     clippy::arithmetic_side_effects,
@@ -82,7 +82,7 @@ async fn settle_after_the_tab_expires(
     );
 }
 
-/// One answer everywhere a person's membership is read: the relay-wide
+/// One answer everywhere a person's membership is read: the server-wide
 /// handshake and the certification queue (which a device paired from another
 /// of theirs, and their root approving it, go through) read the workspace
 /// runtimes' roots; an agent's delegation is bounded by the same roots; the
@@ -159,8 +159,8 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
 async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace.clone();
     let root = SigningKey::from_bytes(&rand::random());
@@ -185,5 +185,5 @@ async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back(
     assert!(
         !crate::workspace_access::admits_person(registry, cert.user_public_key, stranger).await
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }

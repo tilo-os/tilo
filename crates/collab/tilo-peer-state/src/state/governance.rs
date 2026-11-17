@@ -45,7 +45,7 @@ impl PeerGovernance<'_> {
             .map(|bytes| serde_json::from_slice(bytes).map_err(err))
             .collect()
     }
-    /// The access of every governed member device at `now`: what a relay
+    /// The access of every governed member device at `now`: what a server
     /// that does not hold the workspace's governance decides their changes
     /// with, each held to its foreign-device bound.
     pub fn governed_device_access(

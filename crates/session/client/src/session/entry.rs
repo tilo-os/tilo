@@ -174,9 +174,9 @@ impl Task {
         &self,
         entering: tilo_server_protocol::entering::Entering,
         done: EntryCompletion,
-        client: Option<&tilo_server_session::RelayClient>,
+        client: Option<&tilo_server_session::ServerClient>,
     ) {
-        let Some(entrance) = client.and_then(tilo_server_session::RelayClient::entrance) else {
+        let Some(entrance) = client.and_then(tilo_server_session::ServerClient::entrance) else {
             let _ = done.send(Err(LinkError::Unavailable(NOT_CONNECTED.to_owned())));
             return;
         };

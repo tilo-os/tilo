@@ -1,5 +1,5 @@
 //! An app's view of one record, attached and never drawn: how a host
-//! without a screen — an agent host, a relay, a workspace service — performs
+//! without a screen — an agent host, a server, a workspace service — performs
 //! actions.
 //!
 //! Nothing is drawn if no one is looking, but no action is performed out of

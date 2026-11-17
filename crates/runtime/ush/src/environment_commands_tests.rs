@@ -519,7 +519,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
     );
     let files = dir.path().join("replicas");
     // As a VM host's member is started: its environment names the hosted-VM
-    // service and no account, since the relay names one with each run.
+    // service and no account, since the server names one with each run.
     let runs = EnvironmentCommands::new(
         WorkspaceShells::new(dir.path().join("shells"), None)
             .with_files(move |workspace| files.join(workspace))

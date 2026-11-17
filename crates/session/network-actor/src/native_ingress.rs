@@ -329,7 +329,7 @@ impl ActorState {
             .await;
     }
 
-    /// Relay for `members`, the devices that take part in this device's
+    /// Server for `members`, the devices that take part in this device's
     /// workspaces through it: what their links bring reaches
     /// [`Self::member_heard`].
     pub(super) fn serve_members(&mut self, members: tilo_peer_state::direct::Owning) {
@@ -562,7 +562,7 @@ impl ActorState {
         self.tell_unsynced(ws);
     }
     /// The device workspace `ws`'s link reaches answered this device's writes `answers`: they
-    /// leave its ownership as a relay host's answers do, a refused one with the verdict the workspace
+    /// leave its ownership as a server host's answers do, a refused one with the verdict the workspace
     /// files for its writer, and what waited behind them goes out.
     pub(super) fn native_answered(
         &self,
@@ -707,7 +707,7 @@ impl ActorState {
         // completes, its apps say it cannot be reached and work on what this
         // device has. The route dials again on the next heartbeat.
         // Where the host was dialled, as its hint names it: a hint signed before the host knew
-        // its relay names only the sockets it had then.
+        // its server names only the sockets it had then.
         let at = WorkspaceDeviceHintV1::authenticate_transport_hint(via)
             .map(|(payload, _)| format!("{:?}", payload.endpoint_addr))
             .unwrap_or_default();

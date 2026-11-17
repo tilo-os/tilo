@@ -223,7 +223,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .collect();
         for (file, url) in model.files.iter_mut().zip(urls) {
             let size = file.size_bytes;
-            let mut relay = |event| {
+            let mut server = |event| {
                 progress(match event {
                     TransferEvent::Received(bytes) => {
                         TransferEvent::Received(done.saturating_add(bytes))
@@ -234,13 +234,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             let sha256 = match &source {
                 UserModelSource::Hub { .. } => {
                     let url = url.ok_or(ServiceError::InvalidArtifact)?;
-                    self.fetch_hub_file(&url, file, &mut relay)?
+                    self.fetch_hub_file(&url, file, &mut server)?
                 }
                 UserModelSource::File { .. } => {
                     let input = chosen.take().ok_or_else(|| {
                         ServiceError::Backend("choose the model file again to add it".into())
                     })?;
-                    let sha256 = self.import_file(input, file, identity, &mut relay)?;
+                    let sha256 = self.import_file(input, file, identity, &mut server)?;
                     file.digest = HubDigest::Sha256 {
                         sha256: sha256.clone(),
                     };

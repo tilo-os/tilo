@@ -80,7 +80,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         "a barrier completes only once what was published before it is durable"
     );
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Edits made while the host is down: past twice what ownership keeps in its record.
@@ -94,7 +94,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     // The restarted host comes up at the ports the kernel picks, its
-    // identity the one its pages hold, through the relay they reach it at.
+    // identity the one its pages hold, through the server they reach it at.
     let host = start_host_serving(
         &root,
         &host_device,
@@ -126,7 +126,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     admitted(&peer).await;
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     // Far more edits than ownership keeps in its record: every one is taken.
     let mut offline = AutoCommit::new();
     for typed in 0..OFFLINE {
@@ -157,7 +157,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     .unwrap();
     assert_eq!(unadmitted(&peer), 0);
 
-    crate::support::place(&host.relay, &observer.cert).await;
+    crate::support::place(&host.server, &observer.cert).await;
     let observer_peer = start_peer(
         host.iroh(),
         observer.cert.clone(),
@@ -171,5 +171,5 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     holds(&observer_peer, &route(), &offline).await;
     peer.close();
     observer_peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

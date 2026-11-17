@@ -389,7 +389,7 @@ fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device
     bob_laptop
         .chat()
         .wait_for_texts(&ada_key, &["under the new key"]);
-    // Each device reached the host and its other device from one endpoint: a relay keeps one
+    // Each device reached the host and its other device from one endpoint: a server keeps one
     // connection per endpoint, and tells the older of two under one key that it was replaced.
     for device in [&bob_laptop, &bob_phone] {
         assert!(

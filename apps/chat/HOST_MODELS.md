@@ -49,7 +49,7 @@ converge on the same gateway backend and provider protocol.
 
 The gateway uses Rig for provider translation and streaming, and the common
 accounts credential broker for service-, purpose- and origin-bound provider
-keys. A light HTTP host can expose the gateway without running a relay/node.
+keys. A light HTTP host can expose the gateway without running a server/node.
 See [`model-gateway`](../../crates/agent/model-gateway/README.md) for session
 authentication, revocation and deployment requirements.
 

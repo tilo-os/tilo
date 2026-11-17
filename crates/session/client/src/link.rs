@@ -1,6 +1,6 @@
 //! The client's transport half: what this device says to its workspaces, its replicas of them, and
 //! what its session with its host heard and how it fares — what any thread holds. A page's presence
-//! boards ([`crate::Client`]) are built on it; an agent, a program and the relay's own tests hold
+//! boards ([`crate::Client`]) are built on it; an agent, a program and the server's own tests hold
 //! it alone.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -180,7 +180,7 @@ pub enum Entry {
     Admitted {
         /// The workspace's UUID.
         workspace: String,
-        /// Its relay workspace.
+        /// Its server workspace.
         workspace_id: WorkspaceId,
         /// Its name.
         name: String,

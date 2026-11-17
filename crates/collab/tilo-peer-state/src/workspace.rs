@@ -103,7 +103,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
 
 /// The certificate and revocations one [`WorkspaceGovernance::identities`] row
 /// carries, for a reader outside admission that judges the identity history
-/// (a relay's historical retention proof) without the rest of the row.
+/// (a server's historical retention proof) without the rest of the row.
 #[derive(Clone, Debug)]
 pub struct IdentityRow {
     /// The governed device certificate.

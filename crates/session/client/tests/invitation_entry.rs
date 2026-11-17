@@ -51,7 +51,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let host_cert = host_device.cert.clone();
     let bob = new_key();
@@ -166,7 +166,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     refused_peer.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -175,7 +175,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let beta = workspaces.create("Beta").await.unwrap();
     let host_cert = host_device.cert.clone();
@@ -248,7 +248,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     device.close();
 
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test]

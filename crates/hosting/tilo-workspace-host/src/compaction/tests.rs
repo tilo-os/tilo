@@ -342,7 +342,7 @@ fn a_host_fold_is_numbered_as_the_last_host_write_it_removes() {
     }
 }
 
-/// Ported from the old relay's `checkpoint_race`: a change retained while
+/// Ported from the old server's `checkpoint_race`: a change retained while
 /// the host folds (after it read the channel) is never removed, and one it
 /// read but could not apply (its dependency is sealed) is kept too.
 #[test]

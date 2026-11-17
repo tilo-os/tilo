@@ -1,4 +1,4 @@
-//! Remote-action envelopes: the relay routes a frame to the one addressed
+//! Remote-action envelopes: the server routes a frame to the one addressed
 //! device, stamps the authenticated sender, never stores it, and answers
 //! frames addressed to itself only through a supplied app action server.
 
@@ -16,12 +16,14 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::{ActionHostServer, Envelope, RelayClient, WorkspaceId};
+use tilo_server::{ActionHostServer, Envelope, ServerClient, WorkspaceId};
 use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
+use crate::common::{
+    TestDevice, TestUser, client_endpoint, spawn_server, spawn_server_serving_apps,
+};
 
 const WS: WorkspaceId = WorkspaceId::from_u128(11);
 
@@ -29,7 +31,7 @@ async fn subscribed(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
-) -> RelayClient {
+) -> ServerClient {
     subscribed_in(addr, user, device, WS).await
 }
 
@@ -38,7 +40,7 @@ async fn subscribed_in(
     user: &TestUser,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> RelayClient {
+) -> ServerClient {
     let (client, ready) = subscribe(addr, user, device, workspace_id).await;
     assert!(
         matches!(ready, Some(Envelope::Ready { .. })),
@@ -47,15 +49,15 @@ async fn subscribed_in(
     client
 }
 
-/// Connect as `device`, subscribe to `workspace_id`, and return the relay's
+/// Connect as `device`, subscribe to `workspace_id`, and return the server's
 /// first answer, whatever it is.
 async fn subscribe(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> (RelayClient, Option<Envelope>) {
-    let client = RelayClient::connect(
+) -> (ServerClient, Option<Envelope>) {
+    let client = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -86,7 +88,7 @@ fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
     }
 }
 
-async fn next(client: &RelayClient, who: &str) -> Envelope {
+async fn next(client: &ServerClient, who: &str) -> Envelope {
     tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| panic!("{who} timed out"))
@@ -116,7 +118,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
-    // Phase `the_relay_routes_a_stamped_frame_to_the_addressed_device_only`.
+    // Phase `the_server_routes_a_stamped_frame_to_the_addressed_device_only`.
     {
         let user = TestUser::fresh("Alice");
         let host = user.enrol("home", DeviceCapabilities::member());
@@ -124,8 +126,8 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let b = user.enrol("desktop", DeviceCapabilities::member());
         let c = user.enrol("phone", DeviceCapabilities::member());
         let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-        let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
-        let addr = relay.relay.node_addr();
+        let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
+        let addr = server.server.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
         let b_client = subscribed(addr.clone(), &user, &b).await;
         let c_client = subscribed(addr, &user, &c).await;
@@ -145,7 +147,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
                 assert_eq!(to_device_public_key, b.device_pubkey());
                 assert_eq!(from_device_public_key, a.device_pubkey());
                 assert_eq!(from_user_public_key, user.user_pk);
-                assert_eq!(frame, request, "the relay forwards the frame untouched");
+                assert_eq!(frame, request, "the server forwards the frame untouched");
             }
             other => panic!("B expected a remote action, got {other:?}"),
         }
@@ -159,14 +161,14 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
-        let relay = Box::pin(spawn_relay(
+        let server = Box::pin(spawn_server(
             &user,
             host,
             &[WS],
             &[a.device_pubkey(), b.device_pubkey()],
         ))
         .await;
-        let addr = relay.relay.node_addr();
+        let addr = server.server.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
 
         // B is a member but offline: nothing is queued for it.
@@ -192,9 +194,9 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             next(&a_client, "A").await,
             Envelope::RemoteActionUndeliverable { refusal: Refusal::Other(reason), .. } if reason.contains("does not serve apps")
         ));
-        assert!(!relay.relay.handle().advertised_services().app_serving);
+        assert!(!server.server.handle().advertised_services().app_serving);
 
-        // An envelope version this relay does not know is refused, not guessed.
+        // An envelope version this server does not know is refused, not guessed.
         let Envelope::RemoteAction {
             workspace_id,
             to_device_public_key,
@@ -228,7 +230,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let actions = Arc::new(RecordingHost::default());
-        let relay = Box::pin(spawn_relay_serving_apps(
+        let server = Box::pin(spawn_server_serving_apps(
             &user,
             host,
             &[WS],
@@ -236,8 +238,8 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
         ))
         .await;
-        assert!(relay.relay.handle().advertised_services().app_serving);
-        let a_client = subscribed(relay.relay.node_addr(), &user, &a).await;
+        assert!(server.server.handle().advertised_services().app_serving);
+        let a_client = subscribed(server.server.node_addr(), &user, &a).await;
 
         let id = InvocationId::new();
         a_client
@@ -264,14 +266,14 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         assert_eq!(
             *actions.callers.lock().unwrap(),
             [Caller::authenticated(user.user_pk, a.device_pubkey())],
-            "the app action server sees the actor the relay authenticated, not the claimed sender"
+            "the app action server sees the actor the server authenticated, not the claimed sender"
         );
     }
 }
 
-/// How the relay answered a frame it must refuse: its typed refusal, or `None` when the access audit closed the session first —
+/// How the server answered a frame it must refuse: its typed refusal, or `None` when the access audit closed the session first —
 /// either way nothing was served. A served frame fails the test.
-async fn refusal(client: &RelayClient, who: &str) -> Option<Refusal> {
+async fn refusal(client: &ServerClient, who: &str) -> Option<Refusal> {
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
             .await
@@ -293,7 +295,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let actions = Arc::new(RecordingHost::default());
-    let relay = Box::pin(spawn_relay_serving_apps(
+    let server = Box::pin(spawn_server_serving_apps(
         &user,
         host,
         &[WS],
@@ -301,7 +303,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
         Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
-    let addr = relay.relay.node_addr();
+    let addr = server.server.node_addr();
     let _a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr, &user, &b).await;
 
@@ -309,7 +311,8 @@ async fn removed_member_session_ends_without_serving_an_action() {
     // that end rather than racing a send against it; the refusal of a frame
     // that arrives before the audit is covered at the handler by
     // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
+    crate::common::admit_members(&server.server, WS, &[a.device_pubkey()], &server.state_root)
+        .await;
     while tilo_test_env::within("removed member's session to end", b_client.recv())
         .await
         .is_some()
@@ -337,18 +340,19 @@ async fn remote_action_to_removed_target_is_refused() {
     let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let c = user.enrol("phone", DeviceCapabilities::member());
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
         host,
         &[WS],
         &[a.device_pubkey(), c.device_pubkey()],
     ))
     .await;
-    let addr = relay.relay.node_addr();
+    let addr = server.server.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let c_client = subscribed(addr, &user, &c).await;
 
-    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
+    crate::common::admit_members(&server.server, WS, &[a.device_pubkey()], &server.state_root)
+        .await;
     a_client
         .send(directed(
             c.device_pubkey(),
@@ -386,7 +390,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     let workspace = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
     let ws = tilo_server::WorkspaceId::parse(workspace).unwrap();
     let actions = Arc::new(RecordingHost::default());
-    let relay = Box::pin(spawn_relay_serving_apps(
+    let server = Box::pin(spawn_server_serving_apps(
         &user,
         host,
         &[ws],
@@ -436,13 +440,13 @@ async fn expired_agent_delegation_cannot_invoke_host() {
             expires,
         )
         .unwrap();
-        relay
-            .relay
+        server
+            .server
             .register_agent(&agent.cert, delegation)
             .await
             .unwrap();
         actions.callers.lock().unwrap().clear();
-        let (client, ready) = subscribe(relay.relay.node_addr(), &user, &agent, ws).await;
+        let (client, ready) = subscribe(server.server.node_addr(), &user, &agent, ws).await;
         let answer = if matches!(ready, Some(Envelope::Ready { .. })) {
             client
                 .send(to_host(frame(invoke(InvocationId::new()))))
@@ -504,7 +508,7 @@ struct RecordingHost {
     log: Mutex<InvocationLog<()>>,
 }
 
-/// Lets the test keep a handle on the host the relay owns.
+/// Lets the test keep a handle on the host the server owns.
 #[derive(Clone)]
 struct SharedHost(Arc<RecordingHost>);
 

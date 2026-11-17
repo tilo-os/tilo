@@ -101,7 +101,7 @@ class Service:
     manifest: str
     health: str
     platform: str = DEFAULT_PLATFORM
-    # Fields its health URL must answer with besides the revision (`relay = "up"`):
+    # Fields its health URL must answer with besides the revision (`server = "up"`):
     # a service can answer while what it serves is down.
     expect: tuple[tuple[str, str], ...] = ()
 

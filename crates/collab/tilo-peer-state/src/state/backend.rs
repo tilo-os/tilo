@@ -524,7 +524,7 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32]))
             .unwrap();
         peer.receive_from(
-            TransportOrigin::RelayDelta(peer.owner_certificates()[0].device_public_key),
+            TransportOrigin::ServerDelta(peer.owner_certificates()[0].device_public_key),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.owner_certificates()[0].clone()),

@@ -3,11 +3,11 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Label {
-    RelayEnrollOffer,
-    RelayEnrollRequest,
-    /// A relay enrollment response (certificate, configuration) sealed to
+    ServerEnrollOffer,
+    ServerEnrollRequest,
+    /// A server enrollment response (certificate, configuration) sealed to
     /// the joining device.
-    RelayEnrollResponse,
+    ServerEnrollResponse,
     DeviceFabricSecret,
     IdentityBackup,
     MigrationPackage,
@@ -59,9 +59,9 @@ pub enum Label {
 
 impl Label {
     pub const ALL: [Self; 29] = [
-        Self::RelayEnrollOffer,
-        Self::RelayEnrollRequest,
-        Self::RelayEnrollResponse,
+        Self::ServerEnrollOffer,
+        Self::ServerEnrollRequest,
+        Self::ServerEnrollResponse,
         Self::DeviceFabricSecret,
         Self::IdentityBackup,
         Self::MigrationPackage,
@@ -94,9 +94,9 @@ impl Label {
     /// these makes every existing ciphertext for that purpose unreadable.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::RelayEnrollOffer => "tilo-seal/v1/relay-enroll-offer",
-            Self::RelayEnrollRequest => "tilo-seal/v1/relay-enroll-request",
-            Self::RelayEnrollResponse => "tilo-seal/v1/relay-enroll-response",
+            Self::ServerEnrollOffer => "tilo-seal/v1/server-enroll-offer",
+            Self::ServerEnrollRequest => "tilo-seal/v1/server-enroll-request",
+            Self::ServerEnrollResponse => "tilo-seal/v1/server-enroll-response",
             Self::DeviceFabricSecret => "tilo-seal/v1/device-fabric-secret",
             Self::IdentityBackup => "tilo-seal/v1/identity-backup",
             Self::MigrationPackage => "tilo-seal/v1/migration-package",

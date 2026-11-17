@@ -1012,10 +1012,10 @@ COPY os/usr/lib/systemd/user/tilo-ush.service \
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 # The interface declaration the session judges apps against travels with it.
 COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
-# Relay component metadata travels with the same component in images and updates.
-COPY os/usr/lib/tilo/node-relay.toml /tilo-components/usr/lib/tilo/node-relay.toml
+# Server component metadata travels with the same component in images and updates.
+COPY os/usr/lib/tilo/node-server.toml /tilo-components/usr/lib/tilo/node-server.toml
 COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo-components/usr/lib/sysusers.d/tilo-server.conf
-COPY os/usr/lib/systemd/system/tilo-node-relay@.service \
+COPY os/usr/lib/systemd/system/tilo-node-server@.service \
     os/usr/lib/systemd/system/tilo-node-session-key@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \
     os/usr/lib/systemd/system/tilo-node-session@.path \
@@ -2442,9 +2442,9 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
-# The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-server.service. Its
-# snippet ships with the relay component (os/components.toml), which arrives
+# The server's static account: a desktop set up as a node runs the server
+# (tilo-node-server@) under it, as the host image runs tilo-server.service. Its
+# snippet ships with the server component (os/components.toml), which arrives
 # with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \

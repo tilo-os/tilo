@@ -150,7 +150,7 @@ impl Ada {
 
     /// Ada's laptop, in the workspace over a direct session.
     async fn laptop_peer(&self, host_cert: &DeviceCert) -> Link {
-        place(&self.host.relay, &self.laptop.cert).await;
+        place(&self.host.server, &self.laptop.cert).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
             self.laptop.cert.clone(),
@@ -189,7 +189,7 @@ async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     );
     assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
     assert!(!cert.capabilities.can_admit_devices);
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 /// What a page holding the person's root runs: over the session it already
@@ -249,7 +249,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
             .is_empty()
     );
     session.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
@@ -300,7 +300,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     assert_eq!(page.status().phase, TransportPhase::Failed);
     page.close();
     laptop.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 /// The workspace scope's record: its channel keys seal the live session's tracks.
@@ -326,7 +326,7 @@ fn live_session_keys() -> ContentKeys {
 async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
-    place(&ada.host.relay, &cert).await;
+    place(&ada.host.server, &cert).await;
     let keys = live_session_keys();
 
     // The workspace's governance admits the page.
@@ -373,7 +373,7 @@ async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier
 
     page.close();
     laptop.close();
-    ada.host.relay.shutdown().await;
+    ada.host.server.shutdown().await;
 }
 
 /// The next call event of `peer` that `pick` accepts.

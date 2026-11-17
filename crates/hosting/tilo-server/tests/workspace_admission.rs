@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use tilo_peer_state::GovernedAccess;
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint};
@@ -29,7 +29,7 @@ const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);
 const UNBOUND: WorkspaceId = WorkspaceId::from_u128(803);
 
 struct HomeHost {
-    relay: Relay,
+    server: Server,
     state: tempfile::TempDir,
     owner: TestUser,
     bob: TestUser,
@@ -43,13 +43,13 @@ async fn home_host() -> HomeHost {
     let bob = TestUser::fresh("Bob");
     let host = owner.enrol("home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = crate::common::start_relay(
-        RelayConfig {
+    let server = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowMatchingUser,
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: owner.user_pk,
             device_signing_key: host.sk,
             device_cert: host.cert,
@@ -59,14 +59,14 @@ async fn home_host() -> HomeHost {
     .await
     .unwrap();
     let host = HomeHost {
-        relay,
+        server,
         state,
         owner,
         bob,
     };
     let laptop = host.owner.enrol("laptop", DeviceCapabilities::primary());
     let laptop_key = laptop.device_pubkey();
-    let laptop = connect(&host.relay, laptop).await;
+    let laptop = connect(&host.server, laptop).await;
     assert!(
         matches!(
             subscribe(&laptop, OWNERS).await,
@@ -78,10 +78,10 @@ async fn home_host() -> HomeHost {
     host
 }
 
-async fn connect(relay: &Relay, device: TestDevice) -> RelayClient {
-    RelayClient::connect_to_pinned_host(
+async fn connect(server: &Server, device: TestDevice) -> ServerClient {
+    ServerClient::connect_to_pinned_host(
         client_endpoint().await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert,
         device.sk,
         RevocationList::new(),
@@ -90,9 +90,9 @@ async fn connect(relay: &Relay, device: TestDevice) -> RelayClient {
     .unwrap()
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
+async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("relay answered subscription", client.recv()).await
+    tilo_test_env::within("server answered subscription", client.recv()).await
 }
 
 /// The devices the workspace's access record admits, as its host keeps them.
@@ -112,7 +112,7 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_workspace() {
     let host = home_host().await;
     let bob_laptop = host.bob.enrol("bob-laptop", DeviceCapabilities::primary());
     let bob_key = bob_laptop.device_pubkey();
-    host.relay
+    host.server
         .replace_governed_workspace_access(
             GOVERNED,
             true,
@@ -127,7 +127,7 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_workspace() {
 
     // The governed workspace's root lets Bob's laptop through the handshake, and
     // into the workspace that admits it.
-    let bob = connect(&host.relay, bob_laptop).await;
+    let bob = connect(&host.server, bob_laptop).await;
     assert!(matches!(
         subscribe(&bob, GOVERNED).await,
         Some(Envelope::Ready { .. })
@@ -162,7 +162,7 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_workspace() {
             .exists(),
         "a cross-user device bound a workspace on the owner's host"
     );
-    Relay::shutdown(host.relay).await;
+    Server::shutdown(host.server).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -170,7 +170,7 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     let host = home_host().await;
     let phone = host.owner.enrol("phone", DeviceCapabilities::primary());
     let phone_key = phone.device_pubkey();
-    let phone = connect(&host.relay, phone).await;
+    let phone = connect(&host.server, phone).await;
     assert!(matches!(
         subscribe(&phone, OWNERS).await,
         Some(Envelope::Ready {
@@ -182,7 +182,7 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     // devices, so another one is admitted on its first arrival as this one was.
     let tablet = host.owner.enrol("tablet", DeviceCapabilities::primary());
     let tablet_key = tablet.device_pubkey();
-    let tablet = connect(&host.relay, tablet).await;
+    let tablet = connect(&host.server, tablet).await;
     assert!(matches!(
         subscribe(&tablet, OWNERS).await,
         Some(Envelope::Ready {
@@ -195,5 +195,5 @@ async fn owner_device_still_auto_enrols_on_home_host() {
         kept.contains(&phone_key) && kept.contains(&tablet_key),
         "a home host keeps its own devices in the workspace's one record"
     );
-    Relay::shutdown(host.relay).await;
+    Server::shutdown(host.server).await;
 }

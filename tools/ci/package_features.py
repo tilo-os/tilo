@@ -31,13 +31,13 @@ NATIVE_TEST_FEATURES = {
     # the live installer's platform half.
     "imager-backend": ("installation", "destination"),
     "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
-    # The fetch proxy a workspace host serves is a feature its relay enables;
+    # The fetch proxy a workspace host serves is a feature its server enables;
     # tilo-net's own tests of it (`proxy_host`) and the development program
     # build only with it. Its loopback tests of every backend (`desktop`) need
     # the other client features; the public-server ones (`live`) stay ignored.
     "tilo-net": ("proxy-dev-server", "json", "ws", "webtransport", "sockets"),
     # The listener browsers and the fetch proxy reach a host through, and their
-    # tests, are behind `web`, which every deployed relay enables. (`agents`
+    # tests, are behind `web`, which every deployed server enables. (`agents`
     # links every web app, so its tests run with the agent packages.)
     "tilo-server": ("web",),
     # The rest compile their tests only with a feature their default build

@@ -15,7 +15,7 @@
 //! (`SyncRequest`); the host replies with the missing changes
 //! (`SyncResponse`) computed against that materialized doc; the peer
 //! applies them and converges — asserted on Automerge documents (identical
-//! `get_heads()`) through the `Relay` / `RelayClient` path.
+//! `get_heads()`) through the `Server` / `ServerClient` path.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,10 +29,10 @@ use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
-use tilo_server::{Envelope, RelayClient, reconcile};
+use tilo_server::{Envelope, ServerClient, reconcile};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, pending_count, spawn_server_on};
 use tilo_server::WorkspaceId;
 
 /// A connects, subscribes, publishes `note = "recover-me"`, and waits
@@ -45,8 +45,8 @@ async fn publish_offline_edit(
     a: &crate::common::TestDevice,
     ws: WorkspaceId,
     pending_dir: &std::path::Path,
-) -> (RelayClient, AutoCommit) {
-    let a_client = RelayClient::connect(
+) -> (ServerClient, AutoCommit) {
+    let a_client = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -105,7 +105,7 @@ async fn drain_then_lose_session(
     ws: WorkspaceId,
     pending_dir: &std::path::Path,
 ) {
-    let b1 = RelayClient::connect(
+    let b1 = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -147,7 +147,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
 
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::member());
-    let host = Box::pin(spawn_relay_on(
+    let host = Box::pin(spawn_server_on(
         state.path(),
         &user,
         host_dev,
@@ -186,7 +186,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     // ---- B reconnects (session 2). Its queue is empty, so a plain
     //      subscribe cannot catch it up — it is the previously
     //      unrecoverable state. ----
-    let b2 = RelayClient::connect(
+    let b2 = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,

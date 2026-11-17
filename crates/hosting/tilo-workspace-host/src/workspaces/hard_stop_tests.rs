@@ -1,9 +1,9 @@
 //! What a workspace's file says it published when the process is killed: only
-//! changes the relay has made durable, so the next start publishes the rest
+//! changes the server has made durable, so the next start publishes the rest
 //! again instead of losing them.
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and the owner's record handle are this test's subject until its last assertion"
+    reason = "the server and the owner's record handle are this test's subject until its last assertion"
 )]
 use super::tests::{governor, test_host};
 use super::*;
@@ -25,8 +25,8 @@ fn published_on_disk(path: &Path) -> usize {
 async fn a_workspace_file_counts_only_durable_changes_as_published() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Public").await.unwrap();
     let records = workspaces.inner.host.records.clone();
     // The creation's own changes are durable before the owner stalls.
@@ -82,5 +82,5 @@ async fn a_workspace_file_counts_only_durable_changes_as_published() {
     );
     drop(state);
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

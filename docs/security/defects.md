@@ -500,7 +500,7 @@ restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
 recovery UX, plus an authenticated peer-control adapter that drains and
 acknowledges the already durable targeted governance outbox. The ciphertext
-document relay is intentionally not that adapter; it must never broadcast
+document server is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
 **Production adapter now present.** `crates/collab/tilo-action-broker/src/workspace_keys.rs`
@@ -644,9 +644,9 @@ as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-
 Two adjacent holes in the same guarantee were found alongside it:
 
 - `os/containers/tilo-server/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
-  a floating tag — it never breaks, it just silently changes, so the relay image was not
+  a floating tag — it never breaks, it just silently changes, so the server image was not
   reproducible across time. **Closed:** the runtime stage of every server image that ships
-  without a bootc base (the relay, the API server, the VM host, the agent host) is pinned by
+  without a bootc base (the server, the API server, the VM host, the agent host) is pinned by
   digest from `registry.fedoraproject.org`, which keeps the digests quay.io prunes — the same pin
   the Lounge and the browser runtime already carry, so a pin there keeps resolving and no mirrored
   copy is needed. `BASE_REF` stays the bootc base: the runtime's minimal base is a second, separately

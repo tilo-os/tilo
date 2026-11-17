@@ -343,7 +343,7 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
         let changes = typist.change(&key);
         assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
         for message in answer(owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message, now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message, now)
                 .unwrap();
         }
     }
@@ -373,14 +373,14 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
         "the device compacted while offline"
     );
     for message in sent.clone() {
-        host.receive_from(TransportOrigin::RelayDelta(member), message, now)
+        host.receive_from(TransportOrigin::ServerDelta(member), message, now)
             .unwrap();
     }
     for message in peers.clone() {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RelayDelta(governor),
+                TransportOrigin::ServerDelta(governor),
                 message,
                 now,
             )
@@ -555,7 +555,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
             Ok(1)
         );
         for message in answer(&joined.owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
                 .unwrap();
             relayed.push(message);
         }
@@ -590,7 +590,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
 
     // Back: ownership goes to the host in its order until it owes nothing.
     for message in drain(&owner, workspace, now, &mut order).await {
-        host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+        host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
             .unwrap();
         relayed.push(message);
     }
@@ -599,7 +599,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         owner
             .receive(
                 workspace,
-                TransportOrigin::RelayDelta(governor),
+                TransportOrigin::ServerDelta(governor),
                 message,
                 now,
             )
@@ -652,7 +652,7 @@ fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
                 let NeighbourMsg::AppDocument { envelope, .. } = &message else {
                     panic!("a document write");
                 };
-                let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+                let author = TransportOrigin::RetainedServerDelta(*envelope.author.as_bytes());
                 (author, message)
             })
             .collect();
@@ -681,7 +681,7 @@ async fn a_run_of_relayed_documents_is_decided_as_each_would_be_alone() {
     let alone = enrolled_with(fixture.clone());
     let together = enrolled_with(fixture);
     let (_, keys) = rotated_channel();
-    let origin = TransportOrigin::RetainedRelayDelta(governor_key.verifying_key().to_bytes());
+    let origin = TransportOrigin::RetainedServerDelta(governor_key.verifying_key().to_bytes());
     let mut relayed = written_at(
         &mut host,
         &base(&alone.owner, alone.workspace),
@@ -810,7 +810,7 @@ fn joins_after(
         late.owner
             .receive(
                 late.workspace,
-                TransportOrigin::RetainedRelayDelta(author),
+                TransportOrigin::RetainedServerDelta(author),
                 message,
                 late.now,
             )
@@ -882,7 +882,7 @@ impl Host {
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
             panic!("a document write");
         };
-        let origin = TransportOrigin::RelayDelta(*envelope.author.as_bytes());
+        let origin = TransportOrigin::ServerDelta(*envelope.author.as_bytes());
         let taken = self.peer.receive_from(origin, message.clone(), now).is_ok();
         if taken {
             self.relayed.push(message.clone());
@@ -1047,7 +1047,7 @@ async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> R
                     owner
                         .receive(
                             workspace,
-                            TransportOrigin::RelayDelta(governor),
+                            TransportOrigin::ServerDelta(governor),
                             message,
                             now,
                         )
@@ -1230,7 +1230,7 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
             );
         }
         for message in answer(owner, workspace, now, &mut order) {
-            host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
+            host.receive_from(TransportOrigin::ServerDelta(member), message.clone(), now)
                 .unwrap_or_else(|error| panic!("the host takes write {index}: {error}"));
             if matches!(&message,
                 NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
@@ -1253,7 +1253,7 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
         let NeighbourMsg::AppDocument { envelope, .. } = &message else {
             panic!("a document write");
         };
-        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+        let author = TransportOrigin::RetainedServerDelta(*envelope.author.as_bytes());
         late.owner
             .receive(late.workspace, author, message, late.now)
             .unwrap();

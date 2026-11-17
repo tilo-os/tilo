@@ -1,9 +1,9 @@
 //! Invitations, their redemption and member administration of a governed
-//! workspace on this relay.
+//! workspace on this server.
 //!
 //! What a governor records between the steps of an exchange is the shared
 //! [`JoinLog`], the same on every host that governs workspaces; this module
-//! owns who may ask what of this relay's workspaces, and the durability barrier
+//! owns who may ask what of this server's workspaces, and the durability barrier
 //! before each answer.
 
 use ed25519_dalek::SigningKey;
@@ -152,7 +152,7 @@ fn random<const N: usize>() -> Result<[u8; N], CollaborationError> {
 
 impl Workspaces {
     /// Issue an invitation to `workspace` for `administrator`: a device of this
-    /// relay's own user, or of a member the workspace lets invite with the
+    /// server's own user, or of a member the workspace lets invite with the
     /// invitation's role.
     pub async fn issue(
         &self,
@@ -336,7 +336,7 @@ impl Workspaces {
         Ok(workspace.collaboration().pending(now))
     }
 
-    /// Admit `device`, a device of this relay's own user, to `workspace` as its
+    /// Admit `device`, a device of this server's own user, to `workspace` as its
     /// owner. Returns whether governance changed.
     #[expect(
         clippy::significant_drop_tightening,
@@ -374,7 +374,7 @@ impl Workspaces {
         if !candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))? {
             // Admitted already, but an earlier entry can have been cut off
             // between committing the admission and settling it (its page
-            // closed meanwhile): the relay would then decide the device's
+            // closed meanwhile): the server would then decide the device's
             // changes against device_access that leave it out. Settle what
             // governance holds before answering.
             if !self
@@ -777,7 +777,7 @@ impl Workspaces {
     }
 
     /// Remove the member `request.user_public_key` and every device of theirs
-    /// from `workspace`. The relay stops admitting them before this returns.
+    /// from `workspace`. The server stops admitting them before this returns.
     pub async fn remove_member(
         &self,
         workspace: &str,
@@ -906,7 +906,7 @@ impl Workspaces {
             .await
     }
 
-    /// Remove, ban or unban, decided by who asks: a device of the relay's
+    /// Remove, ban or unban, decided by who asks: a device of the server's
     /// user governs its workspaces, and any other member by the workspace's policy (a
     /// Moderator reaches members ranked below Moderator).
     async fn change_membership(
@@ -1602,7 +1602,7 @@ impl Workspaces {
     }
 }
 
-/// A workspace of this relay while a governor decides, under its lock: whether
+/// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
 /// committed that its members have not been sent yet.
 struct HeldWorkspace<'a> {
@@ -1690,7 +1690,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     }
 }
 
-/// This relay's workspaces, to the governor that answers their workspace-join
+/// This server's workspaces, to the governor that answers their workspace-join
 /// exchange: a change is staged in the workspace's record and written once for
 /// everyone who staged one meanwhile (`Workspaces::written`); a governance
 /// change is committed under the workspace's lock and published before the

@@ -32,7 +32,7 @@ pub(super) struct Followed {
     /// The copy changed.
     pub(super) changed: bool,
     /// A write the copy let go earlier waited for something that has landed
-    /// since: replaying what the relay retains brings it in.
+    /// since: replaying what the server retains brings it in.
     pub(super) replay_wanted: bool,
     /// Admission refused the write, and why: the author is owed a verdict.
     pub(super) refused: Option<String>,
@@ -105,7 +105,7 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    /// The governance this workspace published that the relay has not retained,
+    /// The governance this workspace published that the server has not retained,
     /// in order, each with its place reserved in `records`; `published`
     /// moves past them. Stops before a change that does not read, with why.
     pub(super) fn unpublished(
@@ -143,7 +143,7 @@ impl GovernedWorkspace {
     }
 
     /// Write the governor's copy, as following members' writes changed it,
-    /// through to the workspace file. A start replays what the relay retains,
+    /// through to the workspace file. A start replays what the server retains,
     /// but that replay alone does not bring a write back: the app surfaces
     /// it is decided against are still on their way then, so it holds the
     /// write and may let it go. A write the governor took in and lost that
@@ -188,7 +188,7 @@ impl GovernedWorkspace {
                 return Followed::default();
             }
             peer.receive_from(
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
                 message,
                 tilo_clock::wall(),
             )
@@ -200,7 +200,7 @@ impl GovernedWorkspace {
                 refused: None,
             },
             // This device could not decide the write: no verdict of its says
-            // anything about it, and the write stays in the relay's ownership
+            // anything about it, and the write stays in the server's ownership
             // for the next replay.
             Err(error) if error.is_device_failure() => {
                 tracing::warn!(
@@ -219,7 +219,7 @@ impl GovernedWorkspace {
 
     /// The verdict [`Self::follow`] would give `message`, `author`'s write,
     /// without taking it in: why the workspace refuses the write, or `None`
-    /// when it takes it. The relay asks before it keeps the write, so a
+    /// when it takes it. The server asks before it keeps the write, so a
     /// refused change is never stored and never served to a reader, and a
     /// writer numbering its next change the refused one's sequence again
     /// never meets it. `None` for a record the governor's copy does not hold:
@@ -257,7 +257,7 @@ impl GovernedWorkspace {
         };
         let error = decided
             .receive_from(
-                TransportOrigin::RetainedRelayDelta(author),
+                TransportOrigin::RetainedServerDelta(author),
                 message.clone(),
                 tilo_clock::wall(),
             )
@@ -306,8 +306,8 @@ impl GovernedWorkspace {
 
 impl Workspaces {
     /// Why this workspace refuses `body`, `author`'s write, decided before the
-    /// relay keeps or forwards it; `None` when it takes the write, when this
-    /// relay does not govern the workspace, or when the write founds the
+    /// server keeps or forwards it; `None` when it takes the write, when this
+    /// server does not govern the workspace, or when the write founds the
     /// record rather than changing one. The verdict is the one the governor
     /// would give the write ([`GovernedWorkspace::refuses`]), so the change is
     /// never stored for a later reader to meet, and a writer numbering its

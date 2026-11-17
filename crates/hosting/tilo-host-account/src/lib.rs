@@ -5,7 +5,7 @@
 //! Such a host runs a workspace's Linux programs in VMs of its own
 //! ([`legacy_vm::hosted`]), admitted by its plans file and metered in its
 //! usage log, and runs the workspaces' Browser, metered in the log its
-//! relay keeps ([`browser_actions`]). Its account answer is read from those
+//! server keeps ([`browser_actions`]). Its account answer is read from those
 //! and nothing else:
 //!
 //! - the plans file says what the host sells, if anything
@@ -41,7 +41,7 @@ pub const SOCKET_ENV: &str = "TILO_HOSTED_VM_SOCKET";
 pub const ACCOUNT_ENV: &str = "TILO_HOSTED_ACCOUNT";
 /// The plans file the hosted-VM service admits by.
 pub const PLANS_ENV: &str = "TILO_HOSTED_PLANS";
-/// The log of Browser page actions the relay keeps
+/// The log of Browser page actions the server keeps
 /// ([`browser_actions::ACTIONS_LOG_ENV`]).
 pub const ACTIONS_LOG_ENV: &str = browser_actions::ACTIONS_LOG_ENV;
 /// The host's name, as people know it, when its plans file sells nothing
@@ -56,7 +56,7 @@ const PATIENCE: Duration = Duration::from_secs(5);
 pub struct HostedAccount {
     pub account: String,
     pub plans: PathBuf,
-    /// The log of Browser page actions the relay keeps; `None` reads
+    /// The log of Browser page actions the server keeps; `None` reads
     /// none.
     pub log: Option<PathBuf>,
     /// The hosted-VM service, which answers usage; `None` reads none.

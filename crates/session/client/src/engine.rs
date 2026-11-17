@@ -1907,7 +1907,7 @@ impl Engine {
 
     /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:
     /// where members and anyone a link reaches dial it. A record that says nothing gets the
-    /// address, and one naming another relay gets it again ([`NativeWorkspaceOwner::name_host`]),
+    /// address, and one naming another server gets it again ([`NativeWorkspaceOwner::name_host`]),
     /// so what a workspace says keeps up with the relays this device answers through.
     #[cfg(target_os = "linux")]
     pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
@@ -2380,7 +2380,7 @@ mod tests {
                 "the address it named is the one it keeps"
             );
             // The record says something else now, as a net report of the address beside the same
-            // relay would have it: one more pass at the same address writes nothing, and the pass
+            // server would have it: one more pass at the same address writes nothing, and the pass
             // after an address that moved names it again.
             let elsewhere = iroh_base::EndpointAddr::new(device)
                 .with_relay_url("https://relay.example.com/".parse().expect("a relay"));

@@ -35,14 +35,14 @@ pub struct DeviceMeshProfile {
     /// Service claims after intersection with the device certificate.
     pub services: ServiceCapabilities,
     /// Direct endpoints for the authenticated filesystem/blob protocols. This
-    /// is intentionally distinct from the relay endpoint: a client selected
+    /// is intentionally distinct from the server endpoint: a client selected
     /// for content replication must dial one of these addresses.
     pub filesystem_endpoints: Vec<EndpointAddr>,
 }
 
 impl DeviceMeshProfile {
     /// Select the direct filesystem endpoint from a verified mesh profile.
-    /// The relay endpoint is deliberately not a fallback: it speaks relay
+    /// The server endpoint is deliberately not a fallback: it speaks server
     /// ALPN only and cannot serve authenticated blobs while an owner is away.
     pub fn content_endpoint(&self) -> Option<EndpointAddr> {
         self.services
@@ -64,11 +64,11 @@ pub struct ServiceCapabilities {
     pub workspace_replication: bool,
     /// Retain all file blobs requested by the workspace replication policy.
     pub full_content_replication: bool,
-    /// Relay end-to-end encrypted collaboration and chat traffic.
-    pub inbound_relay: bool,
+    /// Server end-to-end encrypted collaboration and chat traffic.
+    pub inbound_server: bool,
     /// Relay an end-to-end remote-control session when direct reachability
     /// fails. Consent and input authorization remain enforced by the target.
-    pub remote_control_relay: bool,
+    pub remote_control_server: bool,
     /// Run app backends for eligible clients.
     pub app_serving: bool,
     /// Accept distributed jobs. This is a placement boundary only; it grants no
@@ -77,9 +77,9 @@ pub struct ServiceCapabilities {
 }
 
 impl ServiceCapabilities {
-    /// Capabilities implemented by the standalone relay daemon.
+    /// Capabilities implemented by the standalone server daemon.
     ///
-    /// The relay durably carries authenticated workspace CRDT updates and
+    /// The server durably carries authenticated workspace CRDT updates and
     /// presence. It does not run the filesystem/blob host protocol, an app
     /// runtime, or a compute worker. Live workspace-control frames use this
     /// daemon's already-authenticated, non-retained presence fan-out rather
@@ -88,8 +88,8 @@ impl ServiceCapabilities {
         Self {
             workspace_replication: true,
             full_content_replication: false,
-            inbound_relay: true,
-            remote_control_relay: true,
+            inbound_server: true,
+            remote_control_server: true,
             app_serving: false,
             compute: false,
         }
@@ -100,8 +100,8 @@ impl ServiceCapabilities {
         Self {
             workspace_replication: true,
             full_content_replication: true,
-            inbound_relay: true,
-            remote_control_relay: true,
+            inbound_server: true,
+            remote_control_server: true,
             app_serving: false,
             compute: false,
         }
@@ -116,8 +116,8 @@ impl ServiceCapabilities {
         Self {
             workspace_replication: true,
             full_content_replication: true,
-            inbound_relay: true,
-            remote_control_relay: true,
+            inbound_server: true,
+            remote_control_server: true,
             app_serving: true,
             compute: true,
         }
@@ -131,8 +131,8 @@ impl ServiceCapabilities {
             workspace_replication: self.workspace_replication && available.workspace_replication,
             full_content_replication: self.full_content_replication
                 && available.full_content_replication,
-            inbound_relay: self.inbound_relay && available.inbound_relay,
-            remote_control_relay: self.remote_control_relay && available.remote_control_relay,
+            inbound_server: self.inbound_server && available.inbound_server,
+            remote_control_server: self.remote_control_server && available.remote_control_server,
             app_serving: self.app_serving && available.app_serving,
             compute: self.compute && available.compute,
         }
@@ -214,12 +214,12 @@ mod tests {
 
     #[test]
     fn service_profiles_are_limited_to_the_protocols_a_process_starts() {
-        // A relay-only device claims only its running workspace protocols.
+        // A server-only device claims only its running workspace protocols.
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);
-        assert!(services.inbound_relay);
+        assert!(services.inbound_server);
         assert!(!services.full_content_replication);
-        assert!(services.remote_control_relay);
+        assert!(services.remote_control_server);
         assert!(!services.app_serving);
         assert!(!services.compute);
         assert_eq!(

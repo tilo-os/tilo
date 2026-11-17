@@ -65,7 +65,7 @@ client_roots = [
 
 # Every Tilo crate those entry points reach, as one list. The client side is MIT
 # end to end (LICENSING.md), so a crate joining this list is a licensing
-# decision, not a build fix: one only a desktop, a relay or a workspace's own
+# decision, not a build fix: one only a desktop, a server or a workspace's own
 # host needs (the shell, the live session, the channels, the runtime that serves a
 # workspace) stays AGPL. The check fails when the graph reaches a crate that is
 # not here, and when one here is no longer reached.
@@ -95,7 +95,7 @@ client_side = [
     "tilo-platform-caps",
     "tilo-reference",          # the links an invitation is written as
     "tilo-server-client",       # device certification and the device-signer boundary
-    "tilo-server-protocol",     # the relay's handshake and wire messages
+    "tilo-server-protocol",     # the server's handshake and wire messages
     "tilo-server-session",
     "tilo-resource",           # a resource's fields, as an app publishes them
     "tilo-resource-macros",

@@ -103,7 +103,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         bytes: surface.clone(),
         answers: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
     });
-    host.relay
+    host.server
         .workspaces()
         .unwrap()
         .serve_content(keeps.clone());
@@ -114,9 +114,9 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     let note = route();
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.document);
     let laptop_device = laptop.key.verifying_key().to_bytes();
-    crate::support::place(&host.relay, &laptop.cert).await;
+    crate::support::place(&host.server, &laptop.cert).await;
     let mut laptop = NativeDevice::start(
-        &host.relay,
+        &host.server,
         root.verifying_key().to_bytes(),
         laptop,
         workspace(),

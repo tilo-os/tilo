@@ -1,4 +1,4 @@
-//! Receipts from the relay's retained source, with projections confined in the
+//! Receipts from the server's retained source, with projections confined in the
 //! existing app worker. This never invokes document writes on another person's
 //! behalf or enrolls a caller in a channel.
 use std::sync::Arc;

@@ -12,7 +12,7 @@ use crate::common::TestUser;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::EndpointAddr;
 use std::net::Ipv4Addr;
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig, daemon::RelayIdentity};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig, daemon::ServerIdentity};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -24,7 +24,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     let tmp = tempfile::tempdir().unwrap();
     let workspace_id =
         tilo_server::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
-    let config = RelayConfig {
+    let config = ServerConfig {
         state_root: tmp.path().to_owned(),
         identity_root: tmp.path().join("identity"),
         full_replica_status: tmp.path().join("full-replica/status.json"),
@@ -38,16 +38,16 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         packet_relay: Some((Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    let identity = RelayIdentity {
+    let identity = ServerIdentity {
         user_public_key: user.user_pk,
         device_signing_key: host.sk.clone(),
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let relay = Relay::start(config, identity).await.unwrap();
+    let server = Server::start(config, identity).await.unwrap();
     // The host answers through its own packet relay from the start: what
     // `Relay::start` waits for before it serves anything.
-    let url = relay
+    let url = server
         .node_addr()
         .relay_urls()
         .next()
@@ -57,14 +57,14 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     let mode = RelayMode::Custom(RelayMap::from(url.clone()));
     tilo_test_env::within(
         "custom packet relay must become online",
-        relay.endpoint.online(),
+        server.endpoint.online(),
     )
     .await;
     assert_eq!(
-        relay.node_addr().relay_urls().collect::<Vec<_>>(),
+        server.node_addr().relay_urls().collect::<Vec<_>>(),
         vec![&url]
     );
-    relay
+    server
         .replace_governed_workspace_access(
             workspace_id,
             true,
@@ -77,7 +77,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .await
         .unwrap();
     // No IP addresses are passed to either client, as in a real browser.
-    let relay_addr = EndpointAddr::new(relay.node_addr().id).with_relay_url(url);
+    let server_addr = EndpointAddr::new(server.node_addr().id).with_relay_url(url);
     let endpoint_a = Endpoint::builder(presets::Minimal)
         .relay_mode(mode.clone())
         .bind_addr((Ipv4Addr::LOCALHOST, 0))
@@ -94,9 +94,9 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .unwrap();
     let page_a = endpoint_a.clone();
     let page_b = endpoint_b.clone();
-    let first = RelayClient::connect(
+    let first = ServerClient::connect(
         endpoint_a,
-        relay_addr.clone(),
+        server_addr.clone(),
         user.user_pk,
         a.cert.clone(),
         a.sk.clone(),
@@ -104,9 +104,9 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     )
     .await
     .unwrap();
-    let second = RelayClient::connect(
+    let second = ServerClient::connect(
         endpoint_b,
-        relay_addr,
+        server_addr,
         user.user_pk,
         b.cert.clone(),
         b.sk.clone(),
@@ -114,7 +114,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     )
     .await
     .unwrap();
-    // A page checks its relay connection after a network change (an `online`
+    // A page checks its server connection after a network change (an `online`
     // event, or a wall-clock jump such as a throttled tab): the connection it
     // was admitted over must stay usable, while asking for admission too.
     page_a.network_change().await;
@@ -179,10 +179,10 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .bind()
         .await
         .unwrap();
-    let outsider_client = RelayClient::connect_to_pinned_host(
+    let outsider_client = ServerClient::connect_to_pinned_host(
         outsider_endpoint,
-        EndpointAddr::new(relay.node_addr().id)
-            .with_relay_url(relay.node_addr().relay_urls().next().unwrap().clone()),
+        EndpointAddr::new(server.node_addr().id)
+            .with_relay_url(server.node_addr().relay_urls().next().unwrap().clone()),
         outsider.cert,
         outsider.sk,
         RevocationList::new(),
@@ -199,5 +199,5 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     outsider_client.close().await;
     first.close().await;
     second.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }

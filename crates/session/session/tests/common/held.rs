@@ -128,7 +128,7 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
         owner
             .receive(
                 id,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 SystemTime::now(),
             )

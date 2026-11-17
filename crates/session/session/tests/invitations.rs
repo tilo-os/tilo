@@ -53,7 +53,7 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     );
 }
 
-/// The link a device hands out right after its session starts names the relay it is reached
+/// The link a device hands out right after its session starts names the server it is reached
 /// through: an address signed before its endpoint reached one names only the network the device
 /// stands in, and reaches nobody the link is given to. Nothing else is in the workspace, so making
 /// the link is what makes the device reachable at all.
@@ -90,12 +90,12 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
         &join.grant().transport[0],
     )
     .expect("the invitation names its host's address");
-    let relay = test_server::loopback_url();
+    let server = test_server::loopback_url();
     assert!(
         hint.endpoint_addr
             .relay_urls()
-            .any(|url| url.as_str() == relay),
-        "the link names the relay this device is reached through ({relay}): {:?}\n{}",
+            .any(|url| url.as_str() == server),
+        "the link names the relay this device is reached through ({server}): {:?}\n{}",
         hint.endpoint_addr,
         laptop.diagnostic()
     );

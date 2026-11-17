@@ -72,7 +72,7 @@ pub(super) async fn handle_host_hello(
                 .await;
         }
     }
-    Ok(Some(Envelope::PeerRelayHello {
+    Ok(Some(Envelope::PeerServerHello {
         hosted_workspaces: hosted_here,
     }))
 }

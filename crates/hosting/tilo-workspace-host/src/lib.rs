@@ -1,8 +1,8 @@
-//! The workspace host every device runs and the relay embeds: the governance of
+//! The workspace host every device runs and the server embeds: the governance of
 //! the workspaces placed on a device (`workspaces`), the session stack their members
 //! run (the handshake, `peer`, each workspace's runtime) and the retained
 //! store and persistence beneath it. [`host::WorkspaceHost`] is its embeddable
-//! surface; the modules marked hidden are shared with the relay daemon that
+//! surface; the modules marked hidden are shared with the server daemon that
 //! embeds the same stack, and are not an interface of their own.
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
@@ -69,7 +69,7 @@ mod transport {
 }
 
 #[cfg(all(test, feature = "agents"))]
-use client::RelayClient;
+use client::ServerClient;
 use coedit::AttributedPresence;
 #[cfg(all(test, feature = "agents"))]
 use coedit::CoeditPayload;

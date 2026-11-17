@@ -1,5 +1,5 @@
-//! `tilo-server release-people`: the people a released relay kept, read out of
-//! its state directory, and taken into this relay's own workspace.
+//! `tilo-server release-people`: the people a released server kept, read out of
+//! its state directory, and taken into this server's own workspace.
 //!
 //! `export` runs beside the earlier release's files, on a copy of its volume
 //! and read-only, and writes what it finds as JSON. `import` hands that JSON to
@@ -16,8 +16,8 @@ use tilo_server_protocol::release_people::{Imported, People};
 pub enum Cmd {
     /// Read the earlier release's people out of its state directory, read-only.
     Export {
-        /// The released relay's workspace state directory, e.g. the volume's
-        /// `lounge/`: its `relay/rooms/` holds the workspace it served.
+        /// The released server's workspace state directory, e.g. the volume's
+        /// `lounge/`: its `server/rooms/` holds the workspace it served.
         #[arg(long)]
         state: PathBuf,
         /// Where to write the JSON `import` takes; `-` writes it to standard
@@ -27,7 +27,7 @@ pub enum Cmd {
     },
     /// Take the exported people into the running relay, over its operator socket.
     Import {
-        /// The relay's operator socket (`--operator-socket`).
+        /// The server's operator socket (`--operator-socket`).
         #[arg(long)]
         socket: PathBuf,
         /// The JSON `export` wrote; `-` reads it from standard input.
@@ -82,9 +82,9 @@ fn import(socket: &std::path::Path, file: &std::path::Path) -> anyhow::Result<()
     let command = tilo_server_protocol::operator::OperatorCommand::ImportPeople { people };
     let answer = ask(socket, &serde_json::to_string(&command)?)?;
     let event: tilo_server_protocol::operator::OperatorEvent =
-        serde_json::from_str(&answer).with_context(|| format!("the relay answered {answer:?}"))?;
+        serde_json::from_str(&answer).with_context(|| format!("the server answered {answer:?}"))?;
     let tilo_server_protocol::operator::OperatorEvent::PeopleImported { imported } = event else {
-        anyhow::bail!("the relay answered {event:?}");
+        anyhow::bail!("the server answered {event:?}");
     };
     say(&imported);
     if imported.refused.is_empty() {

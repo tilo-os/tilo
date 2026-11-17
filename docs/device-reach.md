@@ -66,7 +66,7 @@ An IP address is only a hint.
   retries over a short loss of connectivity, a Wi-Fi roam say, instead of
   failing on the first `No route to host`.
 - **Beyond the LAN** the peer network is the route: hole-punched QUIC with
-  relay fallback and automatic reconnection, between devices that prove the
+  server fallback and automatic reconnection, between devices that prove the
   same identity. Typed actions already travel over it to an enrolled device as
   signed remote-action frames. Admin traffic uses that same route as its own versioned
   ALPN (`tilo-device-admin/1`), which carries the admin daemon's existing
@@ -79,7 +79,7 @@ An IP address is only a hint.
   service rather than the session's endpoint, so a device at the greeter, or
   one nobody has logged in to since boot, stays reachable. It shares the
   device key: its endpoint id is derived from it, as tilo-server's is, since
-  one endpoint id published by two processes would take each other's relay
+  one endpoint id published by two processes would take each other's server
   slot, and the device key proves who answers inside the handshake. Both
   sides present their root-signed certificate and sign a challenge bound to
   the QUIC connection's two endpoint ids. The device admits only a device of
@@ -147,7 +147,7 @@ the recovery key always remains (`tilo-disk-encrypt`).
     and held by their other devices.
 
   Early boot brings up the network and asks the person's devices for the
-  sibling half over the peer network (relay fallback included). It
+  sibling half over the peer network (server fallback included). It
   authenticates with a boot-only key pair whose public half the person's
   devices certified when the slot was enrolled. A sibling releases its half
   only after the owner approves the typed `device.unlock` action, which works

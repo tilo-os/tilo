@@ -709,7 +709,7 @@ fn grant(
 }
 
 const SHELL: &str = "11111111-1111-4111-8111-111111111111";
-const ON_RELAY: &str = "22222222-2222-4222-8222-222222222222";
+const ON_SERVER: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_one_else_does() {
@@ -739,7 +739,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
         unattended: false,
     };
     let held = PersonalList {
-        workspaces: vec![entry(SHELL, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
+        workspaces: vec![entry(SHELL, "Build box"), entry(ON_SERVER, "eu1.tilo.sh")],
         ..PersonalList::default()
     };
     *b.server.list.lock().unwrap() = Some(held.clone());
@@ -868,7 +868,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
     assert_eq!(arrived[0].workspace.as_deref(), Some(SHELL));
 
     // An address names one workspace: another's is not entered with it.
-    assert!(enter(&dialing, &key, ON_RELAY, &address).await.is_err());
+    assert!(enter(&dialing, &key, ON_SERVER, &address).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -885,7 +885,7 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
     let elsewhere = grant(
         &person.root,
         11,
-        tilo_user_identity::AgentScope::parse(ON_RELAY).unwrap(),
+        tilo_user_identity::AgentScope::parse(ON_SERVER).unwrap(),
     );
     let refused = enter(
         &endpoint(&elsewhere.0).await,

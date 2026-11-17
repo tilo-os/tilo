@@ -1,19 +1,19 @@
 //! What a governed workspace's direct link brings its host, how a reader
 //! that fell behind it catches up, and how a member's write crosses between
-//! the link and the relay's sessions, once each way.
+//! the link and the server's sessions, once each way.
 //!
 //! A member device of a workspace governed here syncs with the host over the
-//! workspace's direct link, with no relay session in between: what it writes
+//! workspace's direct link, with no server session in between: what it writes
 //! there is admitted into the host's replica by the link itself, and the host
 //! engine follows it here, as it follows the writes a member sends through a
-//! relay session.
+//! server session.
 //!
 //! The link hands each admitted frame to a channel that keeps the newest ones
 //! and drops the oldest for a reader that falls behind. A dropped frame is a
 //! member's write the host never followed, which is why a reader that lost
 //! frames takes the writes among them from the history the link keeps, and
 //! goes on reading, rather than ending with the workspace's link unread for as
-//! long as the relay runs.
+//! long as the server runs.
 
 use super::follow::Followed;
 use super::{GovernedWorkspace, WeakWorkspaces, Workspaces};
@@ -21,8 +21,8 @@ use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use tilo_server_protocol::WorkspaceId;
 
-/// Carry `body`, `author`'s write the relay admitted for `workspace` from a
-/// relay session, to the devices on the workspace's link
+/// Carry `body`, `author`'s write the server admitted for `workspace` from a
+/// server session, to the devices on the workspace's link
 /// ([`Workspaces::carry_to_links`]).
 ///
 /// Called where the write is admitted, not on a reader's own schedule: a device
@@ -97,8 +97,8 @@ impl Workspaces {
             .store(capacity, std::sync::atomic::Ordering::Release);
     }
 
-    /// Carry `message`, `author`'s write the relay admitted for `workspace`
-    /// from a relay session, to the devices on the workspace's link: live to
+    /// Carry `message`, `author`'s write the server admitted for `workspace`
+    /// from a server session, to the devices on the workspace's link: live to
     /// those linked now, and kept for those that join later. A member reaches
     /// the workspace on whatever carrier its runtime runs, and every member
     /// reads every other's records and channel governance on its own. What a
@@ -124,8 +124,8 @@ impl Workspaces {
     }
 
     /// Carry `message`, `author`'s record write the workspace's link
-    /// admitted, to the members that take part through relay sessions: the
-    /// relay retains it in `author`'s name and sends it to every session, as
+    /// admitted, to the members that take part through server sessions: the
+    /// server retains it in `author`'s name and sends it to every session, as
     /// it does a session's own write, trying again until it is durable there
     /// ([`Self::carry_until_landed`]). Only the link's first copy of a frame
     /// comes here ([`tilo_peer_state::direct::Heard::fresh`]), so nothing a
@@ -156,29 +156,29 @@ impl Workspaces {
         self.carry_until_landed(workspace, workspace_id, author, commit);
     }
 
-    /// Carry to the relay's sessions every record write `workspace`'s link
-    /// keeps that the relay's own history lacks, in its author's name, as the
+    /// Carry to the server's sessions every record write `workspace`'s link
+    /// keeps that the server's own history lacks, in its author's name, as the
     /// link's first copy of a write is carried ([`Self::carry_to_sessions`]):
-    /// writes the link kept before the relay carried each one, or that did
-    /// not reach the relay as they came.
+    /// writes the link kept before the server carried each one, or that did
+    /// not reach the server as they came.
     ///
     /// A page that opens a record, a part behind its chain's head or an
-    /// on-demand one, is sent what the relay's history holds of it, and a
+    /// on-demand one, is sent what the server's history holds of it, and a
     /// record that history lacks is one the page's app makes anew. The
-    /// relay's history answers for the workspace only once it holds what the
-    /// link holds, as the link's holds what the relay retains
+    /// server's history answers for the workspace only once it holds what the
+    /// link holds, as the link's holds what the server retains
     /// ([`Self::recall`]). Returns how many writes it carried.
     pub(super) async fn keep_link_history(&self, workspace: &GovernedWorkspace) -> usize {
         let workspace_id = workspace.workspace_id();
         let retained = match self.inner.host.records.retained(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
-                tracing::warn!(workspace = %workspace.workspace(), %error, "the relay's history was not read; what only the link kept stays there");
+                tracing::warn!(workspace = %workspace.workspace(), %error, "the server's history was not read; what only the link kept stays there");
                 return 0;
             }
         };
         let answered =
-            super::session_carry::RelayHistory::of(retained.iter().filter_map(|retained| {
+            super::session_carry::ServerHistory::of(retained.iter().filter_map(|retained| {
                 tilo_failure::ignored!(
                     "a retained body that does not decode is one recall reports, and holds no write",
                     postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
@@ -194,7 +194,7 @@ impl Workspaces {
             ) {
                 Ok(replay) => replay,
                 Err(error) => {
-                    tracing::warn!(workspace = %workspace.workspace(), %error, "the link's history was not read; the relay's lacks what only the link kept");
+                    tracing::warn!(workspace = %workspace.workspace(), %error, "the link's history was not read; the server's lacks what only the link kept");
                     return carried;
                 }
             };
@@ -217,15 +217,15 @@ impl Workspaces {
             }
         }
         if carried > 0 {
-            tracing::info!(workspace = %workspace.workspace(), carried, "the relay's history took what only the link kept");
+            tracing::info!(workspace = %workspace.workspace(), carried, "the server's history took what only the link kept");
         }
         carried
     }
 
     /// Take in what `workspace`'s link admits and answer what its members ask
     /// there: a frame the link admitted is what a member's write through a
-    /// relay session was, so it is followed as one ([`Self::absorb`]) and
-    /// carried to the relay's sessions ([`Self::carry_to_sessions`]), and each
+    /// server session was, so it is followed as one ([`Self::absorb`]) and
+    /// carried to the server's sessions ([`Self::carry_to_sessions`]), and each
     /// ask for content is answered with what this host keeps of it, or word
     /// that it keeps none, addressed to whoever asked. The link carries each
     /// ask on to the workspace's other members itself.
@@ -263,7 +263,7 @@ impl Workspaces {
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
-                // The members on relay sessions read it as the linked members
+                // The members on server sessions read it as the linked members
                 // do, the first time the link takes it in.
                 if frame.fresh && frame.report.is_ok() {
                     workspaces.carry_to_sessions(&name, frame.author, &frame.message);
@@ -303,7 +303,7 @@ impl Workspaces {
 }
 
 impl Workspaces {
-    /// Replay every record write the relay retains for `workspace` into the
+    /// Replay every record write the server retains for `workspace` into the
     /// governor's copy, and keep what it took in.
     pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let retained = self
@@ -316,11 +316,11 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Take `retained`, the record writes the relay retains for `workspace`, into
+    /// Take `retained`, the record writes the server retains for `workspace`, into
     /// the governor's copy, and keep what it took in. A write held for an
     /// app surface not here yet may be let go past the held queue's bound,
     /// and so is every later write of its author to its record, which
-    /// would otherwise overtake it for good. The relay still retains them
+    /// would otherwise overtake it for good. The server still retains them
     /// all: they are replayed again, in the order their authors wrote them,
     /// once the surface arrives ([`Self::follow`]) or something they waited
     /// for lands ([`Followed::replay_wanted`]).
@@ -331,7 +331,7 @@ impl Workspaces {
     ) {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
-            // What the relay's device wrote is retained under its key, the
+            // What the server's device wrote is retained under its key, the
             // governor's own commits and its sessions' writes alike: the
             // first are the governor's copy already, the second it took in
             // as they came (`absorb`). Neither is replayed into it.
@@ -376,7 +376,7 @@ impl Workspaces {
         if changed {
             workspace.keep_followed();
         }
-        // What a write let go waited for landed in this replay: the relay's
+        // What a write let go waited for landed in this replay: the server's
         // copy is read again, with what reached it since this one was read.
         // Each further replay needs something new to land, so it ends.
         if again {

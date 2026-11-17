@@ -36,10 +36,10 @@ const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
 /// The six-digit code a pairing device shows: the same on the new device,
 /// the device that found it and every device asked to approve it.
 #[must_use]
-pub fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) -> String {
+pub fn pairing_code(device_public_key: [u8; 32], server_node_id: [u8; 32]) -> String {
     let mut input = PAIR_DOMAIN.to_vec();
     input.extend(device_public_key);
-    input.extend(relay_service_node_id);
+    input.extend(server_node_id);
     let digest = blake3::hash(&input);
     let [first, second, third, fourth, ..] = *digest.as_bytes();
     let number = u32::from_le_bytes([first, second, third, fourth]);
@@ -62,7 +62,7 @@ pub struct Ask {
     pub session: [u8; 16],
     /// The certificate to sign, exactly; its signature is all zeros.
     pub cert: DeviceCert,
-    /// The relay service the new device announced: with its key, the
+    /// The server service the new device announced: with its key, the
     /// pairing code the person compares.
     pub service: [u8; 32],
     pub step: Step,
@@ -161,7 +161,7 @@ pub fn check_proposal(
         return Err("the proposed certificate does not start now".into());
     }
     if ask.service == [0; 32] {
-        return Err("the proposed device announced no relay service".into());
+        return Err("the proposed device announced no server service".into());
     }
     Ok(())
 }
@@ -488,7 +488,7 @@ impl Gathering {
 
     /// Renew `cert` (unsigned), which replaces `held` for the same device,
     /// under an identity whose key `threshold` of its `total` devices must
-    /// sign. `service` is the relay service the device announced, which
+    /// sign. `service` is the server service the device announced, which
     /// names the pairing code a renewal is shown under like any
     /// certificate.
     #[must_use]

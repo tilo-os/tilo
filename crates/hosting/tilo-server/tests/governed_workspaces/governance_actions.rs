@@ -1,8 +1,8 @@
 //! A governed workspace's administration answers as `tilo.workspace` actions over
-//! the relay's own remote-action envelope, by the same decision as its wire
+//! the server's own remote-action envelope, by the same decision as its wire
 //! entries: the owner's device invites; a member the workspace grants nothing is not
 //! offered the action. The host's own operations answer the same way as
-//! `tilo.host` actions, to the relay's own person only, and a member's own
+//! `tilo.host` actions, to the server's own person only, and a member's own
 //! business as `tilo.member` actions.
 use tilo_actions::remote::{
     ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -16,11 +16,11 @@ use tilo_server::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, L
 use super::*;
 use tilo_server::WorkspaceId;
 
-/// A session of `device` with the relay, subscribed to nothing.
-pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient {
-    RelayClient::connect_to_pinned_host(
+/// A session of `device` with the server, subscribed to nothing.
+pub(super) async fn connected(server: &Server, device: &TestDevice) -> ServerClient {
+    ServerClient::connect_to_pinned_host(
         device_endpoint(device).await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         device.sk.clone(),
         RevocationList::new(),
@@ -31,11 +31,11 @@ pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient
 
 /// A session of `device` subscribed to `workspace_id`.
 pub(super) async fn subscribed(
-    relay: &Relay,
+    server: &Server,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> RelayClient {
-    let client = connected(relay, device).await;
+) -> ServerClient {
+    let client = connected(server, device).await;
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the workspace admits the device", async {
         while !matches!(
@@ -50,13 +50,13 @@ pub(super) async fn subscribed(
 /// Whether `device` is admitted to `workspace_id`: it connects and its
 /// subscription is ready.
 pub(super) async fn admitted(
-    relay: &Relay,
+    server: &Server,
     device: &TestDevice,
     workspace_id: WorkspaceId,
 ) -> bool {
-    let Ok(client) = RelayClient::connect_to_pinned_host(
+    let Ok(client) = ServerClient::connect_to_pinned_host(
         device_endpoint(device).await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         device.sk.clone(),
         RevocationList::new(),
@@ -68,7 +68,7 @@ pub(super) async fn admitted(
     if client.send(Envelope::Subscribe { workspace_id }).is_err() {
         return false;
     }
-    tilo_test_env::within("the relay answers the subscription", async {
+    tilo_test_env::within("the server answers the subscription", async {
         loop {
             match client.recv().await {
                 Some(Envelope::Ready { .. }) => break true,
@@ -80,10 +80,10 @@ pub(super) async fn admitted(
     .await
 }
 
-/// What the relay answers `message`, sent by `client` to the relay's own
+/// What the server answers `message`, sent by `client` to the server's own
 /// device `host` about `workspace_id`, or why it did not.
 pub(super) async fn try_ask(
-    client: &RelayClient,
+    client: &ServerClient,
     host: &TestDevice,
     workspace_id: WorkspaceId,
     message: RemoteActionMessage,
@@ -98,7 +98,7 @@ pub(super) async fn try_ask(
             frame: RemoteActionFrame::new(message).encode().unwrap(),
         })
         .map_err(|_| "the session closed".to_owned())?;
-    tilo_test_env::within("the relay answers the action", async {
+    tilo_test_env::within("the server answers the action", async {
         loop {
             match client.recv().await {
                 Some(Envelope::RemoteAction { frame, .. }) => {
@@ -115,10 +115,10 @@ pub(super) async fn try_ask(
     .await
 }
 
-/// What the relay answers `message`, one of its own operations, asked of it
+/// What the server answers `message`, one of its own operations, asked of it
 /// directly by `client`.
 pub(super) async fn ask_host_of(
-    client: &RelayClient,
+    client: &ServerClient,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
     client
@@ -126,7 +126,7 @@ pub(super) async fn ask_host_of(
             frame: RemoteActionFrame::new(message).encode().unwrap(),
         })
         .unwrap();
-    tilo_test_env::within("the relay answers its own operation", async {
+    tilo_test_env::within("the server answers its own operation", async {
         loop {
             if let Envelope::HostAction { frame } =
                 client.recv().await.expect("the session stays open")
@@ -138,17 +138,17 @@ pub(super) async fn ask_host_of(
     .await
 }
 
-/// What the relay answers `message`, sent by `client` to the relay's own
+/// What the server answers `message`, sent by `client` to the server's own
 /// device `host` about `workspace_id`.
 pub(super) async fn ask(
-    client: &RelayClient,
+    client: &ServerClient,
     host: &TestDevice,
     workspace_id: WorkspaceId,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
     try_ask(client, host, workspace_id, message)
         .await
-        .unwrap_or_else(|reason| panic!("the relay did not answer: {reason}"))
+        .unwrap_or_else(|reason| panic!("the server did not answer: {reason}"))
 }
 
 pub(super) fn invocation(
@@ -185,7 +185,7 @@ pub(super) fn host_operation(action: &str, argument: serde_json::Value) -> Remot
     )
 }
 
-/// What an invocation came to: what it produced, or why the relay refused.
+/// What an invocation came to: what it produced, or why the server refused.
 #[expect(
     clippy::panic_in_result_fn,
     reason = "a test's helper: an answer that is no finished receipt fails the test"
@@ -197,14 +197,14 @@ pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, 
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
         ReceiptStatus::Rejected { error } => Err(error),
-        other => panic!("the relay's own actions complete at once: {other:?}"),
+        other => panic!("the server's own actions complete at once: {other:?}"),
     }
 }
 
-/// What the relay produced for the host operation `action` with
+/// What the server produced for the host operation `action` with
 /// `argument`, asked of it by `client`, read as `T`.
 pub(super) async fn host_action<T: serde::de::DeserializeOwned>(
-    client: &RelayClient,
+    client: &ServerClient,
     action: &str,
     argument: serde_json::Value,
 ) -> T {
@@ -236,18 +236,18 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspaces = relay.workspaces().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Design review").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &laptop.cert)
         .await
         .unwrap();
-    super::members::admit(&relay, &host, &phone, &workspace.workspace).await;
+    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
 
     // Alice's laptop invites through the action: the workspace records it, as
     // the administration entry would have.
-    let owner = subscribed(&relay, &laptop, workspace.workspace_id).await;
+    let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
     let RemoteActionMessage::Receipt(receipt) = ask(
         &owner,
         &host,
@@ -298,7 +298,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     }));
 
     // Bob, an Editor the workspace grants nothing, is not offered it.
-    let member = subscribed(&relay, &phone, workspace.workspace_id).await;
+    let member = subscribed(&server, &phone, workspace.workspace_id).await;
     let RemoteActionMessage::Receipt(receipt) = ask(
         &member,
         &host,
@@ -315,23 +315,23 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
             error: ActionHostError::UnknownAction
         }
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot() {
+async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
+    let server = start(state.path(), &alice, &host).await;
 
-    // Before it holds any workspace, Alice's laptop asks her relay directly: it
+    // Before it holds any workspace, Alice's laptop asks her server directly: it
     // creates the workspace with Bob's invitation, finds it listed and enters it,
     // answered the invitation it redeems itself.
-    let home = connected(&relay, &laptop).await;
+    let home = connected(&server, &laptop).await;
     let created: CreatedWorkspace = host_action(
         &home,
         CREATE_WORKSPACE,
@@ -388,7 +388,7 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         .await
         .unwrap();
     let workspace = created.workspace.workspace_id;
-    let member = subscribed(&relay, &phone, workspace).await;
+    let member = subscribed(&server, &phone, workspace).await;
     for (action, argument) in [
         (LIST_WORKSPACES, serde_json::json!({})),
         (CREATE_WORKSPACE, serde_json::json!({ "name": "Bob's" })),
@@ -418,8 +418,8 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         panic!("a catalogue request is answered with a page");
     };
     assert!(result.unwrap().rows.is_empty());
-    assert_eq!(relay.workspaces().unwrap().list().await.len(), 1);
-    relay.shutdown().await;
+    assert_eq!(server.workspaces().unwrap().list().await.len(), 1);
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -430,18 +430,18 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspaces = relay.workspaces().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Design review").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &laptop.cert)
         .await
         .unwrap();
-    super::members::admit(&relay, &host, &phone, &workspace.workspace).await;
-    assert!(admitted(&relay, &phone, workspace.workspace_id).await);
+    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
+    assert!(admitted(&server, &phone, workspace.workspace_id).await);
 
     // The owner's own request is the confirmation removing asks for.
-    let owner = subscribed(&relay, &laptop, workspace.workspace_id).await;
+    let owner = subscribed(&server, &laptop, workspace.workspace_id).await;
     let removed = outcome(
         ask(
             &owner,
@@ -463,7 +463,7 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             .is_some_and(|generation| generation > workspace.generation),
         "{removed}"
     );
-    assert!(!admitted(&relay, &phone, workspace.workspace_id).await);
+    assert!(!admitted(&server, &phone, workspace.workspace_id).await);
     drop(owner);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

@@ -1,7 +1,7 @@
-//! Encoded examples of every serialized relay value type.
+//! Encoded examples of every serialized server value type.
 //!
 //! These records are written to disk by one build and read by another, and
-//! the mesh types travel on the relay wire, so their encodings may only change
+//! the mesh types travel on the server wire, so their encodings may only change
 //! through an explicit compatibility decision. Each test pins the exact bytes
 //! or text produced today and decodes them back to the same value.
 
@@ -19,7 +19,7 @@ use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::sealed_invitations as SealedInvitations;
 use tilo_server_protocol::{
     ComputeAccelerator, DeviceMeshProfile, HomePeerRegistration, MetricsSnapshot,
-    PowerAvailability, ProcessLease, RelayConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
+    PowerAvailability, ProcessLease, ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -62,7 +62,7 @@ fn json_encodings_are_pinned() {
         concat!(
             r#"{"device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
             r#""services":{"workspace_replication":true,"full_content_replication":true,"#,
-            r#""inbound_relay":true,"remote_control_relay":true,"app_serving":false,"compute":false},"#,
+            r#""inbound_server":true,"remote_control_server":true,"app_serving":false,"compute":false},"#,
             r#""filesystem_endpoints":[]}"#,
         ),
     );
@@ -88,20 +88,20 @@ fn json_encodings_are_pinned() {
         &HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: "11".repeat(32),
-            relay_service_node_id: "22".repeat(32),
-            relay_endpoint: None,
+            server_node_id: "22".repeat(32),
+            server_endpoint: None,
             label: "Attic server".to_string(),
             user_public_key: "33".repeat(32),
             device_cert: None,
-            relay_workspace_ids: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
+            server_workspace_ids: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
         },
         concat!(
             r#"{"schema_version":3,"#,
             r#""device_node_id":"1111111111111111111111111111111111111111111111111111111111111111","#,
-            r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
-            r#""relay_endpoint":null,"label":"Attic server","#,
+            r#""server_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
+            r#""server_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":["00000000-0000-0000-0000-000000000007","00000000-0000-0000-0000-000000000008"]}"#,
+            r#""device_cert":null,"server_workspace_ids":["00000000-0000-0000-0000-000000000007","00000000-0000-0000-0000-000000000008"]}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
@@ -157,7 +157,7 @@ fn json_encodings_are_pinned() {
         serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
         snapshot
     );
-    // A snapshot a relay wrote before the egress counters still reads, with
+    // A snapshot a server wrote before the egress counters still reads, with
     // no egress.
     let before_egress = r#"{
   "conns_accepted": 1,
@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
 
     phase toml_encodings_are_pinned;
     {
-        let config = RelayConfig {
+        let config = ServerConfig {
             identity_root: PathBuf::from("/var/lib/tilo"),
             state_root: PathBuf::from("/var/lib/tilo-server"),
             full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
@@ -310,13 +310,13 @@ free_memory_percent = 0
 [services]
 workspace_replication = true
 full_content_replication = true
-inbound_relay = true
-remote_control_relay = true
+inbound_server = true
+remote_control_server = true
 app_serving = false
 compute = false
 "#;
         assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
-        assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
+        assert_eq!(toml::from_str::<ServerConfig>(encoded).unwrap(), config);
 
         // Trust policies.
         for (policy, encoded) in [

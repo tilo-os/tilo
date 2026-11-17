@@ -53,7 +53,7 @@ pub(super) fn asks_first(request: &InvokeRequest) -> Option<std::time::Duration>
 /// The person's answer to a question, once they gave it or it lapsed.
 pub type Answer = Pin<Box<dyn Future<Output = Result<ConfirmationAnswer, String>> + Send>>;
 
-/// What puts a question to a person on their approving devices: the relay's
+/// What puts a question to a person on their approving devices: the server's
 /// confirmations, which only devices of that person's root answer.
 pub trait AsksPeople: Send + Sync {
     /// Ask `person` `question` and wait for their answer; `Err` when nobody
@@ -86,7 +86,7 @@ impl Workspaces {
     /// asked as before: a key reaching all their workspaces, a key for another
     /// workspace, an agent on a device of theirs, and any other person's key.
     pub async fn runs_unattended(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
-        // An agent's key, as the relay names one: its person's agent on a
+        // An agent's key, as the server names one: its person's agent on a
         // session its own certificate opened.
         if !(caller.acting().is_agent() && caller.is_session_delegated()) {
             return false;

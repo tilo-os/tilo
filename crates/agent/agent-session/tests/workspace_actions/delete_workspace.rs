@@ -1,19 +1,19 @@
 //! A backend running one workspace per customer deletes a customer's
-//! workspace when they leave, through the API server on the relay: the
-//! workspace leaves every listing, what the relay kept of it goes from its
+//! workspace when they leave, through the API server on the server: the
+//! workspace leaves every listing, what the server kept of it goes from its
 //! disk and from its person's storage, the key minted for it is revoked and
 //! says so, and a member's page open in it is told it was deleted. Only its
 //! owner's key reaching all their workspaces deletes it.
 use super::api::{ISSUER, Mcp, upload};
-use super::api_on_relay::{OnRelay, accept_invitation, api_on_relay, approved_key};
+use super::api_on_server::{OnServer, accept_invitation, api_on_server, approved_key};
 use super::hosted_documents::application_pdf;
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use tilo_session_client::{Cmd, Outbox};
 
-/// Every path under `root` that is `workspace`'s, as the relay names what it
-/// keeps of one: its id, first in a file's name, or its relay workspace.
+/// Every path under `root` that is `workspace`'s, as the server names what it
+/// keeps of one: its id, first in a file's name, or its server workspace.
 fn traces(root: &Path, workspace: &str, workspace_id: WorkspaceId) -> Vec<PathBuf> {
     let names = [workspace_id.to_string()];
     let mut found = Vec::new();
@@ -61,15 +61,15 @@ async fn listed(account: &mut Mcp<'_>) -> Vec<String> {
         .collect()
 }
 
-/// A person's server key on `on_relay`, approved on a page of theirs.
-async fn server_key(on_relay: &OnRelay, name: &str) -> (SigningKey, String) {
+/// A person's server key on `on_server`, approved on a page of theirs.
+async fn server_key(on_server: &OnServer, name: &str) -> (SigningKey, String) {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
     let page = enrol(
         &root,
         &format!("{name}'s browser"),
         DeviceCapabilities::member(),
     );
-    let key = approved_key(on_relay, &root, &page, "Visa backend").await;
+    let key = approved_key(on_server, &root, &page, "Visa backend").await;
     (root, key)
 }
 
@@ -77,7 +77,7 @@ async fn server_key(on_relay: &OnRelay, name: &str) -> (SigningKey, String) {
 /// theirs as `root`: their device.
 async fn invite(
     account: &mut Mcp<'_>,
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     workspace: &str,
     root: &SigningKey,
 ) -> Device {
@@ -91,7 +91,7 @@ async fn invite(
         .as_str()
         .unwrap_or_else(|| panic!("an invitation's link: {invited}"))
         .to_owned();
-    accept_invitation(on_relay, &link, root, "Rosa Ortiz")
+    accept_invitation(on_server, &link, root, "Rosa Ortiz")
         .await
         .0
 }
@@ -135,15 +135,15 @@ async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: Workspace
 /// at the handshake, but its address says the workspace was deleted, so the
 /// device forgets it.
 async fn only_member_hears_deleted(
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     page: &Device,
     workspace: &str,
     workspace_id: WorkspaceId,
 ) {
     let back = start_peer(
-        on_relay.relay_host(),
+        on_server.server_host(),
         page.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         page.key.clone(),
     );
     back.send(Cmd::Join(workspace_id)).unwrap();
@@ -163,7 +163,7 @@ async fn only_member_hears_deleted(
     }
     back.close();
     let client = tilo_net::Client::builder().build().unwrap();
-    let host = tilo_server_client::https::Origin::new(&client, &on_relay.relay);
+    let host = tilo_server_client::https::Origin::new(&client, &on_server.server);
     assert!(
         tilo_server_client::https::workspace_deleted(&host, workspace)
             .await
@@ -171,9 +171,9 @@ async fn only_member_hears_deleted(
         "the host's address says the workspace was deleted"
     );
     // The device settles what it remembered by that answer: forgotten.
-    let host_device = hex::encode(on_relay.host.cert.device_public_key);
+    let host_device = hex::encode(on_server.host.cert.device_public_key);
     let place = tilo_session_client::entered::Place {
-        origin: on_relay.relay.clone(),
+        origin: on_server.server.clone(),
         workspace: workspace.to_owned(),
     };
     let remembered = tilo_session_client::entered::remember(
@@ -203,9 +203,9 @@ async fn only_member_hears_deleted(
     reason = "one customer's workspace, from its making to everything it kept being gone"
 )]
 async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let (_, key) = server_key(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (_, key) = server_key(&on_server, "Ada").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -254,11 +254,11 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
 
     // A reviewer has it open on a page of theirs.
     let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
-    let rosa_page = invite(&mut account, &on_relay, &workspace, &rosa).await;
+    let rosa_page = invite(&mut account, &on_server, &workspace, &rosa).await;
     let page = start_peer(
-        on_relay.relay_host(),
+        on_server.server_host(),
         rosa_page.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         rosa_page.key.clone(),
     );
     page.send(Cmd::Join(workspace_id)).unwrap();
@@ -266,12 +266,12 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     // Another reviewer, who works in the other customer's workspace too,
     // had it open earlier and is away while it is deleted.
     let (sam, _) = tilo_user_identity::UserIdentity::generate("Sam Lee", 1);
-    let sam_page = invite(&mut account, &on_relay, &workspace, &sam).await;
-    let _ = invite(&mut account, &on_relay, &kept, &sam).await;
+    let sam_page = invite(&mut account, &on_server, &workspace, &sam).await;
+    let _ = invite(&mut account, &on_server, &kept, &sam).await;
     let away = start_peer(
-        on_relay.relay_host(),
+        on_server.server_host(),
         sam_page.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         sam_page.key.clone(),
     );
     away.send(Cmd::Join(workspace_id)).unwrap();
@@ -279,24 +279,24 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     away.close();
     // A customer, invited to only this workspace, had it open earlier too.
     let (lin, _) = tilo_user_identity::UserIdentity::generate("Lin Park", 1);
-    let lin_page = invite(&mut account, &on_relay, &workspace, &lin).await;
+    let lin_page = invite(&mut account, &on_server, &workspace, &lin).await;
     let lin_away = start_peer(
-        on_relay.relay_host(),
+        on_server.server_host(),
         lin_page.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         lin_page.key.clone(),
     );
     lin_away.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&lin_away]).await;
     lin_away.close();
 
-    let state = on_relay.state.path();
+    let state = on_server.state.path();
     let before = traces(state, &workspace, workspace_id);
     assert!(
         before
             .iter()
             .any(|path| path.extension().is_some_and(|ext| ext == "workspace")),
-        "the relay keeps the workspace's record: {before:?}"
+        "the server keeps the workspace's record: {before:?}"
     );
     assert!(
         usage(&mut account)
@@ -335,8 +335,8 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         refused["error"]["revoked_at_ms"].is_u64(),
         "it says when: {refused}"
     );
-    // What the relay kept of it is gone from its disk, but the mark that it
-    // was deleted (its content goes as the relay hears it was deleted), and
+    // What the server kept of it is gone from its disk, but the mark that it
+    // was deleted (its content goes as the server hears it was deleted), and
     // from what its person keeps.
     let marker = format!("{workspace}.deleted");
     let deadline = tilo_test_env::hang_deadline();
@@ -362,14 +362,14 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     heard_deleted(&page, workspace_id).await;
     // The reviewer who was away comes back, and hears it was deleted too.
     let back = start_peer(
-        on_relay.relay_host(),
+        on_server.server_host(),
         sam_page.cert.clone(),
-        on_relay.host.cert.clone(),
+        on_server.host.cert.clone(),
         sam_page.key.clone(),
     );
     back.send(Cmd::Join(workspace_id)).unwrap();
     heard_deleted(&back, workspace_id).await;
-    only_member_hears_deleted(&on_relay, &lin_page, &workspace, workspace_id).await;
+    only_member_hears_deleted(&on_server, &lin_page, &workspace, workspace_id).await;
     // Deleting it again finds no such workspace.
     let again = account
         .tilo_do(json!({"path": "account/workspaces#delete", "args": {"workspace": workspace}}))
@@ -382,9 +382,9 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let (_, key) = server_key(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (_, key) = server_key(&on_server, "Ada").await;
     let mut account = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -423,8 +423,8 @@ async fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
 
     // A member's own server key, who was invited in, finds no workspace of
     // theirs to delete.
-    let (rosa, rosa_key) = server_key(&on_relay, "Rosa").await;
-    let _ = invite(&mut account, &on_relay, &workspace, &rosa).await;
+    let (rosa, rosa_key) = server_key(&on_server, "Rosa").await;
+    let _ = invite(&mut account, &on_server, &workspace, &rosa).await;
     let mut member = Mcp {
         api: &api,
         path: "/mcp".into(),

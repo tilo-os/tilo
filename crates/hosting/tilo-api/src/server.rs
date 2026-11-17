@@ -1,15 +1,15 @@
-//! The person's workspaces on the relay, reached as a grant: the same way
+//! The person's workspaces on the server, reached as a grant: the same way
 //! into a workspace every device takes ([`Device::enter_workspace`]).
 //!
 //! The grant's own key is the device. It dials the relay's iroh endpoint
-//! (which the relay's public origin names, `/peer/v1/host`) with the grant's
-//! certificate, and asks the relay's own operations (its person's list, making
+//! (which the server's public origin names, `/peer/v1/host`) with the grant's
+//! certificate, and asks the server's own operations (its person's list, making
 //! and deleting their workspaces, their account) on that session, in no
 //! workspace. It enters one of the person's workspaces its scope reaches as
-//! any device of theirs does: the relay invites it in on the session, it
+//! any device of theirs does: the server invites it in on the session, it
 //! redeems the invitation there, and joins.
 //!
-//! What it does there is decided by the relay, at every handshake and audit:
+//! What it does there is decided by the server, at every handshake and audit:
 //! the grant's scope, its certificate's expiry, and its person's
 //! revocations, a minted grant's issuer included.
 
@@ -34,7 +34,7 @@ pub struct Workspace {
     /// The workspace's id (a UUID): what every action names it by.
     pub id: String,
     pub name: String,
-    /// The host serving it, named as hosts are: a relay's name
+    /// The host serving it, named as hosts are: a server's name
     /// (`eu1.tilo.sh`), or the person's device that hosts it. `None` while
     /// none of their devices said where it is hosted.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,21 +58,21 @@ pub struct Workspace {
     pub address: Option<tilo_server_session::workspaces::WorkspaceHostAddress>,
 }
 
-/// Why the relay did not answer what was asked.
+/// Why the server did not answer what was asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RelayError {
+pub enum ServerError {
     /// Not one of the person's workspaces, or no such workspace: the same
     /// answer, so a guess learns nothing.
     NotFound,
-    /// The relay refused, with its reason (one workspace more than the
+    /// The server refused, with its reason (one workspace more than the
     /// person's plan keeps, quota, policy).
     Refused(String),
-    /// The relay or the site could not be reached.
+    /// The server or the site could not be reached.
     Unavailable(String),
-    /// The relay is busy with this person's changes: nothing ran, and the
+    /// The server is busy with this person's changes: nothing ran, and the
     /// same call works once `retry_after_ms` passed.
     RateLimited { retry_after_ms: u64 },
-    /// The relay refused one of its own workspace operations, saying which
+    /// The server refused one of its own workspace operations, saying which
     /// case it was instead of leaving the caller to read it from words.
     RefusedWorkspace(WorkspaceRefusal),
     /// No host answered with a session, so nothing that can read the
@@ -80,7 +80,7 @@ pub enum RelayError {
     NoHolder,
 }
 
-impl std::fmt::Display for RelayError {
+impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
@@ -91,18 +91,18 @@ impl std::fmt::Display for RelayError {
             // What the host refused is kept for the log: the person (or the
             // agent relaying it) reads what they can do about it.
             Self::Refused(reason) => {
-                tracing::info!(reason, "the relay refused a call");
+                tracing::info!(reason, "the server refused a call");
                 match tilo_actions::remote::host_account::Refusal::from_reason(reason) {
                     Some(refusal) => f.write_str(&refusal.message),
                     None => f.write_str(tilo_server_protocol::refusal::PLAIN_REFUSED),
                 }
             }
             Self::Unavailable(reason) => {
-                tracing::debug!(reason, "the relay was not reached");
+                tracing::debug!(reason, "the server was not reached");
                 f.write_str("Tilo couldn't reach your workspace; try again in a minute.")
             }
             Self::RefusedWorkspace(refusal) => {
-                tracing::info!(?refusal, "the relay refused a workspace operation");
+                tracing::info!(?refusal, "the server refused a workspace operation");
                 match refusal {
                     WorkspaceRefusal::NotYourOwn => f.write_str("no such workspace of yours"),
                     WorkspaceRefusal::BranchNotMade { part } => {
@@ -124,7 +124,7 @@ impl std::fmt::Display for RelayError {
     }
 }
 
-impl From<CertifyError> for RelayError {
+impl From<CertifyError> for ServerError {
     fn from(error: CertifyError) -> Self {
         match error {
             CertifyError::Denied(reason) => Self::Refused(reason),
@@ -134,9 +134,9 @@ impl From<CertifyError> for RelayError {
     }
 }
 
-impl From<HostRefusal> for RelayError {
+impl From<HostRefusal> for ServerError {
     fn from(refusal: HostRefusal) -> Self {
-        // A workspace operation of the relay's own answers a typed refusal;
+        // A workspace operation of the server's own answers a typed refusal;
         // the host's other refusals are read as they were.
         if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {
             return Self::RefusedWorkspace(refused);
@@ -145,17 +145,17 @@ impl From<HostRefusal> for RelayError {
     }
 }
 
-/// The relay the person's workspaces live on.
-pub struct Relay {
+/// The server the person's workspaces live on.
+pub struct Server {
     host: Origin,
-    /// The relay's name, as hosts are named (`eu1.tilo.sh`).
+    /// The server's name, as hosts are named (`eu1.tilo.sh`).
     name: String,
     /// Where it is reached, as it was configured (`https://eu1.tilo.sh`).
     origin: String,
 }
 
-impl Relay {
-    /// The relay at `origin`.
+impl Server {
+    /// The server at `origin`.
     #[must_use]
     pub fn new(client: &tilo_net::Client, origin: &str) -> Self {
         let name = origin
@@ -170,7 +170,7 @@ impl Relay {
         }
     }
 
-    /// The relay's name, as the account lists hosts.
+    /// The server's name, as the account lists hosts.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -182,14 +182,14 @@ impl Relay {
         &self.origin
     }
 
-    /// `key` on the relay: its session, not in any workspace yet.
+    /// `key` on the server: its session, not in any workspace yet.
     ///
     /// # Errors
-    /// The relay was not reached or takes no device sessions.
-    pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, RelayError> {
+    /// The server was not reached or takes no device sessions.
+    pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, ServerError> {
         let info = https::host_info(&self.host)
             .await
-            .map_err(|error| RelayError::Unavailable(error.to_string()))?;
+            .map_err(|error| ServerError::Unavailable(error.to_string()))?;
         let host = info
             .address
             .as_ref()
@@ -199,7 +199,7 @@ impl Relay {
                     relay = self.name(),
                     "the relay published no device address: no workspace can be reached through it"
                 );
-                RelayError::Unavailable("it publishes no device address".to_owned())
+                ServerError::Unavailable("it publishes no device address".to_owned())
             })?;
         let label = key.cert().device_label.clone();
         let device = Device::over(
@@ -216,7 +216,7 @@ impl Relay {
         let connection = Connection {
             device,
             key: key.clone(),
-            relay: Arc::clone(self),
+            server: Arc::clone(self),
             host: self.name.clone(),
             entered: Mutex::default(),
             let_in: Mutex::default(),
@@ -227,39 +227,39 @@ impl Relay {
     }
 
     /// The workspaces `connection`'s grant reaches: the person's list as the
-    /// relay keeps it, every workspace of theirs wherever it is hosted (one
-    /// of their desktops, a paired device, this relay), each naming its host.
+    /// server keeps it, every workspace of theirs wherever it is hosted (one
+    /// of their desktops, a paired device, this server), each naming its host.
     ///
     /// # Errors
-    /// The relay was not reached or refused.
-    pub async fn workspaces(&self, connection: &Connection) -> Result<Vec<Workspace>, RelayError> {
+    /// The server was not reached or refused.
+    pub async fn workspaces(&self, connection: &Connection) -> Result<Vec<Workspace>, ServerError> {
         self.labelled(connection, &WorkspaceLabels::new()).await
     }
 
     /// The workspaces `connection`'s grant reaches that are labelled with
-    /// every one of `labels`: the relay reads only those, however many the
+    /// every one of `labels`: the server reads only those, however many the
     /// person has.
     ///
     /// # Errors
-    /// The relay was not reached or refused.
+    /// The server was not reached or refused.
     pub async fn labelled(
         &self,
         connection: &Connection,
         labels: &WorkspaceLabels,
-    ) -> Result<Vec<Workspace>, RelayError> {
+    ) -> Result<Vec<Workspace>, ServerError> {
         self.listed(connection, labels, None).await
     }
 
     /// `workspace` as `connection`'s grant reaches it, when it does: the
-    /// relay reads that one alone.
+    /// server reads that one alone.
     ///
     /// # Errors
-    /// The relay was not reached or refused.
+    /// The server was not reached or refused.
     pub async fn workspace(
         &self,
         connection: &Connection,
         workspace: &str,
-    ) -> Result<Option<Workspace>, RelayError> {
+    ) -> Result<Option<Workspace>, ServerError> {
         Ok(self
             .listed(connection, &WorkspaceLabels::new(), Some(workspace))
             .await?
@@ -272,12 +272,12 @@ impl Relay {
         connection: &Connection,
         labels: &WorkspaceLabels,
         workspace: Option<&str>,
-    ) -> Result<Vec<Workspace>, RelayError> {
+    ) -> Result<Vec<Workspace>, ServerError> {
         let listed = connection
             .device
             .personal_list(labels, workspace)
             .await
-            .map_err(RelayError::from)?;
+            .map_err(ServerError::from)?;
         // A list is kept, and a workspace listed, only for a person who
         // takes part there.
         if !listed.workspaces.is_empty() {
@@ -303,8 +303,8 @@ impl Relay {
     /// the VM time it ran.
     ///
     /// # Errors
-    /// The relay was not reached or refused.
-    pub async fn account(&self, connection: &Connection) -> Result<Value, RelayError> {
+    /// The server was not reached or refused.
+    pub async fn account(&self, connection: &Connection) -> Result<Value, ServerError> {
         use tilo_actions::remote::host_account;
         connection
             .device
@@ -314,27 +314,27 @@ impl Relay {
                 Map::new(),
             )
             .await
-            .map_err(RelayError::from)
+            .map_err(ServerError::from)
     }
 
     /// Make the person's workspace called `name` as `connection`, labelled
     /// `labels`, under `id` when the caller chose one. A person has any number of workspaces of
     /// their own, sharing what the host keeps for them.
     ///
-    /// The grant enters it only once a run acts there ([`Relay::enter`]): a
+    /// The grant enters it only once a run acts there ([`Server::enter`]): a
     /// backend that makes a workspace per customer keeps hundreds, and its
-    /// session with the relay subscribes only to those it works in.
+    /// session with the server subscribes only to those it works in.
     ///
     /// # Errors
-    /// The relay was not reached or refused.
+    /// The server was not reached or refused.
     pub async fn create(
         &self,
         connection: &Connection,
         name: &str,
         labels: &WorkspaceLabels,
         id: Option<uuid::Uuid>,
-    ) -> Result<Workspace, RelayError> {
-        // The relay makes the workspace under this id, or answers the one it
+    ) -> Result<Workspace, ServerError> {
+        // The server makes the workspace under this id, or answers the one it
         // made under it before (a retried create), or refuses one more than
         // the person's plan keeps rather than answering one they have.
         let fresh = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
@@ -352,13 +352,13 @@ impl Relay {
     /// Branch the person's own `source` as `connection` (reaching all their
     /// workspaces): a new workspace of theirs called `name`, labelled `labels`,
     /// under `id` when the caller chose one, that starts with everything
-    /// `source` holds but what is tied to other people. The relay answers once
+    /// `source` holds but what is tied to other people. The server answers once
     /// the branch holds all of it, or refuses and keeps nothing of it; asked
     /// again under the same `id`, it answers the branch it made.
     ///
     /// # Errors
-    /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
-    /// or the relay refused (naming what did not come) or was not reached.
+    /// Not one of the person's own workspaces ([`ServerError::NotFound`]),
+    /// or the server refused (naming what did not come) or was not reached.
     pub async fn branch(
         &self,
         connection: &Connection,
@@ -366,9 +366,9 @@ impl Relay {
         name: &str,
         labels: &WorkspaceLabels,
         id: Option<uuid::Uuid>,
-    ) -> Result<Workspace, RelayError> {
+    ) -> Result<Workspace, ServerError> {
         if tilo_server_protocol::WorkspaceId::parse(source).is_none() {
-            return Err(RelayError::NotFound);
+            return Err(ServerError::NotFound);
         }
         let branch = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
         let mut arguments = Map::new();
@@ -385,26 +385,26 @@ impl Relay {
                 arguments,
             )
             .await
-            .map_err(|refusal| match RelayError::from(refusal) {
-                RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
+            .map_err(|refusal| match ServerError::from(refusal) {
+                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => ServerError::NotFound,
                 other => other,
             })?;
         let made: tilo_server_session::workspaces::CreatedWorkspace =
             serde_json::from_value(output).map_err(|error| {
-                RelayError::Unavailable(format!("the relay answered no branch: {error}"))
+                ServerError::Unavailable(format!("the server answered no branch: {error}"))
             })?;
         Ok(connection.workspace(&made.workspace))
     }
 
     /// Delete the person's own `workspace` as `connection` (reaching all
-    /// their workspaces): final, with everything the relay keeps of it.
+    /// their workspaces): final, with everything the server keeps of it.
     ///
     /// # Errors
-    /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
-    /// or the relay refused or was not reached.
-    pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), RelayError> {
+    /// Not one of the person's own workspaces ([`ServerError::NotFound`]),
+    /// or the server refused or was not reached.
+    pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), ServerError> {
         if tilo_server_protocol::WorkspaceId::parse(workspace).is_none() {
-            return Err(RelayError::NotFound);
+            return Err(ServerError::NotFound);
         }
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), json!(workspace));
@@ -412,8 +412,8 @@ impl Relay {
             .device
             .host_action(tilo_server_session::workspaces::DELETE_WORKSPACE, arguments)
             .await
-            .map_err(|refusal| match RelayError::from(refusal) {
-                RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
+            .map_err(|refusal| match ServerError::from(refusal) {
+                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => ServerError::NotFound,
                 other => other,
             })?;
         lock(&connection.entered).remove(workspace);
@@ -424,17 +424,17 @@ impl Relay {
     /// the session.
     ///
     /// # Errors
-    /// Not a workspace the grant reaches, or the relay refused or was not
+    /// Not a workspace the grant reaches, or the server refused or was not
     /// reached.
     pub async fn enter(
         &self,
         connection: &Connection,
         workspace: &str,
-    ) -> Result<WorkspaceId, RelayError> {
+    ) -> Result<WorkspaceId, ServerError> {
         if !connection.key.scope().reaches(workspace)
             || tilo_server_protocol::WorkspaceId::parse(workspace).is_none()
         {
-            return Err(RelayError::NotFound);
+            return Err(ServerError::NotFound);
         }
         // Every run of the grant shares its session, so runs entering the
         // same workspace at once enter it once, and a failed entry is tried
@@ -464,14 +464,14 @@ impl Relay {
     }
 }
 
-/// A grant's session with the relay. The relay keeps one session per key,
+/// A grant's session with the server. The server keeps one session per key,
 /// so every run of the grant shares this one.
 pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
     /// The host this session answers on: where the workspace it reaches is
     /// served, and the one the API server forwarded the call to.
-    relay: Arc<Relay>,
+    server: Arc<Server>,
     host: String,
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
@@ -515,8 +515,8 @@ impl Connection {
 
     /// The host this session answers on.
     #[must_use]
-    pub fn relay(&self) -> &Arc<Relay> {
-        &self.relay
+    pub fn server(&self) -> &Arc<Server> {
+        &self.server
     }
 
     /// The grant's endpoint, bound the first time a workspace on one of the
@@ -524,7 +524,7 @@ impl Connection {
     ///
     /// # Errors
     /// The endpoint could not bind.
-    pub async fn endpoint(&self) -> Result<iroh::Endpoint, RelayError> {
+    pub async fn endpoint(&self) -> Result<iroh::Endpoint, ServerError> {
         self.endpoint
             .get_or_try_init(|| async {
                 // It only dials: the relays and directory the setting names find the
@@ -540,7 +540,7 @@ impl Connection {
                 builder
                     .bind()
                     .await
-                    .map_err(|error| RelayError::Unavailable(error.to_string()))
+                    .map_err(|error| ServerError::Unavailable(error.to_string()))
             })
             .await
             .cloned()
@@ -568,7 +568,7 @@ impl Connection {
     }
 
     /// Whether the session still serves: not closed, and not refused by
-    /// the relay for good.
+    /// the server for good.
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.device.is_live()
@@ -576,7 +576,7 @@ impl Connection {
 
     /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:
     /// one the person does not have is not found, as one never made.
-    async fn enter(&self, workspace: &str) -> Result<WorkspaceId, RelayError> {
+    async fn enter(&self, workspace: &str) -> Result<WorkspaceId, ServerError> {
         let label = self.key.cert().device_label.clone();
         let began = std::time::Instant::now();
         let Ok(entered) =
@@ -587,7 +587,7 @@ impl Connection {
                 waited_ms = began.elapsed().as_millis(),
                 "api: a workspace did not admit the key in time"
             );
-            return Err(RelayError::Unavailable(
+            return Err(ServerError::Unavailable(
                 "the workspace did not admit this key in time".to_owned(),
             ));
         };
@@ -597,9 +597,9 @@ impl Connection {
             admitted = entered.is_ok(),
             "api: a key entered its workspace"
         );
-        entered.map_err(|refusal| match RelayError::from(refusal) {
+        entered.map_err(|refusal| match ServerError::from(refusal) {
             // Not theirs, or not one at all: the same answer, so a guess learns nothing.
-            RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => RelayError::NotFound,
+            ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => ServerError::NotFound,
             other => other,
         })
     }

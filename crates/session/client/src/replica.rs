@@ -528,7 +528,7 @@ impl Replicas {
 /// this session, relayed as it arrived or from what its store kept: decided
 /// as of its own timestamp, and in the clear only before its record sealed.
 fn relayed(author: [u8; 32]) -> TransportOrigin {
-    TransportOrigin::RetainedRelayDelta(author)
+    TransportOrigin::RetainedServerDelta(author)
 }
 
 #[cfg(test)]

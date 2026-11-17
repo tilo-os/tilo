@@ -39,12 +39,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The relay this stack runs places on it: the host's member device is
-# certified by the relay's owner root, and reaches the relay at its own
-# device. The stack's relay leaves both; this check starts no relay.
-mkdir -p "$state/secrets" "$state/workspaces/lounge/relay"
+# The server this stack runs places on it: the host's member device is
+# certified by the server's owner root, and reaches the server at its own
+# device. The stack's server leaves both; this check starts no server.
+mkdir -p "$state/secrets" "$state/workspaces/lounge/server"
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state/secrets/workspace-root-lounge"
-(umask 077 && head -c 32 /dev/urandom > "$state/workspaces/lounge/relay/host-device.key")
+(umask 077 && head -c 32 /dev/urandom > "$state/workspaces/lounge/server/host-device.key")
 
 say "loading $archive"
 podman load -i "$archive" > "$state/load.log" 2>&1 || { cat "$state/load.log" >&2; die "podman load $archive"; }
@@ -101,7 +101,7 @@ grep -q 'placing on vm-host-0, at most 1' "$state/placer.log" \
   || die 'the placer does not place on vm-host-0'
 
 # The guest the host boots is the image this check handed it, unpacked under
-# its digest, and its member device is the one the relay's root certified. The
+# its digest, and its member device is the one the server's root certified. The
 # host's log as it is now, by when the host has served a VM: the copy taken
 # right after `up` may hold only its first line.
 podman logs tilo-sh-vm-host-0 > "$state/host.log" 2>&1 || true

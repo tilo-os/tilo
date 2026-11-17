@@ -180,7 +180,7 @@ tilo_test_env::scenario! {
 
     phase a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it;
     {
-        let (mut ada, mut grace, invocation) = relay_workspace();
+        let (mut ada, mut grace, invocation) = server_workspace();
         let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
         ada.host.runtime().set_sink(by_ada.clone());
         grace.host.runtime().set_sink(by_grace.clone());
@@ -260,8 +260,8 @@ fn commit_need(
     )
 }
 
-/// A relay app: a post that goes out at once, and the ask for who records it.
-const RELAY: &str = r#"app test.relay "Relay" (icon: .mail, category: .office)
+/// A server app: a post that goes out at once, and the ask for who records it.
+const SERVER: &str = r#"app test.server "Server" (icon: .mail, category: .office)
 
 type Draft {
     to: Text
@@ -303,12 +303,12 @@ action document(d: Draft) {
     d.sealed = true
 }
 "#;
-const RELAY_APP: &str = "test.relay";
+const SERVER_APP: &str = "test.server";
 const WORKSPACE: &str = "workspace";
 
-/// `who`'s access in the relay workspace: an editor of it, allowed to post, so the action runs
+/// `who`'s access in the server workspace: an editor of it, allowed to post, so the action runs
 /// up to the effect it queues before the ask about recording the letter.
-fn relay_access(
+fn server_access(
     meta: &tilolang_runtime::meta::Meta,
     who: &str,
 ) -> tilo_action_policy::MemberAccess {
@@ -323,9 +323,9 @@ fn relay_access(
         .actions
         .iter()
         .find(|action| action.name == "post_and_record")
-        .expect("the relay posts");
+        .expect("the server posts");
     let node = TreePath::workspace(WORKSPACE)
-        .app(RELAY_APP)
+        .app(SERVER_APP)
         .kind(meta.kind_of("Draft"))
         .action(&post.id);
     let owner = Grantee::person("sol");
@@ -340,20 +340,20 @@ fn relay_access(
     MemberAccess::person(policy, who)
 }
 
-/// Two replicas of a relay workspace: ada posted a letter, and recording it waits on a person.
-fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
+/// Two replicas of a server workspace: ada posted a letter, and recording it waits on a person.
+fn server_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     // The ids the app compiles to: every replica loads the same lock, so they agree on them.
-    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(RELAY, "")]);
+    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(SERVER, "")]);
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
-    let packages = [(RELAY, ids.as_str())];
+    let packages = [(SERVER, ids.as_str())];
     let (mut ada, _) = Replica::access(
         "ada",
         AutoCommit::new(),
         &packages,
-        Some(relay_access(&meta, "ada")),
+        Some(server_access(&meta, "ada")),
     );
-    let letters = ada.host.root_of(RELAY_APP).unwrap();
+    let letters = ada.host.root_of(SERVER_APP).unwrap();
     ada.commit();
     let new_draft = meta
         .actions
@@ -407,7 +407,7 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         "grace",
         ada.doc.fork(),
         &packages,
-        Some(relay_access(&meta, "grace")),
+        Some(server_access(&meta, "grace")),
     )
     .0;
     (ada, grace, invocation)

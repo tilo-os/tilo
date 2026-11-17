@@ -137,7 +137,7 @@ fn prepare_join(
     let peers = [fs::workspace_authority::PersistedContentPeer {
         endpoint: joined.registration.endpoint,
         ticket: Some(joined.registration.ticket.clone()),
-        relay_service_id: Some(joined.registration.relay_service_id),
+        server_service_id: Some(joined.registration.server_service_id),
     }];
     let peers = serde_json::to_vec(&peers)?;
     new_cache(cache)?;

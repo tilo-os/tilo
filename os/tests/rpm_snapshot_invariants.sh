@@ -220,14 +220,14 @@ has "$repo/os/dev/verify-rpm-snapshot-buildkit.py" 'def layer_manifest(host, rep
   'the snapshot verifier reads a single-layer snapshot as it arrives'
 has "$snapshot" 'COPY --from=layers /slots/meta/ /' \
   'the snapshot recipe copies its repository metadata last'
-# The relay image installs only from the snapshot rpm-snapshot resolved and verified.
+# The server image installs only from the snapshot rpm-snapshot resolved and verified.
 # It takes the published snapshot only as a digest-pinned reference; a build of a package set
 # a release tag has not published (the run's own image-rpms) records so and is never
 # signed.
-has "$repo/tools/ci/publish/relay-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
-  'the relay image installs from the snapshot rpm-snapshot named'
+has "$repo/tools/ci/publish/server-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
+  'the server image installs from the snapshot rpm-snapshot named'
 has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
-  'the relay image accepts only a digest-pinned published RPM snapshot'
+  'the server image accepts only a digest-pinned published RPM snapshot'
 has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-source"' \
   'an image built from an unpublished RPM snapshot is never signed'
 has "$build_script" '.buildDefinition.externalParameters.architecture == $native_arch' \

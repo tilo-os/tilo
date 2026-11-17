@@ -1,8 +1,8 @@
-//! The relay's persisted counter snapshot.
+//! The server's persisted counter snapshot.
 //!
 //! The daemon periodically writes its counters to
 //! `<state_root>/metrics.json`; offline status commands and Settings read the
-//! file back to tell whether the relay is alive and what it has carried.
+//! file back to tell whether the server is alive and what it has carried.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -14,11 +14,11 @@ use thiserror::Error;
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
 
-/// The relay's own state root under the `--state` of `tilo-server workspace`: it
+/// The server's own state root under the `--state` of `tilo-server workspace`: it
 /// keeps [`METRICS_FILE`] there. A workspace host reads the snapshot from here.
 #[must_use]
-pub fn workspace_relay_root(workspace_state: &Path) -> PathBuf {
-    workspace_state.join("relay")
+pub fn workspace_server_root(workspace_state: &Path) -> PathBuf {
+    workspace_state.join("server")
 }
 
 /// Where the connector workers of a `tilo-server workspace` keep their counters as
@@ -29,7 +29,7 @@ pub fn workspace_textfile_dir(workspace_state: &Path) -> PathBuf {
     workspace_state.join("metrics.d")
 }
 
-/// Immutable copy of every relay counter for status reports.
+/// Immutable copy of every server counter for status reports.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsSnapshot {
     /// Connections accepted since start (pre-auth).
@@ -86,7 +86,7 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// Bytes one relay workspace's frames put on the wire since the daemon started.
+/// Bytes one server workspace's frames put on the wire since the daemon started.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceEgress {
     /// Every frame of the workspace written to a peer session.

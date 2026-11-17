@@ -252,7 +252,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
                     .owner()
                     .receive(
                         workspace_id,
-                        TransportOrigin::RetainedRelayDelta(first.device_public_key),
+                        TransportOrigin::RetainedServerDelta(first.device_public_key),
                         postcard::from_bytes(bytes).expect("a workspace change"),
                         now,
                     )
@@ -376,7 +376,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
             .owner()
             .receive(
                 workspace_id,
-                TransportOrigin::RelayDelta(second.device_public_key),
+                TransportOrigin::ServerDelta(second.device_public_key),
                 frame,
                 now,
             )
@@ -520,7 +520,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
                     .owner()
                     .receive(
                         workspace_id,
-                        TransportOrigin::RetainedRelayDelta(first.device_public_key),
+                        TransportOrigin::RetainedServerDelta(first.device_public_key),
                         postcard::from_bytes(bytes).expect("a workspace change"),
                         now,
                     )
@@ -660,7 +660,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
                 .owner()
                 .receive(
                     workspace_id,
-                    TransportOrigin::RelayDelta(first.device_public_key),
+                    TransportOrigin::ServerDelta(first.device_public_key),
                     frame,
                     now,
                 )

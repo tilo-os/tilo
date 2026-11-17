@@ -1,11 +1,11 @@
-//! What a person's agent asks them through the API server on a relay, as a
+//! What a person's agent asks them through the API server on a server, as a
 //! tilo.sh tab holding the person's root answers it: the page's approver
 //! session ([`tilo_server_client::questions`]), each command signed by the
 //! root, as the browser runtime runs it. Allowed, the agent's call runs;
 //! refused, it fails with the refusal; either way the question leaves the
 //! sheet once the host stops asking it.
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{api_on_relay, approved_key};
+use super::api_on_server::{api_on_server, approved_key};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -60,7 +60,7 @@ async fn asking(mcp: &mut Mcp<'_>) -> Value {
 }
 
 /// The agent's asks-first call, while the page holding `root`
-/// answers what the relay at `host` asks with `answer`: the call's reply
+/// answers what the server at `host` asks with `answer`: the call's reply
 /// and what the sheet saw, once the host stopped asking.
 async fn answered_by_page(
     mcp: &mut Mcp<'_>,
@@ -96,7 +96,7 @@ async fn answered_on(
     tokio::pin!(session);
     let reply = tokio::select! {
         reply = asking(mcp) => reply,
-        error = &mut session => panic!("the page's session with the relay ended: {error}"),
+        error = &mut session => panic!("the page's session with the server ended: {error}"),
     };
     // The host stops asking a question once it is answered, and the sheet
     // lets it go.
@@ -104,7 +104,7 @@ async fn answered_on(
     while seen.withdrawn.lock().unwrap().len() < seen.asked.lock().unwrap().len() {
         assert!(Instant::now() < deadline, "the answered question stayed up");
         tokio::select! {
-            error = &mut session => panic!("the page's session with the relay ended: {error}"),
+            error = &mut session => panic!("the page's session with the server ended: {error}"),
             () = tokio::time::sleep(Duration::from_millis(50)) => {}
         }
     }
@@ -114,13 +114,13 @@ async fn answered_on(
 /// Ada's workspace for a customer, with one book on its shelf and the agent
 /// her backend minted a key for there: the agent's MCP session.
 async fn agent_with_a_book<'a>(
-    on_relay: &'a super::api_on_relay::OnRelay,
+    on_server: &'a super::api_on_server::OnServer,
     ada: &SigningKey,
 ) -> Mcp<'a> {
     let page = enrol(ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(on_relay, ada, &page, "Visa backend").await;
+    let key = approved_key(on_server, ada, &page, "Visa backend").await;
     let mut account = Mcp {
-        api: &on_relay.api,
+        api: &on_server.api,
         path: "/mcp".into(),
         token: key,
         session: None,
@@ -144,7 +144,7 @@ async fn agent_with_a_book<'a>(
         .unwrap_or_else(|| panic!("a key is minted: {minted}"))
         .to_owned();
     let mut agent = Mcp {
-        api: &on_relay.api,
+        api: &on_server.api,
         path: format!("/w/{workspace}/mcp"),
         token,
         session: None,
@@ -160,17 +160,17 @@ async fn agent_with_a_book<'a>(
 
 /// The person's root is in one tab, and they are elsewhere: on a phone paired
 /// to them, whose page holds only its own device key, and on a computer paired
-/// to them, whose session keeps an approver connection with the relay. Each is
+/// to them, whose session keeps an approver connection with the server. Each is
 /// asked what the agent waits on, and its answer is the person's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
-    let on_relay = api_on_relay(ISSUER).await;
+    let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let mut agent = agent_with_a_book(&on_relay, &ada).await;
+    let mut agent = agent_with_a_book(&on_server, &ada).await;
 
     // A phone paired to Ada: its page signs with its own key, as her device.
     let phone = enrol(&ada, "Ada's phone", DeviceCapabilities::member());
-    let host = MemberApprover::new(on_relay.relay_host());
+    let host = MemberApprover::new(on_server.server_host());
     let on_phone = MemberQuestions {
         host: &host,
         root: &phone.key,
@@ -195,7 +195,7 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
         .unwrap();
     let approver = tilo_server_client::Approver::connect(
         &endpoint,
-        on_relay.hosted.relay.node_addr(),
+        on_server.hosted.server.node_addr(),
         computer.cert.clone(),
         &computer.key,
         &tilo_user_identity::RevocationList::new(),
@@ -215,12 +215,12 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_api() {
-    let on_relay = api_on_relay(ISSUER).await;
+    let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let mut agent = agent_with_a_book(&on_relay, &ada).await;
+    let mut agent = agent_with_a_book(&on_server, &ada).await;
 
-    // Ada's tab holds her root: it is her approver at the relay.
-    let host = MemberApprover::new(on_relay.relay_host());
+    // Ada's tab holds her root: it is her approver at the server.
+    let host = MemberApprover::new(on_server.server_host());
 
     // Refused, the agent's call fails with the refusal, and nothing ran.
     let (refused, seen) = Box::pin(answered_by_page(

@@ -2,13 +2,13 @@
 //!
 //! A session shares a window with web members the way it shares any legacy
 //! window — `SurfaceStreamStart`, `SurfaceFrame`s, `SurfaceStreamEnd` — with
-//! [`CODEC`] as the codec label and one [`Payload`] per frame. The relay keeps
+//! [`CODEC`] as the codec label and one [`Payload`] per frame. The server keeps
 //! the latest group (from a keyframe on) for members that join later, so a
 //! [`Payload::Key`] starts a group and is followed by the blobs its frame
 //! references, and later [`Payload::Patches`] and new blobs extend it.
 //!
 //! [`Payload::is_key`] reads only the first byte: postcard writes an enum's
-//! variant index first, so a relay detects keyframes without decoding.
+//! variant index first, so a server detects keyframes without decoding.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ use crate::{Frame, Patch};
 /// `SurfaceStreamStart::codec` of a paint stream.
 pub const CODEC: &str = "tilo-paint";
 
-/// Largest encoded payload; the relay forwards no larger frame.
+/// Largest encoded payload; the server forwards no larger frame.
 pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 /// Largest blob carried whole, leaving room for the payload's own framing.
@@ -55,7 +55,7 @@ impl std::fmt::Display for WireError {
 impl std::error::Error for WireError {}
 
 impl Payload {
-    /// Encode, refusing anything the relay would not forward.
+    /// Encode, refusing anything the server would not forward.
     ///
     /// # Errors
     ///

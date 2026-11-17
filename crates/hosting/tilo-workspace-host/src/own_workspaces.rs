@@ -1,7 +1,7 @@
 //! A device placing its own workspaces on the workspace host it runs: the host
 //! creates the workspace and issues the device the invitation its replica
 //! redeems, through the host's own `tilo.host` operations, asked in process
-//! exactly as a relay is asked over a session. The desktop session and the
+//! exactly as a server is asked over a session. The desktop session and the
 //! standalone runtime place their workspaces through this one path.
 
 use serde_json::{Map, Value};

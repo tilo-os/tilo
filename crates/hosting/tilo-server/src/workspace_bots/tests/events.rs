@@ -179,8 +179,8 @@ impl Theirs {
 async fn a_persons_assistant_sets_an_event_up_and_its_person_reads_the_same() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(
         &workspaces,
@@ -229,8 +229,8 @@ async fn a_persons_assistant_sets_an_event_up_and_its_person_reads_the_same() {
 async fn another_persons_agent_and_a_bot_set_nothing_up_and_reach_no_event() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(
         &workspaces,
@@ -281,8 +281,8 @@ async fn another_persons_agent_and_a_bot_set_nothing_up_and_reach_no_event() {
 async fn an_event_is_changed_paused_and_removed_by_its_persons_assistant() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("events");
     let theirs = Theirs::on(&workspaces, &workspace, &cert, &state);
@@ -348,8 +348,8 @@ async fn what_lets_an_events_work_act_unasked_is_its_persons_alone_to_give() {
     use tilo_actions::policy::{Level, Rule};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let theirs = Theirs::on(
         &workspaces,
@@ -421,8 +421,8 @@ async fn until<T>(what: &str, mut done: impl FnMut() -> Option<T>) -> T {
 async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("person-events");
     let assistant = Assistant::answering(vec![]);
@@ -493,8 +493,8 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
 async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![Err(HostStepError::Refused(
         "this person keeps no assistant".into(),

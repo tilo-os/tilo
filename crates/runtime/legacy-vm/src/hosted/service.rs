@@ -161,7 +161,7 @@ pub struct Service {
 #[derive(Debug)]
 pub enum BrowserError {
     /// This host serves no Browser: its service was started without the
-    /// relay's endpoint, so no session in its VMs could join a workspace.
+    /// server's endpoint, so no session in its VMs could join a workspace.
     NotOffered,
     Invalid(String),
     /// The account's plan does not allow it: a Linux app is a Linux action.
@@ -190,7 +190,7 @@ impl std::fmt::Display for BrowserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotOffered => f.write_str(
-                "this host serves no Browser: it was started without the relay's endpoint",
+                "this host serves no Browser: it was started without the server's endpoint",
             ),
             Self::Invalid(message) => f.write_str(message),
             Self::Refused(refusal) => f.write_str(&refusal.message),
@@ -651,12 +651,16 @@ impl Service {
         }
     }
 
-    /// The line a workspace's session is handed: the relay's material, with
-    /// the relay's address replaced by the one its VM dials
+    /// The line a workspace's session is handed: the server's material, with
+    /// the server's address replaced by the one its VM dials
     /// ([`browser::hand_off`]).
     fn hand_off(&self, material: &str) -> Result<String, BrowserError> {
-        let relay = self.config.settings.relay.ok_or(BrowserError::NotOffered)?;
-        browser::hand_off(material, relay.guest()).map_err(BrowserError::Invalid)
+        let server = self
+            .config
+            .settings
+            .server
+            .ok_or(BrowserError::NotOffered)?;
+        browser::hand_off(material, server.guest()).map_err(BrowserError::Invalid)
     }
 
     /// Start the Linux app `request` names in its workspace's VM: in the apps session there, or in
@@ -1501,7 +1505,7 @@ mod tests {
                 idle_suspend: Duration::from_secs(30),
                 self_exe: dir.join("tilo-legacy"),
                 jail: None,
-                relay: None,
+                server: None,
                 templates: None,
             },
         }
@@ -1982,7 +1986,7 @@ mod tests {
     fn a_linux_app_without_a_card_is_refused_before_anything_starts() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = config(dir.path());
-        config.settings.relay =
+        config.settings.server =
             Some(super::super::network::Endpoint::parse("127.0.0.1:7704").unwrap());
         std::fs::write(
             &config.plans,
@@ -2017,18 +2021,18 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_is_handed_the_address_its_session_dials_the_relay_at() {
+    fn a_workspace_is_handed_the_address_its_session_dials_the_server_at() {
         use super::super::network::Endpoint;
 
         let dir = tempfile::tempdir().unwrap();
-        let with_relay = |relay: &str| {
+        let with_server = |server: &str| {
             let mut config = config(dir.path());
-            config.settings.relay = Some(Endpoint::parse(relay).unwrap());
+            config.settings.server = Some(Endpoint::parse(server).unwrap());
             open_at(&config, 0)
         };
         let dialled = |line: &str| -> std::net::SocketAddr {
             let line: tilo_server_protocol::hosted::Material = serde_json::from_str(line).unwrap();
-            line.relay
+            line.server
                 .addrs
                 .into_iter()
                 .find_map(|address| match address {
@@ -2037,7 +2041,7 @@ mod tests {
                 })
                 .unwrap()
         };
-        let local = with_relay("127.0.0.1:7704");
+        let local = with_server("127.0.0.1:7704");
         let line = local
             .hand_off(&browser::test_material("127.0.0.1:7704"))
             .unwrap();
@@ -2046,7 +2050,7 @@ mod tests {
             "10.0.2.4:7704".parse().unwrap(),
             "the VM dials the mapped loopback, not the host's own"
         );
-        let hosted = with_relay("10.0.0.9:7704");
+        let hosted = with_server("10.0.0.9:7704");
         let line = hosted
             .hand_off(&browser::test_material("203.0.113.9:7704"))
             .unwrap();
@@ -2059,7 +2063,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_without_the_relays_endpoint_serves_no_browser() {
+    fn a_host_without_the_servers_endpoint_serves_no_browser() {
         let dir = tempfile::tempdir().unwrap();
         let service = open_at(&config(dir.path()), 0);
         let Reply::Error(message) = service.handle(Request::OpenBrowser {
@@ -2071,11 +2075,11 @@ mod tests {
                 material: browser::test_material("127.0.0.1:7704"),
             },
         }) else {
-            panic!("a host with no relay endpoint opens nothing");
+            panic!("a host with no server endpoint opens nothing");
         };
         assert_eq!(
             message,
-            "this host serves no Browser: it was started without the relay's endpoint"
+            "this host serves no Browser: it was started without the server's endpoint"
         );
         assert!(service.status().is_empty(), "and woke nothing");
         assert_eq!(
@@ -2301,7 +2305,7 @@ mod tests {
                 Reply::NoVm {
                     workspace: from.into()
                 },
-                "said in a way the relay tells apart"
+                "said in a way the server tells apart"
             );
             assert!(
                 !config.state.join("vms").join("ws2").exists(),

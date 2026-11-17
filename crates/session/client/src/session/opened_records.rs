@@ -4,7 +4,7 @@
 //! every record when opened (a public one), each route this session opens
 //! is asked for that way ([`Task::documents_when_opened`]).
 
-use super::{DocumentRoute, Envelope, RelayClient, Task};
+use super::{DocumentRoute, Envelope, ServerClient, Task};
 use tilo_server_protocol::WorkspaceId;
 
 impl Task {
@@ -15,7 +15,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         route: DocumentRoute,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         // A chain's head names a part and holds nothing of its own: the
@@ -46,7 +46,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
         if self.opened_records.contains_key(&(workspace_id, channel))
@@ -63,7 +63,7 @@ impl Task {
     pub(super) fn documents_when_opened(
         &mut self,
         workspace_id: WorkspaceId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         if !self.when_opened.insert(workspace_id) {
             return;
@@ -94,7 +94,7 @@ impl Task {
 
     /// Open every record this session opened again on a new subscription.
     /// Returns `false` when the session could not take the requests.
-    pub(super) fn reopen_records(&self, client: &RelayClient) -> bool {
+    pub(super) fn reopen_records(&self, client: &ServerClient) -> bool {
         let mut sent_ok = true;
         for ((workspace_id, channel), route) in &self.opened_records {
             sent_ok &= client

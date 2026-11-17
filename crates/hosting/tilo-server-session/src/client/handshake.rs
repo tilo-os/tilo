@@ -1,4 +1,4 @@
-//! The client half of the relay handshake, over any byte stream pair.
+//! The client half of the server handshake, over any byte stream pair.
 
 use tilo_server_client::DeviceSigner;
 use tilo_server_client::frame::write_frame;
@@ -28,7 +28,7 @@ where
         postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &hello_bytes).await?;
     let ack = read_ack(recv).await?;
-    let relay_peer = verify_ack(
+    let server_peer = verify_ack(
         &ack,
         server,
         &own_cert.user_public_key,
@@ -41,7 +41,7 @@ where
     let own_ack2_bytes =
         postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &own_ack2_bytes).await?;
-    Ok(relay_peer)
+    Ok(server_peer)
 }
 
 /// An entry's hello written ([`tilo_server_protocol::entering`]): the host's
@@ -136,7 +136,8 @@ async fn read_ack<R>(recv: &mut R) -> Result<HelloAck, ClientError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let ack_bytes = match tilo_server_client::frame::read_frame_or_eof(recv, MAX_FRAME_BYTES).await {
+    let ack_bytes = match tilo_server_client::frame::read_frame_or_eof(recv, MAX_FRAME_BYTES).await
+    {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             return Err(ClientError::NoHandshakeAnswer("the stream ended".into()));
@@ -149,7 +150,7 @@ where
 /// The server `ack` proves, checked against who this device dialled. A
 /// host pinned as a device of the dialling device's own person (`own_user`)
 /// proves that exact device under their root and needs no host capability:
-/// whichever host of theirs it is, the person's relay or their own computer,
+/// whichever host of theirs it is, the person's server or their own computer,
 /// it is theirs.
 fn verify_ack(
     ack: &HelloAck,
@@ -178,14 +179,14 @@ fn verify_ack(
             client_nonce,
         )?),
         (Some(expected_user), expected_device) => {
-            let relay_peer =
+            let server_peer =
                 auth::verify_hello_ack(ack, expected_user, revocations, now_ns, client_nonce)?;
             if expected_device.is_some_and(|expected_device| {
-                relay_peer.cert.device_public_key != *expected_device
+                server_peer.cert.device_public_key != *expected_device
             }) {
                 return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
             }
-            Ok(relay_peer)
+            Ok(server_peer)
         }
         (None, _) => Ok(auth::verify_pinned_host_ack(
             ack,

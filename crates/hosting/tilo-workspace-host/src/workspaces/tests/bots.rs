@@ -141,8 +141,8 @@ pub(crate) fn install_command(
 async fn only_a_live_bot_installed_with_personas_shows_other_names() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Bridged").await.unwrap();
     let governed = workspaces.workspace(&created.workspace).await.unwrap();
     let mut peer = governed.lock().await.peer().clone();
@@ -187,5 +187,5 @@ async fn only_a_live_bot_installed_with_personas_shows_other_names() {
             .await
     );
     drop(workspaces);
-    drop(relay);
+    drop(server);
 }

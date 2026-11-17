@@ -682,7 +682,7 @@ pub const MAX_OFFLOAD_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 /// content (files the invoker can read), its outputs are content, and the
 /// outputs are a function of the inputs alone, byte for byte, whichever
 /// device computes them. That is what lets the system run it on the
-/// invoker's best-placed device — placed by the workspace's relay, run as
+/// invoker's best-placed device — placed by the workspace's server, run as
 /// the signed package's catalogue entrypoint under that device's launcher
 /// sandbox — and hand back exactly what a local run returns. When no device
 /// is better placed, or the offload fails for any reason other than the

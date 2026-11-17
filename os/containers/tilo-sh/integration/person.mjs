@@ -63,7 +63,7 @@
 //                   is in the workspace it opens; with --answer it answers
 //                   there, with its own device key, as a device of theirs does.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
+// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -85,7 +85,7 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !relay || !out) {
-  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
+  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
   process.exit(2);
 }
 const invite = option('--invite');
@@ -104,7 +104,7 @@ const answerFifo = option('--answer');
 const pairLink = option('--pair-link');
 mkdirSync(out, {recursive: true});
 
-const report = {site, relay};
+const report = {site, server};
 // The stack is plain HTTP on this machine: no certificate to accept, as for
 // any person's browser.
 const browser = await launch();
@@ -199,7 +199,7 @@ if (pairLink) {
   }
   report.arrivedMs = Date.now() - began;
   membership = JSON.parse(await until(`(() => {
-    const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
+    const kept = ${memberships}[${JSON.stringify(new URL(server).origin)}];
     return kept?.workspace ? JSON.stringify(kept) : '';
   })()`, 'joining the Lounge'));
   report.joinedMs = Date.now() - began;
@@ -248,7 +248,7 @@ if (passkey) {
     const person = await id.browserIdentity();
     try {
       await person.keepWithPasskey({userName: 'local passkey check'});
-      await id.publishEnvelope({origin: ${JSON.stringify(new URL(relay).origin)}, identity: person});
+      await id.publishEnvelope({origin: ${JSON.stringify(new URL(server).origin)}, identity: person});
     } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
     return JSON.stringify({person: person.userPublicKey, rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id)});
   })()`).then(JSON.parse);
@@ -282,7 +282,7 @@ if (passkey) {
     back = await tab.evaluate(`(async () => {
       const id = ${identityModule};
       try {
-        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(relay).origin)}])});
+        const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(server).origin)}])});
         return JSON.stringify({before: ${JSON.stringify(before)}, person: person.userPublicKey});
       } catch (error) { return JSON.stringify({before: ${JSON.stringify(before)}, error: String(error?.message ?? error)}); }
     })()`).then(JSON.parse);

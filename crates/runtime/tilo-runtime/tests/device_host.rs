@@ -1,5 +1,5 @@
-//! A person's device hosts a workspace with the same host a relay runs, and a
-//! key of theirs uses it with the same calls it uses on a relay: it opens a
+//! A person's device hosts a workspace with the same host a server runs, and a
+//! key of theirs uses it with the same calls it uses on a server: it opens a
 //! session with the device, lists their workspaces there, enters the
 //! workspace (the host invites it on the session and it redeems there), and
 //! runs a record action addressed to the host's own device, which the
@@ -241,7 +241,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
     let key_sessions = KeySessions::new();
-    // A host opens only after its endpoint had its whole wait to reach a relay
+    // A host opens only after its endpoint had its whole wait to reach a server
     // (`tilo_workspace_host::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
     // the open: the same wait runs on that clock, which passes it when nothing

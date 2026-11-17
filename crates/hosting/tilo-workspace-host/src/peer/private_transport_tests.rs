@@ -51,7 +51,7 @@ pub(super) fn certified_device(
         issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
-    // Exercise certificate signature and nonce proof, matching the relay
+    // Exercise certificate signature and nonce proof, matching the server
     // handshake rather than constructing unchecked AuthenticatedPeer data.
     let hello = crate::auth::Hello::new(cert, [2; 32]);
     let peer = crate::auth::accept_hello(
@@ -76,7 +76,7 @@ struct Holds {
 }
 
 impl Holds {
-    /// Holds that admit this relay's own person's devices and revoke nobody.
+    /// Holds that admit this server's own person's devices and revoke nobody.
     fn open() -> Self {
         Self {
             trust: Arc::new(std::sync::RwLock::new(
@@ -203,8 +203,8 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
     let (root, user) = UserIdentity::generate("alice", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
-    // The relay's own device is neither of the peers it carries frames for.
-    let (own, _) = certified_device(&root, user.public_key, "relay");
+    // The server's own device is neither of the peers it carries frames for.
+    let (own, _) = certified_device(&root, user.public_key, "server");
     let id = WorkspaceId::from_u128(7);
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
@@ -347,11 +347,11 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
                 })
                 .await;
             if closed {
-                // The relay ended the session: say how, not just that it did.
+                // The server ended the session: say how, not just that it did.
                 let ended = tilo_test_env::within("the closed session's outcome", tasks.remove(1))
                     .await
                     .expect("the closed session's outcome");
-                panic!("the relay closed the session on explicit unsubscribe: {ended:?}");
+                panic!("the server closed the session on explicit unsubscribe: {ended:?}");
             }
             assert!(
                 !workspace
@@ -975,7 +975,7 @@ impl crate::app_serving::AppActionServer for CountingServer {
 #[tokio::test]
 async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     // Wiring for the per-device live checkpoint hold: after a device has been served one live
-    // checkpoint the relay stops fanning checkpoints to it; a presence frame
+    // checkpoint the server stops fanning checkpoints to it; a presence frame
     // from that device (the browser's hello / SyncReq / rejected-checkpoint
     // path) must re-arm exactly that device so the native's fresh
     // checkpoint reaches it.
@@ -1145,7 +1145,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     let (root, user) = UserIdentity::generate("owner", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
-    let (own, _) = certified_device(&root, user.public_key, "relay");
+    let (own, _) = certified_device(&root, user.public_key, "server");
     let id = WorkspaceId::from_u128(73);
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(

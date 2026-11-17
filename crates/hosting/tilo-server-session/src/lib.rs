@@ -1,9 +1,9 @@
-//! `tilo-server-session` — the client side of a Tilo relay session.
+//! `tilo-server-session` — the client side of a Tilo server session.
 //!
-//! A device that talks to a relay needs the authenticated session client
-//! ([`RelayClient`]), the co-edit session over it ([`RelayCoeditSession`]),
+//! A device that talks to a server needs the authenticated session client
+//! ([`ServerClient`]), the co-edit session over it ([`ServerCoeditSession`]),
 //! anti-entropy ([`antientropy`]), resume positions ([`position`]) and
-//! workspace administration ([`workspaces`]: the names of the actions a relay
+//! workspace administration ([`workspaces`]: the names of the actions a server
 //! serves). None of them needs the daemon's
 //! store, delivery or join records, so they live here and the daemon
 //! (`tilo-server`) depends on this crate rather than the other way round.
@@ -35,16 +35,16 @@ tilo_automerge_isolate::test_worker!();
 // paths (`crate::auth`, `crate::transport`, …); keep those crate-private.
 use tilo_server_protocol::auth;
 
-/// The relay wire messages, under the path the session modules use.
+/// The server wire messages, under the path the session modules use.
 mod transport {
     pub use tilo_server_protocol::transport::*;
 }
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
-pub use client::{ClientCredentials, ClientError, Entrance, Entry, RelayClient};
+pub use client::{ClientCredentials, ClientError, Entrance, Entry, ServerClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use coedit::retention_metadata;
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, ServerCoeditSession};
 
 /// Whether low-volume, payload-free event correlation is logged. The same
 /// switch as the daemon's, so one variable correlates both ends. Only the
@@ -85,5 +85,5 @@ pub fn trace_native_publication(
         phase, id = %blake3::hash(&body), kind, workspace_id = %workspace_id,
         author = %hex::encode(&author_device_public_key[..4]),
         recipient = ?recipient.map(|key| hex::encode(&key[..4])),
-        "native relay publication hop");
+        "native server publication hop");
 }

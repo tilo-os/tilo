@@ -1,4 +1,4 @@
-//! Retained relay frames: a four-byte length prefix, a relay `Envelope`,
+//! Retained relay frames: a four-byte length prefix, a server `Envelope`,
 //! and inside an `Envelope::Delta` the co-edit payload a device published.
 //!
 //! Authentication happens at ingress; these decoders only refuse anything

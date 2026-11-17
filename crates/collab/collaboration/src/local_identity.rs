@@ -7,9 +7,9 @@
 //! native implementation reads the runtime identity the launcher bound
 //! (`TILO_USER_IDENTITY`), then `$XDG_CONFIG_HOME/tilo/identity/primary.json`
 //! (feature `local-daemons`). A browser page installs one derived from its
-//! certified device (the relay peer's `DeviceCert` names the user root) with
+//! certified device (the server peer's `DeviceCert` names the user root) with
 //! [`install_source`] once certification completes; the device key itself
-//! stays in the page's ownership and signs through the relay client's
+//! stays in the page's ownership and signs through the server client's
 //! `DeviceSigner`, never through the toolkit. Without either there is no
 //! local identity, and callers fall back to their account-name ladders.
 

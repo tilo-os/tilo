@@ -143,7 +143,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     )
     .unwrap();
     durable(&c).await;
-    let compactor = host.relay.compactor().clone();
+    let compactor = host.server.compactor().clone();
     wait_for("the host to accept a member's statement", || {
         let done = compactor.rounds() > 0;
         async move { done.then_some(()) }

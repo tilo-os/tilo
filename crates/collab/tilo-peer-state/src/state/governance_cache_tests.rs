@@ -361,7 +361,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         let message = governor.workspace_message();
         let _ = crate::governance_work::take();
         page.receive_from_report(
-            TransportOrigin::RelayDelta(owner.device_public_key),
+            TransportOrigin::ServerDelta(owner.device_public_key),
             message,
             now,
         )

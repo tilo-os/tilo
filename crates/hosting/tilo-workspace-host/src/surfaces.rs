@@ -148,7 +148,7 @@ fn signed_surface(app: &str) -> Option<[u8; 32]> {
     ui::app_surface::hash_of(app)
 }
 
-/// A relay running no app in its own process signs no app's changes.
+/// A server running no app in its own process signs no app's changes.
 #[cfg(not(feature = "agents"))]
 const fn signed_surface(_: &str) -> Option<[u8; 32]> {
     None
@@ -202,7 +202,7 @@ fn publish_from(built: &Path, dir: &Path) {
 
 /// Decide every change this process receives against the surfaces of the apps
 /// this host runs in its own process, or keeps under `dir`, its content store
-/// for them. Call it once, on the runtime the relay runs on, before the relay
+/// for them. Call it once, on the runtime the server runs on, before the server
 /// starts.
 pub fn decide_receipt(dir: &Path) {
     publish_built(dir);
@@ -237,7 +237,7 @@ fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
 }
 
 /// Changes each time an app surface arrives here: a change held for it can
-/// be decided now. A workspace's governor replays what its relay retains then
+/// be decided now. A workspace's governor replays what its server retains then
 /// ([`crate::workspaces::Workspaces`]), so a held change is never let go for good.
 pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
     arrival_count().subscribe()
@@ -248,9 +248,9 @@ pub(crate) fn arrived() {
     arrival_count().send_modify(|count| *count = count.wrapping_add(1));
 }
 
-/// Why the relay refuses the change the delta `delta` carries by its author's
+/// Why the server refuses the change the delta `delta` carries by its author's
 /// role: a Viewer's role grants nothing to write in the workspace, so no
-/// document change it sends is one the workspace takes, and the relay says so
+/// document change it sends is one the workspace takes, and the server says so
 /// of a change of an encrypted record too, which it cannot read. Their own
 /// record is no part of what the workspace grants ([`collab_types::OwnResource`]):
 /// it is theirs to write whatever their role. `None` for any other role, for
@@ -300,7 +300,7 @@ fn writes_own_document(message: &neighbour_wire::NeighbourMsg, person: &str) -> 
     )
 }
 
-/// Why the relay refuses the change the delta `delta` carries as a write of a
+/// Why the server refuses the change the delta `delta` carries as a write of a
 /// member's own record by `person` (their user root key): only the record's
 /// person writes it, whatever anyone's role. `None` for a change of no
 /// member's own record, and for the record's person.
@@ -317,7 +317,7 @@ pub(crate) fn own_refusal(
     })
 }
 
-/// Why the relay refuses the change the delta `delta` carries, if it does:
+/// Why the server refuses the change the delta `delta` carries, if it does:
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
 /// one writing a unit outside its action's footprint, or, where the workspace's

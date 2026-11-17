@@ -141,7 +141,7 @@ fn workspace_signed_through(
             .owner()
             .receive(
                 workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                 postcard::from_bytes(bytes).expect("a workspace change"),
                 now,
             )
@@ -240,7 +240,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(a_cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(a_cert.device_public_key),
                     message.clone(),
                     now,
                 )
@@ -299,7 +299,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
             .owner()
             .receive(
                 sessions.workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(
                     sessions.owner_cert.device_public_key,
                 ),
                 message,
@@ -1024,7 +1024,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
                     now,
                 )
@@ -1217,7 +1217,7 @@ fn a_second_device(
                 .owner()
                 .receive(
                     workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
                     now,
                 )
@@ -1345,7 +1345,7 @@ fn her_device_takes(
         hers.owner()
             .receive(
                 workspace_id,
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(cert.device_public_key),
                 message,
                 now,
             )

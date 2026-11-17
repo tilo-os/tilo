@@ -1,8 +1,8 @@
-//! The Browser page actions an account ran, as the relay's log keeps
+//! The Browser page actions an account ran, as the server's log keeps
 //! them.
 //!
-//! Every page action the relay runs on a hosted Browser is one line of a
-//! file it appends to ([`ACTIONS_LOG_ENV`]), written before the action: a relay
+//! Every page action the server runs on a hosted Browser is one line of a
+//! file it appends to ([`ACTIONS_LOG_ENV`]), written before the action: a server
 //! that stops leaves no action uncounted, and a line still being written is
 //! skipped rather than read as another. An account's count is the lines of
 //! its billing period ([`Log::count`]); nothing here knows prices.
@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The log of Browser page actions the relay keeps, a file. Set on a host
-/// that runs hosted Browser; the relay writes it and reads it, this crate
+/// The log of Browser page actions the server keeps, a file. Set on a host
+/// that runs hosted Browser; the server writes it and reads it, this crate
 /// reads it for the account's subscription.
 pub const ACTIONS_LOG_ENV: &str = "TILO_HOSTED_BROWSER_ACTIONS";
 

@@ -557,7 +557,7 @@ tilo_test_env::scenario! {
         let laptop = SigningIdentity::generate();
         let phone = SigningIdentity::generate();
         let home_relay = SigningIdentity::generate();
-        let open_relay = SigningIdentity::generate();
+        let open_server = SigningIdentity::generate();
         let bobs_laptop = SigningIdentity::generate();
         ada.enrol(&laptop, DeviceCapabilities::primary());
         ada.enrol(&phone, DeviceCapabilities::member());
@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
         bob.enrol(&bobs_laptop, DeviceCapabilities::primary());
 
         let runtime = PackageId::from_bytes([3; 32]);
-        let signers = [&laptop, &phone, &home_relay, &open_relay, &bobs_laptop];
+        let signers = [&laptop, &phone, &home_relay, &open_server, &bobs_laptop];
         let built: Vec<(tempfile::TempDir, Packed)> = (20u8..)
             .zip(signers)
             .map(|(seed, signer)| pandoc(runtime, signer, seed))
@@ -590,7 +590,7 @@ tilo_test_env::scenario! {
         for own in [0, 1, 2] {
             materialized_tree(&store, &id(own)).unwrap();
         }
-        // A relay without a certificate is anyone: only CI-signed images open.
+        // A server without a certificate is anyone: only CI-signed images open.
         let refused = materialized_tree(&store, &id(3)).unwrap_err();
         assert!(
             matches!(refused, MaterializeError::Untrusted { .. }),
@@ -662,14 +662,14 @@ tilo_test_env::scenario! {
         assert_eq!(shelved, shelf.path(&tool.meta.id));
         shelf.put(&laptop_store, tool.meta.id).unwrap();
 
-        // The relay reads the same shelf; its registry, asked only after the
+        // The server reads the same shelf; its registry, asked only after the
         // shelf, is offline and does not matter.
-        let relay_root = scratch();
-        let relay = Store::new(PackageStore::at(relay_root.path()))
+        let server_root = scratch();
+        let server = Store::new(PackageStore::at(server_root.path()))
             .with_trust(ImageTrust::new().with_fleet(ada.fleet))
             .with_shelf(shelf.clone())
             .with_fetcher(Offline);
-        let tree = materialized_tree(&relay, &tool.meta.id).unwrap();
+        let tree = materialized_tree(&server, &tool.meta.id).unwrap();
         assert_eq!(
             std::fs::read(tree.join("usr/bin/pandoc")).unwrap(),
             bytes(60, 5_000)
@@ -680,14 +680,14 @@ tilo_test_env::scenario! {
         let stranger = SigningIdentity::generate();
         let (_b, planted) = pandoc(runtime, &stranger, 61);
         std::fs::write(shelf.path(&planted.meta.id), full_tapp(&planted)).unwrap();
-        let refused = materialized_tree(&relay, &planted.meta.id).unwrap_err();
+        let refused = materialized_tree(&server, &planted.meta.id).unwrap_err();
         assert!(
             matches!(refused, MaterializeError::Untrusted { .. }),
             "{refused}"
         );
         let misfiled = PackageId::from_bytes([8; 32]);
         std::fs::write(shelf.path(&misfiled), full_tapp(&tool)).unwrap();
-        let refused = materialized_tree(&relay, &misfiled).unwrap_err();
+        let refused = materialized_tree(&server, &misfiled).unwrap_err();
         assert!(
             matches!(refused, MaterializeError::Fetch { .. }),
             "{refused}"
@@ -695,12 +695,12 @@ tilo_test_env::scenario! {
         // Missing everywhere: an unreachable source says so, rather than
         // passing for "nobody has it".
         let nowhere = PackageId::from_bytes([9; 32]);
-        let refused = materialized_tree(&relay, &nowhere).unwrap_err();
+        let refused = materialized_tree(&server, &nowhere).unwrap_err();
         assert!(
             matches!(&refused, MaterializeError::Fetch { detail, .. } if detail.starts_with("registry")),
             "{refused}"
         );
-        let shelf_only = Store::new(PackageStore::at(relay_root.path())).with_shelf(shelf);
+        let shelf_only = Store::new(PackageStore::at(server_root.path())).with_shelf(shelf);
         assert!(matches!(
             materialized_tree(&shelf_only, &nowhere),
             Err(MaterializeError::NotFound(_))

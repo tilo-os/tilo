@@ -1,18 +1,23 @@
-//! Programs on a workspace the relay hosts: the `tilo` tool and `POST …/programs` run a
+//! Programs on a workspace the server hosts: the `tilo` tool and `POST …/programs` run a
 //! tilolang program as the key's agent, compiled against the apps the workspace lists, and what
 //! the program reads and changes goes through the same action API as every other call.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{OnRelay, api_on_relay, approved_key, headers, json_of};
+use super::api_on_server::{OnServer, api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 
 /// `POST /v1/workspaces/{workspace}/programs` as `token`'s caller: the status and the typed
 /// answer.
-async fn programs(on_relay: &OnRelay, token: &str, workspace: &str, program: &str) -> (u16, Value) {
+async fn programs(
+    on_server: &OnServer,
+    token: &str,
+    workspace: &str,
+    program: &str,
+) -> (u16, Value) {
     let bearer = format!("Bearer {token}");
     json_of(
-        on_relay
+        on_server
             .api
             .dispatch(
                 &hyper::Method::POST,
@@ -30,13 +35,13 @@ async fn programs(on_relay: &OnRelay, token: &str, workspace: &str, program: &st
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_program_runs_on_a_workspace_the_relay_hosts() {
-    let on_relay = api_on_relay(ISSUER).await;
+async fn a_program_runs_on_a_workspace_the_server_hosts() {
+    let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let key = approved_key(&on_server, &ada, &page, "Visa backend").await;
     let mut account = Mcp {
-        api: &on_relay.api,
+        api: &on_server.api,
         path: "/mcp".into(),
         token: key.clone(),
         session: None,
@@ -52,7 +57,7 @@ async fn a_program_runs_on_a_workspace_the_relay_hosts() {
         .unwrap_or_else(|| panic!("a workspace is made: {created}"))
         .to_owned();
     let mut session = Mcp {
-        api: &on_relay.api,
+        api: &on_server.api,
         path: format!("/w/{workspace}/mcp"),
         token: key.clone(),
         session: None,
@@ -73,7 +78,7 @@ async fn a_program_runs_on_a_workspace_the_relay_hosts() {
     // `/programs`, as `tilo run` reaches it, changes the record through the app's own action,
     // as one step.
     let (status, made) = programs(
-        &on_relay,
+        &on_server,
         &key,
         &workspace,
         "notes.new_note(notes.notebook, title: \"From the hosted task\")",
@@ -126,18 +131,18 @@ fn said(said: tilolang_cli::repl::Said) -> String {
 /// back, and a second REPL is a session of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_repl_works_in_a_workspace_as_its_person() {
-    let on_relay = api_on_relay(ISSUER).await;
+    let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    approved_key(&on_server, &ada, &page, "Visa backend").await;
     let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
     let keys = tempfile::tempdir().unwrap();
     let key_file = keys.path().join("laptop.json");
     std::fs::write(
         &key_file,
         serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_relay.relay,
-            Some(&on_relay.web_entry),
+            &on_server.server,
+            Some(&on_server.web_entry),
             "Ada's laptop",
             &laptop.key,
             &laptop.cert,

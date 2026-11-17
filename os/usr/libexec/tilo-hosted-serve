@@ -70,11 +70,11 @@ set -- "$@" --memory-reserve-mib "${TILO_VM_MEMORY_RESERVE_MIB:-2048}"
 set -- "$@" --memory-headroom-mib "${TILO_VM_MEMORY_HEADROOM_MIB:-128}"
 if [ -n "$memory_mib" ]; then set -- "$@" --memory-mib "$memory_mib"; fi
 if [ -n "${TILO_VM_STATUS_LISTEN:-}" ]; then set -- "$@" --status-listen "$TILO_VM_STATUS_LISTEN"; fi
-# The browser session in a workspace's VM joins its workspace through the relay
+# The browser session in a workspace's VM joins its workspace through the server
 # at TILO_VM_SERVER_ENDPOINT, an address inside the host's network: it is the one
 # destination besides the internet a VM may reach.
 if [ -n "${TILO_VM_SERVER_ENDPOINT:-}" ]; then
-  set -- "$@" --relay-endpoint "$TILO_VM_SERVER_ENDPOINT"
+  set -- "$@" --server-endpoint "$TILO_VM_SERVER_ENDPOINT"
 fi
 
 # The cgroup tree every VM's cgroup is made in was handed down by

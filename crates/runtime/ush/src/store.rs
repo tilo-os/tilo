@@ -27,7 +27,7 @@ pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 
 /// Where granted directories' contents are, when not on this machine at the
 /// paths the grants name: a grant of `/home/you/src` binds
-/// `<grant root>/home/you/src` at `/home/you/src`. A relay sets it to the
+/// `<grant root>/home/you/src` at `/home/you/src`. A server sets it to the
 /// member's own file area; unset, grants bind the machine's own paths.
 pub const GRANT_ROOT_ENV: &str = "TILO_USH_GRANT_ROOT";
 

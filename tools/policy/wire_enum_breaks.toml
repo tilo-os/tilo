@@ -126,22 +126,22 @@ reason = "read and written as JSON by name; the variant that named the workspace
 [[break]]
 file = "apps/terminal/src/sessions.rs"
 enum = "Reply"
-reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the relay environments, and both ends of the socket ship in one image"
+reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the server environments, and both ends of the socket ship in one image"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor.rs"
 enum = "ServeRequest"
-reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the relay environment's client asked `list-relays`, and it went with that client"
+reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the server environment's client asked `list-relays`, and it went with that client"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor.rs"
 enum = "ServeResponse"
-reason = "one JSON line per answer over the supervisor's socket, tagged by its `result` name; only the relay picker's ask was answered as `relays`, and it went with that picker"
+reason = "one JSON line per answer over the supervisor's socket, tagged by its `result` name; only the server picker's ask was answered as `relays`, and it went with that picker"
 
 [[break]]
 file = "crates/runtime/ush/src/supervisor/session_end.rs"
 enum = "EndReport"
-reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described relay sessions no longer served"
+reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described server sessions no longer served"
 
 [[break]]
 file = "crates/collab/collab-types/src/peer.rs"
@@ -211,7 +211,7 @@ reason = "drops `Browser`, its last variant, so every other variant keeps its po
 [[break]]
 file = "crates/hosting/tilo-server-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
-reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
+reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the server serves the page's own assets), and these requests are live messages of a session or a server, never bytes kept anywhere, so nothing written under the retirement is read back"
 
 [[break]]
 file = "crates/hosting/tilo-server-protocol/src/workspaces.rs"

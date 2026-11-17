@@ -415,7 +415,7 @@ pub(crate) fn install_governance(
     bootstrap: &crate::join::JoinBootstrap,
     now: SystemTime,
 ) -> Result<usize, crate::AdmissionError> {
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
+    let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -425,7 +425,7 @@ pub(crate) fn install_governance(
         }
         // Only the closed, pinned Complete evidence selects historical
         // admission here; ongoing relay input uses strict receive_from_report.
-        // The origin labels that admission context, not a relay frame.
+        // The origin labels that admission context, not a server frame.
         peer.receive_from(origin, message, now)?;
     }
     Ok(app_messages)

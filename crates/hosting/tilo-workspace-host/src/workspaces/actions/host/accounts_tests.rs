@@ -8,7 +8,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
+    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -95,8 +95,8 @@ fn listed(
 async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
@@ -166,8 +166,8 @@ async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let servers = std::sync::Arc::new(Watched::default());
     workspaces.carry_mail_through(servers.clone());
     let host = HostWorkspaceActions::new();

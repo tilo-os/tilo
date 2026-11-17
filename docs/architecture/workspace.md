@@ -88,7 +88,7 @@ an address that host signed. Being named there is what lets a host in
 everywhere the workspace is held: its device holds the workspace, and its
 person may reach the hosts that do. Another host of the governor's own person
 is also admitted as one of the owner's devices; a host of another person, a
-hosted relay such as tilo.sh, is named and nothing more, so the workspace's
+hosted server such as tilo.sh, is named and nothing more, so the workspace's
 members and roles stay as they were. Whom a workspace is held by is the
 owner's decision and the keeper's: a device of the governor's person, or of
 the person the workspace is kept for, asks its governor to have another host
@@ -96,7 +96,7 @@ hold it (`workspace.attach-host`, an operator's `hold`), and the governor
 hands that host the workspace and names it. The other host takes it only when
 its own operator's work setting takes that work: by default only its own
 person's, and another person's only for the workspaces its operator names or
-for anyone when it says so, so a relay never holds strangers' workspaces
+for anyone when it says so, so a server never holds strangers' workspaces
 unasked. From then on both hold it: each carries what is written through it
 to the other, signed by the device that wrote it, so its history and
 authors are the same on both, and each picks up again after a restart. A
@@ -117,7 +117,7 @@ The device key belongs to a machine. Beside it, `device-private/machine.bin`
 records the firmware's system UUID (`/sys/class/dmi/id/product_uuid`), which a
 VM host sets per machine and keeps across that machine's reboots;
 `/etc/machine-id` is on the disk, so a copy carries it and it proves nothing.
-At every boot, before the filesystem, the relay, the network, SSH or a login
+At every boot, before the filesystem, the server, the network, SSH or a login
 read anything, `tilo-device-branch.service` compares the two
 (`tilo_user_identity::branch`):
 
@@ -157,7 +157,7 @@ cannot be re-sealed into the new one's, so it is dropped and rebuilt from the
 device's peers:
 
 - **Group membership.** Each MLS group the copy holds names the source's
-  device as its member. The relay's group member files (sealed under a key
+  device as its member. The server's group member files (sealed under a key
   its device key derives) are dropped at re-key; a session's (sealed under the
   person's own vault) are dropped where the key service finds them naming
   another device (`key_group::Error::OtherDevice`). Neither is ever used,
@@ -228,16 +228,16 @@ other fields are declared for the parts that apply them.
 
 Devices talk over iroh, and nothing else. A device reaches the other devices
 that hold a workspace, directly or through any device that stores it;
-store-and-forward is what a store does. There is no separate relay protocol,
+store-and-forward is what a store does. There is no separate server protocol,
 no second send path, and no gossip path beside it.
 
 A device is one iroh endpoint, under its device key, and one member of each
 workspace's key group; both are its engine's. Whatever else its session asks a
 host (the actions of a workspace placed there, the person's list kept there)
-runs on that endpoint, in a session that holds no keys. A relay hands what is
+runs on that endpoint, in a session that holds no keys. A server hands what is
 sent to an endpoint id to the connection that registered under it last, so a
 second endpoint of the device's key takes the device's place there: a device
-that starts later, or comes back, then dials it through the relay and reaches
+that starts later, or comes back, then dials it through the server and reaches
 an endpoint that answers nothing. And a second member key asked for as the same
 device has the group's key holders commit one in and the other out, turn
 about, for as long as both sessions run.
@@ -369,7 +369,7 @@ naming a history a receiver does not hold, starts nothing.
 
 The rows stay, as a projection: every admission writes them from the ops it
 holds, and refuses a batch that changes a row the ops do not change. An older
-build, a store and a relay that keep only the document therefore read the
+build, a store and a server that keep only the document therefore read the
 same membership every device computes, and the log is what decides it. A
 batch may only add ops; a held op is never changed or dropped.
 
@@ -571,23 +571,23 @@ serving the workspace relays for its members. A device is in the live session on
 it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, each device up to a quarter sooner by its own key so that the
-devices a relay missed together do not come back together (`retry_wait` in
+devices a server missed together do not come back together (`retry_wait` in
 `crates/session/session/src/live.rs`), since a device that comes back tells
 nobody. The relaying device takes sixteen sessions through admission at
 once, at most four of them of one endpoint, and four more of endpoints that
 none of its workspaces names as a device, which therefore cannot keep a
 workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
-`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/relay.rs`). One
+`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/server.rs`). One
 more it closes as busy, unread: it judged nobody, so the device it closed
-asks again the same way and reads as told busy by it (`relay-busy`), where a
+asks again the same way and reads as told busy by it (`server-busy`), where a
 device that did not reach it reads as waiting to reach it and a device it
 judged and did not admit reads as refused. A live session reads thirty-two devices
 at once (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`): each is
-three tracks that it and the relay hold open, about 250 KiB between them,
+three tracks that it and the server hold open, about 250 KiB between them,
 and that, not the transport, is what a further device costs. A device that
 is in the live session beyond those is not heard on this device, and the live session's
 row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
-The connection to the relay is allowed the streams thirty-two devices take
+The connection to the server is allowed the streams thirty-two devices take
 once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
 `crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
 bound for the live session alone. The share's reading

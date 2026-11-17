@@ -1,7 +1,7 @@
 //! A home peer's replica file versions, read by a process beside it.
 //!
 //! `fs replica` keeps each workspace's [`ContentStore`] open for its whole
-//! life, so another process on the device — the compute worker in the relay
+//! life, so another process on the device — the compute worker in the server
 //! daemon, which runs a job on the replica's copy of an input instead of
 //! fetching it — cannot open the store. File-backed versions it reads from
 //! their files ([`ContentStore::read_file_version_unlocked`]); smaller ones

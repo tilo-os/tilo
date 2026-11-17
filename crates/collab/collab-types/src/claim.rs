@@ -1,7 +1,7 @@
 //! What each change of a signed document op says it is.
 //!
 //! A receiver decides a change before merging it:
-//! the relay checks, without app code and without reading content, that the
+//! the server checks, without app code and without reading content, that the
 //! action a change claims is granted to its author and that the change
 //! writes only the storage units that action may write; a device that has
 //! the app replays the action and checks that it produces exactly the change.

@@ -217,7 +217,7 @@ impl World {
     /// The workspace as Ada's server holds it.
     async fn held(&self) -> Option<StatePeer> {
         self.server()
-            .relay
+            .server
             .workspaces()
             .unwrap()
             .state(WORKSPACE)
@@ -255,7 +255,7 @@ impl World {
     /// What the server holds that does not read whole, with why.
     async fn unread(&self) -> Vec<((String, String), String)> {
         self.server()
-            .relay
+            .server
             .workspaces()
             .unwrap()
             .whole_documents(WORKSPACE, None)
@@ -267,7 +267,7 @@ impl World {
     async fn stop(&mut self) {
         if let Some(server) = self.server.take() {
             drop(server.web);
-            server.relay.shutdown().await;
+            server.server.shutdown().await;
         }
     }
 

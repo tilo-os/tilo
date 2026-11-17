@@ -15,7 +15,7 @@
 //! is authorised as usual.
 //!
 //! This is PR 541's delivery-v3 cursor idea (a host-signed cursor token)
-//! reduced to what one relay host needs: a keyed BLAKE3 MAC in
+//! reduced to what one server host needs: a keyed BLAKE3 MAC in
 //! place of a signature, since only the host that issued a position ever
 //! checks it.
 

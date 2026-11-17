@@ -96,7 +96,7 @@ async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wa
 /// a member device that writes it sealed under the keys the node takes part in.
 pub(super) struct Lounge {
     pub(super) _dir: tempfile::TempDir,
-    pub(super) relay: crate::workspaces::fixtures::TestHost,
+    pub(super) server: crate::workspaces::fixtures::TestHost,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
     pub(super) workspace_id: WorkspaceId,
@@ -116,8 +116,8 @@ pub(super) async fn lounge() -> Lounge {
 async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     if capacity > 0 {
         workspaces.bound_link_readers(capacity);
     }
@@ -139,7 +139,7 @@ async fn lounge_reading(capacity: usize) -> Lounge {
     .await;
     Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace: created.workspace,
         workspace_id: created.workspace_id,
@@ -153,17 +153,17 @@ async fn lounge_reading(capacity: usize) -> Lounge {
 
 /// [`lounge`] with its member's own subscription to the node's host, as the member's phone
 /// or laptop reaches it.
-pub(super) async fn lounge_with_client() -> (Lounge, crate::RelayClient) {
+pub(super) async fn lounge_with_client() -> (Lounge, crate::ServerClient) {
     lounge_reading_with_client(0).await
 }
 
 /// [`lounge_with_client`] over [`lounge_reading`].
-async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::RelayClient) {
+async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::ServerClient) {
     // The host is heap-held from the moment it exists: a node's state is far larger than a
     // test's future wants to keep in its frame while the member's subscription is set up.
     let lounge = Box::new(lounge_reading(capacity).await);
     let client = Box::pin(subscribed_member(
-        &lounge.relay,
+        &lounge.server,
         &lounge.member_key,
         lounge.member_cert.clone(),
         lounge.workspace_id,
@@ -179,7 +179,7 @@ async fn lounge_reading_with_client(capacity: usize) -> (Lounge, crate::RelayCli
 async fn a_node_reads_and_resets_a_record_its_members_seal() {
     let Lounge {
         _dir,
-        relay,
+        server,
         workspaces,
         workspace,
         governor,
@@ -213,7 +213,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         "a member opens the governor's write"
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A public workspace's chat takes thousands of writes within hours. Past three
@@ -223,7 +223,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
 async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let Lounge {
         _dir,
-        relay,
+        server,
         workspaces,
         workspace,
         member,
@@ -256,10 +256,10 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
         .count();
     assert_eq!(published, 0, "a compaction is not published to members");
     drop((state, workspaces));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// Every write of `record` the relay retains for `workspace_id`, in replay
+/// Every write of `record` the server retains for `workspace_id`, in replay
 /// order: what a newcomer is sent.
 ///
 /// Read once the workspace's store settled every write its owner took before
@@ -269,11 +269,11 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
 /// read made beside the owner, the moment the node follows a write, can come
 /// before the store holds that write.
 async fn retained_writes(
-    relay: &crate::workspaces::fixtures::TestHost,
+    server: &crate::workspaces::fixtures::TestHost,
     workspace_id: WorkspaceId,
     record: &str,
 ) -> Vec<SignedOp> {
-    relay
+    server
         .workspace_documents()
         .retained_settled(workspace_id)
         .await
@@ -295,20 +295,20 @@ async fn retained_writes(
 /// A member's own client to `relay`'s host, subscribed to `workspace_id`'s
 /// workspace, as the member's phone or laptop reaches it.
 pub(super) async fn subscribed_member(
-    relay: &crate::workspaces::fixtures::TestHost,
+    server: &crate::workspaces::fixtures::TestHost,
     key: &ed25519_dalek::SigningKey,
     cert: DeviceCert,
     workspace_id: WorkspaceId,
-) -> crate::RelayClient {
+) -> crate::ServerClient {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
         .bind()
         .await
         .unwrap();
-    let client = crate::RelayClient::connect_to_pinned_host(
+    let client = crate::ServerClient::connect_to_pinned_host(
         endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         cert,
         key.clone(),
         tilo_user_identity::RevocationList::new(),
@@ -327,7 +327,7 @@ pub(super) async fn subscribed_member(
 
 /// Send `delta`, `member`'s write, to the host `client` reaches.
 fn send_members_delta(
-    client: &crate::RelayClient,
+    client: &crate::ServerClient,
     workspace_id: WorkspaceId,
     member: &ed25519_dalek::SigningKey,
     delta: &crate::CoeditPayload,
@@ -346,7 +346,7 @@ fn send_members_delta(
 /// Send `message`, a sealed write of the member `key` signs, to the host `client` reaches,
 /// as the member's own writes travel.
 fn send_sealed(
-    client: &crate::RelayClient,
+    client: &crate::ServerClient,
     workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
     message: &NeighbourMsg,
@@ -367,7 +367,7 @@ fn send_sealed(
 /// sealed, as the member's own writes travel.
 pub(super) fn seal_and_send_title(
     member: &SealingMember,
-    client: &crate::RelayClient,
+    client: &crate::ServerClient,
     workspace: &str,
     workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
@@ -404,7 +404,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     let (
         Lounge {
             _dir,
-            relay,
+            server,
             workspaces,
             workspace,
             workspace_id,
@@ -458,7 +458,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     let newest = format!("line {}", WRITES + 2);
     let held = tilo_test_env::within("the node retains the member's checkpoint", async {
         loop {
-            let held = retained_writes(&relay, workspace_id, RECORD).await;
+            let held = retained_writes(&server, workspace_id, RECORD).await;
             let folded = held.iter().any(|op| {
                 op.author.as_bytes() == &member_key.verifying_key().to_bytes()
                     && op.kind == collab_types::OpKind::Compaction
@@ -476,7 +476,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     .await;
     assert!(held.iter().all(holds_nothing_in_the_clear));
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Whether `op` is sealed, or holds nothing: the checkpoint a record is
@@ -507,7 +507,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 
 /// The node is stopped hard a moment after it took in members' sealed
 /// writes, with no governance change since. The workspace as it opens from disk,
-/// before anything is replayed, already holds them: replaying the relay's
+/// before anything is replayed, already holds them: replaying the server's
 /// copy at a start may not bring a write back (the app surface it is
 /// decided against is not there yet), and a later write building on it
 /// would leave the record with a gap.
@@ -515,7 +515,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 async fn members_writes_the_node_took_in_survive_a_hard_stop() {
     let Lounge {
         _dir,
-        relay,
+        server,
         workspaces,
         workspace,
         governor,
@@ -563,10 +563,10 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// App surfaces as a relay has them while it fetches one from the registry:
+/// App surfaces as a server has them while it fetches one from the registry:
 /// none until the fetch lands, then one that admits a sealed write.
 struct LateSurface(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -603,14 +603,14 @@ impl collab_types::SurfaceSource for LateSurface {
 /// Members write while the app surface their writes name is still being
 /// fetched, as after a restart: the governor holds the writes, more than its
 /// held queue keeps, and lets the oldest go. Once the surface arrives the
-/// governor replays what the relay retains and takes in every write, those
+/// governor replays what the server retains and takes in every write, those
 /// it let go included, without waiting for another write to land.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
     const WRITES: usize = tilo_peer_state::MAX_HELD_INPUTS + 16;
     let Lounge {
         _dir,
-        relay,
+        server,
         workspaces,
         workspace,
         workspace_id,
@@ -632,7 +632,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
         .set_surfaces(collab_types::Surfaces::from_source(std::sync::Arc::new(
             LateSurface(std::sync::Arc::clone(&here)),
         )));
-    let client = subscribed_member(&relay, &member_key, member_cert, workspace_id).await;
+    let client = subscribed_member(&server, &member_key, member_cert, workspace_id).await;
     let mut followed = workspaces.document_writes();
     for index in 0..WRITES {
         let ((), message) = member.seal(&workspace, |doc| {
@@ -675,7 +675,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
     let newest = format!("line {}", WRITES - 1);
     follows(&workspaces, &workspace, &newest).await;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A chat kept as a chain of parts starts each part with a member's sealed
@@ -685,7 +685,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
 async fn a_node_follows_every_part_its_members_start_sealed() {
     let Lounge {
         _dir,
-        relay,
+        server,
         workspaces,
         workspace,
         member,
@@ -714,7 +714,7 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
         );
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Members of a hosted workspace seal every Chat write, so the node reads the
@@ -723,15 +723,15 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay stays live until its consuming shutdown"
+    reason = "the server stays live until its consuming shutdown"
 )]
 async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const CHAT: &str = "so.tilo.chat";
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     workspaces
@@ -793,19 +793,19 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         .expect("the node still reads the workspace's calls");
     assert!(calls.iter().any(|listed| listed.state.call == call.call));
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// What the relay retains of `record`, once it retains a write `wanted`.
+/// What the server retains of `record`, once it retains a write `wanted`.
 async fn retained_once(
-    relay: &crate::workspaces::fixtures::TestHost,
+    server: &crate::workspaces::fixtures::TestHost,
     workspace_id: WorkspaceId,
     record: &str,
     wanted: impl Fn(&SignedOp) -> bool + Send + Sync,
 ) -> Vec<SignedOp> {
-    tilo_test_env::within("the relay retains the record", async {
+    tilo_test_env::within("the server retains the record", async {
         loop {
-            let held = retained_writes(relay, workspace_id, record).await;
+            let held = retained_writes(server, workspace_id, record).await;
             if held.iter().any(&wanted) {
                 break held;
             }
@@ -822,8 +822,8 @@ async fn retained_once(
 async fn a_record_of_a_sealed_workspace_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     workspaces
@@ -832,19 +832,19 @@ async fn a_record_of_a_sealed_workspace_is_sealed_from_its_first_write() {
         })
         .await
         .unwrap();
-    let held = retained_once(&relay, workspace_id, RECORD, |op| op.encryption.is_some()).await;
+    let held = retained_once(&server, workspace_id, RECORD, |op| op.encryption.is_some()).await;
     assert!(held.iter().all(holds_nothing_in_the_clear));
     assert_eq!(
         readable(&workspaces, &workspace).await.as_deref(),
         Some("Welcome")
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A record its workspace wrote in the clear before the node took part in its
 /// channel is sealed once its operator decided it: its channel is opened, the
-/// relay retains one sealed snapshot in place of the writes in the clear,
+/// server retains one sealed snapshot in place of the writes in the clear,
 /// and a member with the channel's keys reads every change of that history
 /// from it, with its author and sequence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -856,8 +856,8 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     const LEGACY: &str = "legacy";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -889,20 +889,20 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
             .unwrap();
         workspaces.settle(&mut governed).await.unwrap();
     }
-    retained_once(&relay, workspace_id, LEGACY, |op| {
+    retained_once(&server, workspace_id, LEGACY, |op| {
         !holds_nothing_in_the_clear(op)
     })
     .await;
 
     // The host's operator decided to seal what its workspaces hold in the clear.
     workspaces.reseal_existing();
-    relay.compactor().reseal_existing();
-    workspaces.reseal_own_channels(relay.compactor()).await;
+    server.compactor().reseal_existing();
+    workspaces.reseal_own_channels(server.compactor()).await;
 
-    let held = retained_writes(&relay, workspace_id, LEGACY).await;
+    let held = retained_writes(&server, workspace_id, LEGACY).await;
     assert!(held.iter().all(|op| op.encryption.is_some()));
-    workspaces.reseal_own_channels(relay.compactor()).await;
-    assert_eq!(retained_writes(&relay, workspace_id, LEGACY).await, held);
+    workspaces.reseal_own_channels(server.compactor()).await;
+    assert_eq!(retained_writes(&server, workspace_id, LEGACY).await, held);
     let member = SealingMember::join(&workspaces, &workspace, (APP, LEGACY), member_key).await;
     let mut read = automerge::AutoCommit::new();
     for op in &held {
@@ -918,7 +918,7 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     assert!(changes(&mut written).is_subset(&changes(&mut read)));
     assert_eq!(title(&read.save()).as_deref(), Some("the channel"));
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A note the workspace's governor (Ada) wrote before someone new was admitted
@@ -932,8 +932,8 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
     let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &ada).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &ada).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     for version in ["first", "second"] {
@@ -945,8 +945,10 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
             .unwrap();
     }
     assert!(
-        !retained_writes(&relay, workspace_id, NOTE).await.is_empty(),
-        "the relay retains Ada's note before Grace is admitted"
+        !retained_writes(&server, workspace_id, NOTE)
+            .await
+            .is_empty(),
+        "the server retains Ada's note before Grace is admitted"
     );
 
     let (grace_key, grace) = guest_device();
@@ -958,9 +960,9 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
         .bind()
         .await
         .unwrap();
-    let client = crate::RelayClient::connect_to_pinned_host(
+    let client = crate::ServerClient::connect_to_pinned_host(
         endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         grace.clone(),
         grace_key.clone(),
         tilo_user_identity::RevocationList::new(),
@@ -977,7 +979,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
                 Some(crate::Envelope::Ready { .. }) => break replayed,
                 Some(crate::Envelope::Delta { delta, .. }) => replayed.push(delta),
                 Some(_) => {}
-                None => panic!("the relay closed Grace's subscription before Ready"),
+                None => panic!("the server closed Grace's subscription before Ready"),
             }
         }
     })
@@ -1026,7 +1028,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
         "the note Grace reads keeps both of Ada's versions: {versions:?}"
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Every retained file of `channel` in `root`, as (path, bytes).
@@ -1151,7 +1153,7 @@ fn archived_bodies(root: &std::path::Path) -> std::collections::BTreeSet<Vec<u8>
 /// Several authors write the record over time, past the point its history folds: the shape
 /// a compaction folds, and the shape whose base can go missing. Says the newest title, and
 /// that a newcomer reads the record whole before the damage.
-async fn members_write_over_time(lounge: &Lounge, client: &crate::RelayClient) -> String {
+async fn members_write_over_time(lounge: &Lounge, client: &crate::ServerClient) -> String {
     for author in ["first", "second"] {
         for index in 0..5 {
             seal_and_send_title(
@@ -1166,7 +1168,7 @@ async fn members_write_over_time(lounge: &Lounge, client: &crate::RelayClient) -
     }
     let newest = "second 4";
     follows(&lounge.workspaces, &lounge.workspace, newest).await;
-    let held = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert!(!held.is_empty(), "the record is retained");
     assert_eq!(
         title(&newcomer_opens(&lounge.member, &held).save()).as_deref(),
@@ -1241,7 +1243,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     let damaged = lose_the_documents_base(&root, &channel, &lounge.governor);
 
     // Before the repair: a device joining now does not reach the record.
-    let broken = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let broken = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert_ne!(
         title(&newcomer_opens(&lounge.member, &broken).save()).as_deref(),
         Some(newest.as_str()),
@@ -1258,7 +1260,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     assert_the_repair_kept_everything(&root, &kept_before, damaged);
 
     // A device joining now reads the whole record the governor reads.
-    let whole = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let whole = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert_eq!(
         title(&newcomer_opens(&lounge.member, &whole).save()).as_deref(),
         Some(newest.as_str()),
@@ -1283,7 +1285,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         );
     }
     follows(&lounge.workspaces, &lounge.workspace, "after, second").await;
-    let wrote = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let wrote = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert_eq!(
         newcomer_opens(&lounge.member, &wrote).get_heads(),
         lounge.member.document().get_heads(),
@@ -1305,7 +1307,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         "written before the repair, sent after it",
     )
     .await;
-    let late = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let late = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert_eq!(
         title(&newcomer_opens(&lounge.member, &late).save()).as_deref(),
         Some("written before the repair, sent after it"),
@@ -1318,7 +1320,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     // What the host would do if asked again is found again from the record
     // as it reads, which is not this test's subject.
     drop(lounge.workspaces);
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
 /// A device that still holds changes the refound's checkpoint does not writes
@@ -1334,7 +1336,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
     let (
         Lounge {
             _dir,
-            relay,
+            server,
             workspaces,
             workspace,
             workspace_id,
@@ -1371,7 +1373,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
     // member's writes the node already follows.
     let channel = neighbour_wire::app_document_channel(APP, RECORD);
     let root = state_root(&workspaces, &workspace, workspace_id).await;
-    relay
+    server
         .workspace_documents()
         .retained_settled(workspace_id)
         .await
@@ -1382,7 +1384,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         .await
         .expect("the governor founds the record again");
 
-    // The away device comes back and sends what it held. The relay keeps a
+    // The away device comes back and sends what it held. The server keeps a
     // write as it arrives, before the node follows it, so the wait is for the
     // node's own copy to hold what the away device wrote: the record a device
     // joining now is replayed is the node's, and a check made before the node
@@ -1395,7 +1397,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 
     // What a device joining now is replayed: it reads the record the governor
     // reads, with the away device's changes in it.
-    let replayed = retained_writes(&relay, workspace_id, RECORD).await;
+    let replayed = retained_writes(&server, workspace_id, RECORD).await;
     let held_by_governor = workspaces
         .resource_document(&workspace, APP, RECORD)
         .await
@@ -1409,7 +1411,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         "a joiner reads the record whole, the away device's changes included"
     );
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The node asks to be let into a channel a member opened, and the member is
@@ -1420,8 +1422,8 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (member_key, _) = member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
 
@@ -1476,7 +1478,7 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
 
     pairing.abort();
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A record whose sealed writes do not all merge is named with why, and the
@@ -1515,7 +1517,7 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
             .any(|(route, _)| *route == (APP.to_owned(), "other".to_owned())),
         "the other record is read"
     );
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
 /// The value at `key` in the record as the node reads it.
@@ -1557,7 +1559,7 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
     let [kept] = kept.as_slice() else {
         panic!("one change kept: {kept:?}");
     };
-    // The relay's state root, which holds the governed records' `workspaces`.
+    // The server's state root, which holds the governed records' `workspaces`.
     let root = workspaces
         .workspace(workspace)
         .await
@@ -1615,7 +1617,7 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
         Some("by the repair"),
         "a member reads the kept change from the node's write"
     );
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
 /// A device linked to the workspace directly, as a desktop's runtime is,
@@ -1709,9 +1711,9 @@ fn write_of(message: &NeighbourMsg, author: [u8; 32]) -> Option<u64> {
     }
 }
 
-/// The sequence numbers of `author`'s writes of [`RECORD`] the relay sends `client` live, in
+/// The sequence numbers of `author`'s writes of [`RECORD`] the server sends `client` live, in
 /// order, up to and including `last`, as many times as each arrived.
-async fn delivered(client: &crate::RelayClient, author: [u8; 32], last: u64) -> Vec<u64> {
+async fn delivered(client: &crate::ServerClient, author: [u8; 32], last: u64) -> Vec<u64> {
     tilo_test_env::within("the session is sent the writes", async {
         let mut seqs = Vec::new();
         loop {
@@ -1740,7 +1742,7 @@ async fn delivered(client: &crate::RelayClient, author: [u8; 32], last: u64) -> 
 }
 
 /// A workspace's members write on whatever carrier their runtime runs: a page
-/// through a relay session, a desktop over the workspace's direct link. What
+/// through a server session, a desktop over the workspace's direct link. What
 /// one writes reaches every other member live, once, on either carrier, and
 /// never comes back to its own: each linked device hears each of the page's
 /// writes once, and the page and the other device each get each of a device's
@@ -1771,7 +1773,7 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         );
     }
     eprintln!(
-        "{WRITES} writes of a relay session reached two linked devices in {:?}",
+        "{WRITES} writes of a server session reached two linked devices in {:?}",
         started.elapsed()
     );
 
@@ -1808,7 +1810,7 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         "the page's session is sent each of the device's writes once"
     );
     eprintln!(
-        "{WRITES} writes of a linked device reached the other device and a relay session in {:?}",
+        "{WRITES} writes of a linked device reached the other device and a server session in {:?}",
         started.elapsed()
     );
 
@@ -1849,10 +1851,10 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
     }
     drop(page);
     let Lounge {
-        relay, workspaces, ..
+        server, workspaces, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Write `value` at `key` into `replica` as its next change, and hand that
@@ -1898,7 +1900,7 @@ async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_i
     let [kept] = kept.as_slice() else {
         panic!("one change kept: {kept:?}");
     };
-    // The relay's state root, which holds the governed records' `workspaces`.
+    // The server's state root, which holds the governed records' `workspaces`.
     let root = workspaces
         .workspace(workspace)
         .await
@@ -1981,7 +1983,7 @@ async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_i
         read + 1,
         "the one write that could release it, and no other"
     );
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
 /// The write of `record` of `app` the host published last, whoever signed it.
@@ -2062,7 +2064,7 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
             .with_message(context.change_message().unwrap()),
     );
     let kept = bot.get_last_local_change().unwrap();
-    // The relay's state root, which holds the governed records' `workspaces`.
+    // The server's state root, which holds the governed records' `workspaces`.
     let root = workspaces
         .workspace(workspace)
         .await
@@ -2102,13 +2104,13 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         Some("for Ada"),
         "the record holds the change, showing the name it showed"
     );
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
-/// Every write of [`RECORD`] the relay sends `client` live, as `(author, seq)`
+/// Every write of [`RECORD`] the server sends `client` live, as `(author, seq)`
 /// in the order they arrived, up to and including `author`'s write `last`.
 async fn writes_sent(
-    client: &crate::RelayClient,
+    client: &crate::ServerClient,
     author: [u8; 32],
     last: u64,
 ) -> Vec<([u8; 32], u64)> {
@@ -2147,7 +2149,7 @@ async fn writes_sent(
 }
 
 /// A desktop whose reader of the workspace's link falls behind, and a host
-/// whose reader of it does while a page waits on the relay's session, still
+/// whose reader of it does while a page waits on the server's session, still
 /// read every write once after catching up from the workspace's history:
 /// the device each of the page's writes, the page each of the device's, and
 /// neither its own.
@@ -2255,15 +2257,15 @@ async fn readers_that_fell_behind_read_every_write_once() {
         "the page's session is sent each of the device's writes once, and none of its own"
     );
     peer.pairing.abort();
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }
 
-/// A page wrote parts of a chained record through its relay session, and the
+/// A page wrote parts of a chained record through its server session, and the
 /// host wrote a record and a part of its own, before the workspace's link kept
-/// any of it: the relay retains them, the link's history does not. A relay
+/// any of it: the server retains them, the link's history does not. A server
 /// session replays a joining page only a chain's head and sends an older part
 /// once asked; a desktop decides on its link's replay alone, and a record it
-/// holds nothing of after that replay is one its app makes anew. The relay's
+/// holds nothing of after that replay is one its app makes anew. The server's
 /// start hands the link what it retains before it serves anyone
 /// ([`Workspaces::recall`]): a device that links holds every one of them once it
 /// caught up, the parts behind the head included, and reads them rather than
@@ -2274,14 +2276,14 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
-    let relay = crate::workspaces::fixtures::test_host_holding(
+    let server = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
         &cert,
         std::sync::Arc::clone(&keys),
     )
     .await;
-    let workspaces = relay.workspaces().clone();
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -2294,7 +2296,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
     let page = Box::pin(subscribed_member(
-        &relay,
+        &server,
         &member_key,
         member_cert.clone(),
         workspace_id,
@@ -2322,13 +2324,13 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         .await
         .unwrap();
     written.extend([host_part, RECORD.to_owned()]);
-    // The relay keeps a write before the governor takes it in, and a start
-    // replays what the relay keeps only into the records the governor holds:
+    // The server keeps a write before the governor takes it in, and a start
+    // replays what the server keeps only into the records the governor holds:
     // both have to be there before this host stops, or the restart races the
     // write it replays.
-    tilo_test_env::within("the relay and the governor hold the page's parts", async {
+    tilo_test_env::within("the server and the governor hold the page's parts", async {
         for record in written.iter().filter(|record| record.as_str() != RECORD) {
-            while retained_writes(&relay, workspace_id, record)
+            while retained_writes(&server, workspace_id, record)
                 .await
                 .is_empty()
                 || !workspaces.records(&workspace).await.is_some_and(|records| {
@@ -2344,15 +2346,16 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     .await;
     drop(page);
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 
-    // The link's history as it stood before the relay carried session writes to it.
+    // The link's history as it stood before the server carried session writes to it.
     std::fs::remove_dir_all(dir.path().join("store")).unwrap();
-    let relay = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
-    let workspaces = relay.workspaces().clone();
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
     let lounge = Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace,
         workspace_id,
@@ -2371,31 +2374,31 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     }
     drop(peer);
     let Lounge {
-        workspaces, relay, ..
+        workspaces, server, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// A desktop wrote a part over the workspace's link that the relay's own
-/// retained history lacks (the link kept it before the relay carried each
-/// link write to its sessions). A page decides a part is absent when the relay
+/// A desktop wrote a part over the workspace's link that the server's own
+/// retained history lacks (the link kept it before the server carried each
+/// link write to its sessions). A page decides a part is absent when the server
 /// answers its ask with nothing, and its app then makes the part anew: so the
-/// relay's history takes what the link keeps, and a page that opens the part
+/// server's history takes what the link keeps, and a page that opens the part
 /// is sent it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
-    let relay = crate::workspaces::fixtures::test_host_holding(
+    let server = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
         &cert,
         std::sync::Arc::clone(&keys),
     )
     .await;
-    let workspaces = relay.workspaces().clone();
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -2421,11 +2424,12 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let frame = tilo_peer_state::store::Frame::of(&message).unwrap();
     workspaces.inner.store.retain(workspace_id, &frame).unwrap();
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 
-    let relay = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
     let page = Box::pin(subscribed_member(
-        &relay,
+        &server,
         &member_key,
         member_cert,
         workspace_id,
@@ -2438,7 +2442,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
         own: None,
     })
     .unwrap();
-    let frames = tilo_test_env::within("the relay answers the page's ask", async {
+    let frames = tilo_test_env::within("the server answers the page's ask", async {
         loop {
             if let Some(crate::Envelope::DocumentOpened {
                 channel: opened,
@@ -2454,16 +2458,16 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     .await;
     assert!(
         frames > 0,
-        "the relay sends the page the part the link kept: it reads it, and does not make it again"
+        "the server sends the page the part the link kept: it reads it, and does not make it again"
     );
     drop(member);
     drop(page);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// What the relay sends `page` when it opens `record`: how many frames, before
+/// What the server sends `page` when it opens `record`: how many frames, before
 /// it says the record was sent whole.
-async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, record: &str) -> u32 {
+async fn opened_frames(page: &crate::ServerClient, workspace_id: WorkspaceId, record: &str) -> u32 {
     let channel = neighbour_wire::app_document_channel(APP, record);
     page.send(crate::Envelope::OpenDocument {
         workspace_id,
@@ -2471,7 +2475,7 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
         own: None,
     })
     .unwrap();
-    tilo_test_env::within("the relay answers the page's ask", async {
+    tilo_test_env::within("the server answers the page's ask", async {
         loop {
             if let Some(crate::Envelope::DocumentOpened {
                 channel: opened,
@@ -2487,12 +2491,12 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
     .await
 }
 
-/// A linked device writes a part over the workspace's link while the relay
-/// runs, and the relay's copy of it for its sessions fails `failing` times;
-/// the part, and the relay's page, wait.
+/// A linked device writes a part over the workspace's link while the server
+/// runs, and the server's copy of it for its sessions fails `failing` times;
+/// the part, and the server's page, wait.
 async fn a_device_writes_while_its_copy_fails(
     failing: usize,
-) -> (Lounge, crate::RelayClient, String) {
+) -> (Lounge, crate::ServerClient, String) {
     let (lounge, page) = lounge_with_client().await;
     lounge
         .workspaces
@@ -2516,7 +2520,7 @@ async fn a_device_writes_while_its_copy_fails(
         doc.commit_edit("fixture", "title");
     });
     peer.link.send(message).unwrap();
-    tilo_test_env::within("the relay tries to copy the device's write", async {
+    tilo_test_env::within("the server tries to copy the device's write", async {
         while lounge
             .workspaces
             .inner
@@ -2532,14 +2536,14 @@ async fn a_device_writes_while_its_copy_fails(
     (lounge, page, record)
 }
 
-/// The relay's copy of a device's write for its sessions fails once while it
+/// The server's copy of a device's write for its sessions fails once while it
 /// runs: it is tried again until it lands, and a page that opens the record
-/// is sent it from the relay's own history.
+/// is sent it from the server's own history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_devices_write_whose_copy_failed_once_still_reaches_a_page() {
     let (lounge, page, record) = Box::pin(a_device_writes_while_its_copy_fails(1)).await;
     tilo_test_env::within("the copy is tried again until it lands", async {
-        while retained_writes(&lounge.relay, lounge.workspace_id, &record)
+        while retained_writes(&lounge.server, lounge.workspace_id, &record)
             .await
             .is_empty()
         {
@@ -2554,20 +2558,20 @@ async fn a_devices_write_whose_copy_failed_once_still_reaches_a_page() {
     );
     drop(page);
     let Lounge {
-        workspaces, relay, ..
+        workspaces, server, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// The relay's copy of a device's write keeps failing: until it lands, a page
+/// The server's copy of a device's write keeps failing: until it lands, a page
 /// that opens the record is sent the write from the workspace's link, never
 /// told the record is absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_is_sent_a_devices_write_whose_copy_has_not_landed() {
     let (lounge, page, record) = Box::pin(a_device_writes_while_its_copy_fails(usize::MAX)).await;
     assert!(
-        retained_writes(&lounge.relay, lounge.workspace_id, &record)
+        retained_writes(&lounge.server, lounge.workspace_id, &record)
             .await
             .is_empty(),
         "the copy has not landed"
@@ -2579,16 +2583,16 @@ async fn a_page_is_sent_a_devices_write_whose_copy_has_not_landed() {
     );
     drop(page);
     let Lounge {
-        workspaces, relay, ..
+        workspaces, server, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The member's page lets a change go, unsigned and unsent, and sends its next change, built on
-/// it, to the relay: the hole a page left in a record before its writes waited for the record.
-/// Answers the write it sent, once the relay retains it.
-async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::RelayClient) -> SignedOp {
+/// it, to the server: the hole a page left in a record before its writes waited for the record.
+/// Answers the write it sent, once the server retains it.
+async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::ServerClient) -> SignedOp {
     lounge.member.lets_go(|doc| {
         doc.put(ROOT, "early", "let go").unwrap();
         doc.commit_edit("fixture", "early");
@@ -2601,8 +2605,8 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::RelayClient) -> Sig
     let NeighbourMsg::AppDocument { envelope, .. } = stuck else {
         panic!("a document write")
     };
-    tilo_test_env::within("the relay retains the stuck write", async {
-        while !retained_writes(&lounge.relay, lounge.workspace_id, RECORD)
+    tilo_test_env::within("the server retains the stuck write", async {
+        while !retained_writes(&lounge.server, lounge.workspace_id, RECORD)
             .await
             .iter()
             .any(|op| op.signature == envelope.signature)
@@ -2613,7 +2617,7 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::RelayClient) -> Sig
     .await;
     // As a reader is refused it: the record a newcomer is sent waits for a change no device
     // will ever send.
-    let held = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
     assert!(
         !newcomer_opens(&lounge.member, &held)
             .get_missing_deps(&[])
@@ -2626,9 +2630,9 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::RelayClient) -> Sig
 /// Wait until what a newcomer is sent of [`RECORD`] holds neither `stuck` nor anything that waits
 /// for a change it lacks, and reads `title`: the record whole without the stuck write.
 async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted: &str) {
-    tilo_test_env::within("the relay folds the stuck write away", async {
+    tilo_test_env::within("the server folds the stuck write away", async {
         loop {
-            let held = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+            let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
             let mut read = automerge::AutoCommit::new();
             let opens = held
                 .iter()
@@ -2651,11 +2655,11 @@ async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted:
 /// A page that held a record's keys before the record itself wrote a change in that moment, let it
 /// go unsigned and unsent, and sent its next change, built on the first: the record holds a change
 /// whose base no device will ever send, and every reader was refused it as incomplete. The
-/// relay's fold left that write beside its snapshot, so a newcomer was sent it forever.
+/// server's fold left that write beside its snapshot, so a newcomer was sent it forever.
 ///
 /// The governor, which every write of the record reaches, finds the write stuck behind a change
 /// its writer never sent: the writer's own sequence of changes shows the gap, and every write it
-/// signed before is held. The relay's next fold leaves it out of the record for good, keeps it in
+/// signed before is held. The server's next fold leaves it out of the record for good, keeps it in
 /// the store's archive, and a newcomer reads the rest of the record whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_built_on_a_change_its_writer_never_sent_is_folded_away() {
@@ -2695,29 +2699,29 @@ async fn a_write_built_on_a_change_its_writer_never_sent_is_folded_away() {
     );
     drop(client);
     let Lounge {
-        workspaces, relay, ..
+        workspaces, server, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// A relay's store already holds such a stuck write from a run before writes waited for their
-/// record, and nothing the record's writers do brings it a fold: the relay folds it away as it
+/// A server's store already holds such a stuck write from a run before writes waited for their
+/// record, and nothing the record's writers do brings it a fold: the server folds it away as it
 /// starts, and a newcomer reads the record whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
+async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    // The relay after the restart holds the channel keys the one before it took part with.
+    // The server after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
-    let relay = crate::workspaces::fixtures::test_host_holding(
+    let server = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
         &cert,
         std::sync::Arc::clone(&keys),
     )
     .await;
-    let workspaces = relay.workspaces().clone();
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -2730,7 +2734,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
     let client = Box::pin(subscribed_member(
-        &relay,
+        &server,
         &member_key,
         member_cert.clone(),
         workspace_id,
@@ -2738,7 +2742,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     .await;
     let lounge = Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace,
         workspace_id,
@@ -2752,7 +2756,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     drop(client);
     let Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace,
         workspace_id,
@@ -2763,15 +2767,15 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
         member,
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 
-    let relay =
+    let server =
         crate::workspaces::fixtures::test_host_holding(dir.path(), &governor_key, &governor, keys)
             .await;
-    let workspaces = relay.workspaces().clone();
+    let workspaces = server.workspaces().clone();
     let lounge = Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace,
         workspace_id,
@@ -2783,8 +2787,8 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     };
     newcomer_reads_whole_without(&lounge, &stuck, "Welcome").await;
     let Lounge {
-        workspaces, relay, ..
+        workspaces, server, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

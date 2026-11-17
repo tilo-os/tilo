@@ -4,7 +4,7 @@
 )]
 
 use super::*;
-use crate::RelayConfig;
+use crate::ServerConfig;
 use crate::peer::FetchGrants as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::join::Role;
@@ -40,7 +40,7 @@ async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
-/// The node a test's relay runs as: device `seed` of `root`, certified with
+/// The node a test's server runs as: device `seed` of `root`, certified with
 /// `capabilities`.
 struct Host {
     key: SigningKey,
@@ -53,9 +53,9 @@ fn host(root: &SigningKey, seed: u8, capabilities: DeviceCapabilities) -> Host {
 }
 
 impl Host {
-    /// What the relay presents as its host node.
-    fn identity(&self) -> crate::daemon::RelayIdentity {
-        crate::daemon::RelayIdentity {
+    /// What the server presents as its host node.
+    fn identity(&self) -> crate::daemon::ServerIdentity {
+        crate::daemon::ServerIdentity {
             user_public_key: self.cert.user_public_key,
             device_signing_key: self.key.clone(),
             device_cert: self.cert.clone(),
@@ -64,14 +64,14 @@ impl Host {
     }
 }
 
-/// A relay keeping its state under `state`, identified as `identity`.
-async fn relay_at(
+/// A server keeping its state under `state`, identified as `identity`.
+async fn server_at(
     state: &tempfile::TempDir,
-    identity: crate::daemon::RelayIdentity,
-    config: RelayConfig,
-) -> Relay {
-    Relay::start_with_relay_mode(
-        RelayConfig {
+    identity: crate::daemon::ServerIdentity,
+    config: ServerConfig,
+) -> Server {
+    Server::start_with_relay_mode(
+        ServerConfig {
             state_root: state.path().into(),
             ..config
         },
@@ -82,41 +82,41 @@ async fn relay_at(
     .unwrap()
 }
 
-/// The web `relay` serves its pages, with every entry a test does not open
+/// The web `server` serves its pages, with every entry a test does not open
 /// closed.
-fn web_of(relay: &Relay, host: &Host) -> Web {
-    web_of_at(relay, host, None)
+fn web_of(server: &Server, host: &Host) -> Web {
+    web_of_at(server, host, None)
 }
 
 /// [`web_of`] for a host that belongs to `site`.
-fn web_of_at(relay: &Relay, host: &Host, site: Option<&str>) -> Web {
+fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
     Web {
-        context: relay.web_context().clone(),
+        context: server.web_context().clone(),
         host_info: HostInfo {
             host_cert: host.cert.clone(),
             address: None,
         },
         endpoint: None,
         allowed_origins: vec![],
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        workspaces: server.workspaces().cloned(),
+        envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
         profiles: Arc::new(envelopes::Envelopes::of(
             envelopes::Record::Profile,
-            relay.state_root().join("profiles"),
+            server.state_root().join("profiles"),
         )),
         fetch: None,
         grants: Arc::default(),
         content_links: Arc::default(),
-        presence: Arc::new(live::Authority::new(relay.web_context().relay.clone())),
+        presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
         page_errors: page_errors::PageErrors::default(),
         shelf: shelf::Shelf::opening(
-            relay.state_root().join("invitations"),
+            server.state_root().join("invitations"),
             tilo_clock::unix_now_ns(),
         ),
         site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
         stand_ins: Arc::new(stand_in::StandIns::new(
-            relay.state_root().join("stand-ins"),
+            server.state_root().join("stand-ins"),
         )),
         wait_list: None,
     }
@@ -131,10 +131,10 @@ async fn serve_web(web: Arc<Web>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, tokio::spawn(plain_accept_loop(listener, web)))
 }
 
-/// Stop serving `serving` and shut `relay` down.
-async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
+/// Stop serving `serving` and shut `server` down.
+async fn stop(server: Server, serving: tokio::task::JoinHandle<()>) {
     serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    crate::daemon::Server::shutdown(server).await;
 }
 
 async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
@@ -253,7 +253,7 @@ tilo_test_env::scenario! {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its workspaces serve the page until the relay shuts down at the end"
+    reason = "the server and its workspaces serve the page until the server shuts down at the end"
 )]
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
@@ -265,15 +265,15 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     );
     let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &owner)
         .await
         .unwrap();
 
-    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
     let (code, body) = post(addr, "/channel-keys", Vec::new()).await;
     assert_eq!(
         code,
@@ -282,7 +282,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         String::from_utf8_lossy(&body)
     );
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// A workspace its owner deleted is said to be deleted to any device that
@@ -291,14 +291,14 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay governs the workspaces until it shuts down at the end"
+    reason = "the server governs the workspaces until it shuts down at the end"
 )]
 async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
     let deleted = workspaces.create("Applicant").await.unwrap().workspace;
     let kept = workspaces
         .create("Other applicant")
@@ -306,7 +306,7 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
         .unwrap()
         .workspace;
     workspaces.delete(&deleted).await.unwrap();
-    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
     let path = tilo_server_protocol::web::WORKSPACE_DELETED_PATH;
     let asked = |workspace: &str| post(addr, path, postcard::to_allocvec(workspace).unwrap());
@@ -327,7 +327,7 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let (status, _) = post(addr, path, vec![0xff]).await;
     assert_eq!(status, 400, "a body that names nothing is malformed");
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// The public directory and its entries answer any site's page without
@@ -337,14 +337,14 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay governs the workspace until it shuts down at the end"
+    reason = "the server governs the workspace until it shuts down at the end"
 )]
 async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
     let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
         .publish(
@@ -357,7 +357,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
         )
         .await
         .unwrap();
-    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
     // The directory, from a site the host never configured.
     let head = format!(
@@ -445,7 +445,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let (status, head, _) = exchange(addr, &head, b"not json").await;
     assert_eq!(status, 204, "{head}");
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
@@ -454,7 +454,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay holds the shelf until it shuts down at the end"
+    reason = "the server holds the shelf until it shuts down at the end"
 )]
 async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
@@ -462,8 +462,8 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
     let handle = "abcdefghijklmnop";
     let delete = "a".repeat(43);
@@ -563,7 +563,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
         String::from_utf8_lossy(&body)
     );
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// A site named with the port its scheme implies is the same site a browser
@@ -591,16 +591,16 @@ fn a_site_named_with_its_default_port_is_the_same_site() {
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay holds the shelf until it shuts down at the end"
+    reason = "the server holds the shelf until it shuts down at the end"
 )]
 async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
     let root = SigningKey::from_bytes(&[141; 32]);
     let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
     let site = "https://app.example";
     let (addr, serving) = serve_web(Arc::new(web_of_at(
-        &relay,
+        &server,
         &host,
         Some(&format!("{site}/")),
     )))
@@ -641,12 +641,12 @@ async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
     assert_eq!(status, 410, "{head}");
 
     // A host that knows no site answers as it always has.
-    let (unhosted, second) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (unhosted, second) = serve_web(Arc::new(web_of(&server, &host))).await;
     let (status, head, _) = exchange(unhosted, &browser, b"").await;
     assert_eq!(status, 410, "{head}");
     second.abort();
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// A browser that opens an address this host does not serve asks for a page,
@@ -655,16 +655,16 @@ async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay holds the shelf until it shuts down at the end"
+    reason = "the server holds the shelf until it shuts down at the end"
 )]
 async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     let root = SigningKey::from_bytes(&[151; 32]);
     let host = host(&root, 152, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
     let site = "https://app.example";
     let (addr, serving) = serve_web(Arc::new(web_of_at(
-        &relay,
+        &server,
         &host,
         Some(&format!("{site}/")),
     )))
@@ -685,24 +685,24 @@ async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     assert_eq!(status, 405, "{head}");
 
     // A host that knows no site answers as it always has.
-    let (unhosted, second) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (unhosted, second) = serve_web(Arc::new(web_of(&server, &host))).await;
     let (status, head, _) = exchange(unhosted, browser, b"").await;
     assert_eq!(status, 405, "{head}");
     second.abort();
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// A link is pasted into a message and read days later, so what it names
-/// outlives the relay that was handed it: an invitation left before a restart
-/// is fetched back, and taken back, on the relay that comes up next on the same
+/// outlives the server that was handed it: an invitation left before a restart
+/// is fetched back, and taken back, on the server that comes up next on the same
 /// state — and one that lapsed while nothing was running says so.
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the first relay holds the shelf until it shuts down halfway"
+    reason = "the first server holds the shelf until it shuts down halfway"
 )]
-async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
+async fn a_sealed_invitation_outlives_the_server_it_was_left_on() {
     use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[133; 32]);
@@ -718,7 +718,7 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
             sealed: sealed.to_owned(),
             expires_at_ns,
             delete: delete.clone(),
-            host: Some("https://relay.example".to_owned()),
+            host: Some("https://server.example".to_owned()),
         })
         .unwrap()
     };
@@ -732,11 +732,11 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
         format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
     };
 
-    // The relay this site reached first, with one invitation that outlasts it
+    // The server this site reached first, with one invitation that outlasts it
     // and one that lapses while it is down.
-    let first = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    let first = server_at(&state, signer.identity(), ServerConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
-    // Dated once the relay is up: starting one can take longer than the
+    // Dated once the server is up: starting one can take longer than the
     // second the lapsing invitation lives.
     let now = tilo_clock::unix_now_ns();
     let lapse_at = now + 1_000_000_000;
@@ -747,15 +747,15 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     }
     stop(first, serving).await;
 
-    // The relay that comes up next, on the state the first one kept.
-    let next = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    // The server that comes up next, on the state the first one kept.
+    let next = server_at(&state, signer.identity(), ServerConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&next, &signer))).await;
 
     let (status, head, body) = exchange(addr, &get(keeping), b"").await;
     assert_eq!(status, 200, "{head}");
     let fetched: Fetched = serde_json::from_slice(&body).unwrap();
     assert_eq!(fetched.sealed, sealed);
-    assert_eq!(fetched.host.as_deref(), Some("https://relay.example"));
+    assert_eq!(fetched.host.as_deref(), Some("https://server.example"));
     assert!(
         !String::from_utf8_lossy(&body).contains(&delete),
         "the site gives back no delete secret"
@@ -781,7 +781,7 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
         "a taken-back invitation is off the state disk"
     );
 
-    // What lapsed while the relay was down is gone, and gone from the disk.
+    // What lapsed while the server was down is gone, and gone from the disk.
     while tilo_clock::unix_now_ns() <= lapse_at {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -852,7 +852,7 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its workspaces serve the page until the relay shuts down at the end; only some feature sets see the drop"
+    reason = "the server and its workspaces serve the page until the server shuts down at the end; only some feature sets see the drop"
 )]
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
@@ -867,8 +867,8 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
     let (_, laptop) = device(&signer, 87, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Lounge").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &owner)
@@ -909,7 +909,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         .await
         .unwrap();
 
-    let mut web = web_of(&relay, &host);
+    let mut web = web_of(&server, &host);
     web.allowed_origins = vec!["https://app.example".into()];
     // The target is on loopback, which a host's proxy never reaches; the
     // refusal of its own network is `tilo_net`'s to test. The workspace may
@@ -1109,7 +1109,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let (_, head, _) = fetch(None, "https://other.example").await;
     assert_eq!(header_value(&head, "access-control-allow-origin"), None);
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
@@ -1174,15 +1174,15 @@ async fn call_json(
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay serves the routes until it shuts down at the end"
+    reason = "the server serves the routes until it shuts down at the end"
 )]
 async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     use tilo_server_protocol::login_code as wire;
     let root = SigningKey::from_bytes(&[141; 32]);
     let host = host(&root, 142, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
     let link = format!(
         "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
@@ -1322,7 +1322,7 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     .await;
     assert_eq!(code, 200, "another client still resolves its code");
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// Signing a person in again through their agent: the person's root makes
@@ -1333,7 +1333,7 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay serves the routes until it shuts down at the end"
+    reason = "the server serves the routes until it shuts down at the end"
 )]
 async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     use ed25519_dalek::Signer as _;
@@ -1344,8 +1344,8 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     let owner = SigningKey::from_bytes(&[151; 32]);
     let host = host(&owner, 152, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let web = Arc::new(web_of(&relay, &host));
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let web = Arc::new(web_of(&server, &host));
     web.serve_stand_ins();
     let (addr, serving) = serve_web(Arc::clone(&web)).await;
 
@@ -1534,7 +1534,7 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
         .unwrap()
     };
     let ask = |device: SigningKey, invite: [u8; 16]| {
-        let host_addr = relay.node_addr();
+        let host_addr = server.node_addr();
         async move {
             let endpoint = endpoint(&device).await;
             let outcome = tilo_server_client::certify::request_certification(
@@ -1607,14 +1607,14 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     assert_eq!(code, 403, "no stand-in approves after it is retired");
     verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
     assert!(
-        std::fs::read_dir(relay.state_root().join("stand-ins"))
+        std::fs::read_dir(server.state_root().join("stand-ins"))
             .unwrap()
             .next()
             .is_none(),
         "the key is forgotten"
     );
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// The tab that wrote a setting-up link, answering as its person's root: what
@@ -1625,7 +1625,8 @@ impl tilo_server_client::MemberHost for TabRoot {
     async fn ask(
         &self,
         approval: &tilo_server_protocol::certify::MemberApproval,
-    ) -> Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError> {
+    ) -> Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>
+    {
         Ok(self
             .0
             .member_approve(approval.clone(), tilo_clock::unix_now_ns()))
@@ -1641,7 +1642,7 @@ impl tilo_server_client::MemberHost for TabRoot {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay serves the routes until it shuts down at the end"
+    reason = "the server serves the routes until it shuts down at the end"
 )]
 async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     use tilo_server_client::certify::CertificationOutcome;
@@ -1651,8 +1652,8 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     let owner = SigningKey::from_bytes(&[171; 32]);
     let host = host(&owner, 172, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let web = Arc::new(web_of(&relay, &host));
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let web = Arc::new(web_of(&server, &host));
     web.serve_stand_ins();
     let (addr, serving) = serve_web(Arc::clone(&web)).await;
 
@@ -1704,7 +1705,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
         .unwrap()
     };
     let ask = |device: SigningKey, invite: [u8; 16], pending: tokio::sync::oneshot::Sender<()>| {
-        let host_addr = relay.node_addr();
+        let host_addr = server.node_addr();
         let request = request_for(&device, invite);
         async move {
             let endpoint = endpoint(&device).await;
@@ -1767,7 +1768,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     assert_eq!(cert.device_public_key, computer.verifying_key().to_bytes());
     assert_eq!(cert.user_public_key, user);
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// The secret `mail` carries for `parameter`, as the page it lands on reads
@@ -1800,16 +1801,16 @@ async fn mails_taken(
     mailer.sent.lock().unwrap().clone()
 }
 
-/// A relay serving one workspace, listed and taking people by invitation
+/// A server serving one workspace, listed and taking people by invitation
 /// only, with the entry's wait list keeping `max` addresses.
 async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
-) -> (Relay, Host, String, tempfile::TempDir) {
+) -> (Server, Host, String, tempfile::TempDir) {
     let host = host(root, seed, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
         .publish(
@@ -1826,18 +1827,18 @@ async fn invitation_only_host(
         .list_invitation_only(&workspace, &host.cert, true)
         .await
         .unwrap();
-    (relay, host, workspace, state)
+    (server, host, workspace, state)
 }
 
 /// The entry of `workspace`, keeping `max` addresses and mailing them through
 /// `mailer`.
 fn wait_list_page(
-    relay: &Relay,
+    server: &Server,
     workspace: &str,
     max: usize,
     mailer: Arc<crate::entry::mail::FakeMailer>,
 ) -> Arc<crate::entry::WaitListPage> {
-    let workspaces = relay.workspaces().unwrap();
+    let workspaces = server.workspaces().unwrap();
     let page = Arc::new(crate::entry::WaitListPage::with_mailer(
         workspaces,
         workspace,
@@ -1853,22 +1854,22 @@ fn wait_list_page(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its workspaces serve the entry until the relay shuts down at the end"
+    reason = "the server and its workspaces serve the entry until the server shuts down at the end"
 )]
 async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off() {
     use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
 
     let root = SigningKey::from_bytes(&[150; 32]);
-    let (relay, host, workspace, _state) = invitation_only_host(&root, 151).await;
+    let (server, host, workspace, _state) = invitation_only_host(&root, 151).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let mut web = web_of(&relay, &host);
-    web.wait_list = Some(wait_list_page(&relay, &workspace, 4, mailer.clone()));
+    let mut web = web_of(&server, &host);
+    web.wait_list = Some(wait_list_page(&server, &workspace, 4, mailer.clone()));
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Someone the entry turns away is told it keeps a wait list, where the
     // contact is, and that it mails: the refusal their entry hears on its
     // session.
-    let workspaces = relay.workspaces().unwrap();
+    let workspaces = server.workspaces().unwrap();
     let refusal = workspaces
         .admit_listed(
             &workspace,
@@ -1948,7 +1949,7 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
 
     // Whoever may invite reads it on the workspace's wait list, as the member
     // panel does.
-    let listed = relay
+    let listed = server
         .workspaces()
         .unwrap()
         .page_workspaces(
@@ -2008,20 +2009,20 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
         "invalid-email"
     );
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its workspaces keep their state until the relay shuts down at the end"
+    reason = "the server and its workspaces keep their state until the server shuts down at the end"
 )]
 async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network() {
     let root = SigningKey::from_bytes(&[152; 32]);
-    let (relay, host, workspace, _state) = invitation_only_host(&root, 153).await;
+    let (server, host, workspace, _state) = invitation_only_host(&root, 153).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let mut web = web_of(&relay, &host);
-    web.wait_list = Some(wait_list_page(&relay, &workspace, 1, mailer));
+    let mut web = web_of(&server, &host);
+    web.wait_list = Some(wait_list_page(&server, &workspace, 1, mailer));
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     let ask = |step: &str, body: serde_json::Value| {
@@ -2066,7 +2067,7 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
     );
 
     // A workspace this entry does not serve keeps no wait list.
-    let other = relay
+    let other = server
         .workspaces()
         .unwrap()
         .create("Elsewhere")
@@ -2081,7 +2082,7 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
     let (status, head, _) = exchange(addr, &head, body.as_bytes()).await;
     assert_eq!(status, 404, "{head}");
 
-    stop(relay, serving).await;
+    stop(server, serving).await;
 }
 
 /// `/host` follows the endpoint: a relay reached after the listener started is named (the host

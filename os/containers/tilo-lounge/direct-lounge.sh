@@ -1,11 +1,11 @@
 # The Lounge's own programs run directly, for a test of a page against them:
 # the image's entrypoint with a deployment's environment, the tilo-server the
 # image carries on its PATH, and the web entry served beside it. No image or
-# micro-VM is built around them, so a change to the page or the relay is tried
+# micro-VM is built around them, so a change to the page or the server is tried
 # in minutes; the image's own test (test-image.sh) boots the built image.
 #
 # Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
-# site served, and sets `relay_origin`, `site_origin`, `workspace` and `log`.
+# site served, and sets `server_origin`, `site_origin`, `workspace` and `log`.
 # It names no owner: a deployment's owners come from TILO_WORKSPACES_OWNERS, and
 # a test that needs one starts a stack.sh stack instead.
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
@@ -58,7 +58,7 @@ run_lounge() {
     TILO_WORKSPACES_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
     TILO_WORKSPACES_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
     TILO_WORKSPACES_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
-    TILO_WORKSPACES_SERVER_ORIGIN="$relay_origin" \
+    TILO_WORKSPACES_SERVER_ORIGIN="$server_origin" \
     TILO_WORKSPACES_LIVE="127.0.0.1:$lounge_live_port" \
     TILO_WORKSPACES_SERVER_PLAIN="127.0.0.1:$lounge_plain_port" \
     TILO_WORKSPACES_HTTP="127.0.0.1:$lounge_http_port" \
@@ -83,9 +83,9 @@ run_lounge() {
 await_lounge() {
   local said deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30}))
   until said=$(curl -sS --max-time 2 "http://127.0.0.1:$lounge_http_port/mode" 2>/dev/null) \
-    && [[ $said == *'"relay":"up"'* ]]; do
+    && [[ $said == *'"server":"up"'* ]]; do
     kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it was Ready'
-    [[ $said == *'"relay":"starting"'* ]] || ((SECONDS < deadline)) \
+    [[ $said == *'"server":"starting"'* ]] || ((SECONDS < deadline)) \
       || lounge_fail "the Lounge did not answer its probe in ${LOUNGE_ANSWER_SECONDS:-30}s"
     sleep 0.1
   done
@@ -94,7 +94,7 @@ await_lounge() {
 start_lounge() {
   local started=$SECONDS
   local bundle=${1:?start_lounge BUNDLE WORK} work=${2:?start_lounge BUNDLE WORK}
-  local relay_bin=${TILO_SERVER_BIN:?TILO_SERVER_BIN names the relay to run}
+  local server_bin=${TILO_SERVER_BIN:?TILO_SERVER_BIN names the server to run}
   local crypto=${TILO_CRYPTO_BIN:?TILO_CRYPTO_BIN names the certificate mint}
   local fonts=${TILO_FONTS_DIR:?TILO_FONTS_DIR names the product font catalog}
   log=$work/lounge.log
@@ -104,7 +104,7 @@ start_lounge() {
   lounge_plain_port=$base lounge_live_port=$((base + 1)) lounge_web_port=$((base + 3))
   lounge_http_port=$((base + 4))
   local site_port=$((base + 2))
-  relay_origin=https://127.0.0.1:$lounge_web_port
+  server_origin=https://127.0.0.1:$lounge_web_port
   site_origin=https://${LOUNGE_SITE_NAME:-127.0.0.1}:$site_port
 
   [[ -f $bundle/build.json ]] || lounge_fail "no desktop bundle at $bundle"
@@ -118,10 +118,10 @@ start_lounge() {
   mkdir -p "$volume/secrets" "$work/bin"
   printf 'a%.0s' $(seq 64) > "$volume/secrets/workspace-root"
   chmod 600 "$volume/secrets/workspace-root"
-  # The relay as the image carries it: the product's font catalog beside the
+  # The server as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).
-  cp "$relay_bin" "$work/bin/tilo-server"
+  cp "$server_bin" "$work/bin/tilo-server"
   cp -R "$fonts" "$work/bin/fonts"
 
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
@@ -133,11 +133,11 @@ start_lounge() {
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
   local info
-  info=$("$relay_bin" page-host "http://127.0.0.1:$lounge_plain_port") \
-    || lounge_fail 'the relay did not say who it is (tilo-server page-host)'
+  info=$("$server_bin" page-host "http://127.0.0.1:$lounge_plain_port") \
+    || lounge_fail 'the server did not say who it is (tilo-server page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
-    "$relay_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
+    "$server_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
+    "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do

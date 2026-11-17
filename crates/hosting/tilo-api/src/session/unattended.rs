@@ -97,7 +97,7 @@ impl Session {
     async fn read_unattended(&self, workspace: &str) -> Outcome {
         match self
             .connection
-            .relay()
+            .server()
             .workspace(&self.connection, workspace)
             .await
         {
@@ -105,7 +105,7 @@ impl Session {
                 "workspace": workspace,
                 "unattended": listed.unattended,
             })),
-            Ok(None) => refused(&crate::relay::RelayError::NotFound),
+            Ok(None) => refused(&crate::server::ServerError::NotFound),
             Err(error) => refused(&error),
         }
     }
@@ -128,7 +128,7 @@ impl Session {
         };
         let id = self
             .connection
-            .relay()
+            .server()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;

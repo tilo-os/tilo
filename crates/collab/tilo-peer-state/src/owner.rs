@@ -9,7 +9,7 @@
 //! A host keeps that record beside its state file: an index naming each
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
-//! [`session`] holds the relay co-edit session with that host.
+//! [`session`] holds the server co-edit session with that host.
 mod certified;
 mod create;
 mod document_read;
@@ -821,7 +821,7 @@ impl NativeWorkspaceOwner {
         drop(current);
         policy_changed();
     }
-    /// Admits genuine relay provenance; pending document prerequisites are also durable.
+    /// Admits genuine server provenance; pending document prerequisites are also durable.
     pub fn receive(
         &self,
         workspace: WorkspaceId,
@@ -922,7 +922,7 @@ impl NativeWorkspaceOwner {
     fn received_changes(origin: TransportOrigin, message: &NeighbourMsg) -> Option<&Vec<Vec<u8>>> {
         if !matches!(
             origin,
-            TransportOrigin::RelayDelta(_) | TransportOrigin::RetainedRelayDelta(_)
+            TransportOrigin::ServerDelta(_) | TransportOrigin::RetainedServerDelta(_)
         ) {
             return None;
         }

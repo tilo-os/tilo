@@ -11,10 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_server::RelayConfig;
+use tilo_server::ServerConfig;
 use tilo_server_protocol::WorkSetting;
 
-const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
+const SERVER_CONFIG: &str = "/etc/tilo/server.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
 const MAX_REQUEST: u64 = 64 * 1024;
 const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
@@ -60,7 +60,7 @@ enum BrokerCommand {
 #[serde(deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each boolean is an independently authorized relay capability"
+    reason = "each boolean is an independently authorized server capability"
 )]
 struct ApplyRequest {
     identity_root: PathBuf,
@@ -69,8 +69,8 @@ struct ApplyRequest {
     workspace_ids: Vec<tilo_server_protocol::WorkspaceId>,
     /// Whether it keeps full copies of its workspaces' files.
     full_content_replication: bool,
-    inbound_relay: bool,
-    remote_control_relay: bool,
+    inbound_server: bool,
+    remote_control_server: bool,
     app_serving: bool,
     compute: bool,
 }
@@ -93,14 +93,14 @@ fn read_request() -> anyhow::Result<ApplyRequest> {
     serde_json::from_slice(&bytes).context("invalid configuration request")
 }
 
-fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
+fn desired_config(request: &ApplyRequest) -> anyhow::Result<ServerConfig> {
     if request.workspace_ids.len() > 4096 {
         bail!("too many workspaces");
     }
-    let mut config = if Path::new(RELAY_CONFIG).exists() {
-        RelayConfig::load(Path::new(RELAY_CONFIG))?
+    let mut config = if Path::new(SERVER_CONFIG).exists() {
+        ServerConfig::load(Path::new(SERVER_CONFIG))?
     } else {
-        RelayConfig::default()
+        ServerConfig::default()
     };
     config.work = request.work.clone();
     let serving = !config.work.takes_nothing();
@@ -108,8 +108,8 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     // own hosting membership, not this file's.
     config.services.workspace_replication = serving;
     config.services.full_content_replication = serving && request.full_content_replication;
-    config.services.inbound_relay = serving && request.inbound_relay;
-    config.services.remote_control_relay = serving && request.remote_control_relay;
+    config.services.inbound_server = serving && request.inbound_server;
+    config.services.remote_control_server = serving && request.remote_control_server;
     config.services.app_serving = serving && request.app_serving;
     config.services.compute = serving && request.compute;
     Ok(config)
@@ -158,7 +158,7 @@ fn export_local_home_peer(
         ])
         .arg(&output);
     for id in workspace_ids {
-        command.args(["--relay-workspace-id", &id.to_string()]);
+        command.args(["--server-workspace-id", &id.to_string()]);
     }
     let result = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(60));
     let bytes = match result {
@@ -188,11 +188,11 @@ fn export_local_home_peer(
     Ok(bytes)
 }
 
-fn takes_work(config: &RelayConfig) -> bool {
+fn takes_work(config: &ServerConfig) -> bool {
     !config.work.takes_nothing()
 }
 
-fn needs_local_home_peer_export(config: &RelayConfig, home_peer_exists: bool) -> bool {
+fn needs_local_home_peer_export(config: &ServerConfig, home_peer_exists: bool) -> bool {
     config.services.full_content_replication && !home_peer_exists
 }
 
@@ -212,7 +212,7 @@ fn project_home_peer_workspaces(
     if projected.len() > 4096 {
         bail!("too many workspace mappings");
     }
-    workspace.relay_workspace_ids = projected;
+    workspace.server_workspace_ids = projected;
     toml::to_string_pretty(&home)
         .map(String::into_bytes)
         .map_err(Into::into)
@@ -255,7 +255,7 @@ const fn service_state_actions(state: ServiceState) -> (&'static str, &'static s
     )
 }
 
-fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
+fn apply_services(config: &ServerConfig) -> anyhow::Result<()> {
     if takes_work(config) {
         service("enable", "tilo-server.service")?;
         service("restart", "tilo-server.service")?;
@@ -282,23 +282,23 @@ fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
 }
 
 fn commit_transaction(
-    relay_path: &Path,
+    server_path: &Path,
     relay_bytes: &[u8],
     home_path: &Path,
     home_bytes: Option<&[u8]>,
     restart: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let previous = std::fs::read(relay_path).ok();
+    let previous = std::fs::read(server_path).ok();
     let previous_home = std::fs::read(home_path).ok();
-    tilo_files::native::atomic::write(relay_path, relay_bytes)?;
+    tilo_files::native::atomic::write(server_path, relay_bytes)?;
     if let Some(bytes) = home_bytes
         && let Err(error) = tilo_files::native::atomic::write(home_path, bytes)
     {
-        restore(relay_path, previous.as_deref())?;
+        restore(server_path, previous.as_deref())?;
         return Err(error.into());
     }
     if let Err(error) = restart() {
-        restore(relay_path, previous.as_deref())?;
+        restore(server_path, previous.as_deref())?;
         restore(home_path, previous_home.as_deref())?;
         return Err(error.context("configuration was rolled back"));
     }
@@ -309,7 +309,7 @@ fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     std::fs::create_dir_all("/etc/tilo")?;
     let uid = invoking_uid()?;
     let identity_root = validate_identity_root(&request.identity_root, uid, &home_for_uid(uid)?)?;
-    let previous_relay_state = service_state("tilo-server.service")?;
+    let previous_server_state = service_state("tilo-server.service")?;
     let previous_fs_state = service_state("tilo-fs-replica.service")?;
     let config = desired_config(request)?;
     let bytes = toml::to_string_pretty(&config)?;
@@ -329,21 +329,21 @@ fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
         .map(|bytes| project_home_peer_workspaces(bytes, &request.workspace_ids))
         .transpose()?;
     let result = commit_transaction(
-        Path::new(RELAY_CONFIG),
+        Path::new(SERVER_CONFIG),
         bytes.as_bytes(),
         Path::new(HOME_PEER_CONFIG),
         home_bytes.as_deref(),
         || apply_services(&config),
     );
     if result.is_err() {
-        let relay_restore = restore_service_state("tilo-server.service", previous_relay_state);
+        let server_restore = restore_service_state("tilo-server.service", previous_server_state);
         let fs_restore = restore_service_state("tilo-fs-replica.service", previous_fs_state);
-        if let (Err(relay), Err(filesystem)) = (&relay_restore, &fs_restore) {
+        if let (Err(server), Err(filesystem)) = (&server_restore, &fs_restore) {
             bail!(
-                "restore previous relay service state: {relay}; restore previous filesystem service state: {filesystem}"
+                "restore previous server service state: {server}; restore previous filesystem service state: {filesystem}"
             );
         }
-        relay_restore.context("restore previous relay service state")?;
+        server_restore.context("restore previous server service state")?;
         fs_restore.context("restore previous filesystem service state")?;
     }
     result
@@ -519,7 +519,7 @@ fn approve_enrollment(
         .args(["approve", "--timeout", "60", "--identity-root"])
         .arg(&identity_root);
     for id in workspace_ids {
-        command.args(["--relay-workspace-id", &id.to_string()]);
+        command.args(["--server-workspace-id", &id.to_string()]);
     }
     match (expected_device, expected_service) {
         (Some(device), Some(service)) => {
@@ -759,8 +759,8 @@ mod tests {
                         tilo_server_protocol::WorkspaceId::from_u128(9),
                     ],
                     full_content_replication: true,
-                    inbound_relay: true,
-                    remote_control_relay: false,
+                    inbound_server: true,
+                    remote_control_server: false,
                     app_serving: false,
                     compute: false,
                 };
@@ -794,7 +794,7 @@ mod tests {
     fn config_and_workspace_changes_reload_or_roll_back() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
+            let path = dir.path().join("server.toml");
             tilo_files::native::atomic::write(&path, b"old").unwrap();
             let home = dir.path().join("home.toml");
             tilo_files::native::atomic::write(&home, b"old-home").unwrap();
@@ -807,7 +807,7 @@ mod tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
+            let path = dir.path().join("server.toml");
             let home = dir.path().join("home.toml");
             commit_transaction(&path, b"new", &home, Some(b"new-home"), || Ok(())).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"new");
@@ -835,8 +835,8 @@ mod tests {
                 work: WorkSetting::own_person(),
                 workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(12)],
                 full_content_replication: true,
-                inbound_relay: true,
-                remote_control_relay: false,
+                inbound_server: true,
+                remote_control_server: false,
                 app_serving: false,
                 compute: false,
             })
@@ -846,7 +846,7 @@ mod tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let relay = dir.path().join("relay.toml");
+            let server = dir.path().join("server.toml");
             let home = dir.path().join("home.toml");
             let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
@@ -865,7 +865,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: Some(authority),
                     members: Vec::new(),
-                    relay_workspace_ids: vec![
+                    server_workspace_ids: vec![
                         tilo_server_protocol::WorkspaceId::from_u128(7),
                         tilo_server_protocol::WorkspaceId::from_u128(8),
                     ],
@@ -882,11 +882,11 @@ mod tests {
                 ],
             )
             .unwrap();
-            commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
+            commit_transaction(&server, b"server-add", &home, Some(&added), || Ok(())).unwrap();
             let after_add: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
             assert_eq!(
-                after_add.workspaces[0].relay_workspace_ids,
+                after_add.workspaces[0].server_workspace_ids,
                 vec![
                     tilo_server_protocol::WorkspaceId::from_u128(8),
                     tilo_server_protocol::WorkspaceId::from_u128(9)
@@ -898,11 +898,12 @@ mod tests {
                 &[tilo_server_protocol::WorkspaceId::from_u128(9)],
             )
             .unwrap();
-            commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
+            commit_transaction(&server, b"server-remove", &home, Some(&removed), || Ok(()))
+                .unwrap();
             let after_remove: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
             assert_eq!(
-                after_remove.workspaces[0].relay_workspace_ids,
+                after_remove.workspaces[0].server_workspace_ids,
                 vec![tilo_server_protocol::WorkspaceId::from_u128(9)]
             );
         }

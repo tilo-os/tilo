@@ -855,7 +855,7 @@ impl Apply for SystemdApply {
             Command::new("systemd-sysext").arg("refresh"),
         )?;
         // A layer may bring a system account (a sysusers.d entry, as the
-        // relay's does): create it as the image build would.
+        // server's does): create it as the image build would.
         run("systemd-sysusers", &mut Command::new("systemd-sysusers")).map(drop)
     }
 

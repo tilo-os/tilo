@@ -131,7 +131,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let asked = Arc::new(Mutex::new(Vec::<ConfirmationAnswer>::new()));
     let questions = Questions::new();
 
-    // The host answers the person's approver as a relay serves it: the certification handshake,
+    // The host answers the person's approver as a server serves it: the certification handshake,
     // then one listed question until it is answered.
     let (router, host_addr) = runtime.block_on(async {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)

@@ -309,7 +309,7 @@ pub fn open_file_with(
     )?;
     if migrated {
         // The form of records already there changes neither a workspace nor
-        // its relay workspace, so it goes straight to the files rather than
+        // its server workspace, so it goes straight to the files rather than
         // through a publication of the store: nothing a host follows has
         // changed.
         let record = owner.0.authority.read();

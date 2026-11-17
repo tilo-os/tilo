@@ -66,7 +66,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
@@ -214,7 +214,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// What the workspace's governor commits itself (connecting the bridge, a bot
@@ -231,7 +231,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged workspace").await.unwrap();
     workspaces
         .prepare_application(
@@ -290,5 +290,5 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

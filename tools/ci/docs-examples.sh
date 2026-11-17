@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The developer documentation's code examples, run against a local Tilo.
 #
-# The examples reach a host the way the published ones reach tilo.sh: the api-on-relay example
+# The examples reach a host the way the published ones reach tilo.sh: the api-on-server example
 # of tilo-agent-session serves one on loopback and runs each program with TILO_API_URL,
 # TILO_API_KEY and TILO_INVITEE set. That example and the tilo command sh examples run are built by the
 # docs-examples-build check, whose outputs this script is handed.
@@ -24,6 +24,6 @@ cp -a /opt/tilo-sdk/uv-cache "$UV_CACHE_DIR"
 cp -a /opt/tilo-sdk/python-venv "$UV_PROJECT_ENVIRONMENT"
 cd "$root"
 exec python3 -I tools/docs/doc_examples.py run \
-    --api "$binaries/api-on-relay" \
+    --api "$binaries/api-on-server" \
     --tilo "$binaries/tilo" \
     "$@"

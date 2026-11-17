@@ -12,7 +12,7 @@ use std::time::Duration;
 use tilo_server::Envelope;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{TestUser, connect, next, spawn_relay};
+use crate::common::{TestUser, connect, next, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(41);
@@ -28,14 +28,14 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     let a = user.enrol("browser", DeviceCapabilities::member());
     let b = user.enrol("laptop", DeviceCapabilities::primary());
     let c = user.enrol("phone", DeviceCapabilities::member());
-    let relay = spawn_relay(
+    let server = spawn_server(
         &user,
         host,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey(), c.device_pubkey()],
     )
     .await;
-    let addr = relay.relay.node_addr();
+    let addr = server.server.node_addr();
     let a_client = connect(&user, &a, addr.clone(), WS).await;
     let b_client = connect(&user, &b, addr.clone(), WS).await;
     let c_client = connect(&user, &c, addr, WS).await;

@@ -433,13 +433,13 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let member = Arc::new(Member {
         host: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person,
         devices: vec![
             guest_device.cert.device_public_key,
@@ -897,7 +897,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&operator, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap().clone();
+    let workspaces = hosted.server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Grace's workspace").await.unwrap();
     let cluster = workspace.workspace.clone();
     for device in [&page_device, &computer] {

@@ -108,7 +108,7 @@ tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's entry and directory answer.
 tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
-# A browser environment's session asks its relay to enter the workspace it was handed, the way a
+# A browser environment's session asks its server to enter the workspace it was handed, the way a
 # member device does.
 tilo-server-session = { path = "../../hosting/tilo-server-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -486,7 +486,7 @@ tilo-nm = { path = "../../system/tilo-nm" }
 # carries.
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
-# A relay host on this machine's loopback, which is what a test's devices relay through.
+# A server host on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../dev/test-server" }
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }

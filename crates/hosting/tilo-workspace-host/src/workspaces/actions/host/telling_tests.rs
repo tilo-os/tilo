@@ -38,7 +38,7 @@ pub(super) struct Setup {
     pub(super) ada: DeviceCert,
     pub(super) own: WorkspaceId,
     pub(super) shared: WorkspaceId,
-    _relay: TestHost,
+    _server: TestHost,
     _dir: tempfile::TempDir,
 }
 
@@ -46,8 +46,8 @@ impl Setup {
     pub(super) async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces().clone();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
         let host = HostWorkspaceActions::new();
         host.attach(workspaces.clone());
         let (_, ada) = guest_device();
@@ -66,7 +66,7 @@ impl Setup {
             ada,
             own,
             shared,
-            _relay: relay,
+            _server: server,
             _dir: dir,
         }
     }

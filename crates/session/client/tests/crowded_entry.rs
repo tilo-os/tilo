@@ -425,7 +425,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -439,7 +439,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         .await
         .unwrap();
     let https = host.https();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let desktop = DocumentRoute {
@@ -537,7 +537,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // quiet, as the Lounge's host does between the people who come over a day: wait until it
     // did. A guest that comes in the moment the last of 300 members wrote meets their parts
     // one by one; that is not the entry this measures.
-    let compactor = host.relay.compactor();
+    let compactor = host.server.compactor();
     let deadline = Instant::now() + Duration::from_secs(60);
     while compactor.rounds() == 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;

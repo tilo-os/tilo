@@ -65,7 +65,7 @@ impl Outside for Heard {
 struct Host {
     workspaces: Workspaces,
     heard: Arc<Heard>,
-    _relay: TestHost,
+    _server: TestHost,
     _dir: tempfile::TempDir,
 }
 
@@ -73,11 +73,11 @@ impl Host {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
+        let server = test_host(dir.path(), &key, &cert).await;
         Self {
-            workspaces: relay.workspaces().clone(),
+            workspaces: server.workspaces().clone(),
             heard: Arc::default(),
-            _relay: relay,
+            _server: server,
             _dir: dir,
         }
     }

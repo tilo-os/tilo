@@ -1333,7 +1333,7 @@ mod owner_commit_tests {
         for bytes in owner.outgoing() {
             remote
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(cert.device_public_key),
+                    tilo_peer_state::TransportOrigin::ServerDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
                     SystemTime::now(),
                 )

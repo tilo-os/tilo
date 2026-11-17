@@ -171,7 +171,7 @@ accepting, so peers can dial it, and it keeps writing its metrics snapshot into
 its state root — and `tilo-server-admin status` could open every durable workspace
 store; where the machine runs a filesystem replica (`/etc/tilo/home-peer.toml`),
 that replica is active and publishes complete content. A server that has not
-been paired yet has no relay to serve; it is judged by reaching
+been paired yet has no server to serve; it is judged by reaching
 `multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
 never rolled back for it. A server stages an update but does not restart into it
 blindly: `tilo-server-update-apply` does that only inside the operator's update

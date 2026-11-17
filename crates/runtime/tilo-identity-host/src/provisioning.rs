@@ -336,7 +336,7 @@ fn ensure_primary_identity_in_context(
 /// It signs the certificate for a distinct per-device key without exporting
 /// its private share into the system identity tree. That device key is the
 /// single transport identity used by the shell, filesystem synchroniser, and
-/// hosted relay. Existing records are migrated idempotently; an existing
+/// hosted server. Existing records are migrated idempotently; an existing
 /// device key is never replaced.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
@@ -633,7 +633,7 @@ pub fn enroll_from_local_identity(
 /// certificate filed for its person, a public record naming that person as
 /// the account's active identity under `identity_dir`, and a fleet that knows
 /// this device. A node's session is enrolled so when its node is installed,
-/// by a relay that writes it only the certificate and the person's public
+/// by a server that writes it only the certificate and the person's public
 /// key. Answers whether `paths` holds such a device; idempotent, and never
 /// writes a root or replaces an active identity.
 pub fn complete_enrolled_device(
@@ -1782,7 +1782,7 @@ mod tests {
 
         phase an_enrolled_session_takes_up_its_person_as_a_joined_device;
         // A node's session, given only its certificate and the person's key by
-        // the relay its page installed, holds that person as a joined device.
+        // the server its page installed, holds that person as a joined device.
         {
             let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
             let user = root.verifying_key().to_bytes();
@@ -1855,12 +1855,12 @@ mod tests {
         let own = HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(local_cert.device_public_key),
-            relay_service_node_id: hex::encode([7_u8; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([7_u8; 32]),
+            server_endpoint: None,
             label: "home".into(),
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
+            server_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
         // Another person's peer, kept in the registry beside this person's and
         // left out of the copy: a registration this build writes carries the
@@ -1881,12 +1881,12 @@ mod tests {
         let other = HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(other_cert.device_public_key),
-            relay_service_node_id: hex::encode([8_u8; 32]),
-            relay_endpoint: None,
+            server_node_id: hex::encode([8_u8; 32]),
+            server_endpoint: None,
             label: "other".into(),
             user_public_key: hex::encode(other_cert.user_public_key),
             device_cert: Some(other_cert),
-            relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
+            server_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
         std::fs::write(
             &peers,
@@ -1971,13 +1971,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
-        let service = hex::encode(tilo_server_protocol::relay_service_node_id(
+        let service = hex::encode(tilo_server_protocol::server_node_id(
             &local_device.to_bytes(),
         ));
         assert!(
-            copied
-                .iter()
-                .all(|entry| entry.relay_service_node_id != service),
+            copied.iter().all(|entry| entry.server_node_id != service),
             "the setup machine is dialed directly, not recorded as a home peer"
         );
         let direct: Vec<String> = serde_json::from_slice(
@@ -2062,12 +2060,12 @@ mod tests {
             serde_json::to_vec_pretty(&[HomePeerRegistration {
                 schema_version: HomePeerRegistration::CURRENT_SCHEMA,
                 device_node_id: hex::encode(local_cert.device_public_key),
-                relay_service_node_id: hex::encode([7_u8; 32]),
-                relay_endpoint: None,
+                server_node_id: hex::encode([7_u8; 32]),
+                server_endpoint: None,
                 label: "home".into(),
                 user_public_key: identity_id,
                 device_cert: Some(local_cert.clone()),
-                relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
+                server_workspace_ids: vec![WorkspaceId::from_u128(1)],
             }])
             .unwrap(),
         )

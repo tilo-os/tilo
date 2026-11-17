@@ -233,7 +233,7 @@ mod tests {
         let peers = [PersistedContentPeer {
             endpoint: ticket.node.clone(),
             ticket: Some(ticket.encode().unwrap()),
-            relay_service_id: Some([9; 32]),
+            server_service_id: Some([9; 32]),
         }];
         std::fs::write(
             cache.join("content-peers.json"),
@@ -311,7 +311,7 @@ mod tests {
                         .encode()
                         .unwrap(),
                     ),
-                    relay_service_id: None,
+                    server_service_id: None,
                 })
                 .collect();
             std::fs::write(

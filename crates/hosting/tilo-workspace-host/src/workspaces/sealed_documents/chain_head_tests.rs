@@ -35,7 +35,7 @@ fn part_channel(app: &str, index: u64) -> [u8; 32] {
 
 /// The member starts part `index` of the chain through its own session, as
 /// a device's writes reach the host, until the host holds it.
-async fn write_part(lounge: &Lounge, client: &crate::RelayClient, index: u64) {
+async fn write_part(lounge: &Lounge, client: &crate::ServerClient, index: u64) {
     let record = neighbour_wire::document_part(CHAIN, index);
     let part: SealingMember = lounge
         .member
@@ -68,7 +68,7 @@ async fn write_part(lounge: &Lounge, client: &crate::RelayClient, index: u64) {
 
 /// What the host replays to `guest` until it is ready: the channels of the
 /// records it sent, and whether it says records come when opened.
-async fn replay(guest: &crate::RelayClient) -> (BTreeSet<[u8; 32]>, bool) {
+async fn replay(guest: &crate::ServerClient) -> (BTreeSet<[u8; 32]>, bool) {
     tilo_test_env::within("the guest's replay", async {
         let mut replayed = BTreeSet::new();
         loop {
@@ -91,7 +91,7 @@ async fn replay(guest: &crate::RelayClient) -> (BTreeSet<[u8; 32]>, bool) {
 /// `guest` opens the record at `head`: the channels of the records the host
 /// sent before it answered, and the frames it says it sent.
 async fn open_head(
-    guest: &crate::RelayClient,
+    guest: &crate::ServerClient,
     workspace_id: WorkspaceId,
     head: [u8; 32],
 ) -> (BTreeSet<[u8; 32]>, u32) {
@@ -160,9 +160,9 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
         .bind()
         .await
         .unwrap();
-    let guest = crate::RelayClient::connect_to_pinned_host(
+    let guest = crate::ServerClient::connect_to_pinned_host(
         endpoint,
-        lounge.relay.node_addr(),
+        lounge.server.node_addr(),
         guest_cert,
         guest_key.clone(),
         tilo_user_identity::RevocationList::new(),
@@ -207,10 +207,10 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
     .await;
     drop((guest, client));
     let Lounge {
-        relay, workspaces, ..
+        server, workspaces, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A chain with no part: its head is answered with nothing, which a device
@@ -246,8 +246,8 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
     assert_eq!(frames, 0);
     drop(guest);
     let Lounge {
-        relay, workspaces, ..
+        server, workspaces, ..
     } = lounge;
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

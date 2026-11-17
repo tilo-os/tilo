@@ -12,8 +12,8 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::RelayClient;
-use tilo_server::coedit::RelayCoeditSession;
+use tilo_server::ServerClient;
+use tilo_server::coedit::ServerCoeditSession;
 use tilo_server_protocol::Envelope;
 use tilo_server_protocol::voice::{CallOperation, CallSummary, Directions, Showing};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -27,9 +27,9 @@ async fn session(
     address: iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &Device,
-) -> RelayClient {
-    let client = RelayCoeditSession::join(
-        RelayClient::connect_to_pinned_host(
+) -> ServerClient {
+    let client = ServerCoeditSession::join(
+        ServerClient::connect_to_pinned_host(
             endpoint(&device.key).await,
             address,
             device.cert.clone(),
@@ -76,8 +76,9 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
     let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web, .. } =
-        start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost {
+        server: relay, web, ..
+    } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
     let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
     enter(&relay, &laptop.cert, &workspace.workspace).await;
@@ -171,8 +172,9 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web, .. } =
-        start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost {
+        server: relay, web, ..
+    } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
     let workspace = relay.workspaces().unwrap().create("Lounge").await.unwrap();
     enter(&relay, &laptop.cert, &workspace.workspace).await;

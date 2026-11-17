@@ -98,7 +98,7 @@ pub(super) async fn handle_envelope(
         env @ Envelope::DocumentContentWant { .. } => {
             handle_content_want(peer, session, subscribed, env).await
         }
-        Envelope::PeerRelayHello { hosted_workspaces } => {
+        Envelope::PeerServerHello { hosted_workspaces } => {
             handle_host_hello(peer, session, hosted_workspaces).await
         }
         Envelope::SyncRequest {
@@ -163,7 +163,7 @@ pub(super) async fn handle_envelope(
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(None)
         }
-        // Envelopes the relay only *sends*, never receives; ignore
+        // Envelopes the server only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
         | Envelope::Ready { .. }

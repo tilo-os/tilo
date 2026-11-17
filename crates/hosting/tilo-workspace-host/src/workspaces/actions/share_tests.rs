@@ -4,7 +4,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use serde_json::{Value, json};
@@ -94,8 +94,8 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, _, _) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -228,7 +228,7 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
         WorkspacesReply::Shared(1)
     );
     assert!(!bo_writes(&p1).await);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -237,8 +237,8 @@ async fn a_share_to_edit_lifts_no_restriction() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, _, _) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -335,7 +335,7 @@ async fn a_share_to_edit_lifts_no_restriction() {
         permits().await.unwrap(),
         json!({ "read": true, "undoable": true })
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A window is shared under its own share id by the device it runs on, the
@@ -349,8 +349,8 @@ async fn only_the_device_a_window_runs_on_shares_it() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, _, _) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -428,7 +428,7 @@ async fn only_the_device_a_window_runs_on_shares_it() {
         shared_windows(workspaces, &workspace).await.is_empty(),
         "the share ended"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The windows shared in `workspace` now, by the workspace's own record.

@@ -20,8 +20,8 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::RelayClient;
-use tilo_server::coedit::RelayCoeditSession;
+use tilo_server::ServerClient;
+use tilo_server::coedit::ServerCoeditSession;
 use tilo_server_protocol::Envelope;
 use tilo_server_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -50,9 +50,9 @@ async fn subscribe(
     address: iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &Device,
-) -> (RelayClient, Result<(), String>) {
-    let client = RelayCoeditSession::join(
-        RelayClient::connect_to_pinned_host(
+) -> (ServerClient, Result<(), String>) {
+    let client = ServerCoeditSession::join(
+        ServerClient::connect_to_pinned_host(
             endpoint(&device.key).await,
             address,
             device.cert.clone(),
@@ -80,7 +80,7 @@ async fn session(
     address: iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &Device,
-) -> RelayClient {
+) -> ServerClient {
     let (client, answer) = subscribe(address, workspace_id, device).await;
     if let Err(reason) = answer {
         panic!("device not admitted: {reason}");
@@ -95,22 +95,22 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let phone = enrol(&alice, "alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web, .. } =
+    let TestHost { server, web, .. } =
         start_workspace_host(&alice, &host, state.path(), false).await;
-    let address = relay.node_addr();
+    let address = server.node_addr();
 
     for (index, kind) in KINDS.into_iter().enumerate() {
         let request = u8::try_from(index).unwrap();
         // Two devices in the workspace, and the voice channel they open.
         let (workspace_id, first, second, channel) = match kind {
             Kind::Governed | Kind::Invited => {
-                let workspace = relay
+                let workspace = server
                     .workspaces()
                     .unwrap()
                     .create(&format!("{kind:?}"))
                     .await
                     .unwrap();
-                enter(&relay, &laptop.cert, &workspace.workspace).await;
+                enter(&server, &laptop.cert, &workspace.workspace).await;
                 let (owner, channel) = create_voice_channel(
                     address.clone(),
                     workspace.workspace_id,
@@ -124,7 +124,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
                     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
                     invite(
-                        &relay,
+                        &server,
                         &laptop.cert,
                         &workspace.workspace,
                         &bob,
@@ -133,7 +133,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                     .await;
                     session(address.clone(), workspace.workspace_id, &bob_laptop).await
                 } else {
-                    enter(&relay, &phone.cert, &workspace.workspace).await;
+                    enter(&server, &phone.cert, &workspace.workspace).await;
                     session(address.clone(), workspace.workspace_id, &phone).await
                 };
                 (workspace.workspace_id, owner, other, channel)
@@ -193,5 +193,5 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
     }
 
     drop(web);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

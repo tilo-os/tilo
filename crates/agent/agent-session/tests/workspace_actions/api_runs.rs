@@ -1,4 +1,4 @@
-//! A workspace's runs, listed through the API on the relay as tilo.sh
+//! A workspace's runs, listed through the API on the server as tilo.sh
 //! hosts it (`GET /v1/workspaces/{workspace}/invocations`, `tilo_read
 //! workspace/invocations` over MCP): two keys made for the workspace and the
 //! person's own key each run something there, and each of those keys, which
@@ -7,11 +7,11 @@
 //! it, then as ended; a run taken back reads as undone, and one that someone's
 //! later change stands on says so. Pages hold `limit` runs and read on from
 //! their cursor; a key for another workspace is refused as it is on the
-//! neighbouring routes. After the relay restarts, every run that changed a
+//! neighbouring routes. After the server restarts, every run that changed a
 //! record is still listed, by the same step, from what the records keep.
 
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{api_on_relay_shelled, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server_shelled, approved_key, headers, json_of};
 use super::api_unattended::{Key, Person, Sheet, asked, backend, beside, waiting, workspace};
 use super::*;
 use serde_json::{Value, json};
@@ -119,9 +119,9 @@ async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restar
     reason = "one story, polled once from the heap by its test"
 )]
 async fn every_run_listed() {
-    let on_relay = Box::pin(api_on_relay_shelled(ISSUER)).await;
-    let api = Arc::clone(&on_relay.api);
-    let (ada, token) = backend(&on_relay).await;
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, token) = backend(&on_server).await;
     let person = Key { api: &api, token };
     let ws = workspace(&person, "Applicant: Jane Doe").await;
     let agent = Key {
@@ -206,7 +206,7 @@ async fn every_run_listed() {
     assert_eq!(titled(&listed, "Backend's postscript")["undoable"], true);
 
     // A command the person must allow reads as waiting, then as ended.
-    let host = MemberApprover::new(on_relay.relay_host());
+    let host = MemberApprover::new(on_server.server_host());
     let (answers, mut answered) = mpsc::unbounded_channel();
     let ada_at_page = Person {
         asked: Arc::default(),
@@ -366,7 +366,7 @@ async fn every_run_listed() {
     assert_eq!(over_mcp["total"], total, "{read}");
     titled(over_mcp, "Agent's letter");
 
-    // After the relay restarts, every run that changed a record is still
+    // After the server restarts, every run that changed a record is still
     // listed, by the same step, though no call of it is remembered.
     let steps: Vec<(String, Value)> = LETTERS
         .iter()
@@ -375,11 +375,11 @@ async fn every_run_listed() {
     let command_step = with_id(&listed, &command)["step"].clone();
     drop((agent, reviewer, others, person, mcp));
     drop(api);
-    let on_relay = on_relay.restart(false).await;
+    let on_server = on_server.restart(false).await;
     let page = enrol(&ada, "Ada's browser again", DeviceCapabilities::member());
     let person = Key {
-        api: &on_relay.api,
-        token: Box::pin(approved_key(&on_relay, &ada, &page, "Visa backend")).await,
+        api: &on_server.api,
+        token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
     };
     let listed = invocations(&person, &ws, "").await;
     for (title, step) in &steps {

@@ -1,4 +1,4 @@
-//! Ephemeral traffic the relay never keeps: the live session's membership,
+//! Ephemeral traffic the server never keeps: the live session's membership,
 //! presence, voice calls and record content handed to one device. Presence
 //! is every device's own, browser pages included.
 
@@ -73,7 +73,7 @@ async fn subscription_refusal(
     )
 }
 
-/// Where `peer`'s calls in `workspace_id` are held: by this relay's workspace
+/// Where `peer`'s calls in `workspace_id` are held: by this server's workspace
 /// authority when it governs the workspace, else by the workspace it carries (a
 /// person's own workspace, synced across their devices through this host).
 /// None unless they subscribed to it.
@@ -105,7 +105,7 @@ async fn call_host(
 }
 
 /// Handle a call envelope for a subscribed workspace: its calls are held
-/// by this relay's workspace authority, or as a workspace it carries; see
+/// by this server's workspace authority, or as a workspace it carries; see
 /// [`crate::workspaces`].
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,

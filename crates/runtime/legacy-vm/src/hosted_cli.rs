@@ -22,7 +22,7 @@ usage: tilo-legacy hosted <command>
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
         [--memory-headroom-mib MIB] [--status-listen ADDR]
-        [--relay-endpoint ADDR:PORT]
+        [--server-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -49,13 +49,13 @@ usage: tilo-legacy hosted <command>
                          back before any wake is refused.
                          --status-listen answers Status alone over TCP, for a
                          placer.
-                         --relay-endpoint serves the workspaces' Browser in
+                         --server-endpoint serves the workspaces' Browser in
                          their VMs: ADDR:PORT is where the browser session in a
-                         VM reaches the relay, the one address besides the
-                         internet a VM may reach: the relay's public address,
-                         or its cluster address when the relay is not
+                         VM reaches the server, the one address besides the
+                         internet a VM may reach: the server's public address,
+                         or its cluster address when the server is not
                          reachable from outside, or a loopback address when
-                         the relay runs on the host itself.
+                         the server runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
   place --listen ADDR --record FILE
         (--statefulset NAMESPACE/NAME --status-port PORT --max N
@@ -308,10 +308,10 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
-            // The browser session in a VM joins its workspace through the relay, inside the host's
+            // The browser session in a VM joins its workspace through the server, inside the host's
             // network: the one address besides the internet a VM may reach.
-            relay: flags
-                .get("--relay-endpoint")
+            server: flags
+                .get("--server-endpoint")
                 .map(legacy_vm::hosted::network::Endpoint::parse)
                 .transpose()?,
             // New VMs are clones of a template of their size, kept beside them: only a jailed VM

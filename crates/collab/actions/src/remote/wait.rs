@@ -26,7 +26,7 @@ use super::{
 use crate::outcome::{InvocationId, InvocationUpdate};
 
 /// The longest a host holds a waiting answer, whatever `wait_ms` asked, so a
-/// relay connection or a broker call is never held open indefinitely.
+/// server connection or a broker call is never held open indefinitely.
 pub const MAX_REMOTE_WAIT: Duration = Duration::from_secs(10);
 
 /// How often one wait looks again because the host's change signal had

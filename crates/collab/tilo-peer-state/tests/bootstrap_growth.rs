@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
         for message in messages {
             fresh
                 .receive_from(
-                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                     message,
                     now,
                 )

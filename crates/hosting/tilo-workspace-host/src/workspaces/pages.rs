@@ -4,7 +4,7 @@
 //!
 //! `/workspaces` is workspace administration with the authorization every action API has
 //! ([`Workspaces::authorize`]): the
-//! session's device is one of the relay's own user, or a member's the
+//! session's device is one of the server's own user, or a member's the
 //! workspace's governance lets do what it asks. `/invitation` says what an
 //! invitation offers. A redemption is the invitation's own approval of whoever
 //! made it, so the device's verified redemption is admitted at once, as at
@@ -908,7 +908,7 @@ impl Workspaces {
 
     /// Mail the invitation `link` to the confirmed wait-list entry
     /// `request_id` of `workspace`, for someone the workspace lets invite, once the
-    /// relay sends mail ([`Workspaces::mail_wait_list`]).
+    /// server sends mail ([`Workspaces::mail_wait_list`]).
     pub(super) async fn mail_invite(
         &self,
         workspace: &str,

@@ -203,7 +203,7 @@ struct Inner {
     /// once `resealing`.
     keyed: Mutex<HashMap<ChannelKey, Route>>,
     /// Whether what keyed channels retain in the clear is sealed: only
-    /// once the host's operator decided it (the relay's `reseal`).
+    /// once the host's operator decided it (the server's `reseal`).
     resealing: std::sync::atomic::AtomicBool,
 }
 
@@ -304,7 +304,7 @@ impl Compactor {
     }
 
     /// Seal what the channels this host takes part in retain in the clear, from
-    /// now on: the operator decided it (the relay's `reseal`).
+    /// now on: the operator decided it (the server's `reseal`).
     #[cfg(feature = "agents")]
     pub fn reseal_existing(&self) {
         self.0
@@ -317,7 +317,7 @@ impl Compactor {
     }
 
     /// Stop: wait for the round under way, and start none after it, so
-    /// the relay's state no longer changes once its relay stopped.
+    /// the server's state no longer changes once its server stopped.
     pub(crate) async fn stop(&self) {
         if let Ok(round) = self.0.jobs.acquire().await {
             self.0.jobs.close();

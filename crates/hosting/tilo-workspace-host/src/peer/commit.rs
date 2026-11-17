@@ -12,7 +12,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::refusal::Refusal;
 
 /// Spends `peer`'s budget for one change as its `ownership` is, unless the
-/// relay's own user sent it: the host device and the bots a host-held root
+/// server's own user sent it: the host device and the bots a host-held root
 /// delegated must never turn a burst into refusals.
 pub(super) fn over_change_limit(
     peer: &AuthenticatedPeer,
@@ -66,7 +66,7 @@ pub(super) fn change_ownership(
 
 /// Whether `ws` keeps no more of `peer`'s writes: it is a person's own
 /// workspace and keeps as much as they may
-/// ([`crate::workspaces::Workspaces::storage_refusal`]). The relay's own user
+/// ([`crate::workspaces::Workspaces::storage_refusal`]). The server's own user
 /// is never refused: the host's own writes keep the workspace whole.
 pub(super) async fn over_storage(
     peer: &AuthenticatedPeer,
@@ -396,7 +396,7 @@ async fn commit_refusal(
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
-/// governor follows the workspace. It follows every change the relay keeps, a
+/// governor follows the workspace. It follows every change the server keeps, a
 /// committed one as one sent alone (`handle_delta`): a page writes its
 /// records as commits.
 async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {

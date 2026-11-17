@@ -94,7 +94,7 @@ async fn a_page_names_its_own_record_and_another_member_is_told_it_is_not_theirs
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -107,7 +107,7 @@ async fn a_page_names_its_own_record_and_another_member_is_told_it_is_not_theirs
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();

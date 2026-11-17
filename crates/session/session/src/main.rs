@@ -604,7 +604,7 @@ fn start(
     tilo_startup_metrics::mark("services-start");
     // A session in a workspace's VM takes the device identity its host handed it before it
     // reads anything of itself: the workspace, the record whose window it opens and the key it acts
-    // with are the relay's placement record, the first line of its standard input
+    // with are the server's placement record, the first line of its standard input
     // (`docs/hosted-browser.md`, "What the session in the VM is handed").
     let hosted_browser = match tilo_session::hosted_browser::handed() {
         Ok(hosted) => hosted,
@@ -679,7 +679,7 @@ fn start(
         services,
         wake,
         // A session in a workspace's VM is not a first use of a computer: its identity is the
-        // one the relay handed it, so nothing is left to set up and nothing stands over the window
+        // one the server handed it, so nothing is left to set up and nothing stands over the window
         // it was started for.
         setup: (!serves_an_environment)
             .then(|| tilo_session::startup::before_shell(identity, host_desktop))

@@ -43,9 +43,9 @@ pub struct HomePeerBundle {
     pub members: Vec<String>,
     /// Shell and relay workspace shards backed by this filesystem workspace: a
     /// desktop may attach one tree to several collaboration workspaces, so this
-    /// mapping is authoritative for relay binding.
+    /// mapping is authoritative for server binding.
     #[serde(default)]
-    pub relay_workspace_ids: Vec<collab_types::WorkspaceId>,
+    pub server_workspace_ids: Vec<collab_types::WorkspaceId>,
 }
 
 /// The one configuration file installed on a home peer: Tilo has one global Files
@@ -83,7 +83,7 @@ pub struct FullReplicaStatus {
     pub namespace_generation: Option<String>,
     /// Authenticated filesystem endpoints that serve the complete content
     /// proof. They are published only with a ready proof, so discovery never
-    /// substitutes a relay-only endpoint for the blob/sync protocols.
+    /// substitutes a server-only endpoint for the blob/sync protocols.
     #[serde(default)]
     pub filesystem_endpoints: Vec<EndpointAddr>,
     /// Milliseconds since Unix epoch, refreshed by every successful atomic
@@ -154,7 +154,7 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
         }
         // Residency and endpoint availability are distinct facts. A complete
         // durable replica remains ready while its transport endpoint is
-        // restarting; relay advertisement separately requires a fresh,
+        // restarting; server advertisement separately requires a fresh,
         // serving endpoint before it exposes full-content service.
     }
     aggregate
@@ -473,7 +473,7 @@ mod tests {
             );
         }
 
-        phase replica_topology_and_relay_ids_are_validated;
+        phase replica_topology_and_server_ids_are_validated;
         {
             {
                 let mut ready = FullReplicaStatus::syncing();
@@ -505,7 +505,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     members: Vec::new(),
-                    relay_workspace_ids: vec![
+                    server_workspace_ids: vec![
                         collab_types::WorkspaceId::from_u128(7),
                         collab_types::WorkspaceId::from_u128(8),
                     ],
@@ -531,13 +531,13 @@ mod tests {
                         capability_json: "[]".into(),
                         authority: None,
                         members: Vec::new(),
-                        relay_workspace_ids: vec![high],
+                        server_workspace_ids: vec![high],
                     }],
                 };
                 let text = toml::to_string(&bundle).unwrap();
-                assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
+                assert!(text.contains(&format!("server_workspace_ids = [\"{high}\"]")));
                 assert_eq!(
-                    toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
+                    toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].server_workspace_ids,
                     vec![high]
                 );
             }

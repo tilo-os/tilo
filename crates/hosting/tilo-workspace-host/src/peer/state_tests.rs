@@ -688,7 +688,7 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
 }
 
 /// Two commits by the fixture's source within one bucket refill, with a
-/// burst of one change, as a relay whose own user is `stranger` or else
+/// burst of one change, as a server whose own user is `stranger` or else
 /// the source's own.
 async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Option<Envelope>> {
     let fixture = Fixture::new();
@@ -744,7 +744,7 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
 #[tokio::test]
 async fn bots_and_the_host_are_never_limited() {
     // A public workspace's bots are delegated by the host-held root, so they
-    // chain to the relay's own user; a burst must not become refusals.
+    // chain to the server's own user; a burst must not become refusals.
     let answers = two_commits_with_a_burst_of_one(None).await;
     assert!(
         answers
@@ -2211,7 +2211,7 @@ fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
 }
 
 /// Any key holder of a channel admits a device asking for it, so a member's
-/// access request reaches every member, whether this relay governs the workspace
+/// access request reaches every member, whether this server governs the workspace
 /// or not.
 #[tokio::test]
 async fn access_requests_reach_every_member() {

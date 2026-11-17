@@ -209,7 +209,7 @@ and every lease is revoked when the RemoteApp session ends. The shipped network
 is host-only with forwarding off: no NAT and no physical network. Native RAIL
 can turn a host-authorized `NetHost` request into a short-lived host-only
 CONNECT relay and a guest-local proxy inherited by the RemoteApp wrapper's
-process tree. The relay reuses Tilo's NetHost matcher and its protection against
+process tree. The server reuses Tilo's NetHost matcher and its protection against
 rebinding after DNS, and dropping the lease closes the listener instead of
 attaching an egress NIC. These are host-side lease controls, not per-process
 isolation: every program in the one persistent Windows session sees the union of

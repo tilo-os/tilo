@@ -1,6 +1,6 @@
 //! Remote actions on the v1 `RemoteAction` envelope: routing to another
 //! subscribed device, and the app action server for frames addressed to this
-//! relay.
+//! server.
 
 use super::{
     AuthenticatedPeer, Envelope, Refusal, SessionCtx, action_peer_admitted, current_session, mpsc,
@@ -18,8 +18,8 @@ pub(super) struct RemoteActionRoute {
 
 /// Handle an inbound `RemoteAction`: stamp the authenticated sender, then
 /// hand it to the addressed device's live connection, or — when addressed to
-/// this relay — to the app action server. Never stored, never executed by the
-/// relay itself; every failure is answered as undeliverable so the sender
+/// this server — to the app action server. Never stored, never executed by the
+/// server itself; every failure is answered as undeliverable so the sender
 /// need not wait out a timeout, with its typed [`Refusal`].
 ///
 /// Both ends are re-authorised on every frame under a fresh membership read
@@ -77,7 +77,7 @@ pub(super) async fn handle_remote_action(
             "sender may not act in the workspace".into(),
         ));
     }
-    // A browser environment's device answers the page actions the relay hands
+    // A browser environment's device answers the page actions the server hands
     // it and originates none: what it holds is a window, not a member's
     // standing to call the workspace's action APIs. What it asks of this host about
     // itself — its own streams' media keys, its own windows' shares — is the
@@ -174,7 +174,7 @@ fn answered_by_server(
 }
 
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
-/// the authenticated `peer` as its sender: the relay routes what it forwards,
+/// the authenticated `peer` as its sender: the server routes what it forwards,
 /// and never runs it.
 /// Where an app action server routed the frame of `decoded`'s — `frame`, as the caller
 /// wrote it — in `workspace_id`: handed to the device holding the window, as
@@ -455,7 +455,7 @@ fn answer_later(
     });
 }
 
-/// Where [`serve_locally`] answers: the relay's app action server, in one
+/// Where [`serve_locally`] answers: the server's app action server, in one
 /// workspace, for a caller of the ownership the change budget sees there.
 struct Local<'a> {
     server: &'a dyn crate::app_serving::AppActionServer,
@@ -463,7 +463,7 @@ struct Local<'a> {
     ownership: crate::member_limits::Ownership,
 }
 
-/// Answer a frame addressed to this relay through its app action server,
+/// Answer a frame addressed to this server through its app action server,
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the app action server has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when

@@ -185,7 +185,7 @@ mod tests {
                 vec![
                     Step::new("post", invoke("so.tilo.chat", "chat.workspace", "post")),
                     Step::new(
-                        "relay",
+                        "server",
                         invoke("so.tilo.discord", "discord.guild", "send-message"),
                     ),
                 ],

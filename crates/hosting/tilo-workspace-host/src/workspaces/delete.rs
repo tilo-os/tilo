@@ -139,7 +139,7 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Whether the workspace whose relay workspace is `workspace_id` was
+    /// Whether the workspace whose server workspace is `workspace_id` was
     /// deleted here: whoever asks for it is told so
     /// ([`Refusal::WorkspaceDeleted`]), the same on every queue.
     #[must_use]
@@ -148,7 +148,7 @@ impl Workspaces {
     }
 
     /// The workspaces this host deleted, as each goes: its id and the
-    /// relay workspace that carried it. Whoever keeps more of a workspace
+    /// server workspace that carried it. Whoever keeps more of a workspace
     /// than its record (the content its members posted, app workers acting
     /// in it) lets go of it on hearing.
     #[must_use]

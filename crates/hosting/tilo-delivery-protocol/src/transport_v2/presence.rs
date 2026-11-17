@@ -1,7 +1,7 @@
 //! Presence batches for [`super::EnvelopeV2::PresenceBatch`].
 //!
 //! A session reads a batch's items in order and each item is a whole payload.
-//! Items still decode the slot coding an older relay wrote — a payload with
+//! Items still decode the slot coding an older server wrote — a payload with
 //! its first and last bytes kept from the one before it in the same slot — so
 //! a session reads what a peer running an older build sends.
 
@@ -12,11 +12,11 @@ use tilo_server_protocol::transport::MAX_FRAME_BYTES;
 use super::PRESENCE_BATCH_KIND;
 use collab_types::WorkspaceId;
 
-/// Slots a session's presence reader remembers what an older relay coded
+/// Slots a session's presence reader remembers what an older server coded
 /// against; a higher slot index is refused.
 pub const MAX_PRESENCE_SLOTS: usize = 256;
 
-/// Largest payload an older relay kept in a presence slot; a coded item can
+/// Largest payload an older server kept in a presence slot; a coded item can
 /// never rebuild a larger one.
 pub const MAX_SLOTTED_PRESENCE_BYTES: usize = 2048;
 
@@ -122,7 +122,7 @@ mod tests {
         }
     }
 
-    /// An older relay sent a slot's payload as the bytes that changed: the
+    /// An older server sent a slot's payload as the bytes that changed: the
     /// reader rebuilds it from what it holds in that slot.
     #[test]
     fn a_coded_item_rebuilds_the_payload_it_names() {

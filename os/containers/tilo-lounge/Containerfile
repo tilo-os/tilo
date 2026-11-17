@@ -28,9 +28,9 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
   && command -v bash rpm grep sort tr >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
 # tilo-server, and the Discord connector's outside worker beside it (the
-# connector finds `<app>-worker` next to the relay it runs under).
+# connector finds `<app>-worker` next to the server it runs under).
 COPY bin/ /usr/local/bin/
-# Every version of the built-in apps' surface.toml, which the relay publishes
+# Every version of the built-in apps' surface.toml, which the server publishes
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
@@ -47,7 +47,7 @@ USER 10001
 # state volume, and /run/secrets is mounted from the operator's secrets.
 # The session limits are the measured capacity of one such host: 100 guests
 # and 2000 watching pages at 122 MiB and 1.1 cores, plus the handshakes and
-# grants those hold. They are the relay's own variables, so the deployment may
+# grants those hold. They are the server's own variables, so the deployment may
 # still raise them without a new image.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
@@ -57,7 +57,7 @@ ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_SERVER_MAX_WORKSPACE_GRANTS=34624
 # 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
 #       behind the ingress).
-# 9780: the relay's plain listener the ingress forwards the workspace's own
+# 9780: the server's plain listener the ingress forwards the workspace's own
 #       host to.
 # 9781/udp: the pages' live session (WebTransport), which the ingress publishes
 #       on its own address.

@@ -1,4 +1,4 @@
-//! Record-content envelopes: the relay hands a piece to the one addressed
+//! Record-content envelopes: the server hands a piece to the one addressed
 //! device, stamps the authenticated sender, and drops what it cannot route.
 
 #![allow(
@@ -8,10 +8,10 @@
 use std::time::Duration;
 
 use tilo_server::transport::MAX_DOCUMENT_CONTENT_FRAME_BYTES;
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestDevice, TestUser, client_endpoint, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(12);
@@ -20,8 +20,8 @@ async fn subscribed(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
-) -> RelayClient {
-    let client = RelayClient::connect(
+) -> ServerClient {
+    let client = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -52,7 +52,7 @@ fn piece(to: [u8; 32], frame: Vec<u8>) -> Envelope {
     }
 }
 
-async fn quiet(client: &RelayClient) -> bool {
+async fn quiet(client: &ServerClient) -> bool {
     tokio::time::timeout(Duration::from_millis(300), client.recv())
         .await
         .is_err()
@@ -66,8 +66,8 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());
     let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-    let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
-    let addr = relay.relay.node_addr();
+    let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
+    let addr = server.server.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr.clone(), &user, &b).await;
     let c_client = subscribed(addr, &user, &c).await;
@@ -89,7 +89,7 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
         } => {
             assert_eq!(to_device_public_key, b.device_pubkey());
             assert_eq!(from_device_public_key, a.device_pubkey());
-            assert_eq!(frame, bytes, "the relay forwards the piece untouched");
+            assert_eq!(frame, bytes, "the server forwards the piece untouched");
         }
         other => panic!("B expected a piece, got {other:?}"),
     }
@@ -105,6 +105,6 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     assert!(quiet(&b_client).await, "an oversized piece is dropped");
     assert!(
         quiet(&a_client).await,
-        "nothing is answered for a piece the relay could not route"
+        "nothing is answered for a piece the server could not route"
     );
 }

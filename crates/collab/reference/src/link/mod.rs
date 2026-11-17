@@ -78,7 +78,7 @@ impl ResourceSegment {
 
 /// The origin of a workspace's host: `https://<authority>`, or `http://` for this
 /// computer's loopback names, where local review relays listen. A loopback
-/// host served over TLS (a test relay with its own certificate) is written
+/// host served over TLS (a test server with its own certificate) is written
 /// `https:<authority>`, so a link never changes the scheme it is reached by.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostOrigin {

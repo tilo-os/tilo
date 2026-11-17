@@ -1,5 +1,5 @@
 //! `tilo-home-peer-control`: the polkit helper a Linux home server's Settings
-//! runs through `pkexec` to change its relay and home-peer configuration.
+//! runs through `pkexec` to change its server and home-peer configuration.
 //!
 //! It restarts systemd units, takes the invoking person's credentials with
 //! Linux's `getgrouplist`/`setgroups` and reaches their session under

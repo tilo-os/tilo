@@ -104,7 +104,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         ["Claude Code".to_owned()],
         crate::harness::hosted::Unlisted::Deny,
     )
-    .spawn(&hosted.relay, root.clone(), &laptop_device);
+    .spawn(&hosted.server, root.clone(), &laptop_device);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     let tasks = browser.create(TASKS);
@@ -560,7 +560,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
 }
 
 /// The person's own agent on a logged-in computer, on a host as tilo.sh's
-/// relay runs (records served, no agents): `tilo mcp` holds one session for
+/// server runs (records served, no agents): `tilo mcp` holds one session for
 /// the computer's device, and every agent connection on it is a run of its
 /// own over that session. `runs` are those connections, each an agent
 /// surface over the one session the device `agent` holds.
@@ -633,15 +633,15 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_documents(
+    let server = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
-    let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let mut tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
+    let agent = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = person_of(&root);
     let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
@@ -696,7 +696,7 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_documents(
+    let server = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),
@@ -704,10 +704,10 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     )
     .await;
     // The person's tab made the workspace, and is gone.
-    let tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
+    let tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
     tab.peer.close();
     drop(tab);
-    let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let agent = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = person_of(&root);
     let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
@@ -816,19 +816,19 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_documents(
+    let server = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
+    let mut tab = Browser::open_at(&server, &tab_device, &host, WORKSPACE).await;
     // The peer, as the login's check of its tools starts it.
-    let peer = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let peer = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
     let _ = tilo_session_client::device::session_as_agent(&peer.peer, "Claude Code").await;
     // The login's own entry as the same device, closed once the tab saw it.
-    let login = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
+    let login = Browser::open_at(&server, &computer, &host, WORKSPACE).await;
     let _ = tilo_session_client::device::session_as_agent(&login.peer, "Claude Code").await;
     login.peer.close();
     drop(login);

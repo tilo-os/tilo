@@ -5,7 +5,7 @@
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
+    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -88,8 +88,8 @@ const LAPTOP: &str = "22222222-2222-4222-8222-222222222222";
 async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_here() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -132,7 +132,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
             &host,
             &desktop,
             CREATE_OWN_WORKSPACE,
-            json!({"name": "On the relay"}),
+            json!({"name": "On the server"}),
         )
         .await
         .unwrap(),
@@ -154,7 +154,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     let kept = json!({"workspaces": [
         {"workspace": SHELL, "name": "Shell", "host": {"name": "studio", "hint": "00"}},
         {"workspace": LAPTOP, "name": "Laptop"},
-        {"workspace": here, "name": "On the relay"},
+        {"workspace": here, "name": "On the server"},
     ]});
     assert_eq!(
         invoke(&host, &desktop, KEEP_PERSONAL, json!({"list": kept}))
@@ -237,16 +237,16 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     );
 
     // The list stays across a restart.
-    relay.shutdown().await;
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    server.shutdown().await;
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     assert_eq!(read(&host, &agent).await.workspaces.len(), 3);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The person's devices are one record here: what a desktop holding the root
@@ -258,8 +258,8 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
 async fn one_record_lists_every_device_the_persons_root_certified() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -354,7 +354,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
         signature: [0; 64],
     };
     tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-    // As the relay keeps a revocation it took in from one of their sessions.
+    // As the server keeps a revocation it took in from one of their sessions.
     tilo_lock::RwLockRecover::write_recover(&*workspaces.inner.host.revocations)
         .insert(entry)
         .unwrap();
@@ -362,7 +362,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
         labels(&read(&host, &desktop).await).contains(&("laptop".to_owned(), true)),
         "a revoked device stays in the record, marked"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A browser keeps one key per open tab. A page asking for the record names
@@ -374,8 +374,8 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
 async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -474,7 +474,7 @@ async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
             .all(|device| device.cert.device_public_key != other.device_public_key),
         "an agent names no browser of the person's"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// One key of the person's as their record lists it.
@@ -495,8 +495,8 @@ fn listed_device<'a>(
 async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     // The record holds the key: a device of theirs kept their list here.
@@ -517,13 +517,13 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
 
     // The host opens its files again: the record still says when the key was
     // here last.
-    relay.shutdown().await;
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let listed = relay
+    server.shutdown().await;
+    let server = test_host(dir.path(), &key, &owner).await;
+    let listed = server
         .workspaces()
         .personal(&laptop, &[], &super::Listed::default());
     assert_eq!(listed_device(&listed, &laptop).last_active_ms, Some(5_000));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A session opening writes when a key was here at most once a minute, since a
@@ -534,8 +534,8 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
 async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     let stranger = key_of(&root, "never kept", DeviceCapabilities::member());
@@ -586,7 +586,7 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
         before,
         "a key the person kept no record of writes nothing"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A key whose session says it runs an agent is listed with the agent, for a
@@ -597,8 +597,8 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
 async fn a_keys_session_says_which_agent_it_runs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
     let computer = key_of(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let stop = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -618,7 +618,7 @@ async fn a_keys_session_says_which_agent_it_runs() {
         listed_device(&listed, &computer).agent.as_deref(),
         Some("Claude Code")
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A session of a member's device — a person this host is not the own of —
@@ -632,8 +632,8 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
     let laptop_key = SigningKey::from_bytes(&rand::random());
     let mut laptop = DeviceCert {
@@ -688,8 +688,8 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         compactor: None,
         member_limits: None,
     };
-    let (_client, server) = tokio::io::duplex(65_536);
-    let (read, write) = tokio::io::split(server);
+    let (_client, end) = tokio::io::duplex(65_536);
+    let (read, write) = tokio::io::split(end);
     let session = tokio::spawn(crate::peer::run_peer_until(
         peer,
         std::future::pending::<()>(),
@@ -715,7 +715,7 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     );
 
     session.abort();
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A computer the person logged in is one of their own devices, and its session is their agent's
@@ -725,8 +725,8 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
 async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -798,7 +798,7 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
             "{action}: {refused:?}"
         );
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The session of `device`: the watch that sends it what its person's devices
@@ -840,8 +840,8 @@ async fn next_list(
 async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -941,7 +941,7 @@ async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
     })
     .await;
 
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A device of a person's is sent the list of their devices when another of

@@ -14,11 +14,11 @@ const INVITATION_NS: u64 = 7 * 24 * 3600 * 1_000_000_000;
 const SHELF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Where the links the host hands out open: the Tilo app's web entry, and the
-/// origin the relay is published at, which the link names as the host to ask.
+/// origin the server is published at, which the link names as the host to ask.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Links {
     pub web_entry: Option<String>,
-    pub relay_origin: Option<String>,
+    pub server_origin: Option<String>,
 }
 
 /// The invitation the host makes.
@@ -113,7 +113,7 @@ async fn link(
     };
     match shelve(
         entry,
-        links.relay_origin.as_deref(),
+        links.server_origin.as_deref(),
         invitation,
         expires_at_ns,
     )
@@ -124,7 +124,7 @@ async fn link(
             tracing::info!(%error, "the site kept no invitation; handing over its text");
             let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
             let entry = entry.trim_end_matches('/');
-            Ok(match links.relay_origin.as_deref().map(host_name) {
+            Ok(match links.server_origin.as_deref().map(host_name) {
                 Some(host) => format!("{entry}/#/@{host}/w/{workspace}?invite={text}"),
                 None => format!("{entry}/#/w/{workspace}?invite={text}"),
             })
@@ -191,7 +191,7 @@ mod tests {
         let links = Links {
             // Nothing listens on port 9 of this machine.
             web_entry: Some("http://127.0.0.1:9/".into()),
-            relay_origin: Some("https://eu1.tilo.example".into()),
+            server_origin: Some("https://eu1.tilo.example".into()),
         };
         let link = link(&links, "w", &[1, 2, 3], u64::MAX).await.unwrap();
         assert_eq!(

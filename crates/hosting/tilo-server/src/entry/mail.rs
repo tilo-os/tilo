@@ -540,7 +540,7 @@ impl Mailer for Resend {
             .bearer_auth(&*self.key)
             .header("idempotency-key", id)
             // Built here rather than with the client's `json`, an optional
-            // feature a build of the relay alone does not turn on.
+            // feature a build of the server alone does not turn on.
             .header("content-type", "application/json")
             .body(
                 serde_json::json!({

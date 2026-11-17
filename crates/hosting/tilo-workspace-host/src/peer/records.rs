@@ -111,7 +111,7 @@ pub(super) async fn handle_open_document(
     let read = head.unwrap_or(channel);
     let frames = tokio::task::spawn_blocking(move || {
         let mut frames = store.record_frames(&read)?;
-        // A linked member's write whose copy to the relay has not landed yet
+        // A linked member's write whose copy to the server has not landed yet
         // is kept by the workspace's link: sent from there, so the page never
         // hears the record is absent while the workspace's host keeps it.
         if let Some(governed) = governed {

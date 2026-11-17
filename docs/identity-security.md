@@ -139,7 +139,7 @@ Why this is at least as strong as reading the link:
   PID; the store still takes the PID from the bus daemon's credentials only
   to check the user and to read the link first.
 
-Rejected alternatives: a dumpable relay process that makes the calls for the
+Rejected alternatives: a dumpable server process that makes the calls for the
 compositor would itself be a confused deputy (any same-user process can
 start it and ask), and would carry the identity root secret through a
 dumpable process; caching an identity read while the compositor was still

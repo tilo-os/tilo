@@ -7,15 +7,15 @@
 //! mixes the run and the test into every key it hands out.
 //!
 //! A host runs on its own thread with its own runtime, so a test may start one inside a runtime or
-//! beside one. The relay also answers QUIC address discovery, so a test's endpoints pick their
-//! relay at once instead of waiting out a probe nothing answers.
+//! beside one. The server also answers QUIC address discovery, so a test's endpoints pick their
+//! server at once instead of waiting out a probe nothing answers.
 
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::expect_used,
     clippy::panic,
     clippy::significant_drop_tightening,
-    reason = "test support: a fixture that cannot start is the test's failure, and the host's relay is kept alive until the test ends"
+    reason = "test support: a fixture that cannot start is the test's failure, and the host's server is kept alive until the test ends"
 )]
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -127,7 +127,7 @@ impl Drop for Running {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        // The host's relay is shut down before its directory goes away: a relay still writing
+        // The host's server is shut down before its directory goes away: a server still writing
         // while its directory is removed is a failure the next test would read as its own.
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -146,7 +146,7 @@ impl Running {
         let cert = certified(owner, &host_key, name, DeviceCapabilities::member());
         let (ready, started) = mpsc::channel();
         let thread = std::thread::Builder::new()
-            .name(format!("test relay: {name}"))
+            .name(format!("test server: {name}"))
             .spawn({
                 let cert = cert.clone();
                 let workspace = workspace.map(str::to_owned);
@@ -158,15 +158,15 @@ impl Running {
                         .expect("the host's runtime");
                     let handle = runtime.handle().clone();
                     runtime.block_on(async move {
-                        let relay = tilo_server::daemon::Relay::start(
-                            tilo_server::RelayConfig {
+                        let server = tilo_server::daemon::Server::start(
+                            tilo_server::ServerConfig {
                                 state_root: host_root.join("host"),
                                 identity_root: host_root.join("identity"),
                                 full_replica_status: host_root.join("full-replica/status.json"),
                                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                                ..tilo_server::RelayConfig::default()
+                                ..tilo_server::ServerConfig::default()
                             },
-                            tilo_server::daemon::RelayIdentity {
+                            tilo_server::daemon::ServerIdentity {
                                 user_public_key,
                                 device_signing_key: host_key.clone(),
                                 device_cert: cert.clone(),
@@ -175,7 +175,7 @@ impl Running {
                         )
                         .await
                         .expect("the host starts");
-                        let url = relay
+                        let url = server
                             .node_addr()
                             .relay_urls()
                             .next()
@@ -183,7 +183,7 @@ impl Running {
                             .to_string();
                         let relays =
                             EndpointRelays::for_choice(&settings_store::relay::Relays::Own(url));
-                        let workspaces = relay
+                        let workspaces = server
                             .workspaces()
                             .expect("the host governs workspaces")
                             .clone();
@@ -202,7 +202,7 @@ impl Running {
                             .send((handle, relays, workspaces, workspace, stop))
                             .expect("the host is awaited");
                         let _ = stopped.await;
-                        relay.shutdown().await;
+                        server.shutdown().await;
                     });
                 }
             })
@@ -226,7 +226,7 @@ impl Running {
     }
 }
 
-/// A relay on this machine's loopback, for a session that only needs its relays to be somewhere
+/// A server on this machine's loopback, for a session that only needs its relays to be somewhere
 /// this machine is.
 pub struct Loopback {
     running: Running,
@@ -309,7 +309,7 @@ fn discovery_trust() -> iroh::tls::CaTlsConfig {
 }
 
 /// Serve QUIC address discovery on this machine's loopback, on the port iroh's endpoints ask every
-/// relay for it, and answer what a device of this machine trusts to reach it.
+/// server for it, and answer what a device of this machine trusts to reach it.
 ///
 /// An endpoint asks each relay where that relay sees it from, and takes the relay that answers as
 /// its home — the relay its address then names. A relay that answers nothing leaves the endpoint
@@ -331,7 +331,7 @@ fn serve_discovery() -> iroh::tls::CaTlsConfig {
 
     let (ready, started) = mpsc::channel();
     std::thread::Builder::new()
-        .name("test relay: address discovery".to_owned())
+        .name("test server: address discovery".to_owned())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
@@ -378,7 +378,7 @@ pub async fn direct_endpoint() -> iroh::Endpoint {
         .expect("an endpoint on this machine")
 }
 
-/// A person's host on this machine's loopback, governing one workspace: what its devices relay
+/// A person's host on this machine's loopback, governing one workspace: what its devices server
 /// through, and where they are told it is.
 pub struct Host(Running);
 
@@ -448,7 +448,7 @@ mod tests {
 
     use super::{endpoint, endpoint_key, loopback_url, relay_through_loopback_in};
 
-    /// A profile seeded with this machine's relay reads it back as its device's relays: what a
+    /// A profile seeded with this machine's server reads it back as its device's relays: what a
     /// session started on that profile binds with.
     #[test]
     fn a_seeded_profile_relays_through_this_machines_loopback() {

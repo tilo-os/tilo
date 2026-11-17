@@ -27,7 +27,7 @@ pub use collab_types::{Member, Role};
 pub struct Workspace {
     /// The workspace's UUID.
     pub workspace: String,
-    /// The relay workspace carrying it.
+    /// The server workspace carrying it.
     pub workspace_id: WorkspaceId,
     pub name: String,
     /// Its committed governance generation.
@@ -445,7 +445,7 @@ pub enum JoinReply {
     Invitation {
         /// The workspace's UUID.
         workspace: String,
-        /// Its relay workspace.
+        /// Its server workspace.
         workspace_id: WorkspaceId,
         name: String,
         /// The role it grants.
@@ -467,7 +467,7 @@ pub enum JoinReply {
     Admitted {
         /// The workspace's UUID.
         workspace: String,
-        /// Its relay workspace.
+        /// Its server workspace.
         workspace_id: WorkspaceId,
         name: String,
         role: Role,

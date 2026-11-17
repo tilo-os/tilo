@@ -74,8 +74,8 @@ const fn approve_command(role: DeviceKind) -> &'static str {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Candidate {
     pub device_node_id: String,
-    /// The relay service node id it announced, lowercase hex.
-    pub relay_service_node_id: String,
+    /// The server service node id it announced, lowercase hex.
+    pub server_node_id: String,
     pub label: String,
     /// The code both screens show.
     pub verification_code: String,
@@ -87,7 +87,7 @@ impl Candidate {
         serde_json::json!({
             "role": role.name(),
             "device": self.device_node_id,
-            "service": self.relay_service_node_id,
+            "service": self.server_node_id,
             "label": self.label,
             "verification_code": self.verification_code,
         })
@@ -103,10 +103,7 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
         .map_err(|_| "nearby discovery returned an invalid identity".to_string())?;
     Ok(Candidate {
         device_node_id: node_id(&candidate.device_node_id, "the discovered device")?,
-        relay_service_node_id: node_id(
-            &candidate.relay_service_node_id,
-            "the discovered relay service",
-        )?,
+        server_node_id: node_id(&candidate.server_node_id, "the discovered server service")?,
         ..candidate
     })
 }
@@ -115,9 +112,9 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
 pub struct Approval {
     pub role: DeviceKind,
     pub device: String,
-    /// The relay service node id it announced, in lowercase hex.
+    /// The server service node id it announced, in lowercase hex.
     pub service: String,
-    /// For a home peer, the workspaces it keeps; `None` takes the relay
+    /// For a home peer, the workspaces it keeps; `None` takes the server
     /// configuration's.
     pub workspace_ids: Option<Vec<u64>>,
 }
@@ -220,7 +217,7 @@ pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
 }
 
 /// The certificate to propose for `candidate`, a personal device of
-/// `person`, valid from about `now_ns`; and the relay service it announced.
+/// `person`, valid from about `now_ns`; and the server service it announced.
 pub fn proposed_certificate(
     person: [u8; 32],
     candidate: &Candidate,
@@ -245,7 +242,7 @@ pub fn proposed_certificate(
             signature: [0; 64],
             issuer: None,
         },
-        key(&candidate.relay_service_node_id)?,
+        key(&candidate.server_node_id)?,
     ))
 }
 
@@ -750,7 +747,7 @@ mod tests {
             );
             assert!(discovered(true, b"{\"device_node_id\":\"x\"}", b"").is_err());
             let found = format!(
-                "{{\"device_node_id\":\"{}\",\"relay_service_node_id\":\"{SERVICE}\",\
+                "{{\"device_node_id\":\"{}\",\"server_node_id\":\"{SERVICE}\",\
              \"label\":\"Phone\",\"verification_code\":\"123-456\",\"kind\":\"PersonalDevice\"}}\n",
                 DEVICE.to_ascii_uppercase()
             );

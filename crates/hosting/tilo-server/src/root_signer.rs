@@ -65,7 +65,7 @@ pub fn load_root(
     Ok(Box::new(identity))
 }
 
-/// Sign a revocation of `device` with `root` and append it to the relay
+/// Sign a revocation of `device` with `root` and append it to the server
 /// state's revocation log at `state_root`, where every start of the host reads
 /// it. Returns the entry as signed, and whether the log changed.
 ///

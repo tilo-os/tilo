@@ -553,7 +553,7 @@ impl Task {
 
     /// The host answered `Ready` for `workspace_id`: the action frames that waited for the
     /// admission go out in the order they were made.
-    pub(super) fn admitted(&mut self, workspace_id: WorkspaceId, client: &RelayClient) {
+    pub(super) fn admitted(&mut self, workspace_id: WorkspaceId, client: &ServerClient) {
         self.check_admission();
         self.flush_held_actions(workspace_id, client);
     }
@@ -713,7 +713,7 @@ impl Task {
     /// Ask the workspaces for the app surfaces their writes here wait for and this page does
     /// not have: the workspace keeps every version its history was written with, and a member
     /// that wrote under one answers with it.
-    pub(super) fn ask_surfaces(&mut self, client: &RelayClient) {
+    pub(super) fn ask_surfaces(&mut self, client: &ServerClient) {
         let device = self.config.cert.device_public_key;
         let now = tilo_clock::unix_now_ms();
         let wants: Vec<_> = self
@@ -740,7 +740,7 @@ impl Task {
 
     /// Ask the host to replay each record whose writes waited for an app surface that is here
     /// now, and each one the replica asked to hear again: its writes are decided again.
-    pub(super) fn replay_surfaced(&mut self, client: &RelayClient) {
+    pub(super) fn replay_surfaced(&mut self, client: &ServerClient) {
         let arrived: Vec<[u8; 32]> = self
             .awaiting_surface
             .iter()

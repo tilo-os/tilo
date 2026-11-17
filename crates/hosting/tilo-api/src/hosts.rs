@@ -17,11 +17,11 @@
 //!
 //! When no host answers at all, nothing that can read the workspace is
 //! online, and the caller gets the typed refusal
-//! ([`crate::relay::RelayError::NoHolder`]) rather than a call tried again
+//! ([`crate::server::ServerError::NoHolder`]) rather than a call tried again
 //! forever.
 
 use crate::grant_key::GrantKey;
-use crate::relay::{Connection, Relay, RelayError};
+use crate::server::{Connection, Server, ServerError};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ const ANSWERING: Duration = Duration::from_secs(12);
 
 /// The hosts an API server may forward to, in the order it was configured.
 pub struct Hosts {
-    relays: Vec<Arc<Relay>>,
+    relays: Vec<Arc<Server>>,
 }
 
 impl Hosts {
@@ -44,7 +44,7 @@ impl Hosts {
             relays: origins
                 .iter()
                 .filter(|origin| !origin.trim().is_empty())
-                .map(|origin| Arc::new(Relay::new(client, origin)))
+                .map(|origin| Arc::new(Server::new(client, origin)))
                 .collect(),
         }
     }
@@ -77,19 +77,19 @@ impl Hosts {
     ///
     /// # Errors
     /// No host answered: nothing that can read the workspace is online.
-    pub async fn connect(&self, key: &GrantKey) -> Result<Connection, RelayError> {
+    pub async fn connect(&self, key: &GrantKey) -> Result<Connection, ServerError> {
         let mut answers = Vec::with_capacity(self.relays.len());
         let mut connected = Vec::with_capacity(self.relays.len());
         let mut keeping = Vec::new();
-        for relay in &self.relays {
+        for server in &self.relays {
             let began = Instant::now();
-            let attempt = tokio::time::timeout(ANSWERING, relay.connect(key)).await;
+            let attempt = tokio::time::timeout(ANSWERING, server.connect(key)).await;
             let latency_ms = u32::try_from(began.elapsed().as_millis()).unwrap_or(u32::MAX);
             match attempt {
                 Ok(Ok(connection)) => {
-                    let device = device_of(relay.name());
+                    let device = device_of(server.name());
                     let lists =
-                        tokio::time::timeout(ANSWERING, relay.workspaces(&connection)).await;
+                        tokio::time::timeout(ANSWERING, server.workspaces(&connection)).await;
                     if matches!(lists, Ok(Ok(listed)) if !listed.is_empty()) {
                         keeping.push(device);
                     }
@@ -107,22 +107,22 @@ impl Hosts {
                     connected.push((device, connection));
                 }
                 Ok(Err(error)) => {
-                    tracing::debug!(host = relay.name(), %error, "a host did not answer a key");
-                    answers.push((device_of(relay.name()), Answer::declining(Decline::Offline)));
+                    tracing::debug!(host = server.name(), %error, "a host did not answer a key");
+                    answers.push((device_of(server.name()), Answer::declining(Decline::Offline)));
                 }
                 Err(_) => {
-                    tracing::debug!(host = relay.name(), "a host took too long to answer a key");
-                    answers.push((device_of(relay.name()), Answer::declining(Decline::Offline)));
+                    tracing::debug!(host = server.name(), "a host took too long to answer a key");
+                    answers.push((device_of(server.name()), Answer::declining(Decline::Offline)));
                 }
             }
         }
         let Some(worker) = choose(&among(answers, &keeping)) else {
-            return Err(RelayError::NoHolder);
+            return Err(ServerError::NoHolder);
         };
         let (_, connection) = connected
             .into_iter()
             .find(|(device, _)| *device == worker)
-            .ok_or(RelayError::NoHolder)?;
+            .ok_or(ServerError::NoHolder)?;
         Ok(connection)
     }
 }

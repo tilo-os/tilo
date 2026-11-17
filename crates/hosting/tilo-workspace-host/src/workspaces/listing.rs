@@ -1,4 +1,4 @@
-//! The workspaces this relay lists as public workspaces, and the entry that lets
+//! The workspaces this server lists as public workspaces, and the entry that lets
 //! anyone in with the role their owner chose.
 //!
 //! Making a workspace public is one of its governance settings
@@ -11,7 +11,7 @@
 //! here is listed on a person's own machine too, and a restart settles nothing
 //! anew.
 //!
-//! The relay lists its workspaces whose entry carries a listing in its directory
+//! The server lists its workspaces whose entry carries a listing in its directory
 //! ([`Workspaces::directory`]) and answers each such workspace's entry
 //! ([`Workspaces::admit_listed`]): a person who asks gets an invitation only they
 //! can redeem and the one-time token of a pre-admission at the listing's default
@@ -44,7 +44,7 @@ use tilo_user_identity::DeviceCert;
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 
-/// Where a relay kept its public workspaces' listings before a workspace's
+/// Where a server kept its public workspaces' listings before a workspace's
 /// entry was part of its governance ([`Workspaces::adopt_listings_file`]).
 const LISTINGS_FILE: &str = "listings.json";
 /// How long an entry's invitation and its token stay good: time for the
@@ -128,7 +128,7 @@ impl std::error::Error for EntryRefusal {}
 /// was last written to, and a ping after each entry that changed.
 pub(super) struct Directory {
     /// When a member last wrote to each workspace, Unix milliseconds, since this
-    /// relay started: the directory's activity hint.
+    /// server started: the directory's activity hint.
     active: std::sync::Mutex<BTreeMap<String, u64>>,
     /// The workspace UUID after each change of its entry.
     changes: tokio::sync::broadcast::Sender<String>,
@@ -462,7 +462,7 @@ impl Workspaces {
         listed
     }
 
-    /// Take over the listings a relay kept in [`LISTINGS_FILE`] before a
+    /// Take over the listings a server kept in [`LISTINGS_FILE`] before a
     /// workspace's entry was part of its governance: each workspace that file
     /// lists, whose entry lists nothing yet, is listed again as its owner listed
     /// it, settled by this host as the workspace's governor. The file then
@@ -800,7 +800,7 @@ impl Workspaces {
     }
 
     /// Whether `grant`, recorded for an invitation to `workspace`, was signed by
-    /// someone who may admit people there: the workspace's owner (this relay's
+    /// someone who may admit people there: the workspace's owner (this server's
     /// person), or this host's own entry while the workspace is listed.
     ///
     /// # Errors
@@ -890,7 +890,7 @@ pub(super) mod tests {
 pub(crate) mod entry_tests {
     #![expect(
         clippy::significant_drop_tightening,
-        reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+        reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
     )]
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
@@ -1015,8 +1015,8 @@ pub(crate) mod entry_tests {
     async fn a_entry_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1091,15 +1091,15 @@ pub(crate) mod entry_tests {
             walk_in_as(workspaces, &workspace, &join, &guest).await,
             Ok(JoinReply::Admitted { .. })
         ));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test]
     async fn whoever_joins_a_public_workspace_gets_the_default_role_its_owner_set() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let summary = workspaces.create("Coffee").await.unwrap();
         let workspace = summary.workspace.clone();
 
@@ -1162,7 +1162,7 @@ pub(crate) mod entry_tests {
             ),
             "the default is read at the entry, not when the listing was first made"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Whether `device` may write in `workspace`'s Chat now: its role lets it
@@ -1189,8 +1189,8 @@ pub(crate) mod entry_tests {
     async fn a_person_who_joined_a_public_workspace_writes_in_its_chat_as_their_role_allows() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1228,7 +1228,7 @@ pub(crate) mod entry_tests {
             .unwrap();
         let (_, viewer) = walk_in(workspaces, &workspace).await;
         assert!(!writes_in_chat(workspaces, &workspace, &viewer).await);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// A public workspace prunes the guests it has not seen for long; a Tilo
@@ -1239,8 +1239,8 @@ pub(crate) mod entry_tests {
     async fn a_pruned_guest_comes_back_through_the_entry_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1293,7 +1293,7 @@ pub(crate) mod entry_tests {
         assert!(member(
             &workspaces.summary(&workspace).await.unwrap().members
         ));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Moderation takes a person's membership away and the entry keeps them out
@@ -1302,8 +1302,8 @@ pub(crate) mod entry_tests {
     async fn a_person_moderation_removed_is_refused_at_the_entry_for_the_day() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1365,10 +1365,10 @@ pub(crate) mod entry_tests {
                 .await
         );
         assert!(workspaces.admit_listed(&workspace, &join).await.is_ok());
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
-    /// A relay that kept its listings in a file of their own, before a
+    /// A server that kept its listings in a file of their own, before a
     /// workspace's entry was part of its governance, lists the same workspaces
     /// after the upgrade: each is listed again as its owner listed it, and the
     /// old file stays beside the records.
@@ -1376,14 +1376,14 @@ pub(crate) mod entry_tests {
     async fn a_listing_kept_before_the_entry_lists_its_workspace_after_the_upgrade() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspace = relay
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspace = server
             .workspaces()
             .create("Sketches")
             .await
             .unwrap()
             .workspace;
-        relay.shutdown().await;
+        server.shutdown().await;
         let file = dir.path().join("workspaces").join(super::LISTINGS_FILE);
         let kept = serde_json::json!({"workspaces": {
             workspace.clone(): {"description": "Open to look at", "defaultRole": "Viewer"},
@@ -1392,8 +1392,8 @@ pub(crate) mod entry_tests {
         .to_string();
         std::fs::write(&file, &kept).unwrap();
 
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces().clone();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
         assert_eq!(
             workspaces.listing(&workspace).await,
             Some(Listing {
@@ -1411,20 +1411,20 @@ pub(crate) mod entry_tests {
             kept,
             "the old file stays beside the records"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
 
         // The workspace's entry is its governance from then on: unlisted, it
         // stays unlisted across a restart.
-        let relay = test_host(dir.path(), &key, &owner).await;
-        relay
+        let server = test_host(dir.path(), &key, &owner).await;
+        server
             .workspaces()
             .unpublish(&workspace, &owner)
             .await
             .unwrap();
-        relay.shutdown().await;
-        let relay = test_host(dir.path(), &key, &owner).await;
-        assert!(relay.workspaces().published_workspaces().await.is_empty());
-        relay.shutdown().await;
+        server.shutdown().await;
+        let server = test_host(dir.path(), &key, &owner).await;
+        assert!(server.workspaces().published_workspaces().await.is_empty());
+        server.shutdown().await;
     }
 
     /// An entry that holds as many open grants as the workspace keeps says when
@@ -1433,8 +1433,8 @@ pub(crate) mod entry_tests {
     async fn a_full_entry_answers_when_it_has_room_again() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host_with_grants(dir.path(), &key, &owner, Some(1)).await;
-        let workspaces = relay.workspaces();
+        let server = test_host_with_grants(dir.path(), &key, &owner, Some(1)).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1469,15 +1469,15 @@ pub(crate) mod entry_tests {
             (1..=600).contains(&retry_after_secs),
             "the earliest open grant expires within its ten minutes: {retry_after_secs}"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test]
     async fn a_private_workspace_has_no_entry_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let summary = workspaces.create("Team").await.unwrap();
         let workspace = summary.workspace.clone();
         let (reply, _) = walk_in(workspaces, &workspace).await;
@@ -1528,15 +1528,15 @@ pub(crate) mod entry_tests {
                 .await
                 .is_err()
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test]
     async fn a_banned_person_is_turned_away_at_the_entry_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1585,7 +1585,7 @@ pub(crate) mod entry_tests {
             )
             .await;
         assert!(reported.is_ok(), "{reported:?}");
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// A listed workspace whose entry takes people by invitation only stays
@@ -1596,8 +1596,8 @@ pub(crate) mod entry_tests {
     async fn an_invitation_only_entry_refuses_a_stranger_and_admits_an_invited_person() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1673,7 +1673,7 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Someone the host's operator declares an owner comes in through an
@@ -1685,8 +1685,8 @@ pub(crate) mod entry_tests {
     async fn an_invitation_only_entry_admits_whom_the_operator_declares() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
             .publish(
@@ -1725,13 +1725,13 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-        relay.shutdown().await;
+        server.shutdown().await;
 
         // The host starts again on the same workspace: the declaration and the
         // invitation-only entry are the workspace's own, so another person
         // still cannot walk in and the declared owner still can.
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let (_, stranger) = guest_device();
         assert_eq!(
             workspaces
@@ -1768,6 +1768,6 @@ pub(crate) mod entry_tests {
                 .is_some_and(|listing| listing.description == "Coffee and tea"),
             "the listing is the workspace's too"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

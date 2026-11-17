@@ -1,4 +1,4 @@
-//! The certified relay session of one device.
+//! The certified server session of one device.
 //!
 //! One task owns the connection to the user's host and everything that must
 //! be serialized with it: document signing, the commit outbox, reconnects.
@@ -36,7 +36,7 @@ use crate::membership_check::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::LinkError;
-use tilo_server_session::RelayClient;
+use tilo_server_session::ServerClient;
 
 mod agent_session;
 mod connect;
@@ -158,7 +158,7 @@ enum Command {
     LiveSessionJoined(WorkspaceId),
     /// The live session of `workspace_id` heard something: drain it.
     LiveSessionHeard(WorkspaceId),
-    /// The live session of `workspace_id` ended: the relay closed it, or the live session
+    /// The live session of `workspace_id` ended: the server closed it, or the live session
     /// no longer admits what it reads.
     LiveSessionEnded(WorkspaceId),
     /// The first consumer that reads the members' presence came, or the last one went.
@@ -209,7 +209,7 @@ fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> A
     }
 }
 
-/// Start a certified relay session with `config`'s host. It connects in the background; observe it
+/// Start a certified server session with `config`'s host. It connects in the background; observe it
 /// with [`Link::status`] and [`Link::on_change`]. It ends with its last link.
 pub fn start_session(
     config: PeerConfig,
@@ -233,7 +233,7 @@ pub struct Lent {
     /// group is its own session's.
     pub keys: Option<tilo_workspace_keys::SharedKeys>,
     /// Where the endpoint the device runs under its key lands once bound: the session dials from
-    /// it. A relay keeps one connection per endpoint id, so a second endpoint under the same key
+    /// it. A server keeps one connection per endpoint id, so a second endpoint under the same key
     /// cut the first off; a session opened before the endpoint is bound waits for it and binds
     /// none in its place.
     pub endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
@@ -370,12 +370,12 @@ struct Commands(mpsc::UnboundedSender<Command>);
 
 impl std::fmt::Debug for Commands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("relay session")
+        f.write_str("server session")
     }
 }
 
 /// The session carries the client's commands: what a member says to its workspaces goes
-/// through the relay session it keeps with its host.
+/// through the server session it keeps with its host.
 impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
         self.0.send(Command::Client(command)).map_err(|_| Closed)
@@ -611,7 +611,7 @@ impl Task {
     /// Answer the host beginning a workspace's replay (its bootstrap) or
     /// admitting this session to it (its `Ready`) with what the page says
     /// there from then on. `false` when the session took no more.
-    fn begin(&mut self, client: &RelayClient, envelope: &Envelope) -> bool {
+    fn begin(&mut self, client: &ServerClient, envelope: &Envelope) -> bool {
         match envelope {
             Envelope::WorkspaceBootstrap { workspace_id, .. } => {
                 self.introduce(client, *workspace_id)
@@ -636,7 +636,7 @@ impl Task {
     /// request only once they hold its certificate, so a page told only at
     /// `Ready` got its keys a whole replay late. Returns `false` when the
     /// session could not take it.
-    fn introduce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+    fn introduce(&mut self, client: &ServerClient, workspace_id: WorkspaceId) -> bool {
         if !self.begun.insert(workspace_id) {
             return true;
         }
@@ -648,7 +648,7 @@ impl Task {
     /// certificate (unless the replay's start told it already) and that it
     /// answers compaction requests. Returns `false` when the session could
     /// not take them.
-    fn announce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+    fn announce(&mut self, client: &ServerClient, workspace_id: WorkspaceId) -> bool {
         if !self.introduce(client, workspace_id) {
             return false;
         }
@@ -664,7 +664,7 @@ impl Task {
     fn revoke(
         &mut self,
         entry: tilo_user_identity::RevocationEntry,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         if entry.user_public_key != self.config.cert.user_public_key {
             return true;
@@ -760,7 +760,7 @@ impl Task {
     /// Send the signed statement of each compaction ownership sent, of what it covers: every entry
     /// delivered for its record before it was asked. Returns `false` when the session could not
     /// take an envelope.
-    async fn answer_compactions(&mut self, client: &RelayClient) -> bool {
+    async fn answer_compactions(&mut self, client: &ServerClient) -> bool {
         for (workspace_id, request, route, covered) in std::mem::take(&mut self.answering) {
             let drafted = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
                 .and_then(|workspace| {
@@ -857,7 +857,7 @@ impl Task {
 
     /// Subscribe every joined workspace again, from now on waiting for its
     /// `Ready`. Returns `false` when the session could not take them.
-    fn resubscribe(&mut self, client: &RelayClient) -> bool {
+    fn resubscribe(&mut self, client: &ServerClient) -> bool {
         self.begun.clear();
         let mut sent_ok = true;
         for workspace_id in &self.workspaces {
@@ -1130,7 +1130,7 @@ impl Task {
     /// Hand the host what this session owes it before waiting for the next event: its live sessions,
     /// the app surfaces it asks for, the compactions it was asked for and its ownership. Returns
     /// `false` when the session could not take an envelope.
-    async fn settle_owed(&mut self, client: &RelayClient) -> bool {
+    async fn settle_owed(&mut self, client: &ServerClient) -> bool {
         self.settle_live_sessions();
         // App surfaces this page holds documents for go out with what the
         // session owes, and a surface that arrived decides what waited
@@ -1174,7 +1174,7 @@ impl Task {
     /// Ask the host for every joined workspace whole again, as a refresh
     /// does: no position, no admission failure kept. `false` when the
     /// session took no more.
-    fn refresh(&mut self, client: &RelayClient) -> bool {
+    fn refresh(&mut self, client: &ServerClient) -> bool {
         self.clear_admission_failure();
         self.positions.clear();
         self.received.clear();
@@ -1183,7 +1183,7 @@ impl Task {
 
     async fn serve(
         &mut self,
-        client: RelayClient,
+        client: ServerClient,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
         // The last session's fetch proxy token died with its connection; this
@@ -1291,7 +1291,7 @@ impl Task {
     /// session ends, if it does.
     async fn take_command(
         &mut self,
-        client: &RelayClient,
+        client: &ServerClient,
         command: Option<Command>,
     ) -> Option<Exit> {
         match command {
@@ -1314,7 +1314,7 @@ impl Task {
 
     /// Take in `envelope`, one the host sent: a voice frame, content asked
     /// for, or what [`Self::inbound`] decides.
-    fn received(&mut self, client: &RelayClient, envelope: Envelope) -> Result<(), Exit> {
+    fn received(&mut self, client: &ServerClient, envelope: Envelope) -> Result<(), Exit> {
         // Governance gathered from the frames before is the workspace's before
         // anything after it is decided.
         if !matches!(envelope, Envelope::Delta { .. }) {
@@ -1375,7 +1375,7 @@ impl Task {
         workspace_id: WorkspaceId,
         to: [u8; 32],
         frame: Vec<u8>,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
@@ -1431,7 +1431,7 @@ impl Task {
 
     fn send_action(
         &self,
-        client: &RelayClient,
+        client: &ServerClient,
         workspace_id: WorkspaceId,
         to: [u8; 32],
         frame: Vec<u8>,
@@ -1449,7 +1449,7 @@ impl Task {
     /// Send the action frames that waited for `workspace_id`'s admission, in
     /// the order they were made. What this session owes another workspace
     /// waits for that one.
-    fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &RelayClient) {
+    fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &ServerClient) {
         let (due, waiting): (Vec<HeldAction>, Vec<HeldAction>) =
             std::mem::take(&mut self.held_actions)
                 .into_iter()
@@ -1467,7 +1467,7 @@ impl Task {
         &self,
         workspace_id: WorkspaceId,
         request: Vec<u8>,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             return;
@@ -1511,7 +1511,7 @@ impl Task {
         clippy::too_many_lines,
         reason = "one arm per command, each handing off to its own method"
     )]
-    async fn apply(&mut self, command: Command, client: Option<&RelayClient>) -> bool {
+    async fn apply(&mut self, command: Command, client: Option<&ServerClient>) -> bool {
         match command {
             Command::Client(Cmd::Join(workspace_id)) => self.join(workspace_id, client),
             Command::Client(Cmd::JoinPlaced(workspace, name)) => {
@@ -1663,7 +1663,7 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Client(Cmd::Reconnect | Cmd::Retry | Cmd::Refresh | Cmd::Stop) => true,
-            // What only a desktop's own live session carries: nothing a relay session says.
+            // What only a desktop's own live session carries: nothing a server session says.
             Command::Client(_) => true,
         }
     }
@@ -1679,7 +1679,7 @@ impl Task {
         workspace_id: WorkspaceId,
         msg: &neighbour_wire::NeighbourMsg,
         target: iroh_base::EndpointId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         if !matches!(
             msg,
@@ -1701,7 +1701,7 @@ impl Task {
     }
 
     /// Subscribe to `workspace_id`, now or once connected.
-    fn join(&mut self, workspace_id: WorkspaceId, client: Option<&RelayClient>) -> bool {
+    fn join(&mut self, workspace_id: WorkspaceId, client: Option<&ServerClient>) -> bool {
         // Taking part again is taking part: a page's client says it on every pass over the
         // workspaces it shows, and one still being placed is subscribed once the host governs it.
         if self.workspaces.contains(&workspace_id) || self.placing.contains_key(&workspace_id) {
@@ -1722,7 +1722,7 @@ impl Task {
         &mut self,
         workspace: String,
         name: String,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
             return true;
@@ -1745,7 +1745,7 @@ impl Task {
 
     /// Ask the host to govern the workspace joined as `workspace_id`; it is
     /// subscribed once the host answers, whatever it answers.
-    fn place(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
+    fn place(&mut self, workspace_id: WorkspaceId, client: &ServerClient) -> bool {
         let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
             return true;
         };
@@ -1768,7 +1768,7 @@ impl Task {
     }
 
     /// Restore this session's workspaces, pending commits and call participations.
-    fn resume_session(&mut self, client: &RelayClient) -> bool {
+    fn resume_session(&mut self, client: &ServerClient) -> bool {
         // A page only follows its channel groups: said first, so no replay
         // this session asks for carries every member's request to be
         // admitted to one, which only a device that admits others reads.
@@ -1813,7 +1813,7 @@ impl Task {
         &mut self,
         request: &tilo_server_protocol::workspaces::WorkspacesRequest,
         done: WorkspacesCompletion,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             let _ = done.send(Err(NOT_CONNECTED.into()));
@@ -2041,7 +2041,7 @@ impl Task {
 
     /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
     /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
-    fn content_wanted(&self, envelope: &Envelope, client: &RelayClient) -> bool {
+    fn content_wanted(&self, envelope: &Envelope, client: &ServerClient) -> bool {
         let Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: from,
@@ -2156,7 +2156,7 @@ impl Task {
     /// the governance the channels said, install new keys, open what waited
     /// for them, and seal and commit what was held. Returns `false` when the
     /// session could not take an envelope.
-    async fn settle_channels(&mut self, client: Option<&RelayClient>) -> bool {
+    async fn settle_channels(&mut self, client: Option<&ServerClient>) -> bool {
         let mut delivered = true;
         self.keep_arrived();
         self.retire_answered();

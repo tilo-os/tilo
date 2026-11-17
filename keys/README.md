@@ -94,7 +94,7 @@ public anyway (images, their digests, the operational certificates).
 **What this does not cover, and why:**
 
 - **CI-internal artifacts** (the RPM, kernel and buildroot snapshots, the
-  env-runtime, the builder, the relay, the imager, the SLSA and freshness
+  env-runtime, the builder, the server, the imager, the SLSA and freshness
   attestations) are verified only by this repository's workflows and scripts,
   against `cosign.pub`. That pin lives here, so changing it is a commit, not a
   trust-anchor change on any installed system.

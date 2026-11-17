@@ -12,7 +12,7 @@ pub(super) async fn open_admitted_peer(
 ) -> Browser {
     let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
-        Host::at(hosted.relay.node_addr()),
+        Host::at(hosted.server.node_addr()),
         device.cert.clone(),
         host.cert.clone(),
         device.key.clone(),
@@ -31,7 +31,7 @@ pub(super) async fn admit_person(
     role: Role,
 ) {
     let invitation = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .issue(

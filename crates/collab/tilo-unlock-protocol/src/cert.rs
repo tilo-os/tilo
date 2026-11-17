@@ -254,7 +254,7 @@ pub struct SiblingContact {
     pub label: String,
     /// Its peer-network address (a serialized endpoint address), opaque to
     /// this protocol. Empty when the sibling has not published one; early
-    /// boot then finds it by `device_public_key` through the relay.
+    /// boot then finds it by `device_public_key` through the server.
     pub endpoint: String,
 }
 

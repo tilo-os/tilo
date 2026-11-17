@@ -288,7 +288,7 @@ mod tests {
 
     /// The key file a device's login makes knows the site it logged in with,
     /// so a link it asks the host for is built on that site — the one the
-    /// person's page builds its invitations on — and never on the relay the
+    /// person's page builds its invitations on — and never on the server the
     /// key reaches.
     #[tokio::test]
     async fn a_link_a_key_asks_for_is_built_on_its_site() {
@@ -307,11 +307,11 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
-        // A relay no test listens on: a link built on it would be one nothing
+        // A server no test listens on: a link built on it would be one nothing
         // can open, so the site's own address is what says the site was used.
-        let relay = "http://127.0.0.1:9";
+        let server = "http://127.0.0.1:9";
         let direct = Direct::new(&KeyFile::new(
-            relay,
+            server,
             Some(&site),
             "Ada's laptop",
             &key,
@@ -328,7 +328,7 @@ mod tests {
             link.starts_with(&format!("{site}/i/")),
             "the link is built on the site the device logged in with: {link}"
         );
-        assert!(!link.contains(relay), "{link}");
+        assert!(!link.contains(server), "{link}");
         assert!(
             link.contains('#'),
             "the key it opens with is in the fragment: {link}"

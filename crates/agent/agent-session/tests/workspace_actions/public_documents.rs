@@ -100,7 +100,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -249,7 +249,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A public workspace — anyone may walk in, and its host sends a device its
@@ -265,7 +265,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -408,14 +408,14 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// What the host keeps of the workspace's chat: its writes, which a chat
 /// founded again would add to.
 async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
     let history = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .document_history(workspace, CHAT, "")
@@ -496,7 +496,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     member.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// A visitor's agent writing in the public workspace's Notes, which the
@@ -516,7 +516,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -663,7 +663,7 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(

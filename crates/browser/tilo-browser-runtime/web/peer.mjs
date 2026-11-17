@@ -150,7 +150,7 @@ const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loa
 const GRANT_RENEW_MS = 60_000;
 /** Rejoining the live session: the first wait and the longest, exponential
  * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
- * of a workspace whose relay restarted do not all come back in the same tick. */
+ * of a workspace whose server restarted do not all come back in the same tick. */
 const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
 /** A member's track may be announced a moment after the member: retry a
  * subscription that ended while the member is still present. */
@@ -493,7 +493,7 @@ async function connect({
   // Who the host is and where it is dialled: as the page's own site names
   // it, handed on by the entry that took it (`enterOnSession`), else asked
   // of the host here. An answer from an entry says where the host's packet
-  // relay answers and nothing of how a page reaches the host itself (the
+  // server answers and nothing of how a page reaches the host itself (the
   // WebTransport origin, and the certificate a page pins when the host's is
   // not trusted by the browser): the site's own naming of the host has
   // that, and the host is the same one, so it is kept.

@@ -82,7 +82,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     // The restarted host comes up at the ports the kernel picks, its
-    // identity the one its pages hold, through the relay they reach it at.
+    // identity the one its pages hold, through the server they reach it at.
     let host = start_host_serving(
         &root,
         &host_device,
@@ -151,7 +151,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // A restarted host honours positions it issued before, and replays what
     // was committed while the observer was away.
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     let host = restart_host_relayed(&root, &host_device, state.path()).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;

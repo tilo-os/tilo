@@ -1,11 +1,11 @@
-//! The people a released relay kept: reading them out of that release's state
+//! The people a released server kept: reading them out of that release's state
 //! directory.
 //!
-//! A release of tilo.sh starts its relay on fresh state, so the workspace it
+//! A release of tilo.sh starts its server on fresh state, so the workspace it
 //! serves does not read the earlier release's members, roles, wait list or
 //! invitations back. The people are not lost with them: [`export`] reads the
 //! addresses and people an earlier release kept ([`People`]) from a copy of its
-//! state directory without writing to it, and the running relay takes them in
+//! state directory without writing to it, and the running server takes them in
 //! over its operator socket (`tilo-server release-people import`), where
 //! `persistent_workspace_cli::import_people` keeps the addresses on its wait
 //! list as they stood and declares or invites each person.
@@ -256,7 +256,7 @@ pub fn export(state: &Path) -> Result<People, String> {
     })
 }
 
-/// The workspace record the released relay kept under `state`: the one it
+/// The workspace record the released server kept under `state`: the one it
 /// was told to serve, named by the `room-id` file beside its state (the
 /// deployment passes it to the release's `--room-id-file`). A state holding
 /// exactly one record needs no such file; a state holding several is refused
@@ -276,12 +276,12 @@ fn one_record(state: &Path) -> Result<PathBuf, String> {
     match records.as_slice() {
         [record] => Ok(record.path.clone()),
         [] => Err(format!(
-            "{} holds no workspace record: name the released relay's own state directory",
+            "{} holds no workspace record: name the released server's own state directory",
             state.display()
         )),
         many => Err(format!(
             "{} holds {} workspace records ({}); name the directory holding the one this \
-             relay served",
+             server served",
             state.display(),
             many.len(),
             many.iter()
@@ -309,17 +309,17 @@ impl FoundRecord {
 
 /// Every workspace record the release kept under `state`, and the workspace it was told to
 /// serve, from the `room-id` file beside its state. The release kept its records in its own
-/// `relay/` directory (`--state <state>/relay`), and only those are read: a copy kept beside it
-/// (an older `relay.<when>-unreadable/`, say) holds records of the same workspace that are not
+/// `server/` directory (`--state <state>/relay`), and only those are read: a copy kept beside it
+/// (an older `server.<when>-unreadable/`, say) holds records of the same workspace that are not
 /// the release's, and reading one of those would export what no longer reads, or what the
-/// release no longer held. A `state` with no `relay/` is read whole, as the release's relay
+/// release no longer held. A `state` with no `server/` is read whole, as the release's server
 /// directory itself.
 fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
     let served = std::fs::read_to_string(state.join("room-id"))
         .ok()
         .map(|id| id.trim().to_lowercase())
         .filter(|id| !id.is_empty());
-    let own = state.join("relay");
+    let own = state.join("server");
     let root = if own.is_dir() {
         own
     } else {
@@ -933,7 +933,7 @@ mod tests {
         assert!(refused.contains("no workspace record"), "{refused}");
     }
 
-    /// A copy of the same workspace kept beside the release's own `relay/` (an older state set
+    /// A copy of the same workspace kept beside the release's own `server/` (an older state set
     /// aside as unreadable) is not what the release held, so the export never reads it.
     #[test]
     fn a_copy_kept_beside_the_release_state_is_not_read() {
@@ -941,11 +941,11 @@ mod tests {
         let workspace = "74a479e4-757a-4efb-aa82-a9acf0c72d45";
         let mut record = postcard::to_stdvec(&3u32).unwrap();
         record.extend(postcard::to_stdvec(&workspace.to_owned()).unwrap());
-        let own = dir.path().join("relay").join("relay").join("rooms");
+        let own = dir.path().join("server").join("server").join("rooms");
         let aside = dir
             .path()
-            .join("relay.oct27-unreadable")
-            .join("relay")
+            .join("server.oct27-unreadable")
+            .join("server")
             .join("rooms");
         for rooms in [&own, &aside] {
             std::fs::create_dir_all(rooms).unwrap();
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn a_record_is_found_at_the_depth_a_release_kept_it() {
         let dir = tempfile::tempdir().unwrap();
-        let rooms = dir.path().join("relay").join("relay").join("rooms");
+        let rooms = dir.path().join("server").join("server").join("rooms");
         std::fs::create_dir_all(&rooms).unwrap();
         let mut record = postcard::to_stdvec(&3u32).unwrap();
         record.extend(

@@ -29,16 +29,16 @@
 //    where it did, under OUT (`summary.json`, `run.log`, `browser/`).
 //
 // Two things are the harness's own, not the deployment's: the host's packet
-// relay is plain http here (a deployment's ingress publishes an https one), so
+// server is plain http here (a deployment's ingress publishes an https one), so
 // Chrome gets --webtransport-developer-mode; and the certificate is made per
 // run, which the CLI trusts with `TILO_TEST_CA_FILE` and the browser loads as
 // the only certificate it accepts.
 //
-// usage: node agent-shell.mjs --bundle DIR [--out DIR] [--relay BIN] [--tilo BIN]
+// usage: node agent-shell.mjs --bundle DIR [--out DIR] [--server BIN] [--tilo BIN]
 //          [--widths 1280,390] [--themes light,dark] [--[no-]video] [--build]
 //   --bundle  build.sh --bundle desktop output (with --build and no --bundle:
 //             built into $CARGO_TARGET_DIR/agent-shell/bundle, --profile quick)
-//   --relay   tilo-server with features web,agents (default: target/debug, then
+//   --server   tilo-server with features web,agents (default: target/debug, then
 //             target/release, below $CARGO_TARGET_DIR)
 //   --tilo    the tilo CLI (the same directories)
 //   --out     the shots, recordings and the run's logs (default:
@@ -47,7 +47,7 @@
 //   --work    what the run keeps for itself: certificates, the host's state,
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
-//   --build   cargo build the relay and the CLI, and build the bundle
+//   --build   cargo build the server and the CLI, and build the bundle
 //   --record-scale  the device scale the follow is recorded at (default 1; 2, the shots' own,
 //             on a machine with a GPU)
 // Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
@@ -136,7 +136,7 @@ const known = get => { try { return get() ?? null; } catch { return null; } };
 const writeSummary = () => {
   try {
     writeFileSync(join(out, 'summary.json'), JSON.stringify({started: new Date(t0).toISOString(), out,
-      bundle: known(() => bundle), relay: known(() => relayBin), tilo: known(() => tiloBin),
+      bundle: known(() => bundle), server: known(() => serverBin), tilo: known(() => tiloBin),
       site: known(() => siteOrigin), host: known(() => hostOrigin), workspace: known(() => workspaceId),
       stoppedBy, checks, notes, calls}, null, 2));
   } catch { /* The log has it. */ }
@@ -173,7 +173,7 @@ const note = (id, pass, detail = '') => {
 };
 
 // ---------------------------------------------------------------------------
-// Builds (opt-in): the relay with its agent features, the CLI, and the bundle.
+// Builds (opt-in): the server with its agent features, the CLI, and the bundle.
 
 const cargo = args => {
   log('cargo', args.join(' '));
@@ -208,9 +208,9 @@ if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) {
 }
 bundle = resolve(bundle);
 const firstOf = (name, dirs) => dirs.map(dir => join(dir, name)).find(existsSync);
-const relayBin = resolve(option('--relay', firstOf('tilo-server', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-server'));
+const serverBin = resolve(option('--server', firstOf('tilo-server', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo-server'));
 const tiloBin = resolve(option('--tilo', firstOf('tilo', [join(target, 'debug'), join(target, 'release')]) ?? 'tilo'));
-for (const bin of [relayBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --relay and --tilo`);
+for (const bin of [serverBin, tiloBin]) if (!existsSync(bin)) throw new Error(`missing ${bin}; pass --build, or --relay and --tilo`);
 // The builder's build container carries Chromium where CI's CHROME points.
 if (!process.env.CHROME && existsSync('/usr/lib64/chromium-browser/chromium-browser')) {
   process.env.CHROME = '/usr/lib64/chromium-browser/chromium-browser';
@@ -465,7 +465,7 @@ const hostHome = join(work, 'host-home');
 const secretsDir = join(work, 'secrets');
 mkdirSync(secretsDir, {recursive: true, mode: 0o700});
 const OPERATOR_LINE = 'tilo-workspace-operator ';
-const host = detached('host', relayBin, ['workspace', '--state', join(work, 'workspace-state'),
+const host = detached('host', serverBin, ['workspace', '--state', join(work, 'workspace-state'),
   '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--workspace-id-file', workspaceIdFile,
   '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
   '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
@@ -478,7 +478,7 @@ const host = detached('host', relayBin, ['workspace', '--state', join(work, 'wor
   // beside the workspace's records.
   '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
   '--seed-app', 'so.tilo.terminal'],
-{env: {...homeDirs(hostHome), TILO_SERVER_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_server=info,warn',
+{env: {...homeDirs(hostHome), TILO_SERVER_LOG: process.env.AGENT_SHELL_SERVER_LOG ?? 'tilo_server=info,warn',
   // A machine with no keychain to unlock keeps its secrets in files here.
   TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
 let stopped = null;

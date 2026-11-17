@@ -17,7 +17,7 @@ chmod 0666 /dev/kvm
 dnf install -y --setopt=install_weak_deps=False \
   libvirt-client libvirt-daemon-driver-qemu libvirt-daemon-common \
   qemu-kvm-core qemu-img edk2-ovmf passt virtiofsd waypipe skopeo vhost-device-vsock
-# The relay's legacy window stream is H.264: Cisco's openh264 plugin.
+# The server's legacy window stream is H.264: Cisco's openh264 plugin.
 dnf install -y --setopt=install_weak_deps=False gstreamer1-plugin-openh264 openh264
 command -v virsh virtqemud qemu-system-x86_64 passt waypipe >/dev/null
 test -x /usr/libexec/virtiofsd

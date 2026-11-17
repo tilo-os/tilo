@@ -26,7 +26,7 @@ use tilo_user_identity::RevocationEntry;
 
 use super::{StoreError, atomic_write};
 
-/// Root-signed device revocations enforced during relay authentication.
+/// Root-signed device revocations enforced during server authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.log";
 /// What every revocation log starts with, before its version.
 const MAGIC: &[u8; 8] = b"tilorev\0";
@@ -36,7 +36,7 @@ const FRAMING: usize = 4 + 8;
 
 /// The log this build writes and reads.
 pub(crate) const FORMAT: Format = Format {
-    name: "relay revocation log",
+    name: "server revocation log",
     version: 2,
     oldest: 2,
     steps: &[],
@@ -173,7 +173,7 @@ fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
         .map_err(|error| StoreError::Json(error.to_string()))
 }
 
-/// Load the root-signed revocation entries the relay's log holds: for each
+/// Load the root-signed revocation entries the server's log holds: for each
 /// root and key it revoked, the earliest entry.
 ///
 /// # Errors
@@ -187,7 +187,7 @@ pub fn load_revocations(state_root: &Path) -> Result<Vec<RevocationEntry>, Store
     Ok(read(&bytes)?.0.entries)
 }
 
-/// Atomically replace the relay's root-signed revocation entries.
+/// Atomically replace the server's root-signed revocation entries.
 ///
 /// # Errors
 ///
@@ -200,7 +200,7 @@ pub fn save_revocations(state_root: &Path, entries: &[RevocationEntry]) -> Resul
     Ok(())
 }
 
-/// Add `entries` to the relay's revocation log, each unless the log already
+/// Add `entries` to the server's revocation log, each unless the log already
 /// holds its root's revocation of its device as early. How many it added.
 /// Each root's entries are its own: another root's entry naming the same key
 /// neither replaces nor is replaced by it.
@@ -248,7 +248,7 @@ pub fn append_revocations(
     Ok(added)
 }
 
-/// Add `entry` to the relay's revocation log unless the log already holds
+/// Add `entry` to the server's revocation log unless the log already holds
 /// its root's revocation of its device as early. Whether the log changed.
 ///
 /// # Errors
@@ -278,9 +278,9 @@ mod tests {
     }
 
     /// The log this build writes: one root's revocation of two of its
-    /// devices. Kept so a relay's log goes on reading the same way; a field
+    /// devices. Kept so a server's log goes on reading the same way; a field
     /// added, removed or reordered changes these bytes.
-    const GOLDEN: &str = include_str!("../../golden/relay-revocation-log/v2.hex");
+    const GOLDEN: &str = include_str!("../../golden/server-revocation-log/v2.hex");
 
     fn golden() -> Vec<u8> {
         hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()

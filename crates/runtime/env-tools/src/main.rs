@@ -1,7 +1,7 @@
 //! `tilo-env-tools` — build tool images without a session.
 //!
 //! CI uses it to build the tool catalog for each env-runtime and to sign it
-//! for publication; a relay's compute worker uses it to build a member's tool
+//! for publication; a server's compute worker uses it to build a member's tool
 //! where their session runs.
 //! Output is one JSON document on stdout; progress and logs go to stderr.
 
@@ -102,7 +102,7 @@ enum Command {
     },
     /// Build a tool for `publisher`, whose key is elsewhere: the image is
     /// written to `--out` with a placeholder signature for the key holder
-    /// to sign. What a relay's worker runs as a member, in their quota.
+    /// to sign. What a server's worker runs as a member, in their quota.
     BuildFor {
         /// The key holder's public key (hex).
         #[arg(long)]

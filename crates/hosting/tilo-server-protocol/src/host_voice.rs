@@ -7,7 +7,7 @@
 //! content keys open every member-readable record, and a host that belongs to
 //! an operator never holds them. The host says it here instead, signed with
 //! its own device key, on its own sessions with the workspace's devices: the
-//! relay that is the host fans a frame out only when its own device said it,
+//! server that is the host fans a frame out only when its own device said it,
 //! and a device takes one only when the signature is its host's.
 //!
 //! What the host may say is closed: a run's presence ([`HostWords::Presence`])
@@ -28,7 +28,7 @@ use crate::live::{LiveResource, SemanticFrame};
 /// version is dropped: a reader never guesses at what a host meant.
 pub const HOST_VOICE_VERSION: u16 = 1;
 
-/// Largest encoded [`HostSaid`] a relay fans out or a device reads: a run's
+/// Largest encoded [`HostSaid`] a server fans out or a device reads: a run's
 /// face, or one action's narration, with room to spare.
 pub const MAX_HOST_SAID_BYTES: usize = 40 * 1024;
 
@@ -44,7 +44,7 @@ const SAID_DOMAIN: &[u8] = b"tilo-host-voice-v1\0";
 pub struct HostSaid {
     /// [`HOST_VOICE_VERSION`].
     pub version: u16,
-    /// The workspace it is said in, as the relay's workspace names it.
+    /// The workspace it is said in, as the server's workspace names it.
     pub workspace_id: WorkspaceId,
     /// The host device that says it: the key the signature verifies under.
     pub host: [u8; 32],

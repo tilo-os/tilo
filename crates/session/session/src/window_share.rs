@@ -205,7 +205,7 @@ pub(crate) struct WindowShares {
     /// again when `live_seen` moved, and the windows a member's session is sent pictures of now: what
     /// the reading says beside the shares ([`reading`]).
     live: BTreeMap<String, crate::live::LiveState>,
-    /// The endpoints this device's relay turned away from each workspace's live session, and why.
+    /// The endpoints this device's server turned away from each workspace's live session, and why.
     turned: BTreeMap<String, Vec<crate::live::TurnedAway>>,
     live_seen: u64,
     live_sessions: BTreeMap<String, std::sync::Weak<LiveSession>>,
@@ -1444,7 +1444,7 @@ impl WindowShares {
             return;
         }
         let Ok(object) = tilo_failure::ignored!(
-            "the live session opened only what its relay validated as a picture",
+            "the live session opened only what its server validated as a picture",
             VideoObject::decode(body)
         ) else {
             return;

@@ -3,7 +3,7 @@
 //!
 //! A person is their root; their devices are keys their root certified, each
 //! running a session of its own with its own home, identity and state
-//! ([`common::people`]). The workspace is a site's: a relay of this machine
+//! ([`common::people`]). The workspace is a site's: a server of this machine
 //! governs it, hosts it and admits people to it at an entry a site serves.
 //!
 //! What this proves: a person joins a workspace at its site's entry and lands

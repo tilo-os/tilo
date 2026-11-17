@@ -283,7 +283,7 @@ test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
 echo 'ok: encrypted root retains token unlock, retries without password caching and forwards only confirmed rejection'
 rm -rf "$work/run/tilo-root"
 if TILO_TEST_ATTACH_FAILURE=1 encrypted_discover 2>"$work/attach-failure"; then
-  echo 'fatal encrypted device failure was swallowed by the log relay' >&2
+  echo 'fatal encrypted device failure was swallowed by the log server' >&2
   exit 1
 fi
 grep -q 'encrypted Tilo root did not unlock' "$work/attach-failure"
@@ -323,7 +323,7 @@ if [ "$1" = unlock-prompt ]; then
 fi
 if [ "$1" = other-ways ]; then
   [ "$2" = --device ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ] && [ "$4" = --pid ] && [ -n "$5" ]
-  if [ "${TILO_TEST_RELAY_EXIT:-0}" = 3 ] && [ ! -e "$TILO_ROOT_RUNTIME/backed" ]; then
+  if [ "${TILO_TEST_SERVER_EXIT:-0}" = 3 ] && [ ! -e "$TILO_ROOT_RUNTIME/backed" ]; then
     until [ -e "$TILO_ROOT_RUNTIME/attach-running" ]; do sleep 0.01; done
     touch "$TILO_ROOT_RUNTIME/backed"
     echo back >>"$TILO_TEST_ORDER_LOG"
@@ -337,7 +337,7 @@ if [ "$1" = other-ways ]; then
     sleep 0.01
   done
   echo relayed >>"$TILO_TEST_ORDER_LOG"
-  exit "${TILO_TEST_RELAY_EXIT:-0}"
+  exit "${TILO_TEST_SERVER_EXIT:-0}"
 fi
 [ -e "$TILO_ROOT_RUNTIME/backed" ] && TILO_TEST_SIGNIN_EXIT=0
 [ "$1" = --device ] && [ "$2" = "$TILO_ROOT_DEVROOT/tilo-root" ] && [ "$3" = --volume ] && [ "$4" = root ]
@@ -370,7 +370,7 @@ echo "ok: a root nobody can sign in to keeps every existing unlock path, unchang
 # sign-in screen's agent in place of Plymouth's, which is back afterwards.
 for relayed in 0 2; do
   rm -rf "$work/run/tilo-root" "$work/order"
-  TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT="$relayed" \
+  TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_SERVER_EXIT="$relayed" \
     TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
   printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
     "start --no-block $sibling_unit" "stop $agent.path $agent.service" attach relayed "start $agent.path" "stop $sibling_unit" \
@@ -381,7 +381,7 @@ done
 echo "ok: other ways in keep every existing unlock path, asked on the boot screen"
 # An empty answer there stops that attempt and goes back to signing in.
 rm -rf "$work/run/tilo-root" "$work/order" "$work/run/backed" "$work/run/attach-running"
-TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT=3 \
+TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_SERVER_EXIT=3 \
   TILO_TEST_ATTACH_HOLD=1 TILO_TEST_UNLOCK="$work/bin/rollback-unlock" \
   TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
 printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \

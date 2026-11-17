@@ -40,7 +40,7 @@ tilo_test_env::scenario! {
         let (mut receiver, _, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let before = receiver.durable().unwrap();
         assert!(matches!(
             receiver.receive_from_report(origin, message.clone(), now),
@@ -74,7 +74,7 @@ tilo_test_env::scenario! {
         let (mut receiver, _, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let mut legacy = receiver.clone();
         legacy.receive_from(origin, message.clone(), now).unwrap();
         legacy = restore(&legacy, now);
@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
             envelope.seq += 1;
             collab_types::sign_op(envelope, &key).unwrap();
         }
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         receiver.select_exact_admissions().unwrap();
         let first = receiver.receive_from_report(origin, first, now).unwrap();
         let rows = receiver.rows();
@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, key, _, _, now) = seeded();
         receiver.select_exact_admissions().unwrap();
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let message = receiver.workspace_message();
         let report = receiver.receive_from_report(origin, message, now).unwrap();
         assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
         let (mut receiver, governor, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         receiver.select_exact_admissions().unwrap();
         receiver
             .receive_from_report(origin, message.clone(), now)
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
         let op = collab_types::canonical_bytes(envelope.as_ref()).unwrap();
         collab_types::verify_op(envelope.as_ref()).unwrap();
         receiver.select_exact_admissions().unwrap();
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let report = receiver.receive_from_report(origin, decoded, now).unwrap();
         let InputDisposition::Accepted(admitted) = report.primary() else {
             panic!("message rejected: {:?}", report.primary())
@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
         let mut author = receiver.clone();
         let first = incremental(&mut author, &key, now, "A");
         let second = incremental(&mut author, &key, now, "B");
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         receiver.select_exact_admissions().unwrap();
         let deferred = receiver
             .receive_from_report(origin, second.clone(), now)
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
         }
         let waiting = receiver
             .receive_from_report(
-                TransportOrigin::RelayDelta(absent_key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(absent_key.verifying_key().to_bytes()),
                 unrelated,
                 now,
             )
@@ -372,7 +372,7 @@ tilo_test_env::scenario! {
         let message = incremental(&mut author, &key, now, "old-unindexed");
         let source = key.verifying_key().to_bytes();
         let later = now + Duration::from_secs(301);
-        let retained = TransportOrigin::RetainedRelayDelta(source);
+        let retained = TransportOrigin::RetainedServerDelta(source);
         // A retained frame is its author's history: admitted as of its own
         // timestamp, through either entry point.
         let mut legacy = receiver.clone();
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
         live.select_exact_admissions().unwrap();
         let rows = live.rows();
         assert!(
-            live.receive_from_report(TransportOrigin::RelayDelta(source), message, later)
+            live.receive_from_report(TransportOrigin::ServerDelta(source), message, later)
                 .is_err(),
             "a live frame beyond the clock skew was admitted"
         );
@@ -414,7 +414,7 @@ tilo_test_env::scenario! {
         let mut author = receiver.clone();
         let _first = incremental(&mut author, &key, now, "A");
         let second = incremental(&mut author, &key, now, "B");
-        let origin = TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::RetainedServerDelta(key.verifying_key().to_bytes());
         // Queue through the legacy retained path to exercise persisted provenance.
         assert!(
             receiver
@@ -428,7 +428,7 @@ tilo_test_env::scenario! {
         let workspace = receiver.workspace_message();
         let report = receiver
             .receive_from_report(
-                TransportOrigin::RelayDelta(authority.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(authority.verifying_key().to_bytes()),
                 workspace,
                 later,
             )
@@ -462,8 +462,8 @@ tilo_test_env::scenario! {
         // The record's cleartext writes before it sealed are its base, however
         // they arrive: replayed from what the host kept, or relayed as written.
         for (name, origin) in [
-            ("kept", TransportOrigin::RetainedRelayDelta(source)),
-            ("relayed", TransportOrigin::RelayDelta(source)),
+            ("kept", TransportOrigin::RetainedServerDelta(source)),
+            ("relayed", TransportOrigin::ServerDelta(source)),
         ] {
             let base = incremental(&mut author, &key, now, name);
             here.receive_from_report(origin, base, now).unwrap();
@@ -475,8 +475,8 @@ tilo_test_env::scenario! {
         // After the seal a cleartext write is a downgrade, whether the host
         // relays it as written or sends it as what its store kept.
         for (name, origin) in [
-            ("relayed-after", TransportOrigin::RelayDelta(source)),
-            ("kept-after", TransportOrigin::RetainedRelayDelta(source)),
+            ("relayed-after", TransportOrigin::ServerDelta(source)),
+            ("kept-after", TransportOrigin::RetainedServerDelta(source)),
         ] {
             let after = incremental(&mut author, &key, now, name);
             assert!(

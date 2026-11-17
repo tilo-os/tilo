@@ -98,7 +98,7 @@ impl Reach {
                 host: Host::Paired(host),
             });
         }
-        // The relay answers on a service key of its own, which the hint's signature binds to the
+        // The server answers on a service key of its own, which the hint's signature binds to the
         // host device: the link's history is that device's.
         let host = payload.device_certificate.device_public_key;
         let dialed = tokio::time::timeout(

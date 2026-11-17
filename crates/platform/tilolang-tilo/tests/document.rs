@@ -57,14 +57,14 @@ type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 
 /// One end of a workspace's route as the broker relays it: what one replica sends reaches the
 /// other as the signed document envelope the broker delivers.
-struct Relay {
+struct Server {
     route: RouteSpec,
     mine: Inbox,
     theirs: Inbox,
     joined: Option<RouteSpec>,
 }
 
-impl PeerTransport for Relay {
+impl PeerTransport for Server {
     fn is_connected(&self) -> bool {
         true
     }
@@ -120,7 +120,7 @@ type Queue = Arc<Mutex<VecDeque<CollabEvent>>>;
 
 /// One end of a workspace's route whose collab client fills up: while `busy`, it takes no document
 /// change (`TransportError::Busy`, as the broker transport's queue says under fast typing); what
-/// it takes reaches the other replica as [`Relay`] relays it.
+/// it takes reaches the other replica as [`Server`] relays it.
 struct Crowded {
     route: RouteSpec,
     mine: Queue,
@@ -181,7 +181,7 @@ fn window(
     platform: &Rc<Counter>,
     doc: automerge::AutoCommit,
 ) -> Window {
-    let manager = CollaborationManager::with_peer_transport(Relay {
+    let manager = CollaborationManager::with_peer_transport(Server {
         route: route.clone(),
         mine: Rc::clone(mine),
         theirs: Rc::clone(theirs),

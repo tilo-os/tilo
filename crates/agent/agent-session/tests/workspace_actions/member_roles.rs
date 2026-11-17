@@ -404,13 +404,13 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let membership = Arc::new(Membership {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         role: Mutex::new(Some(Role::Viewer)),
@@ -785,5 +785,5 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     );
     browser.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }

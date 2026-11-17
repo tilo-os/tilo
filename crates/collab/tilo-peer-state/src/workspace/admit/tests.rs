@@ -1209,10 +1209,10 @@ tilo_test_env::scenario! {
         let batch = changes_after(before, |doc| {
             crate::members::put_op(doc, &op).unwrap();
         });
-        let relay = hex::encode(workspace.viewer.device_public_key);
+        let server = hex::encode(workspace.viewer.device_public_key);
         let admitted = admit(
             Some(before),
-            member_of(&relay, &workspace.viewer),
+            member_of(&server, &workspace.viewer),
             &workspace.owner.user_public_key,
             &batch,
         )

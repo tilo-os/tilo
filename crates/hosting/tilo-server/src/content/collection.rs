@@ -414,7 +414,7 @@ mod tests {
     }
 
     /// A workspace host as tilo.sh runs one, under `state`.
-    async fn host(state: &std::path::Path) -> crate::daemon::Relay {
+    async fn host(state: &std::path::Path) -> crate::daemon::Server {
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let host = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
@@ -428,15 +428,15 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        crate::daemon::Relay::start(
-            crate::RelayConfig {
-                state_root: state.join("relay"),
+        crate::daemon::Server::start(
+            crate::ServerConfig {
+                state_root: state.join("server"),
                 identity_root: state.join("identity"),
                 full_replica_status: state.join("status.json"),
                 home_peer_bundle: state.join("home-peer.toml"),
                 ..Default::default()
             },
-            crate::daemon::RelayIdentity {
+            crate::daemon::ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
                 device_cert: cert,
@@ -457,11 +457,11 @@ mod tests {
     )]
     async fn a_workspace_takes_edits_while_a_pass_runs_and_keeps_what_they_name() {
         let state = tempfile::tempdir().unwrap();
-        let relay = host(state.path()).await;
-        let workspaces = relay.workspaces().unwrap().clone();
+        let server = host(state.path()).await;
+        let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Notes").await.unwrap().workspace;
         let governor = workspaces.serving_certificate().clone();
-        let stores = relay.content();
+        let stores = server.content();
         let store = stores.get(&workspace).unwrap();
         let picture = store.put(b"a picture written long ago").unwrap();
         let stray = store.put(b"an upload nothing names").unwrap();
@@ -515,7 +515,7 @@ mod tests {
             "what the edit named after the pass read the records stays"
         );
         assert!(!store.has(&stray));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// The store a page keeps its content in: the profile's app files, which
@@ -557,12 +557,12 @@ mod tests {
     async fn an_attachment_a_draft_named_comes_back_from_the_device_that_uploaded_it() {
         const APP: &str = ui::apps::CHAT;
         let state = tempfile::tempdir().unwrap();
-        let relay = host(state.path()).await;
-        let workspaces = relay.workspaces().unwrap().clone();
+        let server = host(state.path()).await;
+        let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         let governor = workspaces.serving_certificate().clone();
         let host_device = governor.device_public_key;
-        let stores = relay.content();
+        let stores = server.content();
         let store = stores.get(&workspace).unwrap();
 
         // The device a person writes from keeps the attachment it uploaded,
@@ -670,6 +670,6 @@ mod tests {
             Some(attachment.as_slice()),
             "the message's attachment reads"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

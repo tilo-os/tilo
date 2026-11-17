@@ -29,7 +29,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server::certify::ApproverDecision;
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::Approver;
 use tilo_user_identity::{
@@ -74,13 +74,13 @@ async fn main() {
     let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
     let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
-    let cfg = tilo_server::RelayConfig {
+    let cfg = tilo_server::ServerConfig {
         state_root: state.path().to_path_buf(),
         ..Default::default()
     };
-    let relay = Relay::start(
+    let server = Server::start(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user,
             device_signing_key: host_key,
             device_cert: host_cert,
@@ -88,8 +88,8 @@ async fn main() {
         },
     )
     .await
-    .expect("start the relay");
-    let web = relay
+    .expect("start the server");
+    let web = server
         .serve_web(WebConfig {
             listen,
             tls: TlsSource::Development {
@@ -122,7 +122,7 @@ async fn main() {
         .expect("approver endpoint");
     let mut approver = Approver::connect(
         &endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         approver_cert,
         &approver_key,
         &RevocationList::new(),

@@ -202,8 +202,8 @@ pub struct ReceiveOutcome {
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
 #[derive(Clone, Copy, Debug)]
 pub enum TransportOrigin {
-    RelayDelta([u8; 32]),
-    RetainedRelayDelta([u8; 32]),
+    ServerDelta([u8; 32]),
+    RetainedServerDelta([u8; 32]),
     RetainedNativePublication { publisher: [u8; 32] },
     UntrustedPresence([u8; 32]),
 }

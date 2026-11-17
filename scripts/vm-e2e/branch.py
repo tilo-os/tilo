@@ -1075,7 +1075,7 @@ def branch(facts: dict, run: Run) -> None:
 # admission boot during `vm branch` is a boot before this one.
 JOINING = ("journalctl -m --no-pager -o short-iso SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
            "| grep -a 'join_flow\\|join:\\|take this device in\\|admitted\\|host hint\\|"
-           "the workspace.s own host\\|direct\\|relay\\|workspace_sync\\|refus' "
+           "the workspace.s own host\\|direct\\|server\\|workspace_sync\\|refus' "
            "| grep -av 'was not named' | tail -n 250 | cut -c1-500")
 
 

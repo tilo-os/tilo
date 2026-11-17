@@ -7,7 +7,7 @@ description = "Wire contract of Tilo's browser-facing delivery: the private acti
 license = "MIT OR Apache-2.0"
 
 # Browsers, the action broker and both hosts speak these records without
-# linking the relay daemon. Keep this crate wasm-clean: no filesystem, process,
+# linking the server daemon. Keep this crate wasm-clean: no filesystem, process,
 # endpoint or runtime dependencies. The Iroh join transport is in
 # `tilo-server-session` (client) and `tilo-server` (host).
 [package.metadata.cargo-machete]

@@ -1,7 +1,7 @@
 """The person a check holds, answering what their hosts ask them.
 
 `tilo-approve` (a program this tree builds for the checks, like `tilo-enroll`)
-connects to the relay as one of the person's approving devices, from the root
+connects to the server as one of the person's approving devices, from the root
 their page's recovery key opened, and answers the next question a host puts to
 them — allow, deny, or nothing at all. A host asks before what a person's
 access makes them answer for: an agent's action that reaches outside a
@@ -53,7 +53,7 @@ class Person:
     async def _start(self, answer: str, within: int) -> asyncio.subprocess.Process:
         device = ["--device", self.device] if self.device else []
         return await asyncio.create_subprocess_exec(
-            self.approver, "next", "--root", self.root, "--relay", self.host, *device,
+            self.approver, "next", "--root", self.root, "--server", self.host, *device,
             "--answer", answer, "--within", str(within),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )

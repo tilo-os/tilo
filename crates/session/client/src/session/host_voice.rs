@@ -2,7 +2,7 @@
 //! live session ([`tilo_server_protocol::host_voice`]).
 //!
 //! The host's session signs each frame with this device's key and hands it
-//! to the relay that is the host; a member's session takes a frame only when
+//! to the server that is the host; a member's session takes a frame only when
 //! the host this session is pinned to signed it, and hands it on as the
 //! live session's own events would carry it ([`crate::Event::LiveSession`] for a run's
 //! presence, [`crate::Event::Live`] for its narration), from the host's device.
@@ -16,7 +16,7 @@
 use tilo_server_protocol::host_voice::{HOST_VOICE_VERSION, HostSaid, HostWords};
 use tilo_server_protocol::live::{LiveFrame, OpsFrame};
 use tilo_server_protocol::transport::Envelope;
-use tilo_server_session::RelayClient;
+use tilo_server_session::ServerClient;
 
 use super::Task;
 use tilo_server_protocol::WorkspaceId;
@@ -33,7 +33,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         words: HostWords,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) {
         let Some(client) = client else {
             return;

@@ -226,16 +226,16 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     // other: the native apps name their surfaces as the server first runs them.
     let _ = crate::common::catalogue();
     tilo_server::surfaces::decide_receipt(&state.path().join("surfaces"));
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let keeper = root.verifying_key().to_bytes();
     let person = hex::encode(keeper);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
@@ -352,16 +352,16 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let keeper = root.verifying_key().to_bytes();
     let person = hex::encode(keeper);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
@@ -426,17 +426,17 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     // The person's page joins: the device the server admits their agent's turns on.
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
 
     // The person makes an agent that runs on the server, as the Agents tab in a browser does.
@@ -561,16 +561,16 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, Some(10_000)).await;
     let tasks_record =
@@ -670,16 +670,16 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
@@ -976,16 +976,16 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,
         state.path(),
         crate::common::catalogue,
     )
     .await;
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let keeper = root.verifying_key().to_bytes();
     let person = hex::encode(keeper);
     let agents_record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);

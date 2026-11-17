@@ -23,8 +23,8 @@ use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use tilo_server::daemon::RelayIdentity;
-use tilo_server::{Envelope, HomePeerRegistration, RelayClient, RelayConfig};
+use tilo_server::daemon::ServerIdentity;
+use tilo_server::{Envelope, HomePeerRegistration, ServerClient, ServerConfig};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, sign_device_cert,
 };
@@ -89,7 +89,7 @@ fn write_approver_fixture(
     root: &SigningKey,
     approver: &SigningKey,
     home: &SigningKey,
-    relay_endpoint: Option<iroh::EndpointAddr>,
+    server_endpoint: Option<iroh::EndpointAddr>,
 ) -> HomePeerRegistration {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
@@ -130,12 +130,12 @@ fn write_approver_fixture(
     let registration = HomePeerRegistration {
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id: hex::encode(home_cert.device_public_key),
-        relay_service_node_id: hex::encode(tilo_server::daemon::relay_service_node_id(home)),
-        relay_endpoint,
+        server_node_id: hex::encode(tilo_server::daemon::server_node_id(home)),
+        server_endpoint,
         label: "Home peer".into(),
         user_public_key: hex::encode(user),
         device_cert: Some(home_cert),
-        relay_workspace_ids: vec![FILE_WORKSPACE],
+        server_workspace_ids: vec![FILE_WORKSPACE],
     };
     tilo_files::native::atomic::write_creating_parent(
         &tilo_server::home_peer_registry_path(root_dir),
@@ -166,12 +166,12 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let home = SigningKey::generate(&mut UnwrapErr(SysRng));
     let state = tempfile::tempdir().unwrap();
     let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::member());
-    let relay = crate::common::start_relay(
-        RelayConfig {
+    let server = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: home.clone(),
             device_cert: home_cert,
@@ -186,18 +186,18 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         &root,
         &approver,
         &home,
-        Some(relay.node_addr()),
+        Some(server.node_addr()),
     );
 
     // Seed the recipient key before starting either process so approval pins
-    // the exact device and domain-separated relay service identities.
+    // the exact device and domain-separated server service identities.
     let recipient = SigningKey::generate(&mut UnwrapErr(SysRng));
     let recipient_paths = IdentityPaths::under(&recipient_root);
     recipient_paths.ensure_directories().unwrap();
     tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
         .unwrap();
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
-    let recipient_service = hex::encode(tilo_server::daemon::relay_service_node_id(&recipient));
+    let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
 
     let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
@@ -293,27 +293,31 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     )
     .unwrap();
     assert_eq!(transferred, vec![source_registration.clone()]);
-    assert!(transferred[0].relay_workspace_ids.contains(&FILE_WORKSPACE));
+    assert!(
+        transferred[0]
+            .server_workspace_ids
+            .contains(&FILE_WORKSPACE)
+    );
 
-    // The approver process has exited; the transferred, authenticated relay
+    // The approver process has exited; the transferred, authenticated server
     // address remains enough to reach the home peer without DNS/lookup.
     assert_eq!(
-        hex::encode(relay.node_addr().id.as_bytes()),
-        transferred[0].relay_service_node_id,
+        hex::encode(server.node_addr().id.as_bytes()),
+        transferred[0].server_node_id,
         "the transferred registration names the actual home-peer service"
     );
     crate::common::admit_members(
-        &relay,
+        &server,
         FILE_WORKSPACE,
         &[member_cert.device_public_key],
         state.path(),
     )
     .await;
     let transferred_addr = transferred[0]
-        .relay_endpoint
+        .server_endpoint
         .clone()
-        .expect("enrollment must transfer the relay address hint");
-    let client = RelayClient::connect(
+        .expect("enrollment must transfer the server address hint");
+    let client = ServerClient::connect(
         client_endpoint().await,
         transferred_addr,
         root.verifying_key().to_bytes(),
@@ -379,7 +383,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
         .unwrap();
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
-    let recipient_service = hex::encode(tilo_server::daemon::relay_service_node_id(&recipient));
+    let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
 
     let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
@@ -488,7 +492,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
             .unwrap();
         let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
-        let recipient_service = hex::encode(tilo_server::daemon::relay_service_node_id(&recipient));
+        let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
         let enroll = tilo_test_env::package_binary!("tilo-enroll");
         let helper = tilo_test_env::package_binary!("tilo-home-peer-control");
         let ownership = Command::new("chown")

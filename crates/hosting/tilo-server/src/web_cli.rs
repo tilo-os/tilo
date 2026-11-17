@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use ed25519_dalek::SigningKey;
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, RefusalReason};
 use tilo_user_identity::{
@@ -136,7 +136,7 @@ pub struct WebArgs {
         requires_all = ["session_device", "install_token_file"]
     )]
     pub session_identity_root: Option<PathBuf>,
-    /// Once serving, write this relay's endpoint for the session beside it
+    /// Once serving, write this server's endpoint for the session beside it
     /// as `TILO_COLLAB_HOST='<endpoint JSON>'`, a systemd `EnvironmentFile`:
     /// the session dials its node without anyone copying the address.
     #[arg(
@@ -258,9 +258,9 @@ impl AgentArgs {
     }
 }
 
-/// The relay, with its agents when `--agents` asked for them.
-pub struct HostedRelay {
-    pub relay: Relay,
+/// The server, with its agents when `--agents` asked for them.
+pub struct HostedServer {
+    pub server: Server,
     #[cfg(feature = "agents")]
     agents: Option<tilo_agent_session::AgentHost>,
     /// The agents it runs for the workspaces it governs.
@@ -270,8 +270,8 @@ pub struct HostedRelay {
     _lock: tilo_server::state_lock::StateLock,
 }
 
-impl HostedRelay {
-    /// Stop the agents (they resume on the next start), then the relay.
+impl HostedServer {
+    /// Stop the agents (they resume on the next start), then the server.
     pub async fn shutdown(self) {
         #[cfg(feature = "agents")]
         if let Some(agents) = self.agents {
@@ -281,34 +281,34 @@ impl HostedRelay {
         if let Some(host_agents) = self.host_agents {
             host_agents.abort();
         }
-        self.relay.shutdown().await;
+        self.server.shutdown().await;
     }
 }
 
-/// `--web-entry`, when given, is the entry the relay's catalogue announces.
-fn announce_web_entry(cfg: &mut tilo_server::RelayConfig, args: &WebArgs) {
+/// `--web-entry`, when given, is the entry the server's catalogue announces.
+fn announce_web_entry(cfg: &mut tilo_server::ServerConfig, args: &WebArgs) {
     if let Some(entry) = &args.web_entry {
         cfg.web_entry = Some(entry.clone());
     }
 }
 
-/// Start the relay; with `--agents`, with its agent supervisor as the
+/// Start the server; with `--agents`, with its agent supervisor as the
 /// app action server and the agents kept under `state_root/agents`; with
 /// `--workspace-documents` alone, serving the workspaces' records without agents.
 ///
 /// # Errors
-/// The relay did not start, or the agent state could not be read.
+/// The server did not start, or the agent state could not be read.
 #[cfg_attr(
     not(feature = "agents"),
     allow(unused_variables, reason = "agents only")
 )]
-pub async fn start_relay(
-    cfg: tilo_server::RelayConfig,
-    identity: RelayIdentity,
+pub async fn start_server(
+    cfg: tilo_server::ServerConfig,
+    identity: ServerIdentity,
     args: &WebArgs,
     state_root: &Path,
-) -> anyhow::Result<HostedRelay> {
-    start_relay_lending(cfg, identity, args, state_root, Lent::default()).await
+) -> anyhow::Result<HostedServer> {
+    start_server_lending(cfg, identity, args, state_root, Lent::default()).await
 }
 
 /// What a host lends its workspaces besides serving their records.
@@ -319,21 +319,21 @@ pub struct Lent {
     pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>>,
 }
 
-/// [`start_relay`], lending the workspaces what `lent` holds.
+/// [`start_server`], lending the workspaces what `lent` holds.
 ///
 /// # Errors
-/// The relay did not start, or the agent state could not be read.
+/// The server did not start, or the agent state could not be read.
 #[cfg_attr(
     not(feature = "agents"),
     allow(unused_variables, reason = "agents only")
 )]
-pub async fn start_relay_lending(
-    mut cfg: tilo_server::RelayConfig,
-    identity: RelayIdentity,
+pub async fn start_server_lending(
+    mut cfg: tilo_server::ServerConfig,
+    identity: ServerIdentity,
     args: &WebArgs,
     state_root: &Path,
     lent: Lent,
-) -> anyhow::Result<HostedRelay> {
+) -> anyhow::Result<HostedServer> {
     if let Some(max) = env_count("TILO_SERVER_MAX_WORKSPACE_GRANTS") {
         cfg.max_workspace_grants = Some(max);
     }
@@ -353,11 +353,11 @@ pub async fn start_relay_lending(
             tilo_server::agents::host_shells(state_root.join("shells"))
                 .map_err(anyhow::Error::msg)?,
         );
-        let (relay, agents) = tilo_server::agents::start(cfg, identity, options)
+        let (server, agents) = tilo_server::agents::start(cfg, identity, options)
             .await
-            .context("start the relay with agents")?;
-        return Ok(HostedRelay {
-            relay,
+            .context("start the server with agents")?;
+        return Ok(HostedServer {
+            server,
             agents: Some(agents),
             host_agents: None,
             _lock: lock,
@@ -368,7 +368,7 @@ pub async fn start_relay_lending(
         let browsers = tilo_server::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let (relay, actions, events) = tilo_server::agents::start_serving_documents_and_events(
+        let (server, actions, events) = tilo_server::agents::start_serving_documents_and_events(
             cfg,
             identity,
             None,
@@ -380,9 +380,9 @@ pub async fn start_relay_lending(
             browsers,
         )
         .await
-        .context("start the relay serving its workspaces' records")?;
+        .context("start the server serving its workspaces' records")?;
         // The agents each workspace made to run here work around the clock, on the host's model.
-        let host_agents = relay.workspaces().cloned().map(|workspaces| {
+        let host_agents = server.workspaces().cloned().map(|workspaces| {
             // What is judged for a person is counted on their assistant's day,
             // and a question that waits for them reaches their log.
             tilo_server::workspace_telling::start(&workspaces);
@@ -401,18 +401,18 @@ pub async fn start_relay_lending(
                 .run(),
             )
         });
-        return Ok(HostedRelay {
-            relay,
+        return Ok(HostedServer {
+            server,
             agents: None,
             host_agents,
             _lock: lock,
         });
     }
-    let relay = Relay::start(cfg, identity)
+    let server = Server::start(cfg, identity)
         .await
-        .context("start the relay")?;
-    Ok(HostedRelay {
-        relay,
+        .context("start the server")?;
+    Ok(HostedServer {
+        server,
         #[cfg(feature = "agents")]
         agents: None,
         #[cfg(feature = "agents")]
@@ -568,7 +568,7 @@ fn env_count(name: &str) -> Option<usize> {
 ///
 /// # Errors
 /// The listener cannot bind or load its certificate.
-/// Before the relay starts: when `--install-token-file` is given and the
+/// Before the server starts: when `--install-token-file` is given and the
 /// identity under `identity_root` has no certificate yet, wait for one on
 /// the browser listener. Prints `{"event": "awaiting_certificate",
 /// "devicePublicKey": …}` while waiting.
@@ -639,7 +639,7 @@ fn session_device(args: &WebArgs) -> anyhow::Result<Option<[u8; 32]>> {
 }
 
 pub async fn serve(
-    relay: &Relay,
+    server: &Server,
     args: &WebArgs,
     state_root: &Path,
 ) -> anyhow::Result<Option<WebHandle>> {
@@ -648,16 +648,16 @@ pub async fn serve(
     };
     let device = session_device(args)?;
     if let Some(device) = device {
-        relay.set_node_session(device);
+        server.set_node_session(device);
     }
     if let Some(path) = &args.session_env_out {
         let endpoint =
-            serde_json::to_string(&relay.node_addr()).context("encode the relay's endpoint")?;
+            serde_json::to_string(&server.node_addr()).context("encode the server's endpoint")?;
         let line = format!("TILO_COLLAB_HOST='{endpoint}'\n");
         tilo_files::native::atomic::write_with_mode(path, line.as_bytes(), 0o644)
             .with_context(|| format!("write {}", path.display()))?;
     }
-    let web = relay
+    let web = server
         .serve_web(web_config(args, listen, state_root))
         .await
         .context("start the browser listener")?;
@@ -784,12 +784,12 @@ where
     }
 }
 
-/// The relay's address with its bound sockets on loopback too, so an
+/// The server's address with its bound sockets on loopback too, so an
 /// approver in the same process keeps a path when the machine's network
 /// addresses change.
-fn loopback_addr(relay: &Relay) -> iroh::EndpointAddr {
-    let mut addr = relay.node_addr();
-    for socket in relay.bound_sockets() {
+fn loopback_addr(server: &Server) -> iroh::EndpointAddr {
+    let mut addr = server.node_addr();
+    for socket in server.bound_sockets() {
         let ip = match socket.ip() {
             std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::Ipv4Addr::LOCALHOST.into(),
             std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::Ipv6Addr::LOCALHOST.into(),
@@ -815,7 +815,10 @@ async fn approve_every_browser(
         {
             tracing::info!(question = %asked.question(), workspace = %asked.workspace, "allowing an agent's action once");
             approver
-                .answer(asked.id, tilo_server::certify::ConfirmationAnswer::AllowOnce)
+                .answer(
+                    asked.id,
+                    tilo_server::certify::ConfirmationAnswer::AllowOnce,
+                )
                 .await
                 .context("answer an agent's question")?;
         }
@@ -935,7 +938,7 @@ fn announce(
 /// browser device that asks. Workspaces of that user are bound on first use.
 ///
 /// # Errors
-/// The state directory, relay or listener cannot be set up.
+/// The state directory, server or listener cannot be set up.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -958,14 +961,14 @@ pub async fn dev(
         "dev approver",
         DeviceCapabilities::primary(),
     )?;
-    let config = tilo_server::RelayConfig {
-        state_root: state.join("relay"),
+    let config = tilo_server::ServerConfig {
+        state_root: state.join("server"),
         identity_root: state.join("identity"),
         ..Default::default()
     };
-    let hosted = start_relay(
+    let hosted = start_server(
         config,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user,
             device_signing_key: host,
             device_cert: host_cert,
@@ -975,7 +978,7 @@ pub async fn dev(
         &state,
     )
     .await?;
-    let relay = &hosted.relay;
+    let server = &hosted.server;
     let mut web_args = args.web.clone();
     if web_args.allowed_origins.is_empty() {
         web_args.allowed_origins = CLOUD_DEV_ORIGINS
@@ -986,18 +989,18 @@ pub async fn dev(
     // The session beside this host that launches apps for web members, as
     // `run --web` takes it: without it a web page lists nothing to open.
     if let Some(device) = session_device(&web_args)? {
-        relay.set_node_session(device);
+        server.set_node_session(device);
     }
     let listen = web_args
         .web
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9443)));
-    let web = relay
+    let web = server
         .serve_web(web_config(&web_args, listen, &state))
         .await
         .context("start the browser listener")?;
     announce(
         &web,
-        &relay.node_addr(),
+        &server.node_addr(),
         &user,
         &web_args.allowed_origins,
         &state,
@@ -1011,7 +1014,7 @@ pub async fn dev(
             &endpoint,
             approver_cert.clone(),
             &approver_key,
-            loopback_addr(relay),
+            loopback_addr(server),
         );
         async move {
             Ok(tilo_server_client::Approver::connect(
@@ -1289,7 +1292,7 @@ async fn certify_admitted(
 /// events on stdout, starting with [`OperatorEvent::Started`].
 ///
 /// # Errors
-/// The state directory, relay or listener cannot be set up.
+/// The state directory, server or listener cannot be set up.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -1319,14 +1322,14 @@ pub async fn workspace(
         "workspace approver",
         DeviceCapabilities::primary(),
     )?;
-    let config = tilo_server::RelayConfig {
-        state_root: tilo_server_protocol::metrics::workspace_relay_root(&state),
+    let config = tilo_server::ServerConfig {
+        state_root: tilo_server_protocol::metrics::workspace_server_root(&state),
         identity_root: state.join("identity"),
         ..Default::default()
     };
-    let hosted = start_relay(
+    let hosted = start_server(
         config,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user,
             device_signing_key: host,
             device_cert: host_cert,
@@ -1336,8 +1339,8 @@ pub async fn workspace(
         &state,
     )
     .await?;
-    let relay = &hosted.relay;
-    let web = relay
+    let server = &hosted.server;
+    let web = server
         .serve_web(web_config(&args.web, listen, &state))
         .await
         .context("start the browser listener")?;
@@ -1360,7 +1363,7 @@ pub async fn workspace(
         .context("bind the approver's endpoint")?;
     let approver = tilo_server_client::Approver::connect(
         &endpoint,
-        relay.node_addr(),
+        server.node_addr(),
         approver_cert,
         &approver_key,
         &RevocationList::new(),
@@ -1407,7 +1410,7 @@ mod tests {
             .unwrap()
             .web
         };
-        let mut cfg = tilo_server::RelayConfig {
+        let mut cfg = tilo_server::ServerConfig {
             web_entry: Some("https://configured.example/".into()),
             ..Default::default()
         };
@@ -1449,12 +1452,16 @@ mod tests {
 
     /// A browser named `label` asks the host for a certificate; the dev
     /// approver answers.
-    async fn certify_a_browser(relay: &Relay, user: [u8; 32], label: &str) -> CertificationOutcome {
+    async fn certify_a_browser(
+        server: &Server,
+        user: [u8; 32],
+        label: &str,
+    ) -> CertificationOutcome {
         let request = browser_request(user, label);
         let browser = endpoint().await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(20),
-            request_certification(&browser, relay.node_addr(), request, |_| {}),
+            request_certification(&browser, server.node_addr(), request, |_| {}),
         )
         .await
         .expect("the approver never answered")
@@ -1465,7 +1472,7 @@ mod tests {
 
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
+        reason = "the server serves the whole scenario and `shutdown` consumes it at the end"
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_lost_approver_connection_is_reopened_and_the_host_keeps_serving() {
@@ -1480,13 +1487,13 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start_with_relay_mode(
-            tilo_server::RelayConfig {
-                state_root: tmp.path().join("relay"),
+        let server = Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: tmp.path().join("server"),
                 identity_root: tmp.path().join("identity"),
                 ..Default::default()
             },
-            RelayIdentity {
+            ServerIdentity {
                 user_public_key: user,
                 device_signing_key: host,
                 device_cert: host_cert,
@@ -1500,7 +1507,7 @@ mod tests {
         // Every session gets an endpoint of its own, handed to the test so
         // it can cut the connection from under the approver.
         let (sessions_tx, mut sessions) = tokio::sync::mpsc::unbounded_channel();
-        let host_addr = loopback_addr(&relay);
+        let host_addr = loopback_addr(&server);
         let approving = tokio::spawn(async move {
             let connect = || {
                 let (sessions_tx, cert, key, host) = (
@@ -1527,7 +1534,7 @@ mod tests {
 
         let first = sessions.recv().await.unwrap();
         assert!(matches!(
-            certify_a_browser(&relay, user, "Browser").await,
+            certify_a_browser(&server, user, "Browser").await,
             CertificationOutcome::Issued { .. }
         ));
 
@@ -1536,7 +1543,7 @@ mod tests {
         // Another browser of the person, named apart as a client numbers
         // itself when the host refuses a name another device reads by.
         assert!(matches!(
-            certify_a_browser(&relay, user, "Browser 2").await,
+            certify_a_browser(&server, user, "Browser 2").await,
             CertificationOutcome::Issued { .. }
         ));
         assert!(
@@ -1545,7 +1552,7 @@ mod tests {
         );
         assert!(!approving.is_finished(), "the approver gave up");
         approving.abort();
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// A pending browser request as the approver lists it, showing `code`.
@@ -1643,13 +1650,13 @@ mod tests {
         );
     }
 
-    /// A workspace's relay under a fresh root kept in `state`, with the workspace
-    /// approver's session open on it: the relay, the root, the approver and
+    /// A workspace's server under a fresh root kept in `state`, with the workspace
+    /// approver's session open on it: the server, the root, the approver and
     /// the approver's endpoint.
-    async fn workspace_relay(
+    async fn workspace_server(
         state: &Path,
     ) -> (
-        Relay,
+        Server,
         SigningKey,
         tilo_server_client::Approver,
         iroh::endpoint::Endpoint,
@@ -1664,13 +1671,13 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start_with_relay_mode(
-            tilo_server::RelayConfig {
-                state_root: tilo_server_protocol::metrics::workspace_relay_root(state),
+        let server = Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: tilo_server_protocol::metrics::workspace_server_root(state),
                 identity_root: state.join("identity"),
                 ..Default::default()
             },
-            RelayIdentity {
+            ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
                 device_cert: host_cert,
@@ -1683,20 +1690,20 @@ mod tests {
         let approver_endpoint = endpoint().await;
         let approver = tilo_server_client::Approver::connect(
             &approver_endpoint,
-            loopback_addr(&relay),
+            loopback_addr(&server),
             approver_cert,
             &approver_key,
             &RevocationList::new(),
         )
         .await
         .unwrap();
-        (relay, root, approver, approver_endpoint)
+        (server, root, approver, approver_endpoint)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_workspace_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
         let tmp = tempfile::tempdir().unwrap();
-        let (relay, root, approver, approver_endpoint) = workspace_relay(tmp.path()).await;
+        let (server, root, approver, approver_endpoint) = workspace_server(tmp.path()).await;
         let user = root.verifying_key().to_bytes();
         let (operator, commands) = tokio::sync::mpsc::channel(16);
         let (reports, mut reported) = tokio::sync::mpsc::unbounded_channel();
@@ -1718,7 +1725,7 @@ mod tests {
         let (shown, code) = tokio::sync::oneshot::channel();
         let browser = endpoint().await;
         let asking = tokio::spawn({
-            let (browser, host) = (browser.clone(), relay.node_addr());
+            let (browser, host) = (browser.clone(), server.node_addr());
             async move {
                 request_certification(&browser, host, request, |code| {
                     let _ = shown.send(code.to_owned());
@@ -1788,6 +1795,6 @@ mod tests {
         );
         browser.close().await;
         approver_endpoint.close().await;
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

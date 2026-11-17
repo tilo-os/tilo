@@ -1,6 +1,6 @@
 //! What a caller may do to this host itself, where no workspace decides.
 //!
-//! A workspace this relay governs decides its own administration from its
+//! A workspace this server governs decides its own administration from its
 //! governance (`workspaces::authority`). Some operations name no workspace: making or
 //! listing the host's workspaces, entering one as its owner, the host's compute.
 //! Those belong to the host's person, and this is the one place that says

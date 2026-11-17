@@ -1,11 +1,11 @@
-//! The release of tilo.sh that starts its relay on fresh state, on the state an
-//! earlier release kept: the relay starts on its own new directory, the earlier
+//! The release of tilo.sh that starts its server on fresh state, on the state an
+//! earlier release kept: the server starts on its own new directory, the earlier
 //! release's files stay as they were, and the people it kept arrive by the
 //! export and the import.
 //!
-//! `tools/relay-upgrade/run.sh` builds the release the live relay runs, has it
+//! `tools/server-upgrade/run.sh` builds the release the live relay runs, has it
 //! write its state with that release's own harness
-//! (`tools/relay-upgrade/<release>/seed.rs`) and runs this on the same volume,
+//! (`tools/server-upgrade/<release>/seed.rs`) and runs this on the same volume,
 //! with `TILO_UPGRADE_DIR` naming it. Nothing here writes the released state
 //! itself: what the export reads is what the release wrote.
 
@@ -97,7 +97,7 @@ fn contents(root: &std::path::Path) -> std::collections::BTreeMap<String, String
 
 /// Run `tilo-server` with `arguments`, and what it said; a failure fails the
 /// check with its words.
-fn relay(arguments: &[&str]) -> String {
+fn server(arguments: &[&str]) -> String {
     let output = std::process::Command::new(tilo_test_env::package_binary!("tilo-server"))
         .env("NO_COLOR", "1")
         .args(arguments)
@@ -195,7 +195,7 @@ fn start_release(
     mail: &str,
 ) -> Workspace {
     std::fs::create_dir_all(state).unwrap();
-    let log = std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned());
+    let log = std::env::var("TILO_UPGRADE_SERVER_LOG").unwrap_or_else(|_| "warn".to_owned());
     spawn_workspace(
         state,
         root,
@@ -251,16 +251,16 @@ fn started_or_why(workspace: &mut Workspace) -> Started {
                 };
             }
             Ok(started @ OperatorEvent::Started { .. }) => {
-                panic!("the relay started without a plain listener: {started:?}");
+                panic!("the server started without a plain listener: {started:?}");
             }
             Ok(_) | Err(_) => {}
         }
         if let Some(status) = workspace.child.try_wait().unwrap() {
-            panic!("the relay refused the release's own start and stopped: {status}");
+            panic!("the server refused the release's own start and stopped: {status}");
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the relay did not start on the release's own state"
+            "the server did not start on the release's own state"
         );
     }
 }
@@ -315,7 +315,7 @@ async fn wait_list(
     let link = their_page(plain, workspace, owner).await;
     let reply = administer(
         &link,
-        // The workspace as the relay governs it: the id it minted at this
+        // The workspace as the server governs it: the id it minted at this
         // start.
         WorkspacesRequest::WaitList {
             workspace: workspace.to_string(),
@@ -330,12 +330,12 @@ async fn wait_list(
 }
 
 /// The Lounge a release of tilo.sh starts on fresh state, on the state the live
-/// relay's release kept: it starts on its own new directory, comes up on a clean
+/// server's release kept: it starts on its own new directory, comes up on a clean
 /// Lounge with the release's files untouched, and takes the people it kept in by
 /// the export and the import — their addresses on the wait list, and an
 /// invitation mailed to each of them.
 #[test]
-#[ignore = "run by tools/relay-upgrade/run.sh on the state a release kept"]
+#[ignore = "run by tools/server-upgrade/run.sh on the state a release kept"]
 #[expect(
     clippy::too_many_lines,
     reason = "one check, read in the order the runbook runs it"
@@ -354,7 +354,7 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
 
     // What the release kept, read out of a copy of its state, write nothing.
     let people_path = volume.join("people.json");
-    relay(&[
+    server(&[
         "release-people",
         "export",
         "--state",
@@ -491,7 +491,7 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
 
     // The import, over the socket the deployment's operator uses, as the
     // release runbook runs it.
-    let said = relay(&[
+    let said = server(&[
         "release-people",
         "import",
         "--socket",

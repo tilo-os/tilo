@@ -3,10 +3,10 @@ name = "tilo-server-session"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Client side of a Tilo relay session: the authenticated relay client, the co-edit session, anti-entropy, workspace administration and workspace join clients, without the relay daemon."
+description = "Client side of a Tilo server session: the authenticated server client, the co-edit session, anti-entropy, workspace administration and workspace join clients, without the server daemon."
 license = "MIT OR Apache-2.0"
 
-# Everything a device needs to talk to a relay, and nothing the relay needs to
+# Everything a device needs to talk to a server, and nothing the server needs to
 # be one. The daemon (`tilo-server`) depends on this crate and re-exports it
 # under its historic paths; clients (the shell, the action broker, the
 # runtime and joined workspaces) depend on this crate alone, so a daemon edit does

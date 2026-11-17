@@ -36,7 +36,7 @@ fn fixture() -> (
     {
         member
             .receive_from_report(
-                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                 message,
                 now,
             )
@@ -127,7 +127,7 @@ fn checkpoint(
     for message in messages {
         member
             .receive_from_report(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 message,
                 now,
             )
@@ -305,7 +305,7 @@ tilo_test_env::scenario! {
             .unwrap();
         governor
             .receive_from_report(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
                 second,
                 now,
             )
@@ -317,7 +317,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut half = member.clone();
         half.receive_from_report(
-            TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
             pair[0].clone(),
             later,
         )
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         for message in pair {
             member
                 .receive_from_report(
-                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                     message,
                     later,
                 )
@@ -402,7 +402,7 @@ tilo_test_env::scenario! {
         // admits it as retained history, however old it is.
         governor
             .receive_from_report(
-                TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes()),
+                TransportOrigin::RetainedServerDelta(key.verifying_key().to_bytes()),
                 original.clone(),
                 later,
             )
@@ -441,7 +441,7 @@ fn refuse_into(
         .unwrap();
     author
         .receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
             refuser.workspace_message(),
             now,
         )

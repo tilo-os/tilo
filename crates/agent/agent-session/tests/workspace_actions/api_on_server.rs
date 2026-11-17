@@ -1,4 +1,4 @@
-//! The API server on a relay as tilo.sh runs them: the relay's own
+//! The API server on a server as tilo.sh runs them: the server's own
 //! person is its operator, its app workers answer every workspace with no
 //! tab of anyone's open, the site's home workspace lets people in through
 //! its entry, and a person approves keys for their backend at the action API.
@@ -47,28 +47,28 @@ fn query_of(url: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// The relay as its operator runs it, the site whose home workspace lets
+/// The server as its operator runs it, the site whose home workspace lets
 /// anyone in through its entry, and the API server before both.
-pub struct OnRelay {
+pub struct OnServer {
     pub api: Arc<Server>,
     /// The API server's public origin, as agents reach it.
     pub issuer: String,
     /// The site's home workspace.
     pub lobby: String,
-    /// The relay's origin, where a page joins its workspaces.
-    pub relay: String,
-    /// The site people's links open under, which the action API and the relay
+    /// The server's origin, where a page joins its workspaces.
+    pub server: String,
+    /// The site people's links open under, which the action API and the server
     /// both announce.
     pub web_entry: String,
-    /// The relay's own origin, which the links to its records name.
+    /// The server's own origin, which the links to its records name.
     pub host_origin: String,
-    /// The relay's own device, which a page joining its workspaces trusts.
+    /// The server's own device, which a page joining its workspaces trusts.
     pub host: Device,
-    /// The person running the relay, whose device it is.
+    /// The person running the server, whose device it is.
     pub operator: SigningKey,
     pub hosted: Hosted,
     _site: test_http::Responder,
-    /// Where the relay keeps its state.
+    /// Where the server keeps its state.
     pub state: tempfile::TempDir,
     /// Where its workspaces' Terminal sessions keep their files, when it runs
     /// them: under the system's temporary directory, which a shell's sandbox
@@ -76,30 +76,30 @@ pub struct OnRelay {
     pub shells: Option<tempfile::TempDir>,
 }
 
-impl OnRelay {
+impl OnServer {
     /// The relay as a person's devices and pages reach it over iroh.
-    pub fn relay_host(&self) -> tilo_server_client::Host {
-        tilo_server_client::Host::at(self.hosted.relay.node_addr())
+    pub fn server_host(&self) -> tilo_server_client::Host {
+        tilo_server_client::Host::at(self.hosted.server.node_addr())
     }
 }
 
-/// The API server at `issuer` before a relay serving its app workers.
-pub async fn api_on_relay(issuer: &str) -> OnRelay {
-    api_on_relay_limiting(issuer, None).await
+/// The API server at `issuer` before a server serving its app workers.
+pub async fn api_on_server(issuer: &str) -> OnServer {
+    api_on_server_limiting(issuer, None).await
 }
 
-/// [`api_on_relay`], its relay keeping each person to `member_limits`, as a
-/// relay whose workspaces admit the public does.
-pub async fn api_on_relay_limiting(
+/// [`api_on_server`], its server keeping each person to `member_limits`, as a
+/// server whose workspaces admit the public does.
+pub async fn api_on_server_limiting(
     issuer: &str,
     member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
-) -> OnRelay {
+) -> OnServer {
     start(issuer, member_limits, false).await
 }
 
-/// [`api_on_relay`], its relay running its workspaces' Terminal sessions
+/// [`api_on_server`], its server running its workspaces' Terminal sessions
 /// itself (ush's own commands, no VM): what a key's `terminal#run` runs on.
-pub async fn api_on_relay_shelled(issuer: &str) -> OnRelay {
+pub async fn api_on_server_shelled(issuer: &str) -> OnServer {
     start(issuer, None, true).await
 }
 
@@ -107,9 +107,9 @@ async fn start(
     issuer: &str,
     member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
     shelled: bool,
-) -> OnRelay {
-    // The site the action API and the relay hand people's links out under: its
-    // `entry.json` names the home workspace's entry once the relay made it.
+) -> OnServer {
+    // The site the action API and the server hand people's links out under: its
+    // `entry.json` names the home workspace's entry once the server made it.
     let entry = Arc::new(std::sync::OnceLock::<String>::new());
     let answered = Arc::clone(&entry);
     // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
@@ -137,11 +137,11 @@ async fn start(
         }
         shelf.get(&handle).map(|fetched| reply(fetched.to_string()))
     });
-    // The relay, as its operator runs it.
-    let (operator, _) = tilo_user_identity::UserIdentity::generate("Relay operator", 1);
+    // The server, as its operator runs it.
+    let (operator, _) = tilo_user_identity::UserIdentity::generate("Server operator", 1);
     let host = enrol(
         &operator,
-        "relay",
+        "server",
         tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
@@ -161,11 +161,11 @@ async fn start(
         },
     )
     .await;
-    let relay = hosted.web.plain_origin.clone().unwrap();
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let server = hosted.web.plain_origin.clone().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     workspaces
         .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
-            "relay.tilo.test",
+            "server.tilo.test",
         ))
         .unwrap();
     // The site's home workspace, whose entry lets anyone in: the people it
@@ -185,8 +185,8 @@ async fn start(
         .unwrap();
     // The site names that entry in its `entry.json`.
     let _ = entry.set(
-        json!({"home": {"host": {"origin": relay},
-                        "admission": format!("{relay}/peer/v1/directory/{lobby}/")}})
+        json!({"home": {"host": {"origin": server},
+                        "admission": format!("{server}/peer/v1/directory/{lobby}/")}})
         .to_string(),
     );
     let web_entry = format!("http://127.0.0.1:{}/", site.port());
@@ -194,17 +194,17 @@ async fn start(
         &Config {
             issuer: issuer.into(),
             web_entry: web_entry.trim_end_matches('/').to_owned(),
-            hosts: vec![relay.clone()],
+            hosts: vec![server.clone()],
         },
         Store::in_memory(),
     )
     .unwrap();
 
-    OnRelay {
+    OnServer {
         api,
         issuer: issuer.to_owned(),
         lobby,
-        relay,
+        server,
         web_entry,
         host_origin: hosted.web.origin.clone(),
         host,
@@ -216,8 +216,8 @@ async fn start(
     }
 }
 
-impl OnRelay {
-    /// The relay stopped and started again on the state it kept, as a deployment restarts it:
+impl OnServer {
+    /// The server stopped and started again on the state it kept, as a deployment restarts it:
     /// closed, or dropped as a killed process is when `killed`. The API server before it is a new one
     /// pointed at the restarted relay; it remembers no key approved before.
     pub async fn restart(self, killed: bool) -> Self {
@@ -234,14 +234,17 @@ impl OnRelay {
             ..
         } = self;
         let Hosted {
-            relay, web, agents, ..
+            server,
+            web,
+            agents,
+            ..
         } = hosted;
         drop(agents);
         drop(web);
         if killed {
-            drop(relay);
+            drop(server);
         } else {
-            relay.shutdown().await;
+            server.shutdown().await;
         }
         let hosted = crate::harness::hosted::start(
             &operator,
@@ -255,21 +258,21 @@ impl OnRelay {
         )
         .await;
         // People's own workspaces here, and who may keep them, as every start
-        // of the relay offers them: those made before the restart are theirs
+        // of the server offers them: those made before the restart are theirs
         // again.
-        let workspaces = hosted.relay.workspaces().unwrap();
+        let workspaces = hosted.server.workspaces().unwrap();
         workspaces
             .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
-                "relay.tilo.test",
+                "server.tilo.test",
             ))
             .unwrap();
         workspaces.admit_own_through(&lobby);
-        let relay = hosted.web.plain_origin.clone().unwrap();
+        let server = hosted.web.plain_origin.clone().unwrap();
         let api = Server::new(
             &Config {
                 issuer: issuer.clone(),
                 web_entry: web_entry.trim_end_matches('/').to_owned(),
-                hosts: vec![relay.clone()],
+                hosts: vec![server.clone()],
             },
             Store::in_memory(),
         )
@@ -278,7 +281,7 @@ impl OnRelay {
             api,
             issuer,
             lobby,
-            relay,
+            server,
             web_entry,
             host_origin: hosted.web.origin.clone(),
             host,
@@ -296,7 +299,7 @@ impl OnRelay {
 /// challenge with a device of `root`'s and certifies the grant's key as the
 /// server key the action API asked for, lasting until revoked.
 pub async fn approved_key(
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     root: &SigningKey,
     device: &Device,
     name: &str,
@@ -304,15 +307,15 @@ pub async fn approved_key(
     // The person approves on the site, where their page came in through its
     // entry: the entry answers the page with an invitation, and the page enters
     // on its session with it. The person is a member of the site's home
-    // workspace from then on, so every key of theirs reaches the relay as
+    // workspace from then on, so every key of theirs reaches the server as
     // them.
-    let (issued, token) = on_relay
+    let (issued, token) = on_server
         .hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .admit_listed(
-            &on_relay.lobby,
+            &on_server.lobby,
             &tilo_server_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(root.verifying_key().to_bytes()),
                 display_name: device.cert.device_label.clone(),
@@ -321,13 +324,13 @@ pub async fn approved_key(
         .await
         .unwrap();
     enter_page(
-        on_relay,
+        on_server,
         device,
         &issued.signed_invitation,
         Some(token.as_bytes()),
     )
     .await;
-    let api = &on_relay.api;
+    let api = &on_server.api;
     let (status, asked) = json_of(
         api.dispatch(
             &hyper::Method::POST,
@@ -344,7 +347,7 @@ pub async fn approved_key(
     let to_sign_in = api
         .dispatch(
             &hyper::Method::GET,
-            approve.strip_prefix(on_relay.issuer.as_str()).unwrap(),
+            approve.strip_prefix(on_server.issuer.as_str()).unwrap(),
             "",
             &hyper::HeaderMap::new(),
             b"",
@@ -370,7 +373,7 @@ pub async fn approved_key(
     let mut grant = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: grant_key,
-        device_label: format!("{name} via {}", on_relay.issuer),
+        device_label: format!("{name} via {}", on_server.issuer),
         capabilities: DeviceCapabilities::server_key_grant(),
         issued_at_ns: now_ns.saturating_sub(1_000_000_000),
         expires_at_ns: None,
@@ -381,7 +384,7 @@ pub async fn approved_key(
     let proof = SignInProof::sign(
         device.cert.clone(),
         &device.key,
-        &on_relay.issuer,
+        &on_server.issuer,
         challenge,
     )
     .unwrap();
@@ -426,7 +429,7 @@ pub async fn approved_key(
 /// with a new device `root` certifies, named `name`. Answers that device and
 /// what the host admitted it to: `{workspace, name, role}`.
 pub async fn accept_invitation(
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     link: &str,
     root: &SigningKey,
     name: &str,
@@ -449,7 +452,7 @@ pub async fn accept_invitation(
         .decode(text)
         .expect("an invitation's text");
     let page = enrol(root, name, DeviceCapabilities::member());
-    let joined = enter_page(on_relay, &page, &invitation, None).await;
+    let joined = enter_page(on_server, &page, &invitation, None).await;
     (page, joined)
 }
 
@@ -458,7 +461,7 @@ pub async fn accept_invitation(
 /// where the action API issued one: what the workspace admitted it to,
 /// `{workspace, name, role}`.
 pub async fn enter_page(
-    on_relay: &OnRelay,
+    on_server: &OnServer,
     page: &Device,
     invitation: &[u8],
     token: Option<&[u8]>,
@@ -466,7 +469,7 @@ pub async fn enter_page(
     use tilo_server_protocol::workspaces::JoinReply;
     use tilo_session_client::device::{Entering, Held, entered, invitation_entry};
     let client = tilo_net::Client::builder().build().unwrap();
-    let host = tilo_server_client::https::Origin::new(&client, &on_relay.relay);
+    let host = tilo_server_client::https::Origin::new(&client, &on_server.server);
     let offer = tilo_server_client::https::invitation(&host, invitation)
         .await
         .unwrap();
@@ -492,7 +495,7 @@ pub async fn enter_page(
     )
     .await
     .unwrap();
-    let address = info.address.expect("the relay takes device sessions");
+    let address = info.address.expect("the server takes device sessions");
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
             host: tilo_server_client::Host::published(&address),
@@ -517,7 +520,7 @@ pub async fn enter_page(
 /// approve a key of their own at the action API ([`approved_key`]). Each answer
 /// is `{key, person, joined}`.
 #[cfg(not(test))]
-async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: SigningKey) {
+async fn invitee(on_server: &OnServer, listener: tokio::net::TcpListener, root: SigningKey) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     while let Ok((mut stream, _)) = listener.accept().await {
         let mut request = Vec::new();
@@ -551,8 +554,8 @@ async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: Si
             .and_then(|asked| asked["link"].as_str().map(str::to_owned));
         let answer = match link {
             Some(link) => {
-                let (page, joined) = accept_invitation(on_relay, &link, &root, "Rosa Ortiz").await;
-                let key = approved_key(on_relay, &root, &page, "Rosa's review").await;
+                let (page, joined) = accept_invitation(on_server, &link, &root, "Rosa Ortiz").await;
+                let key = approved_key(on_server, &root, &page, "Rosa's review").await;
                 json!({
                     "key": key,
                     "person": hex::encode(root.verifying_key().to_bytes()),
@@ -570,10 +573,10 @@ async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: Si
     }
 }
 
-/// Serve the action API on a relay with its app workers on loopback, for a client
+/// Serve the action API on a server with its app workers on loopback, for a client
 /// outside this process. A person approves a key reaching all their
 /// workspaces there, for their backend, and holds another device's key in a
-/// key file, for a program that reaches the relay directly (an SDK's native
+/// key file, for a program that reaches the server directly (an SDK's native
 /// part); another person, their reviewer, follows the invitation links posted
 /// to the invitee endpoint. It prints one JSON line naming the action API, the key,
 /// the key file and that endpoint, then runs `command` with them in its
@@ -586,19 +589,19 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     use tokio::io::AsyncReadExt as _;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let issuer = format!("http://{}", listener.local_addr().unwrap());
-    let on_relay = api_on_relay(&issuer).await;
+    let on_server = api_on_server(&issuer).await;
     let (person, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&person, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &person, &page, "Backend").await;
+    let key = approved_key(&on_server, &person, &page, "Backend").await;
     // A device of the person's whose key a program holds, now that the
-    // person came to the relay.
+    // person came to the server.
     let script = enrol(&person, "Ada's script", DeviceCapabilities::member());
-    let key_file = on_relay.state.path().join("key-file.json");
+    let key_file = on_server.state.path().join("key-file.json");
     std::fs::write(
         &key_file,
         serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-            &on_relay.relay,
-            Some(&on_relay.web_entry),
+            &on_server.server,
+            Some(&on_server.web_entry),
             "Ada's script",
             &script.key,
             &script.cert,
@@ -606,7 +609,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
         .unwrap(),
     )
     .unwrap();
-    tokio::spawn(tilo_api::serve(Arc::clone(&on_relay.api), listener));
+    tokio::spawn(tilo_api::serve(Arc::clone(&on_server.api), listener));
     let accepting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let invitee_url = format!("http://{}/accept", accepting.local_addr().unwrap());
     let (reviewer, _) = tilo_user_identity::UserIdentity::generate("Rosa Ortiz", 1);
@@ -622,7 +625,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
     out.flush().unwrap();
     drop(out);
     // The reviewer answers on this task, beside whatever runs.
-    let reviewing = invitee(&on_relay, accepting, reviewer);
+    let reviewing = invitee(&on_server, accepting, reviewer);
     let Some((program, arguments)) = command.split_first() else {
         let mut rest = Vec::new();
         let mut input = tokio::io::stdin();
@@ -646,7 +649,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
         } => status,
         () = reviewing => Err(std::io::Error::other("the reviewer stopped answering")),
     };
-    drop(on_relay);
+    drop(on_server);
     match status.map(|status| status.code()) {
         Ok(Some(0)) => std::process::ExitCode::SUCCESS,
         Ok(Some(code)) => std::process::ExitCode::from(u8::try_from(code).unwrap_or(1)),

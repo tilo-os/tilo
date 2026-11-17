@@ -254,7 +254,7 @@ impl SealingMember {
 
     /// The member's next write of the record, `change` made to its replica,
     /// sealed with the record's channel keys as its page seals it, and
-    /// handed to the workspace the way the relay hands it every member write.
+    /// handed to the workspace the way the server hands it every member write.
     pub async fn writes<R>(
         &self,
         workspaces: &Workspaces,
@@ -378,7 +378,7 @@ impl SealingMember {
 
     /// The member's next write of the record carrying `changes`, whichever
     /// they are, sealed and signed as its page publishes it, and handed to the
-    /// workspace the way the relay hands it every member write.
+    /// workspace the way the server hands it every member write.
     pub async fn sends_changes(&self, workspaces: &Workspaces, workspace: &str, changes: Vec<u8>) {
         let message = self.seal_changes(workspace, changes);
         let body = postcard::to_stdvec(&message).unwrap();

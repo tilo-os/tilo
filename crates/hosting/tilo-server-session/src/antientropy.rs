@@ -32,14 +32,14 @@ use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 
-use crate::client::RelayClient;
+use crate::client::ServerClient;
 use crate::transport::Envelope;
 use collab_types::WorkspaceId;
 
 /// Failure modes for an anti-entropy round trip.
 #[derive(Debug)]
 pub enum SyncError {
-    /// The relay connection is gone (outbound closed or inbound EOF).
+    /// The server connection is gone (outbound closed or inbound EOF).
     Disconnected,
     /// No matching [`Envelope::SyncResponse`] arrived within the budget.
     Timeout,
@@ -50,7 +50,7 @@ pub enum SyncError {
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SyncError::Disconnected => f.write_str("anti-entropy: relay disconnected"),
+            SyncError::Disconnected => f.write_str("anti-entropy: server disconnected"),
             SyncError::Timeout => f.write_str("anti-entropy: timed out waiting for SyncResponse"),
             SyncError::Apply(e) => write!(f, "anti-entropy: apply failed: {e}"),
         }
@@ -86,9 +86,9 @@ pub fn apply_sync_response(
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Disconnected`] if the relay connection is gone.
+/// Returns [`SyncError::Disconnected`] if the server connection is gone.
 pub fn send_sync_request(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     doc: &mut AutoCommit,
 ) -> Result<(), SyncError> {
@@ -114,12 +114,12 @@ pub fn send_sync_request(
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Disconnected`] if the relay connection is gone,
+/// Returns [`SyncError::Disconnected`] if the server connection is gone,
 /// [`SyncError::Timeout`] if no matching `SyncResponse` arrives within
 /// `timeout` (or `timeout` itself can't be added to the current time),
 /// and [`SyncError::Apply`] if the response's changes fail to apply.
 pub async fn reconcile(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     doc: &mut AutoCommit,
     timeout: Duration,

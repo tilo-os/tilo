@@ -49,7 +49,7 @@ removal, or forge authority over a shared space.
 **A4 — Compromised supply chain.** Wants to ship a malicious image or package, downgrade the system
 to a known-vulnerable release, or sign as us.
 
-**A5 — Honest-but-curious host operator.** Runs a relay or hosted workspace. Sees ciphertext and
+**A5 — Honest-but-curious host operator.** Runs a server or hosted workspace. Sees ciphertext and
 routing metadata and wants content.
 
 ### 2.2 Out of scope, stated plainly
@@ -73,7 +73,7 @@ routing metadata and wants content.
 | T1 | first-party apps | our code, assume bugs | sandbox + capability grants |
 | T2 | third-party apps | untrusted code | same, default-deny, no network |
 | T3 | peer-supplied rendering code | **hostile** | out of scope today (§2.2) |
-| T4 | hosted relay operator | honest-but-curious | end-to-end encryption; relay sees ciphertext + routing metadata |
+| T4 | hosted server operator | honest-but-curious | end-to-end encryption; server sees ciphertext + routing metadata |
 
 ---
 
@@ -505,8 +505,8 @@ accepted.
 Decides whether an operation is something its claimed author was permitted to perform. Per
 operation, verified against the author's key, **independent of who delivered it**.
 
-This is what admission cannot do. A relay, by definition, delivers operations it did not author.
-Under admission alone a receiver can only ever conclude "the relay sent this" — authority does not
+This is what admission cannot do. A server, by definition, delivers operations it did not author.
+Under admission alone a receiver can only ever conclude "the server sent this" — authority does not
 survive the hop. Since always-on replicas and store-and-forward are core to the product, operations
 must carry their own proof.
 
@@ -515,16 +515,16 @@ follows. Each operation carries a sequence number so a replayed operation is rej
 
 ### 7.3 Why both
 
-The hop check checks the *connection*. The operation check checks the *change*. A relay passes the
+The hop check checks the *connection*. The operation check checks the *change*. A server passes the
 hop check by being an admitted peer; the operations it carries still verify independently against
 their authors. Neither is redundant.
 
 The two checks must remain separate. A shared decision point and a boundary test enforce that
 separation.
 
-### 7.4 Confidentiality from the relay
+### 7.4 Confidentiality from the server
 
-Content is encrypted to the group; routing metadata stays clear so a relay can do its job without
+Content is encrypted to the group; routing metadata stays clear so a server can do its job without
 reading anything. The group key rotates on **every** membership change, including removal.
 
 ---

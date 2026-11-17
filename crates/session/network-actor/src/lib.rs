@@ -35,7 +35,7 @@ pub const DEFAULT_WS_TOPIC: tilo_desktop_model::WorkspaceId =
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update ([`services::Services::peer_version`]).
-fn relay_error(host: &iroh::EndpointId, error: &tilo_server_session::ClientError) -> String {
+fn server_error(host: &iroh::EndpointId, error: &tilo_server_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
         services::peer_version(host.to_string(), theirs);
     }
@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_server_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_server_session::{Inbound as HostInbound, ServerClient, ServerCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -182,7 +182,7 @@ pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
 pub use tilo_identity_host::identity_store::HostIdentity;
 
-/// Enrollment-bound identity expected behind a distinct relay service key.
+/// Enrollment-bound identity expected behind a distinct server service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomePeerExpectation {
     pub user_public_key: [u8; 32],
@@ -191,7 +191,7 @@ pub struct HomePeerExpectation {
 
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Relay between the devices that take part in this device's workspaces
+    /// Server between the devices that take part in this device's workspaces
     /// through it, as their workspace's host, and the rest of each workspace:
     /// what they write reaches this device's apps and the workspace's own
     /// host, and what reaches this device of the workspace reaches them.
@@ -529,7 +529,7 @@ enum InternalEvent {
     },
     Host {
         ws: WorkspaceId,
-        session: std::sync::Weak<RelayCoeditSession>,
+        session: std::sync::Weak<ServerCoeditSession>,
         peer: EndpointId,
         event: HostEvent,
     },
@@ -556,10 +556,10 @@ enum InternalEvent {
         ws: WorkspaceId,
         peer: EndpointId,
         addr: EndpointAddr,
-        // Boxed: `RelayCoeditSession` (an authenticated relay client plus
+        // Boxed: `ServerCoeditSession` (an authenticated server client plus
         // its subscription state) is far larger than every sibling variant,
         // so an unboxed `Result` here would size the whole enum to fit it.
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<ServerCoeditSession, String>>,
     },
     SurfaceFrame {
         ws: WorkspaceId,
@@ -614,7 +614,7 @@ enum InternalEvent {
 enum HostEvent {
     Ready,
     /// The host answered a record this device opened
-    /// ([`RelayCoeditSession::open_resource`]): what it sent of it, as that
+    /// ([`ServerCoeditSession::open_resource`]): what it sent of it, as that
     /// record's frames before this event, or that it is not this device's.
     DocumentOpened {
         channel: [u8; 32],
@@ -645,7 +645,7 @@ struct HostedTopic {
 }
 
 struct HostRuntime {
-    session: Arc<RelayCoeditSession>,
+    session: Arc<ServerCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
 }
 
@@ -843,7 +843,7 @@ fn read_personal_fabric(
 
 /// Why `command` means a remote party is involved, so this device must be
 /// reachable for a while (`tilo_endpoint_reachability`): it dials a peer
-/// or host, enrols a device, administers a relay workspace, joins a call or
+/// or host, enrols a device, administers a server workspace, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
 /// else is on (its workspaces, its fabric broadcast) sends nothing, and a lone
@@ -860,7 +860,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
 }
 
 /// Why `event` means a remote party reached this device (on a path that
-/// needed no relay, such as the local network), so it should be reachable
+/// needed no server, such as the local network), so it should be reachable
 /// through its relays too.
 fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
     match event {
@@ -1329,11 +1329,11 @@ impl ActorState {
                     .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
                 if changed {
                     // A new address for the same certified service replaces
-                    // only its relay session. Its already authenticated Files
+                    // only its server session. Its already authenticated Files
                     // endpoint remains usable until refreshed discovery proves
                     // a replacement; treating a reconnect as removal creates
                     // a needless offline window (and can strand hydration if
-                    // the new relay hint is temporarily unreachable).
+                    // the new server hint is temporarily unreachable).
                     self.teardown_host(id);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
@@ -1350,7 +1350,7 @@ impl ActorState {
         true
     }
 
-    /// Stop relay sessions and discovery tasks for one host. An address
+    /// Stop server sessions and discovery tasks for one host. An address
     /// refresh must never revoke a still-valid Files hydration source, so
     /// this keeps the host's content registrations.
     fn teardown_host(&mut self, id: EndpointId) {
@@ -2159,7 +2159,7 @@ impl ActorState {
         ws: WorkspaceId,
         peer: EndpointId,
         attempted_addr: &EndpointAddr,
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<ServerCoeditSession, String>>,
     ) {
         self.connecting_hosts.remove(&(ws, peer));
         if self.native_routes.contains(ws) || !self.topics.contains_key(&ws) {
@@ -2382,7 +2382,7 @@ impl ActorState {
     }
 
     /// Whether `command` stays in this process: it goes to this device's
-    /// own host, so it needs no relay up.
+    /// own host, so it needs no server up.
     fn stays_local(&self, command: &NetCmd) -> bool {
         matches!(
             command,
@@ -2398,12 +2398,12 @@ impl ActorState {
     /// The remote party this actor is connected to or keeps dialling, if
     /// any, which holds this device's relays up ([`Need::Transport`]): a
     /// peer it dials, a peer on one of its topics, a workspace host, a
-    /// governed workspace's relay, one of the person's devices, a window streamed
+    /// governed workspace's server, one of the person's devices, a window streamed
     /// with a peer, a remote action waiting for its peer, a device being
     /// enrolled or a Messages account its contacts text. A peer that left
     /// stops counting once its membership lapses.
     fn remote_party(&self) -> Option<&'static str> {
-        // This device's own host is joined in process and needs no relay.
+        // This device's own host is joined in process and needs no server.
         let own = self.endpoint.id();
         Some(if !self.own_devices.is_empty() {
             "one of the person's devices this device dials"
@@ -2588,7 +2588,7 @@ impl ActorState {
     /// Tell a workspace host session of `ws` that just started who this
     /// device is; what the host holds then is what a later change is judged
     /// by ([`Self::announce_identity_if_changed`]).
-    fn announce_identity_to_new_host(&mut self, ws: WorkspaceId, session: &RelayCoeditSession) {
+    fn announce_identity_to_new_host(&mut self, ws: WorkspaceId, session: &ServerCoeditSession) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
         };
@@ -2605,7 +2605,7 @@ impl ActorState {
     fn announce_identity_to_host(
         ws: WorkspaceId,
         hello: &NeighbourMsg,
-        session: &RelayCoeditSession,
+        session: &ServerCoeditSession,
     ) {
         let (Some((channel, _)), Ok(bytes)) =
             (retention(hello, false), postcard::to_allocvec(hello))
@@ -3052,7 +3052,7 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 }
 
 /// An endpoint for a test of the network's own peers: on loopback, with no
-/// relay, no address directory and no gateway port mapping, so its peers
+/// server, no address directory and no gateway port mapping, so its peers
 /// reach each other directly and a run never depends on public relays, DNS
 /// or the local network being up and quick. `key`
 /// fixes its identity; `None` makes a fresh one.
@@ -3137,7 +3137,7 @@ fn encode_for_hosts(ws: WorkspaceId, msg: &NeighbourMsg) -> Option<(Vec<u8>, Hos
 /// Send encoded `bytes` on `session` as `retention` says.
 fn send_encoded(
     ws: WorkspaceId,
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     bytes: Vec<u8>,
     retention: HostRetention,
 ) {
@@ -3350,7 +3350,7 @@ impl HostRouteScheduler<'_> {
                     }
                     let discovered = tokio::time::timeout(
                         Duration::from_secs(10),
-                        RelayClient::discover_content_peer(
+                        ServerClient::discover_content_peer(
                             &discovery_endpoint,
                             discovery_addr.clone(),
                             ws,
@@ -3367,15 +3367,15 @@ impl HostRouteScheduler<'_> {
                             let _ = register_content_peer(content_peer).await;
                             // Re-advertise periodically. Registration persists the
                             // peer, while this also repairs a daemon replacement
-                            // without coupling its lifecycle to the relay session.
+                            // without coupling its lifecycle to the server session.
                             retry = Duration::from_secs(30);
                         }
                         Ok(Err(error)) => {
-                            tracing::debug!(%error, ws = %ws, "relay content discovery is not ready");
+                            tracing::debug!(%error, ws = %ws, "server content discovery is not ready");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                         Err(_) => {
-                            tracing::debug!(ws = %ws, "relay content discovery timed out");
+                            tracing::debug!(ws = %ws, "server content discovery timed out");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                     }
@@ -3406,7 +3406,7 @@ impl HostRouteScheduler<'_> {
             tokio::spawn(async move {
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
-                    RelayClient::connect_to_pinned_host(
+                    ServerClient::connect_to_pinned_host(
                         endpoint,
                         addr.clone(),
                         device_cert,
@@ -3416,9 +3416,9 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
+                .and_then(|result| result.map_err(|error| server_error(&host, &error)))
                 .and_then(|client| {
-                    RelayCoeditSession::join(client, ws, identity.device_public_key())
+                    ServerCoeditSession::join(client, ws, identity.device_public_key())
                         .map_err(|error| error.to_string())
                 });
                 let _ = tx
@@ -3436,7 +3436,7 @@ impl HostRouteScheduler<'_> {
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                RelayClient::connect_v2_to_enrolled_home_peer(
+                ServerClient::connect_v2_to_enrolled_home_peer(
                     endpoint,
                     addr.clone(),
                     expectation.user_public_key,
@@ -3448,9 +3448,9 @@ impl HostRouteScheduler<'_> {
             )
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
+            .and_then(|result| result.map_err(|error| server_error(&host, &error)))
             .and_then(|client| {
-                RelayCoeditSession::join(client, ws, identity.device_public_key())
+                ServerCoeditSession::join(client, ws, identity.device_public_key())
                     .map_err(|error| error.to_string())
             });
             let _ = tx
@@ -3465,7 +3465,7 @@ impl HostRouteScheduler<'_> {
     }
 }
 
-/// Submit an authenticated relay-discovered Files peer to the running FUSE
+/// Submit an authenticated server-discovered Files peer to the running FUSE
 /// daemon. This is deliberately a detached worker: endpoint registration may
 /// wait on the group-restricted daemon socket but must never delay networking
 /// or the compositor. The filesystem owns persistence and hydration policy.
@@ -3494,7 +3494,7 @@ async fn register_content_peer(
             std::path::PathBuf::from,
         );
     let Ok(payload) = serde_json::to_vec(&registration) else {
-        tracing::warn!("could not serialize relay-discovered filesystem registration");
+        tracing::warn!("could not serialize server-discovered filesystem registration");
         return false;
     };
     let mut child = match tokio::process::Command::new(&publisher)
@@ -3556,7 +3556,7 @@ const HOST_SILENCE_LIMIT: Duration = Duration::from_secs(25);
 /// Wait until host `session` is due a keep-alive check, then make it: a
 /// host silent for [`HOST_PING_AFTER`] is pinged once (`pinged` notes it),
 /// and one silent for [`HOST_SILENCE_LIMIT`] is not worth keeping (`false`).
-async fn host_keepalive(session: &RelayCoeditSession, pinged: &mut bool) -> bool {
+async fn host_keepalive(session: &ServerCoeditSession, pinged: &mut bool) -> bool {
     let silent = session.silent_for();
     if silent < HOST_PING_AFTER {
         *pinged = false;
@@ -3602,7 +3602,7 @@ fn host_event(
             HostEvent::DocumentOpened { channel, answer }
         }
         // Nothing here holds these: a call's audio is the session's, carried
-        // by the relay session the call itself holds, and a host keeps what a
+        // by the server session the call itself holds, and a host keeps what a
         // link's store kept.
         HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { refusal, .. } => {
@@ -3645,11 +3645,11 @@ fn host_event(
 }
 
 /// Whether `data`, a delta this device is receiving, is of a record the
-/// device opened ([`RelayCoeditSession::open_resource`]): the host sends it in
+/// device opened ([`ServerCoeditSession::open_resource`]): the host sends it in
 /// the record's order, its history first, which a device that restarts
 /// reads its records from. Each write is decided by its place in that
 /// order, never by when it arrived.
-fn opened_resource(data: &[u8], session: &RelayCoeditSession) -> bool {
+fn opened_resource(data: &[u8], session: &ServerCoeditSession) -> bool {
     tilo_server_session::retention_metadata(data)
         .is_some_and(|(channel, _)| session.opened_resource(&channel))
 }
@@ -3657,7 +3657,7 @@ fn opened_resource(data: &[u8], session: &RelayCoeditSession) -> bool {
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
-    session: Arc<RelayCoeditSession>,
+    session: Arc<ServerCoeditSession>,
     replaying: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<InternalEvent>,
     keepalive: bool,

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The programs the tilo.sh server images run, compiled by t's own check and cached like any other
 # build here: the API server, the VM host's service, its jail helper and its member, the
-# relay's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
+# server's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
 # boot and update tools. The images package what this leaves (api-build.sh, vm-host-build.sh,
-# relay-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
+# server-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
 # costs that crate's compile and a layering run.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -27,14 +27,14 @@ case $image in
     # resolution for the three programs.
     packages=(-p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
     bins=(tilo-legacy tilo-hosted-jail tilo-runtime) ;;
-  relay)
-    # The relay and the filesystem replica in one feature resolution, as the image compiled them:
+  server)
+    # The server and the filesystem replica in one feature resolution, as the image compiled them:
     # separate Cargo invocations recompile the shared dependencies whose selected features differ
     # by package root.
     packages=(-p tilo-server -p tilo-fs --bins)
     bins=(tilo-server tilo-server-admin tilo-enroll fs) ;;
   host)
-    # The server OS: the relay and replica, the hosted-VM service and its jail helper, the API
+    # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
     # server, and the boot tools the update log and the boot-entry pass read. One feature
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
@@ -48,7 +48,7 @@ case $image in
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
   *)
-    die "unknown server image $image: api, vm-host, relay or host" ;;
+    die "unknown server image $image: api, vm-host, server or host" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

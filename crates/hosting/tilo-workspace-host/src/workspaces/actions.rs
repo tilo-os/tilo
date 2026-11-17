@@ -14,12 +14,12 @@
 //!
 //! - the holder's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering workspaces and letting an app author one,
-//!   which only devices of the relay's own person may, decided as
+//!   which only devices of the server's own person may, decided as
 //!   [`Workspaces::authorize`] decides every [`WorkspaceOp::Host`]. They are asked of
 //!   the holder itself over the device's session with it, naming no workspace
 //!   (`Envelope::HostAction`, [`AppActionServer::serve_host`]), or on a workspace
 //!   the device holds there, and need the device's certificate as the
-//!   relay's handshake verified it,
+//!   server's handshake verified it,
 //!   which entering admits to the workspace. Creating a workspace may issue its first
 //!   invitation and entering answers the invitation the device redeems, so
 //!   a desktop shares a workspace without any governance before it holds
@@ -1140,7 +1140,7 @@ impl Offer {
 
 impl Workspaces {
     /// The workspace `workspace_id` carries, and the certificate of `caller`'s
-    /// device in it: the one the workspace's governance certified, or the relay's
+    /// device in it: the one the workspace's governance certified, or the server's
     /// own. `None` for a workspace that carries no governed workspace, a device
     /// the workspace never certified, and any caller but a person acting
     /// themselves or their server key: an agent or a bot governs nothing,
@@ -2077,7 +2077,7 @@ struct Shared {
 
 impl HostWorkspaceActions {
     /// Governance for workspaces [`attach`](Self::attach)ed later. Call it inside
-    /// the runtime the relay runs on.
+    /// the runtime the server runs on.
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
@@ -2111,7 +2111,7 @@ impl HostWorkspaceActions {
     }
 
     /// This host for requests about workspace `workspace_id`, from the
-    /// device whose certificate the relay's handshake verified as
+    /// device whose certificate the server's handshake verified as
     /// `certificate`.
     #[must_use]
     pub(crate) fn in_workspace_as(
@@ -2127,7 +2127,7 @@ impl HostWorkspaceActions {
     }
 
     /// This host for its own operations, asked of it directly by the device
-    /// whose certificate the relay's handshake verified as `certificate`.
+    /// whose certificate the server's handshake verified as `certificate`.
     #[must_use]
     pub(crate) fn as_host(
         &self,
@@ -2301,7 +2301,7 @@ impl HostWorkspaceActions {
         true
     }
 
-    /// The answer `work` gives, on the relay's runtime: a workspace is decided
+    /// The answer `work` gives, on the server's runtime: a workspace is decided
     /// under its lock, which is never held on the caller's thread.
     fn spawn<T: Send + 'static>(
         &self,
@@ -2633,7 +2633,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
     serde_json::to_value(workspaces.inner.mcp_server.server()).unwrap_or(Value::Null)
 }
 
-/// The providers a relay that governs workspaces answers itself.
+/// The providers a server that governs workspaces answers itself.
 const PROVIDERS: [&str; 9] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
@@ -2652,7 +2652,7 @@ const PROVIDERS: [&str; 9] = [
     person_connections::PROVIDER,
 ];
 
-/// What a relay that governs workspaces answers remote actions addressed to it
+/// What a server that governs workspaces answers remote actions addressed to it
 /// with: the workspaces' governance (provider [`WORKSPACE_GOVERNANCE_PROVIDER`]), the
 /// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app action server its
 /// embedder supplied for everything else.

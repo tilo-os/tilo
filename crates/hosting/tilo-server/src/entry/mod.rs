@@ -9,7 +9,7 @@
 //! page opens, and the outbox that keeps a mail until the mail service takes
 //! it ([`outbox`], [`mail`]).
 //!
-//! It was the workspace service's, beside the relay; the relay answers it itself
+//! It was the workspace service's, beside the server; the server answers it itself
 //! now, on the same routes and with the same words, so an entry page of either
 //! build reads the same answers.
 
@@ -86,7 +86,7 @@ impl MailConfig {
     }
 }
 
-/// How the entry's wait list is configured: what whoever runs the relay said,
+/// How the entry's wait list is configured: what whoever runs the server said,
 /// from `--wait-list-max` and `--wait-list-mail` and the mail settings'
 /// environment.
 #[derive(Clone, Debug, Default)]

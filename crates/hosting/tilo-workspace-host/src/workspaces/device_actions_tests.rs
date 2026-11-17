@@ -3,7 +3,7 @@
 //! keeps for whom, and who may run it here.
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay, its workspaces and the devices' action services are this test's subject until its last assertion"
+    reason = "the server, its workspaces and the devices' action services are this test's subject until its last assertion"
 )]
 
 use super::fixtures::{entry_join, entry_join_as};
@@ -20,8 +20,8 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let (member_key, member_cert) = guest_device();
     entry_join(
@@ -46,7 +46,7 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
         Duration::from_secs(20),
         action_service.offers(
             &endpoint,
-            [relay.node_addr()],
+            [server.node_addr()],
             &created.workspace,
             &Route::new("so.tilo.notes", "notes.root", "insert"),
             &Work::none(),
@@ -73,7 +73,7 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
     assert!(choice.is_local(), "nothing runs there: {choice}");
 
     endpoint.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The work a device offers the host: one input, and a run here it could
@@ -206,8 +206,8 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("ActionService").await.unwrap();
     let jobs = Arc::new(Recorded::default());
     let serving: Arc<dyn HostJobs> = jobs.clone();
@@ -229,7 +229,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     let (a_input, b_input) = ([0xa1; 32], [0xb2; 32]);
     let a_offer = tilo_actions::InvocationId::new();
     let b_offer = tilo_actions::InvocationId::new();
-    let host = relay.node_addr();
+    let host = server.node_addr();
     let ask = |action_service: &tilo_peer_state::actions::ActionService,
                endpoint: &iroh::Endpoint,
                work: &neighbour_wire::offer::Work,
@@ -356,7 +356,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     a_endpoint.close().await;
     b_endpoint.close().await;
     c_endpoint.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Who may use the host's compute is the workspace's permission for the
@@ -372,15 +372,15 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Permits").await.unwrap();
     let jobs = Arc::new(Recorded::default());
     let serving: Arc<dyn HostJobs> = jobs.clone();
     workspaces.run_jobs(serving);
 
     let route = Route::new("so.tilo.notes", "notes.root", "insert");
-    let host = relay.node_addr();
+    let host = server.node_addr();
     let mut closed = Vec::new();
     for (seed, role) in [(51, Role::Editor), (52, Role::Viewer)] {
         let (device_key, device_cert) = guest_device();
@@ -439,7 +439,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     for endpoint in closed {
         endpoint.close().await;
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A host already running as much as it takes on answers an offer as taken by
@@ -452,8 +452,8 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let created = workspaces.create("Busy").await.unwrap();
     let jobs = Arc::new(Recorded::at_capacity());
     let serving: Arc<dyn HostJobs> = jobs;
@@ -473,7 +473,7 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
         Duration::from_secs(20),
         action_service.offers(
             &endpoint,
-            [relay.node_addr()],
+            [server.node_addr()],
             &created.workspace,
             &Route::new("so.tilo.notes", "notes.root", "insert"),
             &offered_work([0xc3; 32]),
@@ -496,5 +496,5 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
     );
 
     endpoint.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }

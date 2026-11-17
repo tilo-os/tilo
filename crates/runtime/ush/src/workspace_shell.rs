@@ -126,7 +126,7 @@ impl WorkspaceShells {
     }
 
     /// Where a run `payer` pays for runs its Linux programs when the environment names the hosted-VM
-    /// service but no account: a member taking a relay's work, whose every run names who pays,
+    /// service but no account: a member taking a server's work, whose every run names who pays,
     /// runs them on the service its workspaces' Browser starts on.
     fn paid_on_browsers(&self, payer: Option<&Payer>) -> Option<HostedTarget> {
         let payer = payer?;

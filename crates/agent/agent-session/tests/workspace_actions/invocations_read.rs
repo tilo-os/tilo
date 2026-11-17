@@ -257,13 +257,13 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
     let reading = Arc::new(Reading {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         unreadable: Mutex::default(),
@@ -480,13 +480,13 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     let reading = Arc::new(Reading {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.relay.node_addr(),
+                hosted.server.node_addr(),
                 host.cert.clone(),
             ),
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
-        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        workspaces: hosted.server.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         unreadable: Mutex::default(),

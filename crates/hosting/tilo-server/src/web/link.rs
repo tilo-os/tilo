@@ -6,8 +6,8 @@
 //! ([`tilo_server_protocol::web::WebLink`]), and each is served by the same
 //! code its iroh ALPN is:
 //!
-//! - the session path: every stream a member session, as on the relay ALPN
-//!   ([`RelayProtocol::serve_link`]);
+//! - the session path: every stream a member session, as on the server ALPN
+//!   ([`ServerProtocol::serve_link`]);
 //! - the certification path: one request or approver command, as on the
 //!   certification ALPN;
 //! - the live session path: the workspace's live session, offered and answered as
@@ -18,12 +18,12 @@ use tilo_server_client::link::Link;
 use tilo_server_protocol::web::{LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_SESSION_PATH};
 
 use crate::certification::CertificationProtocol;
-use crate::host::RelayProtocol;
+use crate::host::ServerProtocol;
 
 /// What the listener serves.
 #[derive(Clone)]
 pub(crate) struct Serving {
-    pub(crate) relay: RelayProtocol,
+    pub(crate) server: ServerProtocol,
     pub(crate) certification: CertificationProtocol,
     pub(crate) live_origin: tilo_live::relay::Relay,
 }
@@ -63,7 +63,7 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
             let serving = serving.clone();
             async move {
                 match path.as_str() {
-                    LINK_SESSION_PATH => serving.relay.serve_link(Link::web(session)).await,
+                    LINK_SESSION_PATH => serving.server.serve_link(Link::web(session)).await,
                     LINK_CERTIFY_PATH => {
                         if let Err(error) = serving.certification.serve(&Link::web(session)).await {
                             tracing::debug!(%error, "certification over WebTransport ended");
@@ -72,7 +72,7 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                     LINK_LIVE_SESSION_PATH => {
                         super::live::serve_web(
                             &serving.live_origin,
-                            &serving.relay,
+                            &serving.server,
                             live_session(session),
                         )
                         .await;

@@ -1,10 +1,10 @@
-//! A workspace a relay governs, its files held by the member that takes the
+//! A workspace a server governs, its files held by the member that takes the
 //! workspace's work and by a person's device, each a runtime of its own; and
 //! the same files read by a device that joins once the member that wrote them
-//! has left, from what the relay kept of them.
+//! has left, from what the server kept of them.
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay, the runtimes and the person's device live for the whole scenario"
+    reason = "the server, the runtimes and the person's device live for the whole scenario"
 )]
 
 use super::super::super::Standalone;
@@ -25,9 +25,9 @@ const TEST: &str = "standalone::files::replica::tests::\
 /// The invitation the person's device redeems, in its own process.
 const PERSON_INVITATION: &str = "TILO_REPLICA_TEST_PERSON_INVITATION";
 const KEPT_TEST: &str = "standalone::files::replica::tests::\
-    a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left";
+    a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left";
 const RETURN_TEST: &str = "standalone::files::replica::tests::\
-    content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away";
+    content_the_server_let_go_of_comes_back_from_the_writer_that_was_away";
 /// The invitation the device that joins last redeems, in its own process.
 const JOINER_INVITATION: &str = "TILO_REPLICA_TEST_JOINER_INVITATION";
 const WORKSPACE_NAME: &str = "Project";
@@ -60,9 +60,9 @@ fn certificate(
     cert
 }
 
-/// The relay tilo.sh runs: a certified host of its operator, governing the
+/// The server tilo.sh runs: a certified host of its operator, governing the
 /// workspaces it creates.
-async fn relay(state: &Path, operator: &SigningKey) -> tilo_server::Relay {
+async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     // It owns the workspaces it governs, so it takes part in their channels
     // and their records are sealed.
@@ -82,15 +82,15 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_server::Relay {
         .bind()
         .await
         .unwrap();
-    tilo_server::Relay::start_on_endpoint_with_protocols(
-        tilo_server::RelayConfig {
+    tilo_server::Server::start_on_endpoint_with_protocols(
+        tilo_server::ServerConfig {
             state_root: state.join("state"),
             identity_root: state.join("identity"),
             full_replica_status: state.join("replica/status.json"),
             home_peer_bundle: state.join("home-peer.toml"),
             ..Default::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: operator.verifying_key().to_bytes(),
             device_signing_key: key,
             device_cert: cert,
@@ -106,13 +106,13 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_server::Relay {
 /// An editor's invitation to `workspace`, as text, that the operator's own
 /// device `shell` issues; for anyone's device when `person` is `None`.
 async fn invitation(
-    relay: &tilo_server::Relay,
+    server: &tilo_server::Server,
     workspace: &str,
     shell: &DeviceCert,
     person: Option<[u8; 32]>,
     request: u8,
 ) -> String {
-    let issued = relay
+    let issued = server
         .workspaces()
         .unwrap()
         .issue(
@@ -155,7 +155,7 @@ fn wait_for_file(path: &Path, bytes: &[u8], what: &str, log: &Path) {
     );
 }
 
-/// Wait until the relay's blobs under `dir` take `bytes` together, failing
+/// Wait until the server's blobs under `dir` take `bytes` together, failing
 /// with how much they take.
 /// What the files under `dir` take, every directory below it included.
 fn bytes_under(dir: &Path) -> u64 {
@@ -182,7 +182,7 @@ fn wait_for_kept(dir: &Path, bytes: u64, what: &str) {
         }
         assert!(
             started.elapsed() <= bound,
-            "{what}: the relay keeps {kept} bytes of them under {}",
+            "{what}: the server keeps {kept} bytes of them under {}",
             dir.display(),
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -231,15 +231,15 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let (_, member_device) =
         tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
 
-    // The relay governs the workspace; its operator's shell owns it.
+    // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);
     let shell = certificate(
         &operator,
         &SigningKey::from_bytes(&[43; 32]),
         DeviceCapabilities::primary(),
     );
-    let relay = run(relay(&scenario.join("relay"), &operator));
-    let workspaces = relay.workspaces().unwrap();
+    let server = run(server(&scenario.join("server"), &operator));
+    let workspaces = server.workspaces().unwrap();
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
@@ -252,7 +252,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 
     // The member joins and holds the workspace's files at a folder.
     let joined = member.joiner().unwrap()(&run(invitation(
-        &relay,
+        &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
@@ -275,7 +275,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let mut person = isolated_command(TEST, &person_root)
         .env(
             PERSON_INVITATION,
-            run(invitation(&relay, &workspace, &shell, None, 2)),
+            run(invitation(&server, &workspace, &shell, None, 2)),
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
@@ -323,17 +323,17 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let _ = person.kill();
     let _ = person.wait();
     drop(member);
-    run(relay.shutdown());
+    run(server.shutdown());
 }
 
-/// The files a relay keeps reach a device that joins after the member that
+/// The files a server keeps reach a device that joins after the member that
 /// wrote them left.
 ///
-/// The relay reads the tree only once the member that opened its channel let
-/// the relay's device in: the member is linked to the relay directly, and
-/// hears the relay's access request on that link.
+/// The server reads the tree only once the member that opened its channel let
+/// the server's device in: the member is linked to the server directly, and
+/// hears the server's access request on that link.
 #[test]
-fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
+fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // The device that joins last: a runtime of its own that joins the
     // workspace and holds its files until the test stops it.
     let _ = tracing_subscriber::fmt()
@@ -359,16 +359,16 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let (_, member_device) =
         tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
 
-    // The relay governs the workspace; its operator's shell owns it.
+    // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[51; 32]);
     let shell = certificate(
         &operator,
         &SigningKey::from_bytes(&[53; 32]),
         DeviceCapabilities::primary(),
     );
-    let state = scenario.join("relay");
-    let relay = run(relay(&state, &operator));
-    let workspaces = relay.workspaces().unwrap();
+    let state = scenario.join("server");
+    let server = run(server(&state, &operator));
+    let workspaces = server.workspaces().unwrap();
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
@@ -381,7 +381,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
 
     // The member joins and holds the workspace's files at a folder.
     let joined = member.joiner().unwrap()(&run(invitation(
-        &relay,
+        &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
@@ -401,7 +401,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     std::fs::write(member_folder.join("report.txt"), &report).unwrap();
     std::fs::write(member_folder.join("out").join("build.bin"), &build).unwrap();
 
-    // The relay keeps the content of both while the member that wrote them is
+    // The server keeps the content of both while the member that wrote them is
     // still here: the member leaves entirely before anything reads them again.
     let kept = state
         .join("state")
@@ -411,11 +411,11 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     wait_for_kept(
         &kept,
         written,
-        "the content of the files the member wrote, on the relay",
+        "the content of the files the member wrote, on the server",
     );
     drop(member);
 
-    // The device that joins afterwards is given the same bytes, from the relay
+    // The device that joins afterwards is given the same bytes, from the server
     // alone: nothing else keeps a copy.
     let joiner_root = scenario.join("joiner");
     std::fs::create_dir_all(&joiner_root).unwrap();
@@ -423,7 +423,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let mut later = isolated_command(KEPT_TEST, &joiner_root)
         .env(
             JOINER_INVITATION,
-            run(invitation(&relay, &workspace, &shell, None, 2)),
+            run(invitation(&server, &workspace, &shell, None, 2)),
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
@@ -439,27 +439,27 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     wait_for_file(
         &joiner_folder.join("report.txt"),
         &report,
-        "the file the relay kept, on the device that joined after its writer left",
+        "the file the server kept, on the device that joined after its writer left",
         &log,
     );
     wait_for_file(
         &joiner_folder.join("out").join("build.bin"),
         &build,
-        "the large file the relay kept, on the device that joined after its writer left",
+        "the large file the server kept, on the device that joined after its writer left",
         &log,
     );
 
     let _ = later.kill();
     let _ = later.wait();
-    run(relay.shutdown());
+    run(server.shutdown());
 }
 
-/// A member that was away longer than the relay keeps content nothing names
-/// comes back with a file whose bytes the relay let go of in the meantime:
-/// the relay asks the writer for them again, as for any content a record
-/// names and the relay lacks, and keeps them once more.
+/// A member that was away longer than the server keeps content nothing names
+/// comes back with a file whose bytes the server let go of in the meantime:
+/// the server asks the writer for them again, as for any content a record
+/// names and the server lacks, and keeps them once more.
 #[test]
-fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
+fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
         .with_writer(std::io::stderr)
@@ -477,9 +477,9 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
         &SigningKey::from_bytes(&[63; 32]),
         DeviceCapabilities::primary(),
     );
-    let state = scenario.join("relay");
-    let relay = run(relay(&state, &operator));
-    let workspaces = relay.workspaces().unwrap();
+    let state = scenario.join("server");
+    let server = run(server(&state, &operator));
+    let workspaces = server.workspaces().unwrap();
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
@@ -490,7 +490,7 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     })
     .unwrap();
     let joined = member.joiner().unwrap()(&run(invitation(
-        &relay,
+        &server,
         &workspace,
         &shell,
         Some(member_device.user_public_key),
@@ -504,12 +504,12 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     // The member goes away.
     drop(member);
 
-    // The relay held the bytes of the member's draft, which no record named
-    // yet; the member is away for longer than the relay keeps such content,
-    // and the relay lets go of it.
+    // The server held the bytes of the member's draft, which no record named
+    // yet; the member is away for longer than the server keeps such content,
+    // and the server lets go of it.
     let draft = content(21, 300_000);
     let (manifest, _) = tilo_fs::content::build(&draft, None);
-    let store = relay.content().get(&workspace).unwrap();
+    let store = server.content().get(&workspace).unwrap();
     let id = store.put(&manifest.encode()).unwrap();
     let chunks: Vec<String> = (0..manifest.chunks().len())
         .map(|index| {
@@ -521,14 +521,14 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     let past_the_grace = std::time::SystemTime::now() + Duration::from_secs(60);
     let collected = run(tilo_server::content::collection::collect(
         workspaces,
-        &relay.content(),
+        &server.content(),
         &workspace,
         past_the_grace,
     ))
     .expect("every record of the workspace reads whole");
     assert!(
         collected.hashes.contains(&id),
-        "nothing named the draft, so the relay let go of it: {collected:?}"
+        "nothing named the draft, so the server let go of it: {collected:?}"
     );
     assert!(!store.has(&id));
 
@@ -537,13 +537,13 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     std::fs::write(member_folder.join("draft.txt"), &draft).unwrap();
     let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
 
-    // The relay asks the writer for the draft and keeps it again.
+    // The server asks the writer for the draft and keeps it again.
     let started = std::time::Instant::now();
     let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
     while !(store.has(&id) && chunks.iter().all(|chunk| store.has(chunk))) {
         assert!(
             started.elapsed() <= bound,
-            "the relay never took the draft back from its writer: manifest kept {}, {} of {} chunks",
+            "the server never took the draft back from its writer: manifest kept {}, {} of {} chunks",
             store.has(&id),
             chunks.iter().filter(|chunk| store.has(chunk)).count(),
             chunks.len(),
@@ -551,5 +551,5 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
         std::thread::sleep(Duration::from_millis(100));
     }
     drop(member);
-    run(relay.shutdown());
+    run(server.shutdown());
 }

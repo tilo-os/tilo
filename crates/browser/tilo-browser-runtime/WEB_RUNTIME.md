@@ -162,7 +162,7 @@ node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle
 
 `--build` runs those builds itself (the bundle with `--profile dev` into
 `OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
-for a relay without `agents`. The native window is read and edited from
+for a server without `agents`. The native window is read and edited from
 outside the process through the macOS accessibility API
 (`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
 running the script needs Accessibility permission; the native pointer moves
@@ -202,12 +202,12 @@ CHROME=/usr/lib64/chromium-browser/chromium-browser \
 On a machine with a GPU, headless Chrome still draws WebGPU with SwiftShader
 unless told otherwise: `TILO_CHROME_ARGS="--enable-gpu --use-angle=vulkan
 --enable-features=Vulkan --ignore-gpu-blocklist"` gives it the GPU (on a laptop
-with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A relay built on another
+with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A server built on another
 machine finds no font catalog of its own; `TILO_FONT_CATALOG` names one
 (`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope
 fixtures` prints it).
 
-`--build` builds the relay (features `web,agents`), the CLI and the bundle;
+`--build` builds the server (features `web,agents`), the CLI and the bundle;
 the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
 gst-launch-1.0 (the build container has the latter); without either, the
 screencast's frames are kept instead.

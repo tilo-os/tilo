@@ -1,5 +1,5 @@
 //! Helpers of a job: the programs that serve it from outside its sandbox (pasta connecting its
-//! network, virtiofsd sharing its files with a VM, passt, a relay to a socket of the caller's). A
+//! network, virtiofsd sharing its files with a VM, passt, a server to a socket of the caller's). A
 //! helper runs in a mount namespace of its own built from nothing: a tmpfs root with the host's
 //! `/usr` and `/etc` read-only, the usual links or directories for `/bin`, `/sbin` and `/lib*`, and
 //! the caller's binds. It holds none of the caller's other mounts, so a filesystem the caller

@@ -334,7 +334,7 @@ pub fn scope_reaches(scope: &Scope, pinned: Option<&str>) -> bool {
     // Any grant at the server's root: a workspace grant's session is pinned all
     // the same, so a client configured with the root URL keeps working. An
     // account grant reaches each of the person's workspaces at its own URL,
-    // as a backend works in each customer's; the relay still admits it only
+    // as a backend works in each customer's; the server still admits it only
     // where the workspace is the person's.
     match (scope, pinned) {
         (Scope::Workspace(workspace), Some(pinned)) => workspace == pinned,

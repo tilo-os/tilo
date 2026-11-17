@@ -38,12 +38,12 @@ fn key_of(key: &SigningKey) -> [u8; 32] {
 }
 
 fn live(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key_of(key))
+    TransportOrigin::ServerDelta(key_of(key))
 }
 
 /// As a holder hands on what it kept: decided as of the write's own time.
 fn retained(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RetainedRelayDelta(key_of(key))
+    TransportOrigin::RetainedServerDelta(key_of(key))
 }
 
 /// `key`'s device sets `field` in the document as `peer` holds it, dated `at`.

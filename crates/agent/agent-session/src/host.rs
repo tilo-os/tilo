@@ -602,7 +602,7 @@ mod tests {
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     const OTHER_WORKSPACE: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
 
-    /// The host's content, under its state directory as a relay keeps it.
+    /// The host's content, under its state directory as a server keeps it.
     fn test_content(state: &Path) -> Arc<WorkspaceStores> {
         Arc::new(WorkspaceStores::in_dir(
             state.join(CONTENT_DIR),

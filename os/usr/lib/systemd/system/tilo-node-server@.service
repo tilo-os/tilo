@@ -1,9 +1,9 @@
-# A node's relay for account %i's session: serves browsers (run --web), waits
+# A node's server for account %i's session: serves browsers (run --web), waits
 # for the person's page to install it with the provisioned token, certifies
 # the session beside it at the same time, and then governs the person's
 # workspaces for their pages. Enable together with tilo-node-session@%i.path.
 [Unit]
-Description=Tilo node relay for %i's session
+Description=Tilo node server for %i's session
 After=network-online.target var-lib-tilo.mount tilo-node-session-key@%i.service
 Wants=network-online.target
 Requires=tilo-node-session-key@%i.service
@@ -20,13 +20,13 @@ EnvironmentFile=/var/lib/tilo-node/%i/session.env
 # The deployment's browser origins: TILO_NODE_WEB_ARGS="--allowed-origin
 # https://… --web-entry https://…" (where the pages are served from).
 EnvironmentFile=-/etc/tilo/node/web.env
-StateDirectory=tilo-node/relay
+StateDirectory=tilo-node/server
 StateDirectoryMode=0700
 RuntimeDirectory=tilo-node/%i
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-ExecStart=/usr/libexec/tilo/tilo-server --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
-# Until the person's page installs it, the relay waits for its certificate
+ExecStart=/usr/libexec/tilo/tilo-server --config /usr/lib/tilo/node-server.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
+# Until the person's page installs it, the server waits for its certificate
 # and only then reports ready: that wait has no deadline.
 TimeoutStartSec=infinity
 Restart=on-failure
@@ -39,7 +39,7 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 PrivateIPC=yes
-ReadWritePaths=/var/lib/tilo-node/relay /var/lib/tilo-node/%i/session/device /var/lib/tilo-node/%i/session/user-identity /run/tilo-node/%i
+ReadWritePaths=/var/lib/tilo-node/server /var/lib/tilo-node/%i/session/device /var/lib/tilo-node/%i/session/user-identity /run/tilo-node/%i
 ReadOnlyPaths=/etc/tilo /usr/lib/tilo
 NoNewPrivileges=yes
 CapabilityBoundingSet=

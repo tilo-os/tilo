@@ -1,14 +1,14 @@
 //! The boundary through which a host may serve apps to remote callers.
 //!
-//! The relay itself runs no apps and links none: it carries
+//! The server itself runs no apps and links none: it carries
 //! [`Envelope::RemoteAction`](tilo_server_protocol::transport::Envelope::RemoteAction) frames between
 //! devices of a workspace without executing them. A process that embeds the
 //! relay and *does* host apps supplies an [`AppActionServer`] to the host
 //! ([`HostConfig::apps`](crate::host::HostConfig::apps)); frames addressed
-//! to the host's own device are then answered by it, and a relay advertises
+//! to the host's own device are then answered by it, and a server advertises
 //! its `app_serving` service.
 //! Without one, the capability stays off and such frames are refused as
-//! undeliverable — all but the governance of the workspaces the relay governs,
+//! undeliverable — all but the governance of the workspaces the server governs,
 //! which it answers itself (`crate::workspaces::GovernedServer`).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
@@ -16,7 +16,7 @@ use tilo_server_protocol::WorkspaceId;
 
 /// Answers remote-action requests addressed to this host.
 ///
-/// `caller` is the actor the relay authenticated for the connection the
+/// `caller` is the actor the server authenticated for the connection the
 /// request arrived on; implementations decide authority from it alone.
 pub trait AppActionServer: Send + Sync {
     /// Answer one message for `workspace_id` — whenever the answer is ready,
@@ -28,8 +28,8 @@ pub trait AppActionServer: Send + Sync {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>>;
 
-    /// As [`Self::serve`], with the certificate the relay's handshake
-    /// verified for `caller`'s device: what the relay hands every message
+    /// As [`Self::serve`], with the certificate the server's handshake
+    /// verified for `caller`'s device: what the server hands every message
     /// that arrives on a session. The host's own operations need it (they
     /// admit that certificate to a workspace); an app action server has no use
     /// for it, and the default ignores it.
@@ -46,7 +46,7 @@ pub trait AppActionServer: Send + Sync {
 
     /// Answer one of the host's own operations (`tilo.host`), asked of the
     /// host itself by `caller` on the device `certificate` names, as the
-    /// relay's handshake verified it: no workspace is involved. An app action server that
+    /// server's handshake verified it: no workspace is involved. An app action server that
     /// governs no workspaces answers none.
     fn serve_host(
         &self,
@@ -109,7 +109,7 @@ pub trait AppActionServer: Send + Sync {
         None
     }
 
-    /// As [`Self::route`], with the certificate the relay's handshake
+    /// As [`Self::route`], with the certificate the server's handshake
     /// verified for `caller`'s device: what the app action server may hold the caller to
     /// beyond who it is — a key's own scope, say. An app action server that needs only the
     /// caller routes as before.

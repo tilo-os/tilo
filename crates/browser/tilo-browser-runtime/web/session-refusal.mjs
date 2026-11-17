@@ -82,7 +82,7 @@ export const hostUnreachable = error => (error?.name === 'HostAdmissionError' &&
 
 /**
  * The host did not answer the page before it got in (a host restarting
- * starts its relay and entry a moment apart): which try this was, counted
+ * starts its server and entry a moment apart): which try this was, counted
  * across the page's reloads (`attempt`, 0 for the first failure), and since
  * when it fails (`since`), for the reconnect screen's backoff. Counts it.
  */

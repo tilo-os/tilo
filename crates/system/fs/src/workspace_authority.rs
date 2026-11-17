@@ -87,7 +87,7 @@ async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, Path
     }
 }
 
-/// Stable, workspace-scoped handoff for a direct endpoint returned by the authenticated relay
+/// Stable, workspace-scoped handoff for a direct endpoint returned by the authenticated server
 /// discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
     local_socket_dir().join(format!(
@@ -95,7 +95,7 @@ pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
     ))
 }
 
-/// Durable direct Files endpoints discovered through the authenticated relay. Written only by the
+/// Durable direct Files endpoints discovered through the authenticated server. Written only by the
 /// root-owned daemon after its group-restricted control socket accepts the request.
 pub fn content_peers_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CONTENT_PEERS_FILE)
@@ -110,9 +110,9 @@ pub struct PersistedContentPeer {
     pub endpoint: iroh_base::EndpointAddr,
     #[serde(default)]
     pub ticket: Option<String>,
-    /// Enrolled relay service which authenticated this endpoint; legacy entries have none.
+    /// Enrolled server service which authenticated this endpoint; legacy entries have none.
     #[serde(default)]
-    pub relay_service_id: Option<[u8; 32]>,
+    pub server_service_id: Option<[u8; 32]>,
 }
 
 impl PersistedContentPeer {
@@ -120,7 +120,7 @@ impl PersistedContentPeer {
         if let Some(ticket) = &self.ticket {
             // The ticket names the shared namespace and record protocol. Its node is commonly the
             // originating owner while `endpoint` is the authenticated always-on replica discovered
-            // through relay; discovery authentication pins the endpoint to the enrolled host, so only
+            // through server; discovery authentication pins the endpoint to the enrolled host, so only
             // the bounded ticket encoding and its workspace identity are checked here.
             let _ = Ticket::decode(ticket)?;
         }
@@ -171,8 +171,8 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         if refreshed.ticket.is_none() {
             refreshed.ticket = previous.ticket;
         }
-        if refreshed.relay_service_id.is_none() {
-            refreshed.relay_service_id = previous.relay_service_id;
+        if refreshed.server_service_id.is_none() {
+            refreshed.server_service_id = previous.server_service_id;
         }
         peers.push(refreshed);
     } else {
@@ -426,13 +426,13 @@ pub struct AuthorityResponse {
 #[serde(deny_unknown_fields)]
 pub struct ContentPeerRequest {
     pub endpoint: iroh_base::EndpointAddr,
-    /// Exact NAS ticket returned by authenticated relay discovery; the daemon validates that it names
+    /// Exact NAS ticket returned by authenticated server discovery; the daemon validates that it names
     /// this endpoint before making it durable. Omitted only by old clients, which keep blob-only
     /// behaviour.
     #[serde(default)]
     pub ticket: Option<String>,
     #[serde(default)]
-    pub relay_service_id: Option<[u8; 32]>,
+    pub server_service_id: Option<[u8; 32]>,
 }
 
 /// Authenticated local Files-control requests. The Unix socket is owned by the daemon and
@@ -500,7 +500,7 @@ pub fn serve_local_content_peer(
                                     PersistedContentPeer {
                                         endpoint: request.endpoint.clone(),
                                         ticket: request.ticket.clone(),
-                                        relay_service_id: request.relay_service_id,
+                                        server_service_id: request.server_service_id,
                                     },
                                 )
                             });
@@ -544,7 +544,7 @@ pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
     ticket: Option<String>,
-    relay_service_id: Option<[u8; 32]>,
+    server_service_id: Option<[u8; 32]>,
 ) -> anyhow::Result<ContentPeerResponse> {
     let mut stream = tokio::net::UnixStream::connect(socket).await?;
     write_frame(
@@ -552,7 +552,7 @@ pub async fn register_local_content_peer(
         &ContentPeerControlRequest::Register(ContentPeerRequest {
             endpoint,
             ticket,
-            relay_service_id,
+            server_service_id,
         }),
     )
     .await?;
@@ -715,7 +715,7 @@ mod tests {
                             iroh::SecretKey::from_bytes(&[byte; 32]).public(),
                         ),
                         ticket: None,
-                        relay_service_id: None,
+                        server_service_id: None,
                     },
                 )
                 .unwrap();
@@ -727,7 +727,7 @@ mod tests {
                     endpoint: iroh_base::EndpointAddr::new(refreshed_id)
                         .with_ip_addr("127.0.0.1:4788".parse().unwrap()),
                     ticket: None,
-                    relay_service_id: None,
+                    server_service_id: None,
                 },
             )
             .unwrap();
@@ -737,7 +737,7 @@ mod tests {
                 PersistedContentPeer {
                     endpoint: iroh_base::EndpointAddr::new(replacement_id),
                     ticket: None,
-                    relay_service_id: None,
+                    server_service_id: None,
                 },
             )
             .unwrap();
@@ -1077,7 +1077,7 @@ mod tests {
                 vec![PersistedContentPeer {
                     endpoint: discovered,
                     ticket: Some(ticket),
-                    relay_service_id: None,
+                    server_service_id: None,
                 }]
             );
             assert!(rebind_rx.try_recv().is_err());
@@ -1105,7 +1105,7 @@ mod tests {
             .unwrap();
             let discovered =
                 iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
-            let relay_service_id = [0x99; 32];
+            let server_service_id = [0x99; 32];
             let ticket = Ticket {
                 node: discovered.clone(),
                 workspace: [0x71; 32],
@@ -1116,7 +1116,7 @@ mod tests {
                 &socket,
                 discovered.clone(),
                 Some(ticket.clone()),
-                Some(relay_service_id),
+                Some(server_service_id),
             )
             .await
             .unwrap();
@@ -1126,7 +1126,7 @@ mod tests {
                 vec![PersistedContentPeer {
                     endpoint: discovered,
                     ticket: Some(ticket),
-                    relay_service_id: Some(relay_service_id),
+                    server_service_id: Some(server_service_id),
                 }]
             );
             task.abort();

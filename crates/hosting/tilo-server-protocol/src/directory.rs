@@ -10,8 +10,8 @@
 //! refused at the entry.
 //!
 //! JSON over HTTPS, below the host's [`API_PREFIX`](crate::web::API_PREFIX)
-//! for a relay, at the site's own path for a site's community workspace (the workspace
-//! service). Every route is a `POST` (a relay serves nothing else):
+//! for a server, at the site's own path for a site's community workspace (the workspace
+//! service). Every route is a `POST` (a server serves nothing else):
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
@@ -52,14 +52,14 @@ pub const MAX_FACES: usize = 8;
 /// The longest reason a report gives.
 pub const MAX_REPORT_CHARS: usize = 500;
 
-/// The entry of `workspace` on a relay, relative to its directory: what
+/// The entry of `workspace` on a server, relative to its directory: what
 /// [`DirectoryEntry::entry`] names.
 #[must_use]
 pub fn entry_path(workspace: &str) -> String {
     format!("directory/{workspace}/")
 }
 
-/// The workspace a relay entry route below the API prefix names, and what is
+/// The workspace a server entry route below the API prefix names, and what is
 /// asked of it there: `/directory/<workspace>/report` is `(workspace, "report")`.
 /// The wait list's acts are the one step of two words:
 /// `…/wait-list/remove` is `(workspace, "wait-list/remove")`.
@@ -77,7 +77,7 @@ pub fn entry_route(route: &str) -> Option<(&str, &str)> {
 /// The entry's wait list: the acts a person who asked without an invitation
 /// leaves an address with, confirms it, takes it off and asks where it
 /// stands, each a step after its entry (`<entry>wait-list`, below the API
-/// prefix for a relay).
+/// prefix for a server).
 pub const WAIT_LIST: &str = "wait-list";
 /// The step taking an address off the list with the secret it was handed or
 /// mailed.

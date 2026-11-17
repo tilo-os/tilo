@@ -367,7 +367,7 @@ fn heap_bytes(envelope: &Envelope) -> usize {
     match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
         Envelope::RetiredPresence { payload, .. } => payload.capacity(),
-        Envelope::PeerRelayHello { hosted_workspaces } => {
+        Envelope::PeerServerHello { hosted_workspaces } => {
             hosted_workspaces.capacity().saturating_mul(8)
         }
         Envelope::SyncRequest { have_heads, .. } => have_heads.capacity().saturating_mul(32),

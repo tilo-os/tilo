@@ -199,7 +199,7 @@ fn follow(
     };
     // Who asks is the action service's device: the caller here is only what the trait
     // asks for, never sent.
-    let caller = Caller::local_app("tilo.relay");
+    let caller = Caller::local_app("tilo.server");
     let receipt = placed_shells::settled(device.invoke(&caller, request))?
         .map_err(|error| format!("the VM host refused it: {error}"))?;
     if let ReceiptStatus::Rejected { error } = receipt.status {

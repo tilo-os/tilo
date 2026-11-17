@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use tilo_lock::MutexRecover as _;
 use tilo_server_client::CoeditPayload;
 use tilo_server_protocol::Envelope;
-use tilo_server_session::RelayClient;
+use tilo_server_session::ServerClient;
 
 use super::Task;
 use tilo_server_protocol::WorkspaceId;
@@ -80,7 +80,7 @@ impl Task {
     /// admitted this session to or began replaying to it; the rest waits
     /// until it does. Returns `false` when the session could not take an
     /// envelope.
-    pub(super) fn send_governance(&self, client: &RelayClient) -> bool {
+    pub(super) fn send_governance(&self, client: &ServerClient) -> bool {
         // A workspace whose replay has begun takes the page's channel
         // governance: its access requests go out as soon as the replay's
         // governance names the page, so its keys arrive while the rest of the

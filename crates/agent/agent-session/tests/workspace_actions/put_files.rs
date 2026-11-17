@@ -27,7 +27,7 @@ use tilo_session_client::remote::SessionActions;
 /// The tree the workspace's host keeps, as the records its members read: the
 /// tree's own record and each chunk it lists.
 async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tree {
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await
@@ -248,7 +248,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
 
     // No app's record was made of any of them: the workspace holds the tree
     // and whatever its members opened, not a record per file.
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let records = workspaces.records(WORKSPACE).await.unwrap_or_default();
     let made: Vec<&(String, String)> = records
         .iter()
@@ -359,7 +359,7 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
         json!({"path": "files#open", "args": {"content": content, "name": "filed.pdf"}}),
     )
     .await;
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let records = workspaces.records(WORKSPACE).await.unwrap_or_default();
     assert!(
         records.iter().all(|(app, _)| app != "so.tilo.pdf-viewer"),
@@ -420,7 +420,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
 
     // The folder is one chunk, named by the tree's own record, and the host
     // keeps that chunk beside it: a reader takes the folder record by record.
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let index = workspaces
         .resource_document(WORKSPACE, FILES_APP, &tree_document())
         .await

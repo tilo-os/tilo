@@ -93,7 +93,7 @@ tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = 
 # identity store itself is the host's: no resource or secret enters Settings.
 runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
 runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client", optional = true }
-# Device role, workspace residency and server relay policy use the same types
+# Device role, workspace residency and server server policy use the same types
 # the tilo-server daemon loads; Settings never keeps a shadow sync model.
 tilo-server-protocol = { path = "../../crates/hosting/tilo-server-protocol" }
 tilo-bluez = { path = "../../crates/system/tilo-bluez", optional = true }

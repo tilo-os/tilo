@@ -9,7 +9,7 @@ use std::path::Path;
 use tilo_user_identity::{DeviceCert, IdentityPaths, persist};
 
 /// What a renewal can fail on changing: this device's identity store
-/// becoming available, the network coming back, a relay or host becoming
+/// becoming available, the network coming back, a server or host becoming
 /// reachable again, room to write coming back. A renewal that failed waits
 /// for one of them, not for a clock ([`keep_device_certificates_renewed`]).
 pub struct RenewalCauses {

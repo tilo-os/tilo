@@ -10,7 +10,7 @@ use super::{
     workspace_access,
 };
 
-/// A live frame's share of the relay's live-byte budget: `Ok(None)` for a
+/// A live frame's share of the server's live-byte budget: `Ok(None)` for a
 /// selected frame, which is not charged, and an error when the budget is full.
 pub(super) type LiveBudget =
     Result<Option<Arc<tokio::sync::OwnedSemaphorePermit>>, crate::store::StoreError>;

@@ -2808,7 +2808,7 @@
               "string",
               "null"
             ],
-            "description": "The host that keeps it: a relay's name, or the person's device that\nhosts it; absent while none of their devices said."
+            "description": "The host that keeps it: a server's name, or the person's device that\nhosts it; absent while none of their devices said."
           },
           "role": {
             "type": [

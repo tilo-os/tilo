@@ -1,4 +1,4 @@
-//! What the relay allocates, measured with a counting global allocator: classifying a routed
+//! What the server allocates, measured with a counting global allocator: classifying a routed
 //! multi-megabyte delta must not copy it.
 
 #![allow(

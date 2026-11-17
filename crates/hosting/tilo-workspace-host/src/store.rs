@@ -1,6 +1,6 @@
-//! Persistent on-disk state for the relay.
+//! Persistent on-disk state for the server.
 //!
-//! Layout (rooted at `RelayConfig.state_root`):
+//! Layout (rooted at `ServerConfig.state_root`):
 //!
 //! ```text
 //! /var/lib/tilo-server/
@@ -72,7 +72,7 @@ pub use revocation_log::{
 /// The metrics snapshot file is read by clients as well as the daemon.
 pub use tilo_server_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
 
-/// Directory entries the relay's workspace stores listed to commit retained
+/// Directory entries the server's workspace stores listed to commit retained
 /// history since this process started.
 static LISTED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -90,7 +90,7 @@ pub(crate) fn count_listed_entry() {
     THREAD_LISTED_ENTRIES.with(|listed| listed.set(listed.get().saturating_add(1)));
 }
 
-/// Directory entries the relay's workspace stores have listed to retain
+/// Directory entries the server's workspace stores have listed to retain
 /// history in this process: what a commit's cost grows with when it lists a
 /// lineage instead of using the index of it. The hosting bench
 /// divides it by edits.
@@ -184,7 +184,7 @@ pub(crate) struct GovernedAccessRecord {
 pub struct PendingEntry {
     /// On-disk file removed only after the replay reaches the wire.
     pub path: PathBuf,
-    /// Complete framed relay envelope.
+    /// Complete framed server envelope.
     pub bytes: Vec<u8>,
 }
 
@@ -433,7 +433,7 @@ impl WorkspaceStore {
     /// Commit a checkpoint for the envelope's authenticated author/channel.
     /// Raw Automerge causal containment permits atomic replacement of covered
     /// history. Opaque checkpoints are shared in receipt order without inferring
-    /// supersedence. `bytes` is a full relay frame.
+    /// supersedence. `bytes` is a full server frame.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
         #[cfg(test)]
         test_barrier::pause(&self.root, "state-persist");

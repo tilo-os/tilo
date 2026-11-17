@@ -89,7 +89,7 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-server"
-  why = "the relay embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
+  why = "the server embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
 
   [[rule.allow]]
   package = "tilo-agent-session"

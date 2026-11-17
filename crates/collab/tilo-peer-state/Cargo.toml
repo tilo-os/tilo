@@ -54,7 +54,7 @@ tilo-automation = { path = "../automation" }
 registry-types = { path = "../../packaging/registry-types" }
 # Document frames are sealed and opened with a route's channel content keys.
 key-group = { path = "../key-group" }
-# The relay's workspace a peer syncs through, and a frame's retained entry id.
+# The server's workspace a peer syncs through, and a frame's retained entry id.
 tilo-server-protocol = { path = "../../hosting/tilo-server-protocol" }
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
@@ -97,7 +97,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # Where that record API keeps a device's records in the test: in memory.
 durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true
-# The governed-workspace acceptance test runs against a real relay.
+# The governed-workspace acceptance test runs against a real server.
 tilo-server = { path = "../../hosting/tilo-server" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }

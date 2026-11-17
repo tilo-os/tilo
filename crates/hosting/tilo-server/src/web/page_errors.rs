@@ -12,13 +12,13 @@ use tilo_server_protocol::directory::PageError;
 
 /// The longest string a line carries; longer ones are cut.
 const FIELD_MAX: usize = 1024;
-/// Reports a relay logs per second, and the burst it takes: pages break in
+/// Reports a server logs per second, and the burst it takes: pages break in
 /// a crowd (a failed release is every visitor at once), and a host must not
 /// spend its logs on the flood.
 const RATE: f64 = 20.0;
 const BURST: f64 = 50.0;
 
-/// A relay's page error reports.
+/// A server's page error reports.
 pub(super) struct PageErrors {
     bucket: Mutex<Bucket>,
 }
@@ -41,7 +41,7 @@ impl Default for PageErrors {
 
 impl PageErrors {
     /// Log `body`, the report a page on `workspace`'s site sent, unless it is
-    /// no report or this relay has logged its fill for now.
+    /// no report or this server has logged its fill for now.
     pub(super) fn report(&self, workspace: &str, body: &[u8]) {
         if !self.admit() {
             return;
@@ -78,7 +78,7 @@ impl PageErrors {
         );
     }
 
-    /// One report of the relay's fill, or `false` while it is spent.
+    /// One report of the server's fill, or `false` while it is spent.
     fn admit(&self) -> bool {
         let mut bucket = self.bucket.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
@@ -107,7 +107,7 @@ mod tests {
 
     use super::*;
 
-    /// What a relay logs while `run` reports.
+    /// What a server logs while `run` reports.
     fn logged(run: impl FnOnce(&PageErrors)) -> String {
         #[derive(Clone, Default)]
         struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -203,7 +203,7 @@ mod tests {
             assert_eq!(line, "");
         }
 
-        phase a_line_carries_no_more_than_a_field_and_the_relay_its_fill;
+        phase a_line_carries_no_more_than_a_field_and_the_server_its_fill;
         {
             let long = serde_json::json!({"kind": "error", "message": "x".repeat(3000)})
                 .to_string()

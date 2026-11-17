@@ -1,8 +1,8 @@
-//! What an active member costs a relay: the hosting-cost load bench.
+//! What an active member costs a server: the hosting-cost load bench.
 //!
-//! One relay runs in its own process, so its CPU time and memory are its
+//! One server runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the
-//! production [`tilo_server::Relay`] with authentication and the co-edit path
+//! production [`tilo_server::Server`] with authentication and the co-edit path
 //! as a daemon runs them. The parent then connects N members in workspaces
 //! of four, each its own device certificate, iroh endpoint and
 //! `tilo-server/7` session, and plays a fixed, deterministic minute of work
@@ -10,11 +10,11 @@
 //!
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
 //!   production publish path (`PeerPublicationMut::publish_incremental`, retention,
-//!   `RelayCoeditSession::publish_retained_delta`), each followed by the
+//!   `ServerCoeditSession::publish_retained_delta`), each followed by the
 //!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::RetiredAppPresenceV2`);
 //! - **pointing**: 4 seconds of pointer motion at the shell's 30 Hz publish
 //!   rate (`NeighbourMsg::RetiredPresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`),
-//!   which the relay forwards in the order it was posted, one frame per
+//!   which the server forwards in the order it was posted, one frame per
 //!   move;
 //! - **idle** for the rest of the minute.
 //!
@@ -27,9 +27,9 @@
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by members and hours. Fan-out latency is publish to receipt
 //! by each other member of the workspace; pointer and caret latency are the same
-//! for each pointer move and caret the relay forwarded (one it coalesced
+//! for each pointer move and caret the server forwarded (one it coalesced
 //! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
-//! and directory barriers the relay's workspace stores issued by the deltas
+//! and directory barriers the server's workspace stores issued by the deltas
 //! it committed; listed entries per edit divides the directory entries they
 //! listed to retain them the same way. Compaction's own CPU time and the
 //! document signatures it verified are reported beside them, per
@@ -37,7 +37,7 @@
 //!
 //! Packets are counted where QUIC already counts them, on each
 //! member's connection ([`Packets`]): the datagrams the members
-//! sent (and of those, the ones carrying data) and the datagrams the relay
+//! sent (and of those, the ones carrying data) and the datagrams the server
 //! sent them (and of those, the ones carrying only acknowledgements), per
 //! member-hour. Bytes cannot see a change that sends the same bytes in
 //! more packets; these can.
@@ -47,10 +47,10 @@
 //! prices them with `tools/perf/prices.toml`; the summary is printed as one
 //! `HOSTING_LOAD key=value …` line.
 //!
-//! The relay process ends when this process ends, however it ends: it reads
+//! The server process ends when this process ends, however it ends: it reads
 //! its commands from a pipe this process holds, and is killed on drop.
 
-mod relay_process;
+mod server_process;
 mod workload;
 
 use std::path::PathBuf;
@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 
-use relay_process::{RelayProcess, Sample};
+use server_process::{ServerProcess, Sample};
 use workload::Fleet;
 
 /// Length of one workload cycle and of one sample window.
@@ -70,9 +70,9 @@ const WINDOW: Duration = Duration::from_secs(60);
 const SECONDS_PER_HOUR: f64 = 3_600.0;
 const MIB: f64 = 1_048_576.0;
 
-/// Measure what N members cost one relay.
+/// Measure what N members cost one server.
 #[derive(Parser, Debug)]
-#[command(name = "relay_load")]
+#[command(name = "server_load")]
 struct Args {
     /// Simulated members, each its own device and session.
     #[arg(long, default_value_t = 100)]
@@ -86,37 +86,37 @@ struct Args {
     /// Directory for `hosting-load.json`.
     #[arg(long)]
     out: Option<PathBuf>,
-    /// Confine the relay process to this many CPUs, as on a VM with that many
+    /// Confine the server process to this many CPUs, as on a VM with that many
     /// vCPUs: its daemon runtime then starts that many workers (at most
     /// four), and its blocking pool shares the same CPUs. The members
-    /// run on the CPUs left over. Linux only; by default the relay may use
+    /// run on the CPUs left over. Linux only; by default the server may use
     /// every CPU.
     #[arg(long)]
-    relay_cpus: Option<usize>,
-    /// Run as the relay process (internal: the bench starts it itself).
+    server_cpus: Option<usize>,
+    /// Run as the server process (internal: the bench starts it itself).
     #[arg(long, hide = true)]
     serve: bool,
-    /// The CPUs the relay process runs on (internal: `--relay-cpus` picks them).
+    /// The CPUs the server process runs on (internal: `--server-cpus` picks them).
     #[arg(long, hide = true, value_delimiter = ',')]
     cpus: Vec<usize>,
 }
 
 fn main() -> ExitCode {
     // Both processes run Automerge in isolated workers (the members'
-    // `StatePeer`s, the relay's store), which re-execute this binary.
+    // `StatePeer`s, the server's store), which re-execute this binary.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return ExitCode::from(code);
     }
     let args = Args::parse();
     let result = if args.serve {
-        relay_process::serve(&args.cpus)
+        server_process::serve(&args.cpus)
     } else {
         bench(&args)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("relay_load: {error:#}");
+            eprintln!("server_load: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -134,25 +134,25 @@ fn bench(args: &Args) -> anyhow::Result<()> {
     anyhow::ensure!(args.minutes >= 1, "--minutes must be at least 1");
     // Split the CPUs before this process starts its runtime, so its workers
     // count only the members' share.
-    let relay_cpus = match args.relay_cpus {
-        Some(count) => Some(relay_process::split_cpus(count)?),
+    let server_cpus = match args.server_cpus {
+        Some(count) => Some(server_process::split_cpus(count)?),
         None => None,
     };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args, relay_cpus.as_deref()))
+        .block_on(run(args, server_cpus.as_deref()))
 }
 
-async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
+async fn run(args: &Args, server_cpus: Option<&[usize]>) -> anyhow::Result<()> {
     let fleet = Fleet::enrol(args.members, args.workspace_size)?;
     let state = tempfile::Builder::new()
         .prefix("tilo-server-load-")
         .tempdir()
-        .context("the relay's state directory")?;
-    let mut relay = RelayProcess::spawn(&fleet, state.path(), relay_cpus).await?;
-    let result = measure(args, &fleet, &mut relay).await;
-    relay.stop().await;
+        .context("the server's state directory")?;
+    let mut server = ServerProcess::spawn(&fleet, state.path(), server_cpus).await?;
+    let result = measure(args, &fleet, &mut server).await;
+    server.stop().await;
     drop(state);
     let report = result?;
     println!("{}", report.summary_line());
@@ -169,19 +169,19 @@ async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
 async fn measure(
     args: &Args,
     fleet: &Arc<Fleet>,
-    relay: &mut RelayProcess,
+    server: &mut ServerProcess,
 ) -> anyhow::Result<Report> {
-    let idle = relay.sample().await?;
-    let members = fleet.connect(relay.addr(), relay.device()).await?;
+    let idle = server.sample().await?;
+    let members = fleet.connect(server.addr(), server.device()).await?;
     anyhow::ensure!(
         members.len() == args.members,
         "{} members connected, not {}",
         members.len(),
         args.members
     );
-    let connected = relay.sample().await?;
+    let connected = server.sample().await?;
     eprintln!(
-        "{} members in {} workspaces connected; relay RSS {:.1} MiB idle, {:.1} MiB connected",
+        "{} members in {} workspaces connected; server RSS {:.1} MiB idle, {:.1} MiB connected",
         members.len(),
         fleet.workspaces(),
         mib(idle.rss_bytes),
@@ -200,13 +200,13 @@ async fn measure(
 
     tokio::time::sleep_until(at(start, WINDOW, 1)?.into()).await;
     fleet.measuring.store(true, Ordering::SeqCst);
-    let mut previous = relay.sample().await?;
+    let mut previous = server.sample().await?;
     let mut previous_packets = Packets::of(&sessions)?;
     let mut previous_at = Instant::now();
     let mut samples = Vec::with_capacity(windows);
     for window in 0..windows {
         tokio::time::sleep_until(at(start, WINDOW, window.saturating_add(2))?.into()).await;
-        let sample = relay.sample().await?;
+        let sample = server.sample().await?;
         let packets = Packets::of(&sessions)?;
         let now = Instant::now();
         samples.push(Window::between(
@@ -228,7 +228,7 @@ async fn measure(
     }
     anyhow::ensure!(
         previous.subscriber_dropped == idle.subscriber_dropped,
-        "the relay dropped {} subscriber session(s) under load; the run measured a degraded relay",
+        "the server dropped {} subscriber session(s) under load; the run measured a degraded server",
         previous
             .subscriber_dropped
             .saturating_sub(idle.subscriber_dropped),
@@ -254,9 +254,9 @@ fn mib(bytes: u64) -> f64 {
     float(bytes) / MIB
 }
 
-/// The members' QUIC connections to the relay, summed: the packets
+/// The members' QUIC connections to the server, summed: the packets
 /// they sent it and it sent them. On the bench's loopback path nothing is
-/// lost, so what they received is what the relay sent. Read from each
+/// lost, so what they received is what the server sent. Read from each
 /// connection's own counters (`iroh::endpoint::Connection::stats`), which
 /// QUIC keeps anyway; nothing is logged or hooked per packet.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -267,17 +267,17 @@ struct Packets {
     /// session has one stream and QUIC writes a stream once per packet.
     client_data: u64,
     /// UDP datagrams the relay sent the members.
-    relay: u64,
+    server: u64,
     /// Of those, the ones carrying stream data or a PING (keep-alives, path
     /// MTU probes): the rest carry only acknowledgements.
-    relay_eliciting: u64,
+    server_eliciting: u64,
 }
 
 impl Packets {
     /// Every session's counters now. A session whose transport keeps none
     /// fails the run: a packet KPI that cannot see its packets must not
     /// report zero.
-    fn of(sessions: &[Arc<tilo_server::RelayCoeditSession>]) -> anyhow::Result<Self> {
+    fn of(sessions: &[Arc<tilo_server::ServerCoeditSession>]) -> anyhow::Result<Self> {
         sessions.iter().try_fold(Self::default(), |sum, session| {
             let stats = session
                 .transport_stats()
@@ -285,9 +285,9 @@ impl Packets {
             Ok(Self {
                 client: sum.client.saturating_add(stats.udp_tx.datagrams),
                 client_data: sum.client_data.saturating_add(stats.frame_tx.stream),
-                relay: sum.relay.saturating_add(stats.udp_rx.datagrams),
-                relay_eliciting: sum
-                    .relay_eliciting
+                server: sum.server.saturating_add(stats.udp_rx.datagrams),
+                server_eliciting: sum
+                    .server_eliciting
                     .saturating_add(stats.frame_rx.stream)
                     .saturating_add(stats.frame_rx.ping),
             })
@@ -299,25 +299,25 @@ impl Packets {
         Self {
             client: self.client.saturating_sub(before.client),
             client_data: self.client_data.saturating_sub(before.client_data),
-            relay: self.relay.saturating_sub(before.relay),
-            relay_eliciting: self.relay_eliciting.saturating_sub(before.relay_eliciting),
+            server: self.server.saturating_sub(before.server),
+            server_eliciting: self.server_eliciting.saturating_sub(before.server_eliciting),
         }
     }
 
-    /// Datagrams the relay sent that carried only acknowledgements.
-    const fn relay_ack_only(self) -> u64 {
-        self.relay.saturating_sub(self.relay_eliciting)
+    /// Datagrams the server sent that carried only acknowledgements.
+    const fn server_ack_only(self) -> u64 {
+        self.server.saturating_sub(self.server_eliciting)
     }
 }
 
-/// What the relay spent during one measured window, and how long it was.
+/// What the server spent during one measured window, and how long it was.
 struct Window {
     cpu_s: f64,
     rss_bytes: u64,
     transport_bytes: u64,
     app_bytes: u64,
     live_bytes: u64,
-    /// Deltas the relay committed and fanned out.
+    /// Deltas the server committed and fanned out.
     deltas: u64,
     store_fsyncs: u64,
     store_listed_entries: u64,
@@ -361,8 +361,8 @@ struct Report {
     members: usize,
     workspaces: usize,
     workspace_size: usize,
-    /// The CPUs the relay was confined to (`--relay-cpus`); none is all.
-    relay_cpus: Option<usize>,
+    /// The CPUs the server was confined to (`--relay-cpus`); none is all.
+    server_cpus: Option<usize>,
     idle_rss_bytes: u64,
     windows: Vec<Window>,
     fanout_ms: Vec<f64>,
@@ -398,7 +398,7 @@ impl Report {
             members: args.members,
             workspaces: fleet.workspaces(),
             workspace_size: args.workspace_size,
-            relay_cpus: args.relay_cpus,
+            server_cpus: args.server_cpus,
             idle_rss_bytes: idle.rss_bytes,
             windows,
             fanout_ms,
@@ -446,12 +446,12 @@ impl Report {
 
     /// UDP datagrams the relay sent the members.
     fn relay_datagrams(&self) -> Vec<f64> {
-        self.per_member_hour(|window| float(window.packets.relay))
+        self.per_member_hour(|window| float(window.packets.server))
     }
 
-    /// Relay datagrams that carried only acknowledgements.
+    /// Server datagrams that carried only acknowledgements.
     fn ack_only_datagrams(&self) -> Vec<f64> {
-        self.per_member_hour(|window| float(window.packets.relay_ack_only()))
+        self.per_member_hour(|window| float(window.packets.server_ack_only()))
     }
 
     /// Store fsyncs per committed delta: what durability costs an edit.
@@ -487,7 +487,7 @@ impl Report {
             .collect()
     }
 
-    /// Resident memory each connected, active member adds to the relay.
+    /// Resident memory each connected, active member adds to the server.
     fn rss_mib(&self) -> Vec<f64> {
         let members = float(u64::try_from(self.members).unwrap_or(u64::MAX));
         self.windows
@@ -503,29 +503,29 @@ impl Report {
             "members": self.members,
             "workspaces": self.workspaces,
             "workspace_size": self.workspace_size,
-            "relay_cpus": self.relay_cpus,
+            "server_cpus": self.server_cpus,
             "window_s": WINDOW.as_secs(),
             "windows": self.windows.len(),
-            "relay_idle_rss_mib": mib(self.idle_rss_bytes),
+            "server_idle_rss_mib": mib(self.idle_rss_bytes),
             "edits": self.edits,
             "presence": self.presence,
             "undelivered_edits": self.undelivered,
             "kpis": {
-                "hosting.relay.cpu_s_per_collab_hour": kpi("s", self.cpu_s()),
-                "hosting.relay.rss_mib_per_collab": kpi("MiB", self.rss_mib()),
-                "hosting.relay.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
-                "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
-                "hosting.relay.client_packets_per_collab_hour": kpi("count", self.client_packets()),
-                "hosting.relay.client_data_packets_per_collab_hour": kpi("count", self.client_data_packets()),
-                "hosting.relay.datagrams_per_collab_hour": kpi("count", self.relay_datagrams()),
-                "hosting.relay.ack_only_datagrams_per_collab_hour": kpi("count", self.ack_only_datagrams()),
-                "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
+                "hosting.server.cpu_s_per_collab_hour": kpi("s", self.cpu_s()),
+                "hosting.server.rss_mib_per_collab": kpi("MiB", self.rss_mib()),
+                "hosting.server.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
+                "hosting.server.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
+                "hosting.server.client_packets_per_collab_hour": kpi("count", self.client_packets()),
+                "hosting.server.client_data_packets_per_collab_hour": kpi("count", self.client_data_packets()),
+                "hosting.server.datagrams_per_collab_hour": kpi("count", self.relay_datagrams()),
+                "hosting.server.ack_only_datagrams_per_collab_hour": kpi("count", self.ack_only_datagrams()),
+                "hosting.server.fanout_ms": kpi("ms", self.fanout_ms.clone()),
                 "hosting.relay.presence_pointer_ms": kpi("ms", self.pointer_ms.clone()),
                 "hosting.relay.presence_caret_ms": kpi("ms", self.caret_ms.clone()),
-                "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
-                "hosting.relay.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
-                "hosting.relay.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
-                "hosting.relay.compaction_signature_checks_per_edit": kpi("count", self.compaction_signature_checks_per_edit()),
+                "hosting.server.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
+                "hosting.server.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
+                "hosting.server.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
+                "hosting.server.compaction_signature_checks_per_edit": kpi("count", self.compaction_signature_checks_per_edit()),
             },
         })
     }
@@ -626,14 +626,14 @@ mod tests {
             let before = Packets {
                 client: 1_000,
                 client_data: 400,
-                relay: 900,
-                relay_eliciting: 600,
+                server: 900,
+                server_eliciting: 600,
             };
             let after = Packets {
                 client: 1_250,
                 client_data: 500,
-                relay: 1_200,
-                relay_eliciting: 780,
+                server: 1_200,
+                server_eliciting: 780,
             };
             let window = after.since(before);
             assert_eq!(
@@ -641,14 +641,14 @@ mod tests {
                 Packets {
                     client: 250,
                     client_data: 100,
-                    relay: 300,
-                    relay_eliciting: 180,
+                    server: 300,
+                    server_eliciting: 180,
                 }
             );
-            assert_eq!(window.relay_ack_only(), 120);
+            assert_eq!(window.server_ack_only(), 120);
             // Counters never run backwards; if a reading did, nothing goes negative.
             assert_eq!(before.since(after), Packets::default());
-            assert_eq!(Packets::default().relay_ack_only(), 0);
+            assert_eq!(Packets::default().server_ack_only(), 0);
         }
     }
 }

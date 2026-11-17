@@ -303,7 +303,7 @@ scope above, so who may publish is who may push a `vX.Y.Z` tag.
 ### Native packages
 
 Both SDKs will gain a native half over the one Rust client, so a program can reach a Tilo host
-directly instead of through a browser or a relay: Python's `tilo._native`, a PyO3 extension
+directly instead of through a browser or a server: Python's `tilo._native`, a PyO3 extension
 module, and the npm package `tilo-sdk-native`, built with napi-rs as one package per platform.
 Neither crate exists yet, so nothing publishes them, and the pure packages above release on their
 own until they do. What follows is the step that switches on, as a check of its own beside

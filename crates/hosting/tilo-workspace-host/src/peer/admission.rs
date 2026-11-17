@@ -78,7 +78,7 @@ impl StateAdmissionTrace {
             phase, id = %self.id, kind = self.kind,
             workspace_id = %self.workspace_id,
             author = %hex::encode(self.author),
-            "native relay publication hop");
+            "native server publication hop");
     }
 }
 

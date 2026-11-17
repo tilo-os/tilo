@@ -1,5 +1,5 @@
 //! What a workspace's governor records between the steps of a join, on every
-//! host that governs workspaces: a relay, a cloud host or the device that made
+//! host that governs workspaces: a server, a cloud host or the device that made
 //! the workspace. One log, so a workspace is joined the same way wherever it is
 //! hosted.
 //!
@@ -279,7 +279,7 @@ pub struct Redeeming<'a> {
 }
 
 /// What a workspace's governor keeps between the steps of its joins. Its bytes
-/// are part of the host's workspace record (postcard on a relay): field order is
+/// are part of the host's workspace record (postcard on a server): field order is
 /// the format, append only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinLog {

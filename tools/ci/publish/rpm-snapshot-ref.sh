@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The frozen RPM snapshot for ARCH in this tree's package set, for the builds that install from it
-# (relay, agent host, servers, env-runtime, the OS image): that architecture's published snapshot,
+# (server, agent host, servers, env-runtime, the OS image): that architecture's published snapshot,
 # verified (signature, provenance, architecture) by os/dev/resolve-rpm-snapshot.sh, written to
 # OUT/rpms-ref.
 #

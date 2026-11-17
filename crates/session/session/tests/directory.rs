@@ -831,7 +831,7 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
-    relay: Option<tilo_server::daemon::Relay>,
+    server: Option<tilo_server::daemon::Server>,
     _entry: Responder,
     /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
     /// session enters through the entry.
@@ -874,7 +874,7 @@ impl RunOn for tokio::runtime::Handle {
 /// Run `work` on `runtime` , giving up after the suite's hang bound.
 /// The lounge's host, its pages and its governance live on runtimes of their own, so what a test
 /// waits for there is not a step of the session the suite's waits drive: a loaded machine takes a
-/// while over a relay's start, a page's write and a governance change, and a wait with no bound at
+/// while over a server's start, a page's write and a governance change, and a wait with no bound at
 /// all reports nothing when one of them never comes back.
 #[track_caller]
 fn block_on_within<T>(
@@ -896,11 +896,11 @@ fn block_on_within<T>(
 impl Drop for Lounge {
     fn drop(&mut self) {
         drop(self.page.take());
-        let Some(relay) = self.relay.take() else {
+        let Some(server) = self.server.take() else {
             return;
         };
         if std::thread::panicking() {
-            // A test that already failed leaves with its report: the relay's own shutdown is not
+            // A test that already failed leaves with its report: the server's own shutdown is not
             // waited for on the way out of a panic, where a second panic would take the report
             // away.
             return;
@@ -908,7 +908,7 @@ impl Drop for Lounge {
         block_on_within(
             &self.runtime,
             "the lounge's relay to shut down",
-            relay.shutdown(),
+            server.shutdown(),
         );
     }
 }
@@ -946,7 +946,7 @@ impl Lounge {
         let (site, web, entry) = host.serve_site(&runtime, state.path(), admission);
         Self {
             page: Some(page),
-            relay: Some(host.relay),
+            server: Some(host.server),
             _entry: site,
             _web: web,
             runtime,
@@ -971,10 +971,10 @@ fn lounge_key() -> [u8; 32] {
     key
 }
 
-/// The host behind the lounge's site: a relay of this machine, certified under a key root of the
+/// The host behind the lounge's site: a server of this machine, certified under a key root of the
 /// test's own, which governs the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
-    relay: tilo_server::daemon::Relay,
+    server: tilo_server::daemon::Server,
     workspaces: tilo_server::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
@@ -1002,14 +1002,14 @@ impl LoungeHost {
             "The lounge's page",
             tilo_user_identity::DeviceCapabilities::member(),
         );
-        let (relay, workspaces, workspace) =
+        let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let relay = tilo_server::daemon::Relay::start_with_relay_mode(
-                    tilo_server::RelayConfig {
+                let server = tilo_server::daemon::Server::start_with_relay_mode(
+                    tilo_server::ServerConfig {
                         state_root: state.join("host"),
-                        ..tilo_server::RelayConfig::default()
+                        ..tilo_server::ServerConfig::default()
                     },
-                    tilo_server::daemon::RelayIdentity {
+                    tilo_server::daemon::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
                         device_cert: host_cert.clone(),
@@ -1019,7 +1019,7 @@ impl LoungeHost {
                 )
                 .await
                 .expect("the lounge's host");
-                let workspaces = relay
+                let workspaces = server
                     .workspaces()
                     .expect("the host governs workspaces")
                     .clone();
@@ -1033,10 +1033,10 @@ impl LoungeHost {
                     .enter(&workspace, &page_device)
                     .await
                     .expect("the site's page is in its workspace");
-                (relay, workspaces, workspace)
+                (server, workspaces, workspace)
             });
         Self {
-            relay,
+            server,
             workspaces,
             host_cert,
             page_key,
@@ -1059,7 +1059,7 @@ impl LoungeHost {
             let _entered = runtime.enter();
             let page = tilo_session_client::start_session(
                 PeerConfig {
-                    host: Host::at(self.relay.node_addr()),
+                    host: Host::at(self.server.node_addr()),
                     cert: self.page_device.clone(),
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
@@ -1133,7 +1133,7 @@ impl LoungeHost {
                     .await
                     .expect("the lounge takes people by invitation");
             }
-            self.relay
+            self.server
                 .serve_web(tilo_server::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
                     tls: tilo_server::web::TlsSource::Development {

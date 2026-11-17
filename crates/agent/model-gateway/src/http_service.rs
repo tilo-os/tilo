@@ -31,7 +31,7 @@ const MAX_CALL: Duration = Duration::from_secs(120);
 pub use crate::caller::{Caller, Session};
 
 /// Authentication must be local and bounded. Hosts can consult an already
-/// authenticated relay/session store. Reject missing/ambiguous credentials,
+/// authenticated server/session store. Reject missing/ambiguous credentials,
 /// cross-origin cookie requests and tokens intended for another service.
 pub trait SessionAuthorizer: Send + Sync + 'static {
     fn authorize(&self, headers: &hyper::HeaderMap) -> Option<Arc<dyn Session>>;

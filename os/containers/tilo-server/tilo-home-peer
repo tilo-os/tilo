@@ -23,7 +23,7 @@ if [ ! -s /var/lib/tilo/device/cert.bin ]; then
     fi
 fi
 
-if [ ! -s /etc/tilo/relay.toml ]; then
+if [ ! -s /etc/tilo/server.toml ]; then
     umask 022
     printf '%s\n' \
         'identity_root = "/var/lib/tilo"' \
@@ -33,19 +33,19 @@ if [ ! -s /etc/tilo/relay.toml ]; then
         'iroh_listen = "0.0.0.0:4433"' \
         'trust_policy = { kind = "allow_matching_user" }' \
         'work = { from = "own_devices" }' \
-        > /etc/tilo/relay.toml
+        > /etc/tilo/server.toml
 fi
 
 /usr/bin/fs replica --config /etc/tilo/home-peer.toml &
 replica_pid=$!
 /usr/libexec/tilo/tilo-server "$@" &
-relay_pid=$!
+server_pid=$!
 
 shutdown() {
     trap - EXIT INT TERM
-    kill "$replica_pid" "$relay_pid" 2>/dev/null || true
+    kill "$replica_pid" "$server_pid" 2>/dev/null || true
     wait "$replica_pid" 2>/dev/null || true
-    wait "$relay_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
 }
 trap 'shutdown; exit 143' INT TERM
 trap shutdown EXIT
@@ -53,7 +53,7 @@ trap shutdown EXIT
 # The container is one service: if either half exits, stop the other so the
 # restart policy brings the complete home peer back together.
 set +e
-wait -n "$replica_pid" "$relay_pid"
+wait -n "$replica_pid" "$server_pid"
 status=$?
 set -e
 exit "$status"

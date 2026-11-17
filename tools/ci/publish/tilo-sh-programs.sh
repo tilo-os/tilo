@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The programs the local tilo.sh stack runs natively (os/containers/tilo-sh/stack.sh), in one
-# build: the relay and the Discord worker as the Lounge image carries them (feature `agents`),
+# build: the server and the Discord worker as the Lounge image carries them (feature `agents`),
 # the API server, the fake Discord and the tilo command, at Cargo.toml's `lounge-check` (the
 # release's code and opt-level without the whole-program link). One cargo build, so a change
-# to the relay compiles it once and relinks every program beside it, instead of one check
+# to the server compiles it once and relinks every program beside it, instead of one check
 # waiting on another's build. Reads no git: a commit that changes none of what it compiles
 # takes the last build. usage: tilo-sh-programs.sh OUT
 set -euo pipefail

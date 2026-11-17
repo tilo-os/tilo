@@ -10,15 +10,15 @@
 
 use std::time::Duration;
 
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{TestDevice, TestUser, connect, next, spawn_relay_on};
+use crate::common::{TestDevice, TestUser, connect, next, spawn_server_on};
 use tilo_server::WorkspaceId;
 
 const WS: WorkspaceId = WorkspaceId::from_u128(43);
 
-async fn no_delta(client: &RelayClient) {
+async fn no_delta(client: &ServerClient) {
     let deadline = tokio::time::Instant::now()
         .checked_add(Duration::from_millis(300))
         .unwrap();
@@ -40,7 +40,7 @@ fn commit(author: &TestDevice, op: [u8; 16], delta: Vec<u8>) -> Envelope {
     }
 }
 
-async fn committed(client: &RelayClient, op: [u8; 16]) -> u64 {
+async fn committed(client: &ServerClient, op: [u8; 16]) -> u64 {
     match next(client, |env| {
         matches!(env, Envelope::Committed { op: acked, .. } | Envelope::CommitRefused { op: acked, .. } if *acked == op)
     })
@@ -58,7 +58,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     let b = user.enrol("laptop", DeviceCapabilities::primary());
     let members = [a.device_pubkey(), b.device_pubkey()];
     let state = tempfile::tempdir().unwrap();
-    let host = spawn_relay_on(
+    let host = spawn_server_on(
         state.path(),
         &user,
         user.enrol("home-server", DeviceCapabilities::member()),
@@ -89,7 +89,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     b_client.close().await;
     host.endpoint.close().await;
     drop(host);
-    let host = spawn_relay_on(
+    let host = spawn_server_on(
         state.path(),
         &user,
         user.enrol("home-server-2", DeviceCapabilities::member()),

@@ -6,7 +6,7 @@ use tilo_server_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, RelayRuntimeStatus, WORK_FROM,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, ServerRuntimeStatus, WORK_FROM,
     home_server_row, last_seen_label, peer_health_badge, peer_health_detail, peer_key,
     personal_device_key, room_shown, runtime_status_tone, takes_work, work_key,
 };
@@ -236,11 +236,11 @@ impl Page<'_> {
         let taking = takes_work(&self.config.work);
         if taking {
             let home_desc = t(match self.runtime_status {
-                RelayRuntimeStatus::Ready => "mesh-home-ready",
-                RelayRuntimeStatus::Online => "mesh-home-online",
-                RelayRuntimeStatus::Syncing => "mesh-home-syncing",
-                RelayRuntimeStatus::Offline => "mesh-home-offline",
-                RelayRuntimeStatus::Unreadable => "mesh-home-unreadable",
+                ServerRuntimeStatus::Ready => "mesh-home-ready",
+                ServerRuntimeStatus::Online => "mesh-home-online",
+                ServerRuntimeStatus::Syncing => "mesh-home-syncing",
+                ServerRuntimeStatus::Offline => "mesh-home-offline",
+                ServerRuntimeStatus::Unreadable => "mesh-home-unreadable",
             });
             let runtime = self.runtime_status.label();
             out.push(setting_row_described(
@@ -311,18 +311,18 @@ impl Page<'_> {
                 self.config.services.full_content_replication,
             ),
             self.service_row(
-                "mesh-svc-relay",
-                "mesh-svc-relay-desc",
-                "inbound_relay",
-                "device_mesh.inbound_relay",
-                self.config.services.inbound_relay,
+                "mesh-svc-server",
+                "mesh-svc-server-desc",
+                "inbound_server",
+                "device_mesh.inbound_server",
+                self.config.services.inbound_server,
             ),
             self.service_row(
                 "mesh-svc-remote",
                 "mesh-svc-remote-desc",
-                "remote_control_relay",
-                "device_mesh.remote_relay",
-                self.config.services.remote_control_relay,
+                "remote_control_server",
+                "device_mesh.remote_server",
+                self.config.services.remote_control_server,
             ),
             self.service_row(
                 "mesh-svc-apps",

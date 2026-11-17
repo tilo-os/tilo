@@ -230,7 +230,7 @@ pub fn reads_app(reader: &str, owner: &str) -> bool {
 }
 
 /// `claims` naming as units what each action may write by `app_id`'s
-/// surface: what a relay that cannot read a sealed change checks it against
+/// surface: what a server that cannot read a sealed change checks it against
 /// (devices that open it check what it really wrote). Every host that signs a
 /// change names its units this way; a claim left on the whole record is
 /// refused wherever the action may only write some of its units (a comment,

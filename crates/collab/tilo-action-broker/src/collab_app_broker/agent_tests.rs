@@ -625,7 +625,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
             .owner
             .receive(
                 workspace_id(),
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(
                     f.native.key.verifying_key().to_bytes(),
                 ),
                 message,

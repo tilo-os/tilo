@@ -1,4 +1,4 @@
-//! A member sharing one record, or one item of it, with a workspace this relay
+//! A member sharing one record, or one item of it, with a workspace this server
 //! governs ([`tilo_action_policy::share`]).
 //!
 //! A share is grants on the shared resource's node. A member's device

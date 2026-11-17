@@ -2,7 +2,7 @@
 # review a change here like an API change (docs/architecture/compatibility.md).
 # Everything above [schema] is authored; [schema] and `version` are written.
 
-# Device ↔ device: the certified handshake, the relay session's frames and
+# Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
 version = 53
@@ -55,7 +55,7 @@ roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "Device
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
 Value = "serde_json::Value: any JSON value, carried as its text"
-RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the relay transport's remote-action envelope"
+RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the server transport's remote-action envelope"
 
 [schema]
 "ActionKey" = "struct"
@@ -305,8 +305,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::OpenDocument.channel" = "#1 [u8; 32]"
 "Envelope::OpenDocument.own" = "#2 Option<OwnedChannel>"
 "Envelope::OpenDocument.workspace_id" = "#0 WorkspaceId"
-"Envelope::PeerRelayHello" = "#8 struct"
-"Envelope::PeerRelayHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
+"Envelope::PeerServerHello" = "#8 struct"
+"Envelope::PeerServerHello.hosted_workspaces" = "#0 Vec<WorkspaceId>"
 "Envelope::PersonalList" = "#52 struct"
 "Envelope::PersonalList.list" = "#0 Vec<u8> with=serde_bytes"
 "Envelope::Ping" = "#6 unit"

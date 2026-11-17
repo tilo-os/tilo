@@ -202,8 +202,8 @@ fn validate_peers(
             || peer.user_public_key != hex::encode(root)
             || peer.device_node_id != hex::encode(cert.device_public_key)
             || !cert.capabilities.can_own_workspaces
-            || peer.relay_workspace_ids.len() > 4096
-            || hex::decode(&peer.relay_service_node_id).map_or(true, |bytes| bytes.len() != 32)
+            || peer.server_workspace_ids.len() > 4096
+            || hex::decode(&peer.server_node_id).map_or(true, |bytes| bytes.len() != 32)
             || peer.label.len() > 256
             || peer.label.chars().any(char::is_control)
         {

@@ -1,5 +1,5 @@
 //! The host's browser listener (feature `web`): HTTPS (TCP, HTTP/2 and
-//! HTTP/1.1), served by the relay itself.
+//! HTTP/1.1), served by the server itself.
 //!
 //! What a page needs before it holds a session rides it: the host's
 //! certificate and address (`/host`), joining a workspace, the public
@@ -7,7 +7,7 @@
 //! entry. Everything after that — certification, presence, membership,
 //! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_server_protocol::web`].
 //!
-//! No owner loop runs here: every handler is async and awaits the relay's
+//! No owner loop runs here: every handler is async and awaits the server's
 //! own locks; workspace I/O already runs on the blocking pool.
 
 mod content;
@@ -40,7 +40,7 @@ use hyper::{Method, Request, Response, StatusCode, header};
 pub(crate) use tilo_server_protocol::web as protocol;
 use tilo_server_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
 
-use crate::daemon::{Relay, RelayError, WebContext};
+use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
 
 /// Configuration of the browser listener.
@@ -188,7 +188,7 @@ struct Web {
     /// no endpoint of its own.
     endpoint: Option<iroh::Endpoint>,
     allowed_origins: Vec<String>,
-    /// The workspaces this relay governs, for their directory and entries.
+    /// The workspaces this server governs, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
@@ -221,9 +221,9 @@ struct Web {
 
 impl Web {
     /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
-    /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
+    /// device dials the host at this address, so it follows the endpoint: a server the endpoint
     /// reached only after the listener started (its first network report found none, as when
-    /// the host's own relay is not routable yet) is named as soon as it is.
+    /// the host's own server is not routable yet) is named as soon as it is.
     fn current_host_info(&self) -> HostInfo {
         let mut info = self.host_info.clone();
         if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
@@ -234,7 +234,7 @@ impl Web {
 }
 
 /// Move `address` to the endpoint's address `now`. An endpoint that has lost its relays keeps
-/// the relay `address` named, as a host keeps what it named elsewhere
+/// the server `address` named, as a host keeps what it named elsewhere
 /// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
 /// relay is back, and an address with no relay reaches it from nowhere.
 fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
@@ -351,7 +351,10 @@ fn checked_origins(config: &WebConfig) -> Result<(), String> {
 
 /// An unspecified listener is not a usable browser destination. Only its
 /// configured certificate host can provide one; no caller URL is accepted.
-fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<String>, RelayError> {
+fn browser_locator_origin(
+    tls: &TlsSource,
+    addr: SocketAddr,
+) -> Result<Option<String>, ServerError> {
     let host = match tls {
         TlsSource::Files { host, .. } => host
             .clone()
@@ -390,12 +393,12 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
     let origin = format!("https://{authority}");
     let uri: hyper::Uri = origin
         .parse()
-        .map_err(|_| RelayError::Identity("invalid configured browser locator host".into()))?;
+        .map_err(|_| ServerError::Identity("invalid configured browser locator host".into()))?;
     if uri
         .authority()
         .is_none_or(|value| value.as_str() != authority || value.as_str().contains('@'))
     {
-        return Err(RelayError::Identity(
+        return Err(ServerError::Identity(
             "invalid configured browser locator host".into(),
         ));
     }
@@ -406,16 +409,16 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
     }))
 }
 
-impl Relay {
+impl Server {
     /// Make `origin` the one browser locators name, and return it shared.
     fn publish_browser_origin(
         &self,
         origin: Option<String>,
-    ) -> Result<Option<Arc<String>>, RelayError> {
+    ) -> Result<Option<Arc<String>>, ServerError> {
         let published = origin.map(Arc::new);
         self.browser_origin
             .write()
-            .map_err(|_| RelayError::Iroh("web listener: browser locator lock poisoned".into()))?
+            .map_err(|_| ServerError::Iroh("web listener: browser locator lock poisoned".into()))?
             .clone_from(&published);
         Ok(published)
     }
@@ -424,14 +427,14 @@ impl Relay {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::Iroh`] (the transport error kind) when the
+    /// Returns [`ServerError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
     #[expect(
         clippy::too_many_lines,
         reason = "one bring-up of every browser-facing part, each started where it reads"
     )]
-    pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
-        let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
+    pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
+        let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
         let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
@@ -447,12 +450,12 @@ impl Relay {
         let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
         let Some(live) = self.live_origin.as_ref() else {
-            return Err(failed("the relay runs no live session".into()));
+            return Err(failed("the server runs no live session".into()));
         };
         if let Some(workspaces) = self.workspaces() {
-            let _ = context.relay.carried_calls.set(workspaces.downgrade());
+            let _ = context.server.carried_calls.set(workspaces.downgrade());
         }
-        let host_cert = context.relay.identity.cert.clone();
+        let host_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the
         // moment this host serves anything ([`Relay::start`] waits for it), as
@@ -489,7 +492,7 @@ impl Relay {
             page_errors: page_errors::PageErrors::default(),
             // A link is read days after it was made, so what it names waits on
             // this host's disk: a restart, an upgrade or a deploy over this
-            // relay leaves it there.
+            // server leaves it there.
             shelf: shelf::Shelf::opening(
                 self.state_root().join("invitations"),
                 tilo_clock::unix_now_ns(),
@@ -509,7 +512,7 @@ impl Relay {
         // A page's fetch proxy token is minted on the session it fetched from.
         if web.fetch.is_some() {
             let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
-            let _ = context.relay.fetch.set(grants);
+            let _ = context.server.fetch.set(grants);
         }
         let mut tasks = Vec::new();
         tasks.extend(fetch.metrics);
@@ -528,7 +531,7 @@ impl Relay {
         tasks.push(tokio::spawn(link::serve(
             link_listener,
             link::Serving {
-                relay: context.relay.clone(),
+                server: context.server.clone(),
                 certification: context.certification.clone(),
                 live_origin: live.origin(),
             },
@@ -549,7 +552,7 @@ impl Relay {
     }
 }
 
-impl Relay {}
+impl Server {}
 
 /// Where a page reaches this host: WebTransport on `socket`, at the HTTPS
 /// listener's origin and certificate unless the deployment names another way in.
@@ -843,7 +846,7 @@ async fn directory_entry(
     };
     let (workspace, step) =
         entry_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
-    // A relay that governs no workspaces refuses before the request is parsed.
+    // A server that governs no workspaces refuses before the request is parsed.
     let workspaces = governed_workspaces(web)?;
     // The wait list a workspace taking people by invitation keeps: an address
     // left, confirmed, taken off, and where it stands.
@@ -898,7 +901,7 @@ async fn directory_entry(
     }
 }
 
-/// The workspaces this relay governs, or the answer that it governs none.
+/// The workspaces this server governs, or the answer that it governs none.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -906,7 +909,7 @@ async fn directory_entry(
 fn governed_workspaces(web: &Web) -> Result<&crate::workspaces::Workspaces, Response<Body>> {
     web.workspaces
         .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this server governs no workspaces"))
 }
 
 #[allow(
@@ -928,12 +931,12 @@ fn public_directory_route(path: &str) -> bool {
 
 /// The public directory's route a site names, below the listener's own paths.
 ///
-/// A relay's own routes live below [`API_PREFIX`]. A site names its directory
+/// A server's own routes live below [`API_PREFIX`]. A site names its directory
 /// in its `entry.json` and hangs each entry off that address
 /// ([`tilo_server_protocol::directory`]), so the same routes answer at the
 /// site's own paths — `/directory` and `/directory/<workspace>/report` — for a
 /// host a site's person reaches without the prefix: the ingress in front of
-/// it sends the site's paths to the relay.
+/// it sends the site's paths to the server.
 fn directory_route(path: &str) -> Option<&str> {
     let route = path.strip_prefix(API_PREFIX).unwrap_or(path);
     (route == tilo_server_protocol::directory::DIRECTORY_PATH
@@ -1023,7 +1026,8 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
     }
     // A sealed invitation is fetched and taken back with their own methods,
     // so the shelf answers before the POST-only check.
-    if let Some(handle) = tilo_server_protocol::sealed_invitations::handle_of(request.uri().path()) {
+    if let Some(handle) = tilo_server_protocol::sealed_invitations::handle_of(request.uri().path())
+    {
         let handle = handle.to_owned();
         let mut response = shelf::handle(web, request, &handle).await;
         shelf::cors(&mut response);
@@ -1069,11 +1073,11 @@ async fn body(
     Ok((parts, bytes))
 }
 
-/// Whether `user` is admitted to any workspace this relay serves: whose
+/// Whether `user` is admitted to any workspace this server serves: whose
 /// envelope it keeps.
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     // The person this host runs for is its own before any workspace is bound.
-    web.context.relay.admits(user).await
+    web.context.server.admits(user).await
 }
 
 /// The client a request came from: its connection's address, or, for a
@@ -1241,18 +1245,16 @@ async fn route(
             Ok(encoded(&deleted))
         }
         tilo_server_protocol::web::INVITATION_PATH => {
-            let workspaces = web
-                .workspaces
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
             let invitation: Vec<u8> = decode(&bytes)?;
             Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
         }
         tilo_server_protocol::directory::DIRECTORY_PATH => {
-            let workspaces = web
-                .workspaces
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
             let online = web.presence.devices().into_keys().collect();
             Ok(json(&tilo_server_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,

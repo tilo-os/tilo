@@ -201,7 +201,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     // A workspace anyone may walk into: it sends a device its records when it opens them, so a
     // page that just came in holds none of them.
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -214,7 +214,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         )
         .await
         .unwrap();
-    let address = host.relay.node_addr();
+    let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
     let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();

@@ -392,9 +392,9 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
-# The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-server.service. Its
-# snippet ships with the relay component (os/components.toml), which arrives
+# The server's static account: a desktop set up as a node runs the server
+# (tilo-node-server@) under it, as the host image runs tilo-server.service. Its
+# snippet ships with the server component (os/components.toml), which arrives
 # with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \

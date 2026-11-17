@@ -1225,7 +1225,7 @@ impl Session {
         }
         // A session in a workspace's VM is started for one workspace, and everything it does
         // of what a person's session does is the window it holds: it is told here what wakes its
-        // loop when the relay answers, and what the broker admits of its window's page.
+        // loop when the server answers, and what the broker admits of its window's page.
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
             hosted.watching(

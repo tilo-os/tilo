@@ -308,7 +308,7 @@ pub async fn sign_in(
 pub struct Admission {
     /// The workspace's UUID.
     pub workspace: String,
-    /// Its relay workspace.
+    /// Its server workspace.
     pub workspace_id: WorkspaceId,
     /// Its name.
     pub name: String,

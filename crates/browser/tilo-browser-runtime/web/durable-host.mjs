@@ -1,5 +1,5 @@
 // A profile's durable storage, shared by everything on the page that keeps
-// state in it: mounted applications, the relay peer, settings. One namespace
+// state in it: mounted applications, the server peer, settings. One namespace
 // (profile/device) holds one writer lease (Web Lock + IndexedDB, see
 // storage.mjs) and one Rust store for as long as anyone has it open.
 //

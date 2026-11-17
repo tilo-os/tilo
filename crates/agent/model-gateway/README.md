@@ -5,8 +5,8 @@ The native service core is `service::Gateway`. It accepts a host-authenticated
 adapter and command line remain available as `tilo-model-gateway`.
 
 `http_service::HttpService` is a small HTTP/1 adapter with an injected
-`SessionAuthorizer`. A relay or another authenticated host can mount `handle`
-or pass an accepted TLS stream to `serve_io`; no relay/node runtime is required.
+`SessionAuthorizer`. A server or another authenticated host can mount `handle`
+or pass an accepted TLS stream to `serve_io`; no server/node runtime is required.
 The authorizer must validate session audience and revocation, and origin/CSRF
 when using cookies. Settings identity alone is insufficient for credential
 status/set/remove: the session must explicitly grant credential management.

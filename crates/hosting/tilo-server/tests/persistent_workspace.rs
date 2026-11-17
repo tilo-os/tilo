@@ -70,7 +70,7 @@ fn spawn_workspace(
         // What a published image sets from the commit it was built from.
         .env("TILO_SOURCE_REVISION", SOURCE_REVISION)
         .args(["workspace", "--state"])
-        .arg(state.join("relay"))
+        .arg(state.join("server"))
         .args([
             // Port 0: the workspace picks a free port rather than a test choosing
             // one another test's socket may already hold.
@@ -257,7 +257,7 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
 
     // The state kept for the workspace went away; its id file and the sealed
     // root it keeps stay, as a host that keeps them aside leaves them.
-    std::fs::remove_dir_all(state.join("relay")).unwrap();
+    std::fs::remove_dir_all(state.join("server")).unwrap();
 
     let workspace = start(&state, &root_file, &secrets).unwrap();
     let OperatorEvent::Started {
@@ -281,7 +281,7 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
 }
 
 /// The workspace as the image's entrypoint starts it on the state volume a workspace
-/// service leaves: the relay's own state in `relay/`, the workspace id beside
+/// service leaves: the server's own state in `relay/`, the workspace id beside
 /// it, and the avatars and sealed secrets the image mounts.
 fn start_lounge(
     state: &std::path::Path,
@@ -314,7 +314,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     let scratch = tempfile::tempdir().unwrap();
     let state = scratch.path().join("plaza");
     // What the volume holds before the new image starts.
-    for dir in ["relay", "avatars", "secrets"] {
+    for dir in ["server", "avatars", "secrets"] {
         std::fs::create_dir_all(state.join(dir)).unwrap();
     }
     let root_file = scratch.path().join("root");
@@ -431,7 +431,7 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
         .expect("the host names the packet relay it runs");
     assert!(
         relay.starts_with("http://127.0.0.1:"),
-        "the relay is the host's own, not a public one: {relay}"
+        "the server is the host's own, not a public one: {relay}"
     );
     let named = address
         .endpoint_addr
@@ -856,7 +856,7 @@ async fn directory_page(
 /// join the listed workspace at its default role, each as their own person,
 /// and the directory counts both.
 #[test]
-fn the_relay_entry_admits_two_people_as_distinct_members_at_its_default_role() {
+fn the_server_entry_admits_two_people_as_distinct_members_at_its_default_role() {
     use tilo_server_protocol::workspaces::Role;
 
     let scratch = tempfile::tempdir().unwrap();
@@ -1521,7 +1521,7 @@ fn the_workspace_serves_without_an_operator_and_answers_its_deployment_routes() 
     let mode = get(&runtime, management, "/mode");
     assert_eq!(mode.status, 200, "{}", String::from_utf8_lossy(&mode.body));
     let mode: serde_json::Value = serde_json::from_slice(&mode.body).unwrap();
-    assert_eq!(mode["relay"], "up", "the health check a deploy waits on");
+    assert_eq!(mode["server"], "up", "the health check a deploy waits on");
     assert_eq!(mode["revision"], SOURCE_REVISION, "the image it built");
 
     answers_its_avatars(&runtime, management, &published);

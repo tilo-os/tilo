@@ -1,12 +1,12 @@
-//! `tilo-server-client` — the device side of the Tilo host + relay that every
+//! `tilo-server-client` — the device side of the Tilo host + server that every
 //! peer shares, native or in a browser.
 //!
-//! - the session with a relay over iroh is `tilo_server_session::RelayClient`;
-//! - [`frame`] — the length-prefixed frame codec every relay stream uses.
-//!   The daemon and the relay session client in `tilo-server-session` read and write
+//! - the session with a relay over iroh is `tilo_server_session::ServerClient`;
+//! - [`frame`] — the length-prefixed frame codec every server stream uses.
+//!   The daemon and the server session client in `tilo-server-session` read and write
 //!   through the same functions;
 //! - [`coedit`] — the co-edit payloads carried through the host; the iroh
-//!   session speaking them is `tilo_server_session::coedit::RelayCoeditSession`;
+//!   session speaking them is `tilo_server_session::coedit::ServerCoeditSession`;
 //! - [`certify`] — ask a host for a `DeviceCert`, or approve such requests
 //!   as a root-holding device or as a member's root;
 //! - [`pairing`] — the pairing ceremony a member's root answers, and the

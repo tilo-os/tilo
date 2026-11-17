@@ -35,7 +35,7 @@ pub struct Material {
     pub secret: [u8; 32],
     /// Where the session joins the workspace: the host's endpoint, at the
     /// address a machine outside its network reaches it by.
-    pub relay: EndpointAddr,
+    pub server: EndpointAddr,
     /// The person the workspace belongs to.
     pub user_public_key: [u8; 32],
     /// Who pays for the workspace's machines, as the host knows it.

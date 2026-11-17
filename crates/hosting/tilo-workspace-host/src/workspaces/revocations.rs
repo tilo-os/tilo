@@ -26,7 +26,7 @@ use super::{GovernedWorkspace, Workspaces};
 
 impl Workspaces {
     /// Take in the root-signed `entries` a device announced. An entry whose
-    /// root the relay does not serve, or one naming a device this relay knows
+    /// root the server does not serve, or one naming a device this server knows
     /// certified by another root, is another person's key, which the entry's
     /// root has no say over: it is dropped.
     pub(super) async fn take_revocations(
@@ -45,7 +45,7 @@ impl Workspaces {
         for workspace in &workspaces {
             known.extend(workspace.lock().await.peer().certificates());
         }
-        // The roots this relay serves: its own person's, and those of the
+        // The roots this server serves: its own person's, and those of the
         // members of its workspaces. A root it serves made a key here, and
         // only a root that made a key has anything to say about it.
         let served = |entry: &RevocationEntry| {
@@ -80,14 +80,14 @@ impl Workspaces {
     /// it refuses from each entry's moment on.
     ///
     /// A root signs only about the keys it made, so whose root signed a
-    /// verified entry decides whose keys it reaches, and the relay keeps them
+    /// verified entry decides whose keys it reaches, and the server keeps them
     /// all: its own person's devices, a member's, and the stand-in approver it
     /// holds for a member whose root lives in one browser tab — a key no
     /// workspace lists, because a stand-in is no device, but the one this host
     /// signs with when it approves a returning sign-in.
     ///
-    /// Every entry is kept in the log as long as the relay is: a restart
-    /// refuses each key it refused before. Only a root the relay serves gets
+    /// Every entry is kept in the log as long as the server is: a restart
+    /// refuses each key it refused before. Only a root the server serves gets
     /// here ([`Self::take_revocations`]), so what the log holds grows with the
     /// revocations of the people it serves and nothing else.
     fn record(&self, entries: &[RevocationEntry]) -> Result<(), String> {
@@ -134,7 +134,7 @@ impl Workspaces {
     }
 
     /// Write into `workspace`'s governance every entry of `entries` (and of the
-    /// relay's live list) it may carry and does not yet: those its
+    /// server's live list) it may carry and does not yet: those its
     /// authority's root signed, and those of a root the workspace certifies the
     /// revoked device to. A workspace never carries the revocation of its own
     /// governing device, which would leave it without a writer, nor one
@@ -239,12 +239,12 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
+        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn another_roots_revocation_of_a_device_is_not_taken() {
         // The authority epoch is the whole process's, which every test that
         // narrows anything bumps: only in a process of its own is the epoch
-        // standing still this relay's own doing.
+        // standing still this server's own doing.
         if !tilo_test_env::in_own_process_here(
             module_path!(),
             "another_roots_revocation_of_a_device_is_not_taken",
@@ -253,8 +253,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
@@ -306,22 +306,22 @@ mod tests {
             "the removal is written with its cut, in the same step"
         );
         drop(workspace);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
-    /// A root the relay does not serve announces thousands of entries naming
+    /// A root the server does not serve announces thousands of entries naming
     /// keys nobody here made. The host keeps none of them, leaves every
     /// session alone, and the log still has room for the revocation a member
     /// announces, which lands and ends that device's session.
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
+        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn a_strangers_flood_leaves_room_for_a_members_revocation() {
         // The authority epoch is the whole process's, which every test that
         // narrows anything bumps: only in a process of its own is the epoch
-        // standing still this relay's own doing.
+        // standing still this server's own doing.
         if !tilo_test_env::in_own_process_here(
             module_path!(),
             "a_strangers_flood_leaves_room_for_a_members_revocation",
@@ -330,8 +330,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
@@ -350,7 +350,7 @@ mod tests {
             crate::store::load_revocations(dir.path())
                 .unwrap()
                 .is_empty(),
-            "an entry of a root the relay does not serve is not kept"
+            "an entry of a root the server does not serve is not kept"
         );
         assert!(workspaces.revocations().is_empty());
         assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
             epoch,
             "the member's device is re-checked and its session ends"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Ada's root revokes thousands of keys, more than the log once had room
@@ -384,13 +384,13 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
+        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn every_revocation_of_a_served_root_is_kept_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
@@ -409,7 +409,7 @@ mod tests {
             .await
             .unwrap();
         revoked.push(laptops);
-        relay.shutdown().await;
+        server.shutdown().await;
 
         let mut list = tilo_user_identity::RevocationList::new();
         for entry in crate::store::load_revocations(dir.path()).unwrap() {
@@ -434,7 +434,7 @@ mod tests {
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
+        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn a_hello_that_alone_brings_a_revocation_outlives_its_device() {
         use crate::workspaces::RemoveMemberRequest;
@@ -442,8 +442,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[21; 32]);
         let device = |seed: u8, root: &SigningKey| {
@@ -539,7 +539,7 @@ mod tests {
         }
         assert!(list.refuses(&laptop), "and refuses the laptop");
         drop(governed);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Retain `device`'s identity hello bringing `revoked` in the workspace
@@ -608,7 +608,7 @@ mod tests {
             let message = postcard::from_bytes(&entry.body).unwrap();
             replica
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(entry.author),
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(entry.author),
                     message,
                     now,
                 )

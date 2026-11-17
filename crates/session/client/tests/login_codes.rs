@@ -32,7 +32,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let lounge = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Lounge")
@@ -181,5 +181,5 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
 
     tab.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

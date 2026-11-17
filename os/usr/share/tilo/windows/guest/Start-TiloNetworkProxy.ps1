@@ -1,5 +1,5 @@
 <#
-The Windows half of a Tilo `NetHost` lease. The actual concurrent relay is C#:
+The Windows half of a Tilo `NetHost` lease. The actual concurrent server is C#:
 PowerShell ThreadPool scriptblocks have no reliable Runspace, so they must not
 carry proxy connections. This process accepts only loopback clients, attaches
 the opaque lease bearer to a CONNECT request for the host-only gateway, and

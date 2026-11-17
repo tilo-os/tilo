@@ -39,8 +39,8 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server::RelayConfig;
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::ServerConfig;
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::install::{InstallListener, SessionDevice};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::https::invitation as invitation_offer;
@@ -254,12 +254,12 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
-    let relay = Relay::start(
-        RelayConfig {
+    let server = Server::start(
+        ServerConfig {
             state_root: state.clone(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),
             device_cert: persist::read_device_cert(&paths.device_cert).unwrap(),
@@ -268,7 +268,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     )
     .await
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: dev_tls(&state),
@@ -283,7 +283,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
-    let host = Host::at(relay.node_addr());
+    let host = Host::at(server.node_addr());
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -342,7 +342,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .unwrap();
 
     // The node holds the document only as ciphertext.
-    let writes: Vec<_> = relay
+    let writes: Vec<_> = server
         .workspace_documents()
         .retained(acme.workspace_id)
         .await
@@ -535,7 +535,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         "{removed:?}"
     );
     wait_for("the node to end Cy's subscription", || async {
-        (!relay.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
+        (!server.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
     })
     .await;
 
@@ -544,7 +544,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     assert!(status.success(), "the page's expectations failed");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission

@@ -550,7 +550,7 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
         matches!(&rig.app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))),
         "the note's body is focused for typing"
     );
-    for ch in "Relay path".chars() {
+    for ch in "Server path".chars() {
         let key = if ch == ' ' {
             Key::Named(NamedKey::Space)
         } else {
@@ -565,7 +565,7 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
     );
     let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
     assert!(
-        saved.iter().any(|c| c.comment.text == "Relay path"),
+        saved.iter().any(|c| c.comment.text == "Server path"),
         "the typed comment body landed in the shared document: {:?}",
         saved
             .iter()

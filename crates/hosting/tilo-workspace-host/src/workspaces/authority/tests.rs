@@ -1,10 +1,10 @@
-//! A workspace this relay governs decides its own administration: what another
+//! A workspace this server governs decides its own administration: what another
 //! person's device may do is what the workspace's governance lets that person,
-//! and what no workspace decides stays the relay's person's.
+//! and what no workspace decides stays the server's person's.
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -119,8 +119,8 @@ fn invitation(request_id: u8, role: Role) -> IssueInvitationRequest {
 async fn a_page_renames_the_workspace_where_every_list_of_it_reads_the_name() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let rename = |name: &str| WorkspacesRequest::Rename {
@@ -161,15 +161,15 @@ async fn a_page_renames_the_workspace_where_every_list_of_it_reads_the_name() {
             .any(|held| held.workspace == workspace && held.name == "Tilo"),
         "{listed:?}"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_admit() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     assert_eq!(
@@ -213,7 +213,7 @@ async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_
         WorkspacesReply::WaitList(left) if left.is_empty()
     ));
     assert!(matches!(ask(unlist()).await, WorkspacesReply::Refused(_)));
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// Bo left an address where the entry mails a confirmation link, and Cy one
@@ -271,13 +271,13 @@ async fn bo_confirmed_beside_cy(
 async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let bo = bo_confirmed_beside_cy(workspaces, &owner, &workspace).await;
     let invitation = the_address_is_invited_and_mailed(workspaces, &owner, &workspace, bo).await;
     joining_takes_it_off_the_list(workspaces, &owner, &workspace, invitation).await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The entry `workspace` holds for the address `entry` names.
@@ -337,7 +337,7 @@ async fn the_address_is_invited_and_mailed(
         Ok(WaitListStatus::Invited)
     );
 
-    // A relay whose operator sends no mail mails nothing.
+    // A server whose operator sends no mail mails nothing.
     assert!(matches!(
         ask(mailed_invitation(
             workspace,
@@ -438,8 +438,8 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let mut mail = workspaces.mail_wait_list("https://entry.example/").unwrap();
     assert!(
@@ -518,7 +518,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
         workspaces.leave_wait_list(&workspace, [0x0c; 32]).await,
         Ok(None)
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -535,9 +535,9 @@ async fn uncertain_invitation_mail(timeout: bool) {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let shutdown = {
-        let relay = test_host(dir.path(), &key, &owner).await;
-        assert_uncertain_invitation_mail(relay.workspaces(), &owner, timeout).await;
-        relay.shutdown()
+        let server = test_host(dir.path(), &key, &owner).await;
+        assert_uncertain_invitation_mail(server.workspaces(), &owner, timeout).await;
+        server.shutdown()
     };
     shutdown.await;
 }
@@ -614,9 +614,9 @@ async fn pending_removal_returns_only_a_private_stable_contact_digest() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let shutdown = {
-        let relay = test_host(dir.path(), &key, &owner).await;
-        assert_pending_removal_contact_digest(relay.workspaces()).await;
-        relay.shutdown()
+        let server = test_host(dir.path(), &key, &owner).await;
+        assert_pending_removal_contact_digest(server.workspaces()).await;
+        server.shutdown()
     };
     shutdown.await;
 }
@@ -712,8 +712,8 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
 async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_shows_them() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
@@ -749,7 +749,7 @@ async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_s
         .await
         .unwrap();
     assert_eq!(inviter(named).unwrap().name, "Ada");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A device of `person`'s root, labelled `label`: one they hold themselves,
@@ -779,8 +779,8 @@ fn device_of(person: &SigningKey, label: &str, capabilities: DeviceCapabilities)
 async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
 
     // All the operator has of them is their root and the name they go by: no
@@ -875,15 +875,15 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     .expect("the invitation names who it is from");
     assert_eq!(from.name, "Quinten Wolff");
     assert_eq!(from.user_public_key, root);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
@@ -967,15 +967,15 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
             .iter()
             .any(|pending| pending.invite_id == issued.invite_id)
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn roles_and_removals_follow_the_workspaces_policy() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1056,15 +1056,15 @@ async fn roles_and_removals_follow_the_workspaces_policy() {
                 .is_err()
         );
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_administrator_governs_within_their_role_without_further_grants() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1080,7 +1080,7 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         .await;
     an_administrator_runs_the_workspaces_calls(workspaces, &workspace, &ada).await;
     unmaking_the_administrator_takes_it_all_back(workspaces, &workspace, &owner, &ada, &bo).await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// The co-owner invites at every role a workspace hands out, with no grant
@@ -1193,8 +1193,8 @@ async fn unmaking_the_administrator_takes_it_all_back(
 async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let who = hex::encode(ada.user_public_key);
@@ -1216,15 +1216,15 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
         .issue(&workspace, &ada, invitation(61, Role::Editor))
         .await
         .unwrap();
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
-async fn what_no_workspace_decides_stays_the_relay_persons() {
+async fn what_no_workspace_decides_stays_the_server_persons() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1283,15 +1283,15 @@ async fn what_no_workspace_decides_stays_the_relay_persons() {
             .is_err()
     );
     assert_eq!(workspaces.list().await.len(), 1);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1317,15 +1317,15 @@ async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     grant(workspaces, &workspace, &owner, &ada, governance::CALL).await;
     let granted = workspaces.voice_call(&workspace, &peer(&ada), &end).await;
     assert!(past_the_check(&granted), "{granted:?}");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_expired_certificate_administers_nothing_even_the_owners() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let mut expired = owner.clone();
     expired.expires_at_ns = Some(2);
@@ -1343,7 +1343,7 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
     assert!(workspaces.pending(&workspace, &expired).await.is_err());
     assert!(workspaces.enter(&workspace, &expired).await.is_err());
     workspaces.pending(&workspace, &owner).await.unwrap();
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
@@ -1358,8 +1358,8 @@ fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
 async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -1415,5 +1415,5 @@ async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
             .await
             .is_err()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }

@@ -6,7 +6,7 @@ use iroh::endpoint::presets;
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};
@@ -35,7 +35,7 @@ impl ProtocolHandler for Echo {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn extra_protocol_and_relay_share_one_endpoint() {
+async fn extra_protocol_and_server_share_one_endpoint() {
     let user = TestUser::fresh("owner");
     let host = user.enrol("host", DeviceCapabilities::member());
     let device = user.enrol("laptop", DeviceCapabilities::member());
@@ -48,12 +48,12 @@ async fn extra_protocol_and_relay_share_one_endpoint() {
         .await
         .unwrap();
     let endpoint_addr = endpoint.addr();
-    let relay = Relay::start_on_endpoint_with_protocols(
-        RelayConfig {
+    let server = Server::start_on_endpoint_with_protocols(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: host.sk,
             device_cert: host.cert,
@@ -77,23 +77,25 @@ async fn extra_protocol_and_relay_share_one_endpoint() {
     )
     .await
     .unwrap();
-    assert_eq!(relay.node_addr().id, endpoint_addr.id);
+    assert_eq!(server.node_addr().id, endpoint_addr.id);
 
     let client = test_server::direct_endpoint().await;
-    let connection = client.connect(relay.node_addr(), TEST_ALPN).await.unwrap();
+    let connection = client.connect(server.node_addr(), TEST_ALPN).await.unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
     tilo_server::daemon::write_frame(&mut send, b"join")
         .await
         .unwrap();
     send.finish().unwrap();
     assert_eq!(
-        tilo_server::daemon::read_frame(&mut recv, 64).await.unwrap(),
+        tilo_server::daemon::read_frame(&mut recv, 64)
+            .await
+            .unwrap(),
         b"join"
     );
     drop(connection);
 
     let connection_two = client
-        .connect(relay.node_addr(), TEST_ALPN_TWO)
+        .connect(server.node_addr(), TEST_ALPN_TWO)
         .await
         .unwrap();
     let (mut send_two, mut recv_two) = connection_two.open_bi().await.unwrap();
@@ -109,9 +111,9 @@ async fn extra_protocol_and_relay_share_one_endpoint() {
     );
     drop(connection_two);
 
-    let relay_client = RelayClient::connect(
+    let server_client = ServerClient::connect(
         client_endpoint().await,
-        relay.node_addr(),
+        server.node_addr(),
         user.user_pk,
         device.cert,
         device.sk,
@@ -119,10 +121,10 @@ async fn extra_protocol_and_relay_share_one_endpoint() {
     )
     .await
     .unwrap();
-    relay_client.send(Envelope::Ping).unwrap();
-    assert!(matches!(relay_client.recv().await, Some(Envelope::Pong)));
-    drop(relay_client);
-    relay.shutdown().await;
+    server_client.send(Envelope::Ping).unwrap();
+    assert!(matches!(server_client.recv().await, Some(Envelope::Pong)));
+    drop(server_client);
+    server.shutdown().await;
     assert!(shutdown.load(Ordering::SeqCst));
     assert!(shutdown_two.load(Ordering::SeqCst));
 }

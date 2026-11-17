@@ -1,4 +1,4 @@
-//! A workspace this relay governs: another person is invited, joins, edits with
+//! A workspace this server governs: another person is invited, joins, edits with
 //! the workspace's owner, sees their presence, and is removed again.
 
 #![allow(
@@ -21,13 +21,13 @@ use collab_types::CommitNamed as _;
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_server::coedit::{Inbound, RelayCoeditSession};
+use tilo_server::coedit::{Inbound, ServerCoeditSession};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, IssueInvitationRequest,
     IssuedInvitation, RemoveMemberRequest, WorkspaceListing,
 };
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, device_endpoint};
@@ -35,7 +35,7 @@ use tilo_server::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 
-async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Relay {
+async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Server {
     start_at(state, alice, host, "127.0.0.1:0".parse().unwrap()).await
 }
 
@@ -48,21 +48,21 @@ async fn start_at(
     alice: &TestUser,
     host: &TestDevice,
     iroh_listen: std::net::SocketAddr,
-) -> Relay {
+) -> Server {
     if iroh_listen.port() != 0 {
-        // The stopped relay's connections let go of its socket shortly after
+        // The stopped server's connections let go of its socket shortly after
         // its shutdown returns.
-        tilo_test_env::wait_for("the stopped relay's address to be free", || {
+        tilo_test_env::wait_for("the stopped server's address to be free", || {
             std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
         });
     }
-    crate::common::start_relay(
-        RelayConfig {
+    crate::common::start_server(
+        ServerConfig {
             state_root: state.to_path_buf(),
             iroh_listen,
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),
             device_cert: host.cert.clone(),
@@ -74,27 +74,27 @@ async fn start_at(
 }
 
 async fn session(
-    relay: &Relay,
+    server: &Server,
     device: &TestDevice,
     workspace_id: WorkspaceId,
-) -> RelayCoeditSession {
-    let client = RelayClient::connect_to_pinned_host(
+) -> ServerCoeditSession {
+    let client = ServerClient::connect_to_pinned_host(
         device_endpoint(device).await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         device.sk.clone(),
         RevocationList::new(),
     )
     .await
     .unwrap();
-    RelayCoeditSession::join(client, workspace_id, device.device_pubkey()).unwrap()
+    ServerCoeditSession::join(client, workspace_id, device.device_pubkey()).unwrap()
 }
 
 /// Alice's `device` creates a workspace named `name` on her relay and enters it
-/// as its owner, through the relay's own host actions asked of it directly.
-async fn create_and_enter(relay: &Relay, device: &TestDevice, name: &str) -> WorkspaceListing {
+/// as its owner, through the server's own host actions asked of it directly.
+async fn create_and_enter(server: &Server, device: &TestDevice, name: &str) -> WorkspaceListing {
     use governance_actions::{connected, host_action};
-    let home = connected(relay, device).await;
+    let home = connected(server, device).await;
     let created: CreatedWorkspace =
         host_action(&home, CREATE_WORKSPACE, serde_json::json!({ "name": name })).await;
     assert_eq!(created.workspace.name, name);
@@ -114,13 +114,13 @@ async fn create_and_enter(relay: &Relay, device: &TestDevice, name: &str) -> Wor
 /// An invitation to `workspace` carrying `role`, for `person` only, that the
 /// workspace's owner `issuer` issues.
 async fn invite(
-    relay: &Relay,
+    server: &Server,
     issuer: &TestDevice,
     workspace: &str,
     role: Role,
     person: [u8; 32],
 ) -> IssuedInvitation {
-    relay
+    server
         .workspaces()
         .unwrap()
         .issue(
@@ -145,7 +145,7 @@ async fn invite(
 /// every presence payload by its author.
 async fn receive_until(
     what: &str,
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     peer: &mut StatePeer,
     presence: &mut Vec<([u8; 32], Vec<u8>)>,
     mut done: impl FnMut(&StatePeer, &[([u8; 32], Vec<u8>)]) -> bool,
@@ -156,9 +156,9 @@ async fn receive_until(
                 Inbound::Delta { author, data } => {
                     let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                     let origin = if author == peer.owner_certificates()[0].device_public_key {
-                        TransportOrigin::RetainedRelayDelta(author)
+                        TransportOrigin::RetainedServerDelta(author)
                     } else {
-                        TransportOrigin::RelayDelta(author)
+                        TransportOrigin::ServerDelta(author)
                     };
                     peer.receive_from(origin, message, SystemTime::now())
                         .unwrap();
@@ -171,7 +171,7 @@ async fn receive_until(
     .await;
 }
 
-fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+fn publish(session: &ServerCoeditSession, message: &NeighbourMsg) {
     let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
     if kind == neighbour_wire::Retention::Checkpoint {
@@ -210,7 +210,7 @@ fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
     peer.role(&device, SystemTime::now()).ok()
 }
 
-/// What every scenario here starts from: Alice's relay governing a workspace her
+/// What every scenario here starts from: Alice's server governing a workspace her
 /// laptop owns, Bob's phone admitted through an invitation as `role`, both
 /// replicas converged on the roster, and a session open for each of them.
 struct Governed {
@@ -220,12 +220,12 @@ struct Governed {
     bob: TestUser,
     phone: TestDevice,
     state: tempfile::TempDir,
-    relay: Relay,
+    server: Server,
     workspace: WorkspaceListing,
     alice_peer: StatePeer,
     bob_peer: StatePeer,
-    alice_session: RelayCoeditSession,
-    bob_session: RelayCoeditSession,
+    alice_session: ServerCoeditSession,
+    bob_session: ServerCoeditSession,
     alice_presence: Vec<([u8; 32], Vec<u8>)>,
     bob_presence: Vec<([u8; 32], Vec<u8>)>,
 }
@@ -240,15 +240,15 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
         let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = start(state.path(), &alice, &host).await;
+        let server = start(state.path(), &alice, &host).await;
 
         // Alice's laptop creates a workspace on her relay and enters it as its owner.
         // (That Bob's device cannot is `governance_actions`'s to show.)
-        let workspace = create_and_enter(&relay, &laptop, "Design review").await;
+        let workspace = create_and_enter(&server, &laptop, "Design review").await;
 
         // Alice invites Bob's person; his device redeems through the signed
         // address the invitation carries and is admitted by the workspace's governor.
-        let invitation = invite(&relay, &laptop, &workspace.workspace, granted, bob.user_pk).await;
+        let invitation = invite(&server, &laptop, &workspace.workspace, granted, bob.user_pk).await;
         let verified = decode_and_verify_invitation(
             &invitation.signed_invitation,
             None,
@@ -259,7 +259,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         assert_eq!(
             verified.grant().issuer,
             host.cert,
-            "the relay answers for the workspace"
+            "the server answers for the workspace"
         );
         let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
             .redeem_hint(
@@ -288,7 +288,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         for bytes in &bootstrap.governance_messages {
             bob_peer
                 .receive_from(
-                    TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
+                    TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
                     SystemTime::now(),
                 )
@@ -296,7 +296,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         }
         assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted));
 
-        // Alice's replica learns governance from the relay's retained history.
+        // Alice's replica learns governance from the server's retained history.
         let mut alice_peer = StatePeer::new(
             &workspace.workspace,
             host.cert.clone(),
@@ -305,8 +305,8 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             SystemTime::now(),
         )
         .unwrap();
-        let alice_session = session(&relay, &laptop, workspace.workspace_id).await;
-        let bob_session = session(&relay, &phone, workspace.workspace_id).await;
+        let alice_session = session(&server, &laptop, workspace.workspace_id).await;
+        let bob_session = session(&server, &phone, workspace.workspace_id).await;
         let mut alice_presence = Vec::new();
         let bob_presence = Vec::new();
         receive_until(
@@ -321,7 +321,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
         )
         .await;
         crate::common::wait_until_subscribed(
-            &relay,
+            &server,
             workspace.workspace_id,
             &phone.device_pubkey(),
         )
@@ -333,7 +333,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             bob,
             phone,
             state,
-            relay,
+            server,
             workspace,
             alice_peer,
             bob_peer,
@@ -354,7 +354,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         bob,
         phone,
         state,
-        relay,
+        server,
         workspace,
         mut alice_peer,
         mut bob_peer,
@@ -467,8 +467,8 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     )
     .await;
 
-    // Alice removes Bob: the relay stops admitting his device.
-    let generation = relay
+    // Alice removes Bob: the server stops admitting his device.
+    let generation = server
         .workspaces()
         .unwrap()
         .remove_member(
@@ -484,9 +484,9 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         .generation;
     assert!(generation > workspace.generation);
     let refused = async {
-        let client = RelayClient::connect_to_pinned_host(
+        let client = ServerClient::connect_to_pinned_host(
             device_endpoint(&phone).await,
-            relay.node_addr(),
+            server.node_addr(),
             phone.cert.clone(),
             phone.sk.clone(),
             RevocationList::new(),
@@ -498,7 +498,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
                 workspace_id: workspace.workspace_id,
             })
             .ok()?;
-        tilo_test_env::within("the relay answers a removed member", client.recv()).await
+        tilo_test_env::within("the server answers a removed member", client.recv()).await
     }
     .await;
     assert!(
@@ -506,14 +506,14 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         "a removed member is not admitted: {refused:?}"
     );
 
-    // The workspace survives a restart of its relay, governance and all: every change its people
+    // The workspace survives a restart of its server, governance and all: every change its people
     // made is still there.
-    let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
+    let iroh_listen = *server.node_addr().ip_addrs().next().unwrap();
     alice_session.close().await;
     bob_session.close().await;
-    relay.shutdown().await;
-    let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
-    let workspaces = relay.workspaces().unwrap().list().await;
+    server.shutdown().await;
+    let server = start_at(state.path(), &alice, &host, iroh_listen).await;
+    let workspaces = server.workspaces().unwrap().list().await;
     let [restored] = workspaces.as_slice() else {
         panic!("one governed workspace: {workspaces:?}")
     };
@@ -536,33 +536,33 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
         "{:?}",
         restored.members
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A host restarted with a workspace already on disk names the relay it is reached through
 /// before it answers anything, so the first invitation it mints after start carries an
 /// address a stranger can dial; a restart at the same address changes no governance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
+async fn a_restarted_host_names_its_server_before_its_first_invitation() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspace = create_and_enter(&relay, &laptop, "Design review").await;
-    let generation = relay.workspaces().unwrap().list().await[0].generation;
+    let server = start(state.path(), &alice, &host).await;
+    let workspace = create_and_enter(&server, &laptop, "Design review").await;
+    let generation = server.workspaces().unwrap().list().await[0].generation;
     assert!(
-        relay.node_addr().relay_urls().next().is_some(),
+        server.node_addr().relay_urls().next().is_some(),
         "a started host names the relay it is reached through"
     );
-    let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
-    relay.shutdown().await;
+    let iroh_listen = *server.node_addr().ip_addrs().next().unwrap();
+    server.shutdown().await;
 
-    let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
+    let server = start_at(state.path(), &alice, &host, iroh_listen).await;
     // What a person does as soon as their host is up again: hand out a link.
     let invited = invite(
-        &relay,
+        &server,
         &laptop,
         &workspace.workspace,
         Role::Editor,
@@ -581,7 +581,7 @@ async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
         .transport[0],
     )
     .unwrap();
-    let relay_url = relay
+    let relay_url = server
         .node_addr()
         .relay_urls()
         .next()
@@ -594,19 +594,19 @@ async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
         "an invitation minted right after start names the relay: {:?}",
         hint.endpoint_addr
     );
-    let restored = relay.workspaces().unwrap().list().await;
+    let restored = server.workspaces().unwrap().list().await;
     assert_eq!(
         restored[0].generation, generation,
         "a restart at the same address names the address it had, changing nothing"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// The relay keeps and forwards only changes that name an action their app
+/// The server keeps and forwards only changes that name an action their app
 /// publishes, decided against the app's surface the op names; a change
 /// claiming anything else never reaches the workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_relay_forwards_only_changes_their_app_surface_publishes() {
+async fn the_server_forwards_only_changes_their_app_surface_publishes() {
     const SURFACE: &str = r#"
 [[resources]]
 kind = "fixture"
@@ -622,7 +622,7 @@ type = "String"
 "#;
     // The surfaces it installs are the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "governed_workspaces::the_relay_forwards_only_changes_their_app_surface_publishes",
+        "governed_workspaces::the_server_forwards_only_changes_their_app_surface_publishes",
     ) {
         return;
     }
@@ -637,10 +637,10 @@ type = "String"
         move |_| Some(hash),
     );
     let Governed {
-        // The relay's storage: kept alive for the whole test.
+        // The server's storage: kept alive for the whole test.
         state: _state,
         laptop,
-        relay,
+        server,
         mut alice_peer,
         mut bob_peer,
         alice_session,
@@ -650,7 +650,7 @@ type = "String"
     } = governed_workspace(Role::Editor).await;
 
     // A change claiming a verb the app does not publish: refused by the
-    // relay, so it never reaches Bob (whose replica would refuse it loudly).
+    // server, so it never reaches Bob (whose replica would refuse it loudly).
     // It goes first on the one connection, so Bob would see it first.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "smuggled", "from Alice").unwrap();
@@ -693,15 +693,15 @@ type = "String"
     assert_eq!(
         text(&bob_peer, "smuggled"),
         None,
-        "the relay forwarded a refused change"
+        "the server forwarded a refused change"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
-/// The relay decides each change against its author's grants, as the workspace's
+/// The server decides each change against its author's grants, as the workspace's
 /// governor projects them: a commenter's comment reaches the workspace, their
 /// edit of the record does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_relay_refuses_an_action_the_author_is_not_granted() {
+async fn the_server_refuses_an_action_the_author_is_not_granted() {
     const SURFACE: &str = r#"
 [[resources]]
 kind = "fixture"
@@ -724,7 +724,7 @@ params = []
 "#;
     // The surfaces it installs are the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "governed_workspaces::the_relay_refuses_an_action_the_author_is_not_granted",
+        "governed_workspaces::the_server_refuses_an_action_the_author_is_not_granted",
     ) {
         return;
     }
@@ -739,11 +739,11 @@ params = []
         move |_| Some(hash),
     );
     let Governed {
-        // The relay's storage: kept alive for the whole test.
+        // The server's storage: kept alive for the whole test.
         state: _state,
         laptop,
         phone,
-        relay,
+        server,
         workspace,
         mut alice_peer,
         mut bob_peer,
@@ -826,9 +826,9 @@ params = []
     assert_eq!(
         text(&alice_peer, "topic").as_deref(),
         Some("from Alice"),
-        "the relay forwarded an ungranted edit"
+        "the server forwarded an ungranted edit"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A public workspace prunes the guests who left in one governance change, and
@@ -840,14 +840,14 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let workspace = create_and_enter(&relay, &laptop, "Demo").await;
+    let server = start(state.path(), &alice, &host).await;
+    let workspace = create_and_enter(&server, &laptop, "Demo").await;
     let mut guests = Vec::new();
     for (seed, name) in [(17, "Ada"), (18, "Bea"), (19, "Cy")] {
         let guest = TestUser::fresh(name);
         let phone = guest.enrol("phone", DeviceCapabilities::member());
         let invitation = invite(
-            &relay,
+            &server,
             &laptop,
             &workspace.workspace,
             Role::Editor,
@@ -873,7 +873,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
             .unwrap();
         guests.push((guest, phone, verified, invitation));
     }
-    let workspaces = relay.workspaces().unwrap();
+    let workspaces = server.workspaces().unwrap();
     let before = workspaces
         .summary(&workspace.workspace)
         .await
@@ -916,7 +916,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
             .is_err(),
         "a pruned guest's invitation admits nobody again"
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[path = "governed_workspaces/members.rs"]

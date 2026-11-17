@@ -6,7 +6,7 @@ ad-hoc direct invite and an optional always-on workspace host at the same time.
 Peer sync starts automatically in every normal desktop session. The shell
 loads the certified device identity, binds an Iroh endpoint, and joins the
 workspace mesh; Iroh attempts a direct path and falls back to its encrypted
-transport relay when necessary. Recovery and deliberately offline sessions
+transport server when necessary. Recovery and deliberately offline sessions
 can use `--disable-peer-sync`.
 
 Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
@@ -78,13 +78,13 @@ A Fedora Desktop may have an enrolled home peer but no local Files daemon or
 namespace. Do not infer a new empty workspace from this, or from an offline
 peer. The saved `home-peers.json` under the host's existing identity root
 (`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
-device, relay service and relay workspace IDs to probe:
+device, server service and relay workspace IDs to probe:
 
 ```sh
 tilo-server-admin home-peer-files-status \
   --identity-root "$HOME/.local/share/tilo" \
-  --device ENROLLED_DEVICE_PUBLIC_KEY --service RELAY_SERVICE_PUBLIC_KEY \
-  --workspace-id REGISTERED_RELAY_WORKSPACE_ID
+  --device ENROLLED_DEVICE_PUBLIC_KEY --service SERVER_SERVICE_PUBLIC_KEY \
+  --workspace-id REGISTERED_SERVER_WORKSPACE_ID
 ```
 
 This read-only command uses the existing device key, verified certificate and
@@ -96,7 +96,7 @@ create an identity, grant access, or start a Files mount. A timeout or denied
 query leaves the existence of remote data unknown. Probe the saved candidate
 workspaces before deciding whether explicit new initialization is appropriate.
 
-The relay workspace ID is a routing key, not a Files namespace UUID. A successful
+The server workspace ID is a routing key, not a Files namespace UUID. A successful
 probe identifies a recovery source; actual namespace recovery must still use
 the existing authenticated Files join path and corresponding authority.
 

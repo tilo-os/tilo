@@ -36,8 +36,8 @@ ReadWritePaths=/etc
 # their home.
 ProtectHome=no
 ReadWritePaths=-/home -/var/home
-# The relay's channel state names the old device and is dropped; it is the
-# relay account's, so removing it takes overriding its directories' modes.
+# The server's channel state names the old device and is dropped; it is the
+# server account's, so removing it takes overriding its directories' modes.
 ReadWritePaths=-/var/lib/tilo-server
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

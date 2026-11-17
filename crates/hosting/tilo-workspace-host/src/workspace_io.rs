@@ -179,7 +179,7 @@ fn apply_loaded_membership(
 
 /// Enrol `cert`'s device as a member of `workspace`, where [`crate::workspace_access::decide`]
 /// answered [`crate::workspace_access::Decision::AdmitAndEnrol`], through whoever owns the
-/// workspace's membership: the governance of a workspace this relay governs records the device
+/// workspace's membership: the governance of a workspace this server governs records the device
 /// under its person, and its settle projects it here; any other workspace's membership file takes
 /// it ([`admit_member`]). The caller decides again afterwards: a device governance did not take
 /// is still no member.
@@ -534,7 +534,7 @@ pub(crate) async fn get_or_initialize(
 /// be persisted; `Ok(Err(reason))` when the device is refused.
 pub async fn admit_for(
     workspace: &SharedWorkspace,
-    trust: &crate::workspace_access::RelayTrust<'_>,
+    trust: &crate::workspace_access::ServerTrust<'_>,
     peer: &crate::auth::AuthenticatedPeer,
     operation: crate::workspace_access::WorkspaceOperation,
 ) -> Result<Result<(), crate::workspace_access::DenyReason>, StoreError> {
@@ -892,7 +892,7 @@ mod tests {
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
         let agents = crate::peer::AgentRegistry::default();
-        let trust = crate::workspace_access::RelayTrust {
+        let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,
             own_user: &owner,
@@ -930,7 +930,7 @@ mod tests {
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
         let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
         let agents = crate::peer::AgentRegistry::default();
-        let trust = crate::workspace_access::RelayTrust {
+        let trust = crate::workspace_access::ServerTrust {
             revocations: &revocations,
             policy: &policy,
             own_user: &owner,

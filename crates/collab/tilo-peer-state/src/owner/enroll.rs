@@ -316,7 +316,7 @@ fn expired(code: u16, message: &str) -> bool {
 }
 
 /// The workspace's current state for a device that is a member: the membership
-/// exchange for `workspace` (its id and its relay workspace), challenged and proven with
+/// exchange for `workspace` (its id and its server workspace), challenged and proven with
 /// the device's key and presenting `device`, the certificate it is a member
 /// with or the renewal of it. The answer is checked by whoever takes it in
 /// ([`VerifiedNativeEnrollment::finalize`],

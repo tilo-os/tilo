@@ -8,7 +8,7 @@
 //! content keys only, which open and seal and admit nobody: the device's
 //! group stays the device's business.
 //!
-//! A host that runs that service itself, as a relay whose device may own
+//! A host that runs that service itself, as a server whose device may own
 //! workspaces does, is also handed the sink its members' group governance is
 //! delivered to ([`KeySink`]): the service settles the groups from what
 //! the host's sessions hear, exactly as it settles them from its own.

@@ -5,7 +5,7 @@
 //! this service for their keys ([`DeviceGroupKeys`]), so its apps get
 //! their route keys without any network. In a workspace
 //! hosted elsewhere it is one key holder among the workspace's member devices:
-//! it asks them for access over the workspace's relay session, follows and
+//! it asks them for access over the workspace's server session, follows and
 //! checks their commits against the workspace's governance, and commits itself
 //! when the group falls behind the membership. While nobody who can admit
 //! it is online, groups this device already reads keep their keys and a

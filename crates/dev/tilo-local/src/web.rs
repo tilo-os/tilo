@@ -16,7 +16,7 @@ cargo web: the web desktop on this machine, served by the local tilo.sh stack.
 
 Builds the desktop bundle (crates/browser/tilo-browser-runtime/scripts/build.sh
 --bundle desktop; only what changed rebuilds) and serves it with the stack
-production's site runs on (os/containers/tilo-sh/stack.sh: the relay, the API
+production's site runs on (os/containers/tilo-sh/stack.sh: the server, the API
 server and the web entry, all on 127.0.0.1). A running stack keeps running
 and only the web entry restarts on the new bundle. Then it loads the page the
 way a browser starts it (the entry page, each module it imports, the runtime

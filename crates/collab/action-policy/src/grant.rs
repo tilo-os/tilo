@@ -400,7 +400,7 @@ impl Grant {
 pub struct Context<'a> {
     /// Wall clock, Unix milliseconds.
     pub now_unix_ms: u64,
-    /// The current session. `None` where sessions are not known (a relay): a
+    /// The current session. `None` where sessions are not known (a server): a
     /// session grant then counts as live, and the device that holds the session
     /// is the one that refuses after it ends.
     pub session: Option<&'a str>,

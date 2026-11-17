@@ -1,12 +1,12 @@
 //! A dialled session outlives the caller's endpoint handle.
 //!
-//! `RelayClient::connect` takes the iroh `Endpoint` **by value**. A
+//! `ServerClient::connect` takes the iroh `Endpoint` **by value**. A
 //! `Connection` does not keep its endpoint open, so if the client did
 //! not hold on to it, handing over the only handle would close the
 //! socket the moment `connect` returned — and the failure is silent
 //! rather than loud: the handshake bytes are already in flight, so
 //! `connect` still succeeds, and only the *next* exchange goes missing.
-//! Every caller in this suite and in the toolkit's relay bridge dials
+//! Every caller in this suite and in the toolkit's server bridge dials
 //! that way, so the whole tier goes quiet on a single dropped handle.
 //!
 //! This test dials with an endpoint that has no other owner and then
@@ -18,17 +18,17 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(7);
 
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.
-async fn next_envelope(client: &RelayClient, what: &str) -> Envelope {
+async fn next_envelope(client: &ServerClient, what: &str) -> Envelope {
     tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| {
@@ -40,12 +40,12 @@ async fn next_envelope(client: &RelayClient, what: &str) -> Envelope {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server_dev = user.enrol("home-server", DeviceCapabilities::member());
     let device = user.enrol("laptop", DeviceCapabilities::primary());
 
-    let relay = Box::pin(spawn_relay(
+    let server = Box::pin(spawn_server(
         &user,
-        relay_dev,
+        server_dev,
         &[WORKSPACE],
         &[device.device_pubkey()],
     ))
@@ -53,9 +53,9 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
 
     // The endpoint is constructed inside the call: the test keeps no
     // handle of its own, so only the returned client can hold it open.
-    let client = RelayClient::connect(
+    let client = ServerClient::connect(
         client_endpoint().await,
-        relay.relay.node_addr(),
+        server.server.node_addr(),
         user.user_pk,
         device.cert.clone(),
         device.sk.clone(),

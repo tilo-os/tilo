@@ -1,6 +1,6 @@
 //! The store entry points tests outside this crate drive it through, so they
 //! retain, stage, capture and replay through the production store exactly as
-//! the relay's own owner does. Built only for tests and the `test-support`
+//! the server's own owner does. Built only for tests and the `test-support`
 //! feature.
 use super::{
     WorkspaceStore,

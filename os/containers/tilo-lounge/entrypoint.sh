@@ -119,7 +119,7 @@ entry=${TILO_WORKSPACES_WEB_ENTRY:-}
 [ -n "$entry" ] || fail 'TILO_WORKSPACES_WEB_ENTRY is required: the Tilo app web entry the links open'
 origin=${origin%/}
 # eu1 also names the API's public address and the live session's. The API's is
-# the relay's own origin here (one origin, one ingress), and the live session
+# the server's own origin here (one origin, one ingress), and the live session
 # rides the plain listener as the HTTPS stream fallback, so neither changes
 # what the host serves; both are read so eu1's environment starts as it is.
 dir=${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$name
@@ -150,7 +150,7 @@ comma_flags() {
 }
 
 set -- workspace \
-  --state "$dir/relay" \
+  --state "$dir/server" \
   --persistent "$name" \
   --root-file "$root" \
   --workspace-id-file "$dir/workspace-id" \
@@ -266,7 +266,7 @@ while [ -n "$bots" ]; do
   [ -z "$spec" ] || set -- "$@" --bot "$spec"
 done
 
-# The moderation agent runs only with a key; the model is the relay's unless
+# The moderation agent runs only with a key; the model is the server's unless
 # the deployment names one.
 moderation=${TILO_WORKSPACES_MODERATION_KEY_FILE:-}
 if [ -z "$moderation" ] && [ -r /run/secrets/moderation-model-key ]; then

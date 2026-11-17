@@ -9,7 +9,7 @@
 //! under a key derived from its store's channel vault — a reload dials as the
 //! same endpoint — and its device signs, for every live session grant, that the
 //! endpoint speaks for it. Over WebTransport there is no endpoint: the device
-//! proves itself with the relay handshake on each link that needs it.
+//! proves itself with the server handshake on each link that needs it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use std::time::Duration;
 use tilo_server_client::Carrier;
 use tilo_server_client::link::{Dialer, Purpose};
 
-use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
+use super::{DeviceSigner, LinkError, PeerConfig, ServerClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
 /// long enough for a session and its live sessions to outlive one roster change,
@@ -112,7 +112,7 @@ impl Task {
     /// A dial or handshake that fails without a final answer is tried a few
     /// times with jittered, doubling waits before its error reaches the
     /// session loop, which then backs off and retries on its own.
-    pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
+    pub(super) async fn connect(&mut self) -> Result<ServerClient, LinkError> {
         let access = self.entry_access().await;
         let mut attempt: u32 = 0;
         loop {
@@ -171,7 +171,7 @@ pub(super) async fn connect(
     config: &PeerConfig,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
-) -> Result<RelayClient, LinkError> {
+) -> Result<ServerClient, LinkError> {
     connect_entering(config, None, signer, dial).await
 }
 
@@ -188,11 +188,11 @@ async fn connect_entering(
     access: Option<collab_types::MlsAccessRequestV1>,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
-) -> Result<RelayClient, LinkError> {
+) -> Result<ServerClient, LinkError> {
     let host = &config.host;
     // A lent endpoint that is not bound yet is waited for: the dial fails as
     // one to make again, and no endpoint is bound under the device's key in
-    // its place, which would take the device's place at its relay.
+    // its place, which would take the device's place at its server.
     #[cfg(not(target_arch = "wasm32"))]
     if dial.dialer.is_none()
         && let Some(lent) = &dial.lent
@@ -226,7 +226,7 @@ async fn connect_entering(
         .await?;
     }
     let link = dialer.link(Purpose::Session).await?;
-    RelayClient::connect_over_link(
+    ServerClient::connect_over_link(
         link,
         Some(config.host_cert.user_public_key),
         Some(config.host_cert.device_public_key),

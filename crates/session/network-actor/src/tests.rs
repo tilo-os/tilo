@@ -76,7 +76,7 @@ fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
             start + Duration::from_millis(1),
             &mut recent
         ),
-        "the same event arriving over a second relay session"
+        "the same event arriving over a second server session"
     );
     assert!(
         mark_new_input(

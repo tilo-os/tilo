@@ -470,7 +470,7 @@ impl<'a> Caller<'a> {
                 let mut listed = self
                     .session
                     .connection()
-                    .relay()
+                    .server()
                     .labelled(self.session.connection(), &labels)
                     .await
                     .map_err(ApiError::from)?;
@@ -658,7 +658,7 @@ impl<'a> Caller<'a> {
         let workspace = self
             .session
             .connection()
-            .relay()
+            .server()
             .workspace(self.session.connection(), &ws)
             .await
             .map_err(ApiError::from)?

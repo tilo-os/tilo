@@ -177,7 +177,7 @@ pub async fn test_server_keeping_keys_apart(
 }
 
 /// The same host, run on a device that takes part in its workspaces' channels,
-/// as a relay whose device owns workspaces does: what its members seal it opens,
+/// as a server whose device owns workspaces does: what its members seal it opens,
 /// and what it writes itself it seals.
 ///
 /// # Panics
@@ -276,10 +276,10 @@ async fn host_on(
 /// ([`super::await_relay`]), so no workspace learns an address the host must
 /// rename, and gives up after iroh's net report timeout. An endpoint that has
 /// no relay to reach waits that whole bound out: five seconds for every host a
-/// test opens. This package's tests give the fixture's endpoint a relay on this
+/// test opens. This package's tests give the fixture's endpoint a server on this
 /// machine's loopback instead, as a host on a network has one, and the host
 /// opens as soon as its endpoint names it. An embedder's tests reach this
-/// fixture without that relay, which is a development dependency here, and
+/// fixture without that server, which is a development dependency here, and
 /// wait as before.
 #[cfg(test)]
 async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_env::relay::Relay) {
@@ -324,9 +324,9 @@ pub async fn admit_view_reader(
         .expect("the admission commits");
 }
 
-/// Project `workspace`'s members onto the relay's own runtime for it, as a
+/// Project `workspace`'s members onto the server's own runtime for it, as a
 /// settled decision does: what a member's change is decided against on its way
-/// in, before the workspace's governance reaches the relay by its own path.
+/// in, before the workspace's governance reaches the server by its own path.
 ///
 /// # Panics
 ///
@@ -351,7 +351,7 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .access
         .replace_access(workspace_id, true, device_access)
         .await
-        .expect("the relay projects the workspace's device_access");
+        .expect("the server projects the workspace's device_access");
 }
 
 /// Until when `workspace` restricts `person`, as `host` reads its policy.

@@ -739,7 +739,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             names = ("tilo-fs", "tilo-server", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone tilo-fs and the relay would share the lighter
+            # By time alone tilo-fs and the server would share the lighter
             # shard. Placement breaks equal weights by name, so theirs differ.
             seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-server": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
@@ -1826,7 +1826,7 @@ class DependencyKindTests(unittest.TestCase):
             self.assertLessEqual({name} | reverse[name], selected, name)
             self.assertLessEqual(selected, ci_select.closure({name}, reverse), name)
 
-    def test_the_owner_commit_vocabulary_no_longer_lints_relay_or_the_wasm_crates(self):
+    def test_the_owner_commit_vocabulary_no_longer_lints_server_or_the_wasm_crates(self):
         # A workspace shape around tilo-owner-commit, with every edge kind
         # Cargo metadata reports.
         graph = {

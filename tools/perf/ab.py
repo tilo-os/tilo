@@ -3,7 +3,7 @@
 
 The scheduled job compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same
-relay bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
+server bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
 runs). This tool builds two commits in one checkout, one after the other, and
 runs the existing benchmark of a KPI group on both, alternating, in one job
 on one machine. A slow host then slows both sides alike, and pairing each
@@ -378,9 +378,9 @@ def run_hosting(ctx: RunContext) -> list[record.Record]:
     # Historical refs predate this check; every side that has it must pass it.
     if "keystroke_writes" in ctx.bins:
         call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
-    # Both sides need a bench that knows --relay-cpus; an older one refuses it.
-    cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
-    call([ctx.bins["relay_load"], "--members", "100", "--minutes", str(ctx.options.hosting_minutes),
+    # Both sides need a bench that knows --server-cpus; an older one refuses it.
+    cpus = ["--server-cpus", str(ctx.options.hosting_server_cpus)] if ctx.options.hosting_server_cpus else []
+    call([ctx.bins["server_load"], "--members", "100", "--minutes", str(ctx.options.hosting_minutes),
           *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
     report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))
@@ -461,8 +461,8 @@ BROWSER_BUILD = ("bash", "-c",
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
-          (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "relay_load"),),
-          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
+          (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "server_load"),),
+          {"server_load": "target/release/examples/server_load"}, {}, {}, run_hosting,
           {"keystroke_writes": ("crates/hosting/tilo-server/examples/keystroke_writes.rs",
                                 ("cargo", "build", "--locked", "-p", "tilo-server", "--example",
                                  "keystroke_writes"),
@@ -658,8 +658,8 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--virtualization", default="none", choices=sorted(record.VIRTUALIZATIONS))
     go.add_argument("--runner", default="local", help="the runner class, as record.py env takes it")
     go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
-    go.add_argument("--hosting-relay-cpus", type=int, default=0,
-                    help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
+    go.add_argument("--hosting-server-cpus", type=int, default=0,
+                    help="confine the server to this many CPUs, as on a VM with that many vCPUs (0: all)")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)
     args = parser.parse_args(argv)

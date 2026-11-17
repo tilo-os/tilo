@@ -3,7 +3,7 @@
 //!
 //! An owner who expects someone (a co-founder, a teammate a backend vouched
 //! for) signs a [`PreAdmission`] with their user root for the SHA-256 of a
-//! one-time token whoever vouches hands that person. The relay issues a
+//! one-time token whoever vouches hands that person. The server issues a
 //! single-use invitation with it; the person who redeems that invitation
 //! and presents the token is admitted at once, the grant is spent, and the
 //! owner finds a [`WorkspaceNotice`] and may remove them like any member.

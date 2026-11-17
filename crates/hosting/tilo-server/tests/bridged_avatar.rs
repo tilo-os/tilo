@@ -10,35 +10,35 @@
 )]
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and the member's session live until the test ends"
+    reason = "the server and the member's session live until the test ends"
 )]
 
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::peer_handle;
-use tilo_server::coedit::{Inbound, RelayCoeditSession};
+use tilo_server::coedit::{Inbound, ServerCoeditSession};
 use tilo_server::workspaces::WorkspaceSummary;
-use tilo_server::{Relay, RelayClient, RelayConfig};
+use tilo_server::{Server, ServerClient, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, device_endpoint};
 
 const CHAT: &str = "so.tilo.chat";
 
-/// A workspace on `relay` that `member` entered as its owner's, and the member's
+/// A workspace on `server` that `member` entered as its owner's, and the member's
 /// live session in it.
 async fn member_in_a_new_workspace(
-    relay: &Relay,
+    server: &Server,
     member: &TestDevice,
-) -> (WorkspaceSummary, RelayCoeditSession) {
-    let workspaces = relay.workspaces().unwrap();
+) -> (WorkspaceSummary, ServerCoeditSession) {
+    let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &member.cert)
         .await
         .unwrap();
-    let client = RelayClient::connect_to_pinned_host(
+    let client = ServerClient::connect_to_pinned_host(
         device_endpoint(member).await,
-        relay.node_addr(),
+        server.node_addr(),
         member.cert.clone(),
         member.sk.clone(),
         RevocationList::new(),
@@ -46,8 +46,8 @@ async fn member_in_a_new_workspace(
     .await
     .unwrap();
     let session =
-        RelayCoeditSession::join(client, workspace.workspace_id, member.device_pubkey()).unwrap();
-    crate::common::wait_until_subscribed(relay, workspace.workspace_id, &member.device_pubkey())
+        ServerCoeditSession::join(client, workspace.workspace_id, member.device_pubkey()).unwrap();
+    crate::common::wait_until_subscribed(server, workspace.workspace_id, &member.device_pubkey())
         .await;
     (workspace, session)
 }
@@ -58,12 +58,12 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = crate::common::start_relay(
-        RelayConfig {
+    let server = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),
             device_cert: host.cert.clone(),
@@ -73,13 +73,13 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     .await
     .unwrap();
 
-    let (workspace, session) = member_in_a_new_workspace(&relay, &laptop).await;
+    let (workspace, session) = member_in_a_new_workspace(&server, &laptop).await;
 
     // What a bridge fetched from the other service, kept as the host keeps
     // it, in the workspace's content: larger than one piece, so the member
     // reassembles it.
     let avatar: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
-    let hash = relay
+    let hash = server
         .content()
         .get(&workspace.workspace)
         .unwrap()

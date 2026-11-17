@@ -396,10 +396,10 @@ that workspace environment's own, never in a guest sharing the host's kernel
   so the host routes and translates nothing, and in Kubernetes the pod's
   network policy applies to VM traffic too. Every VM has the same address
   (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A VM
-  is allowed one destination besides the internet: the relay its Browser
+  is allowed one destination besides the internet: the server its Browser
   session joins the workspace through
-  (`--relay-endpoint`/`TILO_VM_SERVER_ENDPOINT`, a public address or the
-  stack's cluster address), and a relay on a local host's loopback is
+  (`--server-endpoint`/`TILO_VM_SERVER_ENDPOINT`, a public address or the
+  stack's cluster address), and a server on a local host's loopback is
   reached at 10.0.2.4, which `pasta` maps there. Firecracker's rate
   limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
@@ -505,16 +505,16 @@ way a device serves its own:
   the requester as a window stream (`surface_stream`), with input routed back.
 
 A member holds a workspace as any device does, so its action service admits the
-relay's runs. A member that runs the workspace's VMs also answers its browser
+server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
-hosted-VM service starts beside the Linux VM; the relay asks for them the way
+hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, placing `<workspace>/browser` first
-(`crates/hosting/tilo-server/src/placed_browsers.rs`). The first time the relay
+(`crates/hosting/tilo-server/src/placed_browsers.rs`). The first time the server
 asks about a workspace it placed on the member, the member enters it: it asks
-the relay's own `workspace.enter`, which answers an invitation naming the member's
-person, and redeems it as a device joins any workspace. The relay decides
+the server's own `workspace.enter`, which answers an invitation naming the member's
+person, and redeems it as a device joins any workspace. The server decides
 which member may enter which workspace, never the request: a device of another
-person asking the member gets nothing from it, and a workspace the relay does
+person asking the member gets nothing from it, and a workspace the server does
 not govern is refused there and remembered for a while, so nothing that names
 workspaces makes the member ask again and again.
 

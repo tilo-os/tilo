@@ -14,14 +14,14 @@ use tilo_server_protocol::WorkspaceId;
 const MAX_QUEUED_CHANNEL_NOTICES: usize = 16_384;
 
 impl Workspaces {
-    /// Publish channel governance messages as this relay's own, once what the
+    /// Publish channel governance messages as this server's own, once what the
     /// workspace's governance already handed its store is durable: a channel's
     /// group is built on it.
     ///
-    /// They are retained, which carries them to the members' relay sessions
+    /// They are retained, which carries them to the members' server sessions
     /// and to whoever catches up later, and handed to the workspace's direct
     /// link, which carries them to the member devices it holds. A member
-    /// linked directly hears nothing the relay retains: without the link, the
+    /// linked directly hears nothing the server retains: without the link, the
     /// host's access request never reaches the key holders that could admit
     /// it, nor its genesis or commits, so a host is never let into a channel
     /// a member opened while every member's request reaches the host. The
@@ -58,7 +58,7 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Retain channel governance messages as this relay's own.
+    /// Retain channel governance messages as this server's own.
     pub(super) async fn retain_channel_governance(
         &self,
         workspace_id: WorkspaceId,
@@ -105,7 +105,7 @@ impl Workspaces {
     /// service it runs also queues it for that service, which settles the
     /// groups.
     ///
-    /// What the relay already kept as the member's own write
+    /// What the server already kept as the member's own write
     /// ([`Carried::Kept`]) is not kept again as the host's: each member's
     /// request was written to the workspace twice, a second job on its
     /// one-at-a-time queue for every request a crowd sends, and sent twice
@@ -231,7 +231,7 @@ impl Workspaces {
         Ok(())
     }
     /// Queue channel governance messages in the host's order as this
-    /// relay's own, without waiting for them to be durable.
+    /// server's own, without waiting for them to be durable.
     async fn enqueue_channel_governance(
         &self,
         workspace_id: WorkspaceId,
@@ -252,7 +252,7 @@ impl Workspaces {
     }
 }
 
-/// A channel governance message, retained as this relay's own.
+/// A channel governance message, retained as this server's own.
 fn channel_commit(
     message: &neighbour_wire::NeighbourMsg,
 ) -> Result<crate::workspace_documents::HostCommit, String> {

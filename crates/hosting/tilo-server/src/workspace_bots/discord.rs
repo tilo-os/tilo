@@ -118,7 +118,7 @@ pub async fn connect(
         .await
         .map_err(|error| error.to_string())?
         .ok_or("the Discord record is missing")?;
-    // A record an older relay or older devices wrote reads once migrated.
+    // A record an older server or older devices wrote reads once migrated.
     let guild = automerge::AutoCommit::load(&guild)
         .map_err(|error| format!("the Discord record does not load: {error}"))
         .and_then(|mut doc| super::opened::<discord::Guild>(&mut doc))
@@ -440,8 +440,8 @@ mod tests {
     async fn the_host_connects_the_workspace_to_the_server_its_bridge_names_once() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = crate::workspaces::fixtures::governor();
-        let relay = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
-        let workspaces = relay.workspaces().clone();
+        let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
             .unwrap()

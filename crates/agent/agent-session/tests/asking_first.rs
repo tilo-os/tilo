@@ -148,7 +148,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",
@@ -171,7 +171,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -257,5 +257,5 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let declined = last_task(&control);
     assert_eq!(declined.state, TaskState::Failed, "{declined:?}");
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

@@ -1,8 +1,8 @@
-//! Tenant isolation on one hosted relay.
+//! Tenant isolation on one hosted server.
 //!
-//! A hosted relay governs workspaces for people who share nothing but the host:
+//! A hosted server governs workspaces for people who share nothing but the host:
 //! two tenants, each its own governed workspace with its own members. These
-//! tests stand the real relay up with two such workspaces and drive every entry a
+//! tests stand the real server up with two such workspaces and drive every entry a
 //! member, an agent or a compute client has, asserting that one tenant
 //! cannot read, write, enumerate, administer or invoke anything in the
 //! other's workspace, that an agent holds only what its delegation names and
@@ -10,7 +10,7 @@
 //! refusal is checked against the other workspace's state afterwards, so an entry
 //! that answered "no" but acted anyway still fails.
 //!
-//! The suite is the `tenant_isolation::` module of the relay's `it` target.
+//! The suite is the `tenant_isolation::` module of the server's `it` target.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +21,7 @@
 #![allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
-    reason = "one end-to-end scenario whose relay and sessions live until it ends"
+    reason = "one end-to-end scenario whose server and sessions live until it ends"
 )]
 
 use std::path::Path;
@@ -42,7 +42,7 @@ use tilo_server::workspaces::{
     IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, RemoveMemberRequest,
     WorkspaceSummary, Workspaces,
 };
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
 use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -53,18 +53,18 @@ use tilo_server::WorkspaceId;
 /// counts as evidence.
 const QUIET: Duration = Duration::from_millis(500);
 
-async fn connect(relay: &Relay, device: &TestDevice) -> RelayClient {
-    try_connect(relay, device).await.unwrap()
+async fn connect(server: &Server, device: &TestDevice) -> ServerClient {
+    try_connect(server, device).await.unwrap()
 }
 
-/// A connection the relay may refuse at its handshake.
+/// A connection the server may refuse at its handshake.
 async fn try_connect(
-    relay: &Relay,
+    server: &Server,
     device: &TestDevice,
-) -> Result<RelayClient, tilo_server::ClientError> {
-    RelayClient::connect_to_pinned_host(
+) -> Result<ServerClient, tilo_server::ClientError> {
+    ServerClient::connect_to_pinned_host(
         device_endpoint(device).await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         device.sk.clone(),
         RevocationList::new(),
@@ -72,10 +72,10 @@ async fn try_connect(
     .await
 }
 
-/// The relay's first answer to `client` subscribing to `workspace_id`.
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
+/// The server's first answer to `client` subscribing to `workspace_id`.
+async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("the relay answers the subscription", async {
+    tilo_test_env::within("the server answers the subscription", async {
         loop {
             match client.recv().await {
                 Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
@@ -89,9 +89,13 @@ async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<En
     .await
 }
 
-/// A session of `device` that the relay admitted to `workspace_id`.
-async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
-    let client = connect(relay, device).await;
+/// A session of `device` that the server admitted to `workspace_id`.
+async fn subscribed(
+    server: &Server,
+    device: &TestDevice,
+    workspace_id: WorkspaceId,
+) -> ServerClient {
+    let client = connect(server, device).await;
     assert!(
         matches!(
             subscribe(&client, workspace_id).await,
@@ -103,9 +107,15 @@ async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceI
 }
 
 /// Admit `member`'s person to `workspace` as `role`, through an invitation the
-/// relay's own device issues and `member`'s device redeems.
-async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, workspace: &str, role: Role) {
-    let issued = invitation(relay.workspaces().unwrap(), host, workspace, role, member).await;
+/// server's own device issues and `member`'s device redeems.
+async fn admit(
+    server: &Server,
+    host: &TestDevice,
+    member: &TestDevice,
+    workspace: &str,
+    role: Role,
+) {
+    let issued = invitation(server.workspaces().unwrap(), host, workspace, role, member).await;
     redeem(member, &issued).await.unwrap();
 }
 
@@ -169,16 +179,16 @@ async fn governance(workspaces: &Workspaces, host: &TestDevice, workspace: &str)
     format!("{generation} {members:?} {pending:?} {:?}", summary.members)
 }
 
-/// `device` asks the relay to remove `victim` from `workspace`: it must be
+/// `device` asks the server to remove `victim` from `workspace`: it must be
 /// refused.
 async fn removal_refused(
     who: &str,
     device: &TestDevice,
-    relay: &Relay,
+    server: &Server,
     workspace: &WorkspaceSummary,
     victim: [u8; 32],
 ) {
-    let answer = relay
+    let answer = server
         .workspaces()
         .unwrap()
         .remove_member(
@@ -232,7 +242,7 @@ fn completed(answer: &RemoteActionMessage) -> bool {
     )
 }
 
-/// Whether `answer` is a receipt of an action the relay refused.
+/// Whether `answer` is a receipt of an action the server refused.
 fn rejected(answer: &RemoteActionMessage) -> bool {
     matches!(
         answer,
@@ -267,7 +277,7 @@ fn persisted(root: &Path, marker: &[u8]) -> bool {
 
 /// Everything `client` receives until it has been quiet for [`QUIET`], or
 /// its session ends.
-async fn received_until_quiet(client: &RelayClient) -> Vec<Envelope> {
+async fn received_until_quiet(client: &ServerClient) -> Vec<Envelope> {
     let mut received = Vec::new();
     while let Ok(Some(envelope)) = tokio::time::timeout(QUIET, client.recv()).await {
         received.push(envelope);
@@ -281,17 +291,17 @@ fn carries(bytes: &[u8], marker: &[u8]) -> bool {
 }
 
 /// Whatever `client` receives within [`QUIET`], or `None`.
-async fn next_within_quiet(client: &RelayClient) -> Option<Envelope> {
+async fn next_within_quiet(client: &ServerClient) -> Option<Envelope> {
     tokio::time::timeout(QUIET, client.recv())
         .await
         .ok()
         .flatten()
 }
 
-/// A remote action from `client` to the relay's own device `host`, in
+/// A remote action from `client` to the server's own device `host`, in
 /// `workspace_id`.
 fn to_host(
-    client: &RelayClient,
+    client: &ServerClient,
     host: &TestDevice,
     workspace_id: WorkspaceId,
     message: RemoteActionMessage,
@@ -308,16 +318,16 @@ fn to_host(
         .unwrap();
 }
 
-/// The relay's answer to the remote action `client` sent last.
-async fn action_answer(client: &RelayClient) -> RemoteActionMessage {
-    tilo_test_env::within("the relay answers the action", async {
+/// The server's answer to the remote action `client` sent last.
+async fn action_answer(client: &ServerClient) -> RemoteActionMessage {
+    tilo_test_env::within("the server answers the action", async {
         loop {
             match client.recv().await.expect("the session stays open") {
                 Envelope::RemoteAction { frame, .. } => {
                     break RemoteActionFrame::decode(&frame).unwrap().message;
                 }
                 Envelope::RemoteActionUndeliverable { refusal, .. } => {
-                    panic!("the relay did not answer: {refusal}")
+                    panic!("the server did not answer: {refusal}")
                 }
                 _ => {}
             }
@@ -344,7 +354,7 @@ fn invite_action(workspace: &str) -> RemoteActionMessage {
 
 /// The governance resources `client`'s catalogue lists in `workspace_id`.
 async fn governance_resources(
-    client: &RelayClient,
+    client: &ServerClient,
     host: &TestDevice,
     workspace_id: WorkspaceId,
 ) -> Vec<String> {
@@ -371,13 +381,13 @@ async fn governance_resources(
         .collect()
 }
 
-/// A hosted relay with two tenants' workspaces: Acme, where Ann invites, and
+/// A hosted server with two tenants' workspaces: Acme, where Ann invites, and
 /// Globex, where Bob edits and an invitation for Carol waits.
 struct TwoTenants {
     state: tempfile::TempDir,
     provider: TestUser,
     host: TestDevice,
-    relay: Relay,
+    server: Server,
     acme: WorkspaceSummary,
     globex: WorkspaceSummary,
     ann: TestUser,
@@ -391,7 +401,7 @@ struct TwoTenants {
 impl TwoTenants {
     async fn start() -> Self {
         let provider = TestUser::fresh("Provider");
-        let host = provider.enrol("hosted-relay", DeviceCapabilities::member());
+        let host = provider.enrol("hosted-server", DeviceCapabilities::member());
         let ann = TestUser::fresh("Ann of Acme");
         let ann_laptop = ann.enrol("ann-laptop", DeviceCapabilities::primary());
         let bob = TestUser::fresh("Bob of Globex");
@@ -399,12 +409,12 @@ impl TwoTenants {
         let carol = TestUser::fresh("Carol, invited to Globex");
         let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = crate::common::start_relay(
-            RelayConfig {
+        let server = crate::common::start_server(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: provider.user_pk,
                 device_signing_key: host.sk.clone(),
                 device_cert: host.cert.clone(),
@@ -413,7 +423,7 @@ impl TwoTenants {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap();
+        let workspaces = server.workspaces().unwrap();
         let acme = workspaces.create("Acme").await.unwrap();
         let globex = workspaces.create("Globex").await.unwrap();
         assert_ne!(acme.workspace_id, globex.workspace_id);
@@ -421,7 +431,7 @@ impl TwoTenants {
         // Ann invites in Acme: the owner grants her the workspace's `invite`
         // governance action, as an owner hands a member a part of running
         // their workspace.
-        admit(&relay, &host, &ann_laptop, &acme.workspace, Role::Editor).await;
+        admit(&server, &host, &ann_laptop, &acme.workspace, Role::Editor).await;
         let who = hex::encode(ann.user_pk);
         let grant = Grant::new(
             format!("tenant-isolation:invite:{who}"),
@@ -435,7 +445,7 @@ impl TwoTenants {
             .put_workspace_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])
             .await
             .unwrap();
-        admit(&relay, &host, &bob_phone, &globex.workspace, Role::Editor).await;
+        admit(&server, &host, &bob_phone, &globex.workspace, Role::Editor).await;
         let carol_invitation = invitation(
             workspaces,
             &host,
@@ -448,7 +458,7 @@ impl TwoTenants {
             state,
             provider,
             host,
-            relay,
+            server,
             acme,
             globex,
             ann,
@@ -461,7 +471,7 @@ impl TwoTenants {
     }
 
     fn workspaces(&self) -> Workspaces {
-        self.relay.workspaces().unwrap().clone()
+        self.server.workspaces().unwrap().clone()
     }
 
     async fn globex_governance(&self) -> String {
@@ -476,7 +486,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     let t = Box::pin(TwoTenants::start()).await;
     let workspaces = t.workspaces();
     let before = t.globex_governance().await;
-    let ann = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    let ann = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
 
     // Positive control: Ann governs her own workspace through the same actions.
     let own = invocation(
@@ -557,7 +567,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     removal_refused(
         "Acme's inviter",
         &t.ann_laptop,
-        &t.relay,
+        &t.server,
         &t.globex,
         t.bob.user_pk,
     )
@@ -576,7 +586,7 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
     // Carol herself still redeems it: the refusal was about Ann, not the
     // invitation.
     redeem(&t.carol_phone, &t.carol_invitation).await.unwrap();
-    t.relay.shutdown().await;
+    t.server.shutdown().await;
     drop(t.state);
 }
 
@@ -586,11 +596,11 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
-    let bob_in_globex = subscribed(&t.relay, &t.bob_phone, t.globex.workspace_id).await;
+    let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
     received_until_quiet(&bob_in_globex).await;
 
     // Reading: Ann's subscription to Globex is refused outright.
-    let ann_probe = connect(&t.relay, &t.ann_laptop).await;
+    let ann_probe = connect(&t.server, &t.ann_laptop).await;
     assert!(
         matches!(
             subscribe(&ann_probe, t.globex.workspace_id).await,
@@ -601,10 +611,10 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     drop(ann_probe);
 
     // Writing: a delta Ann addresses to Globex from her own workspace's session
-    // reaches no Globex member and is persisted nowhere on the relay. (The
-    // relay may end the session that sent it; that is a refusal too.)
+    // reaches no Globex member and is persisted nowhere on the server. (The
+    // server may end the session that sent it; that is a refusal too.)
     let marker = b"acme-writes-into-globex-7f3c";
-    let ann_writer = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    let ann_writer = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     ann_writer
         .send(Envelope::Delta {
             workspace_id: t.globex.workspace_id,
@@ -631,7 +641,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     // Invoking: Ann's catalogue in her own workspace lists Acme's governance and
     // nothing of Globex's, and invoking Globex's invite from her workspace does
     // nothing.
-    let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    let ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     let resources = governance_resources(&ann_in_acme, &t.host, t.acme.workspace_id).await;
     assert!(
         resources.contains(&workspace_governance_resource(&t.acme.workspace)),
@@ -658,14 +668,14 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     drop(ann_in_acme);
 
     // Addressed to Globex's workspace, the same action is not run.
-    let ann_foreign = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    let ann_foreign = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     to_host(
         &ann_foreign,
         &t.host,
         t.globex.workspace_id,
         invite_action(&t.globex.workspace),
     );
-    let answer = tilo_test_env::within("the relay answers Ann's foreign action", async {
+    let answer = tilo_test_env::within("the server answers Ann's foreign action", async {
         loop {
             match ann_foreign.recv().await {
                 Some(
@@ -693,7 +703,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     drop(ann_foreign);
 
     // Nor may Ann address a Globex member's device directly.
-    let ann_direct = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    let ann_direct = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
     ann_direct
         .send(Envelope::RemoteAction {
             workspace_id: t.globex.workspace_id,
@@ -714,7 +724,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         "Bob received Ann's action: {leaked:?}"
     );
     assert_eq!(t.globex_governance().await, before);
-    t.relay.shutdown().await;
+    t.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -722,10 +732,10 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
-    let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
-    let bob_in_globex = subscribed(&t.relay, &t.bob_phone, t.globex.workspace_id).await;
+    let ann_in_acme = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
+    let bob_in_globex = subscribed(&t.server, &t.bob_phone, t.globex.workspace_id).await;
     crate::common::wait_until_subscribed(
-        &t.relay,
+        &t.server,
         t.globex.workspace_id,
         &t.bob_phone.device_pubkey(),
     )
@@ -743,7 +753,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
         .await
         .unwrap();
 
-    // `remove_member` returns once the relay stops admitting Bob: his very
+    // `remove_member` returns once the server stops admitting Bob: his very
     // next write is refused, never fanned out or kept.
     let marker = b"removed-member-writes-9d21";
     bob_in_globex
@@ -755,7 +765,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
             signature: [0; 64],
         })
         .ok();
-    let answer = tilo_test_env::within("the relay answers the removed member", async {
+    let answer = tilo_test_env::within("the server answers the removed member", async {
         loop {
             match bob_in_globex.recv().await {
                 Some(answer @ Envelope::NotAuthorised { .. }) => break Some(answer),
@@ -775,7 +785,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     );
     tilo_test_env::within("the removed member's subscription ends", async {
         while t
-            .relay
+            .server
             .is_subscribed(t.globex.workspace_id, &t.bob_phone.device_pubkey())
             .await
         {
@@ -785,7 +795,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     .await;
     // A fresh connection is not admitted either: the handshake or the
     // subscription refuses it.
-    if let Ok(again) = try_connect(&t.relay, &t.bob_phone).await {
+    if let Ok(again) = try_connect(&t.server, &t.bob_phone).await {
         let answer = subscribe(&again, t.globex.workspace_id).await;
         assert!(
             matches!(answer, Some(Envelope::NotAuthorised { .. }) | None),
@@ -795,7 +805,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 
     // Acme is untouched by Globex's decision.
     assert!(
-        t.relay
+        t.server
             .is_subscribed(t.acme.workspace_id, &t.ann_laptop.device_pubkey())
             .await
     );
@@ -806,7 +816,7 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
         ),
         "Globex's removal cut Acme's member"
     );
-    t.relay.shutdown().await;
+    t.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -815,7 +825,7 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     // tenants' people, their devices and two governed workspaces.
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
-    // The host's own agent: a device of the relay's person with no
+    // The host's own agent: a device of the server's person with no
     // capabilities, delegated Acme alone.
     let agent = t
         .provider
@@ -837,7 +847,7 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
         issued.checked_add(600_000_000_000).unwrap(),
     )
     .unwrap();
-    t.relay
+    t.server
         .register_agent(&agent.cert, delegation)
         .await
         .unwrap();
@@ -861,8 +871,8 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     // An agent governs nothing, not even the workspace it is delegated, and it
     // is no host person: the one decision every entry asks refuses it
     // removing anyone, the host's operations and either workspace's governance.
-    removal_refused("the agent", &agent, &t.relay, &t.acme, t.ann.user_pk).await;
-    removal_refused("the agent", &agent, &t.relay, &t.globex, t.bob.user_pk).await;
+    removal_refused("the agent", &agent, &t.server, &t.acme, t.ann.user_pk).await;
+    removal_refused("the agent", &agent, &t.server, &t.globex, t.bob.user_pk).await;
     let workspaces = t.workspaces();
     for workspace in [&t.acme.workspace, &t.globex.workspace] {
         let expires_at_ns = tilo_clock::unix_now_ns()
@@ -917,7 +927,7 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     );
 
     // Outside its delegation it is not admitted to a workspace at all.
-    let probe = connect(&t.relay, &agent).await;
+    let probe = connect(&t.server, &agent).await;
     assert!(
         matches!(
             subscribe(&probe, t.globex.workspace_id).await,
@@ -925,5 +935,5 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
         ),
         "the agent reads a workspace its delegation does not name"
     );
-    t.relay.shutdown().await;
+    t.server.shutdown().await;
 }

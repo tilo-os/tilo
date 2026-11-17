@@ -1,20 +1,20 @@
 //! A hosted browser environment's device: one workspace, one record.
 //!
-//! A workspace hosted on a relay that sells machines opens Browser in a
+//! A workspace hosted on a server that sells machines opens Browser in a
 //! browser environment: a short-lived VM whose headless session joins the
-//! workspace, as a device the relay certified for it
+//! workspace, as a device the server certified for it
 //! ([`docs/hosted-browser.md`](../../../../docs/hosted-browser.md)). Web pages
 //! are strangers' code and Chromium runs a JIT on it, so a page that escapes
 //! the engine holds that device's key: everything the device may reach is
-//! everything such a page may read. The relay therefore admits it as a device
+//! everything such a page may read. The server therefore admits it as a device
 //! of one workspace with one record — its Browser record — whose channel is
 //! the only record channel it reaches, and whose window's page is the only
 //! track it publishes.
 //!
 //! This register is the environment's half of the rule that confines an agent
-//! to its delegation ([`crate::peer::AgentRegistry`]): the devices this relay
+//! to its delegation ([`crate::peer::AgentRegistry`]): the devices this server
 //! certified for its environments, by device key, with the one record each
-//! reaches. It is the relay's, and nothing here is asked of the session in the
+//! reaches. It is the server's, and nothing here is asked of the session in the
 //! VM: [`crate::workspace_access::decide`] answers every protocol with it, the
 //! state protocol's replay, its live fan-out, its record opening and its changes
 //! ask it what a record is, and the live session offers such a device no one
@@ -31,9 +31,9 @@
 //! A device certified for an environment is a member device of the
 //! workspace's person by certificate, and the workspace lists it as one while
 //! its session runs: losing the register would leave it an ordinary member.
-//! So the register is the relay's own state ([`EnvironmentRegistry::at`]),
+//! So the register is the server's own state ([`EnvironmentRegistry::at`]),
 //! written before the device is handed to its session and listed, and read
-//! back when the relay starts: a relay that restarts with an environment still
+//! back when the server starts: a server that restarts with an environment still
 //! placed confines it again, whatever the workspace's persisted membership
 //! says.
 //!
@@ -44,11 +44,11 @@
 //! every audit already makes asks this register — and a delisting that fails
 //! leaves it refused rather than open. The register also counts the sessions
 //! each environment device has here ([`EnvironmentRegistry::arrived`],
-//! [`EnvironmentRegistry::departed`]); when the last one ends, the relay that
+//! [`EnvironmentRegistry::departed`]); when the last one ends, the server that
 //! placed it is told ([`EnvironmentRegistry::when_ended`]) so the environment
 //! stops too, and the certificate's expiry bounds what a lost signal could.
 //!
-//! The one hole left is the register's own file: a relay whose state root
+//! The one hole left is the register's own file: a server whose state root
 //! loses it cannot tell a previous run's environment device from a member.
 //! [`EnvironmentRegistry::place`] therefore refuses to certify a new one until
 //! the file reads again, so the hole never opens wider than what an operator
@@ -77,7 +77,7 @@ pub fn document_channel(app: &str, record: &str) -> [u8; 32] {
 /// of its one record there. A scope that reaches nothing has neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnvironmentScope {
-    /// The workspace it was placed in, by this relay's workspace id.
+    /// The workspace it was placed in, by this server's workspace id.
     pub workspace: WorkspaceId,
     /// The channel of its Browser record ([`document_channel`]).
     pub channel: [u8; 32],
@@ -99,7 +99,7 @@ impl EnvironmentScope {
     ///
     /// Subscription, state, replay and publishing are what joining, syncing
     /// and writing its record need; the live session carries its window's page;
-    /// a remote action is how the window answers the page action the relay
+    /// a remote action is how the window answers the page action the server
     /// handed it; and a channel is how it asks its record's keys for access.
     /// Every other protocol — compute, an environment, content discovery,
     /// membership — is not its to ask.
@@ -130,7 +130,7 @@ impl EnvironmentScope {
     }
 }
 
-/// What the relay knows of a device it certified for one of its environments.
+/// What the server knows of a device it certified for one of its environments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Environment {
     /// Placed, and its session may run: it reaches this one scope.
@@ -180,7 +180,7 @@ impl Environment {
     }
 }
 
-/// The environment devices this relay certified, by device key
+/// The environment devices this server certified, by device key
 /// ([`Environment`]), kept across restarts when it has a path.
 #[derive(Clone)]
 pub struct EnvironmentRegistry {
@@ -205,12 +205,12 @@ struct Table {
     /// Whether the register could not be read at start: no environment is
     /// placed until it can be.
     unreadable: bool,
-    /// What the relay does when the last session of an environment device
+    /// What the server does when the last session of an environment device
     /// ends ([`Self::when_ended`]).
     ended: RwLock<Option<Ended>>,
 }
 
-/// What the relay is told when a device's last session here ends.
+/// What the server is told when a device's last session here ends.
 type Ended = Arc<dyn Fn(EnvironmentScope, [u8; 32]) + Send + Sync>;
 
 impl Default for EnvironmentRegistry {
@@ -230,7 +230,7 @@ impl std::fmt::Debug for EnvironmentRegistry {
 
 impl EnvironmentRegistry {
     /// A register kept in `path` when one is named, and in memory otherwise:
-    /// what it holds is read back here, so a relay that restarts confines the
+    /// what it holds is read back here, so a server that restarts confines the
     /// environments it placed before.
     #[must_use]
     pub fn new(path: Option<PathBuf>) -> Self {
@@ -243,7 +243,7 @@ impl EnvironmentRegistry {
                     tracing::error!(
                         %error,
                         path = %path.display(),
-                        "the environments this relay placed cannot be read: it places no new \
+                        "the environments this server placed cannot be read: it places no new \
                          one until its register reads again"
                     );
                     (HashMap::new(), true)
@@ -274,7 +274,7 @@ impl EnvironmentRegistry {
     ///
     /// # Errors
     ///
-    /// The register could not be read when the relay started, or what it wrote
+    /// The register could not be read when the server started, or what it wrote
     /// cannot be kept: the device is then confined to nothing at all rather
     /// than placed.
     pub fn place(
@@ -285,7 +285,7 @@ impl EnvironmentRegistry {
     ) -> Result<(), String> {
         if self.table.unreadable {
             return Err(
-                "the environments this relay placed cannot be read, so it places no new one"
+                "the environments this server placed cannot be read, so it places no new one"
                     .to_owned(),
             );
         }
@@ -319,7 +319,7 @@ impl EnvironmentRegistry {
         )
     }
 
-    /// Forget `device` entirely: it never left the relay, so nothing holds it.
+    /// Forget `device` entirely: it never left the server, so nothing holds it.
     pub fn forget(&self, device: &[u8; 32]) {
         let mut devices = self.table.devices.write_recover();
         let forgotten = devices.remove(device).is_some();
@@ -330,7 +330,7 @@ impl EnvironmentRegistry {
         self.table.connected.write_recover().remove(device);
     }
 
-    /// What the relay knows of `device`, at `now_ns`: an entry whose
+    /// What the server knows of `device`, at `now_ns`: an entry whose
     /// certificate would have expired says nothing, as the certificate itself
     /// no longer admits it.
     #[must_use]
@@ -383,7 +383,7 @@ impl EnvironmentRegistry {
         drop(connected);
     }
 
-    /// A connection of `device` ended: when it was the last one, the relay that
+    /// A connection of `device` ended: when it was the last one, the server that
     /// placed its environment hears of it ([`Self::when_ended`]).
     pub fn departed(&self, device: [u8; 32]) {
         let last = {
@@ -470,7 +470,7 @@ impl EnvironmentRegistry {
 }
 
 /// A register that confines nobody: what a protocol no browser environment
-/// reaches asks its [`crate::workspace_access::RelayTrust`] with, so that a
+/// reaches asks its [`crate::workspace_access::ServerTrust`] with, so that a
 /// decision it takes about a device of another kind asks the same rule as
 /// every other.
 #[must_use]
@@ -551,7 +551,7 @@ impl StoredDevice {
 
 /// Why a kept register was not read.
 enum Unreadable {
-    /// There was none: the relay placed no environment before.
+    /// There was none: the server placed no environment before.
     Missing,
     /// There is one and it cannot be read.
     Broken(String),
@@ -727,11 +727,11 @@ mod tests {
         let path = dir.path().join("environments.json");
         let until = soon();
         {
-            let relay = EnvironmentRegistry::at(&path);
-            relay.place([1; 32], scope(), until).unwrap();
-            relay.stop([2; 32], until).unwrap();
+            let server = EnvironmentRegistry::at(&path);
+            server.place([1; 32], scope(), until).unwrap();
+            server.stop([2; 32], until).unwrap();
             assert_eq!(
-                relay.placed_in(workspace()),
+                server.placed_in(workspace()),
                 vec![([1; 32], scope(), until)]
             );
         }
@@ -756,11 +756,11 @@ mod tests {
     fn a_register_that_cannot_be_read_places_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("environments.json");
-        std::fs::write(&path, b"{ not the relay's").unwrap();
-        let relay = EnvironmentRegistry::at(&path);
-        let refused = relay.place([1; 32], scope(), soon()).unwrap_err();
+        std::fs::write(&path, b"{ not the server's").unwrap();
+        let server = EnvironmentRegistry::at(&path);
+        let refused = server.place([1; 32], scope(), soon()).unwrap_err();
         assert!(refused.contains("places no new one"), "{refused}");
-        assert_eq!(environment_of(&relay, &[1; 32]), None);
+        assert_eq!(environment_of(&server, &[1; 32]), None);
     }
 
     #[test]

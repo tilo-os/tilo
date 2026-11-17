@@ -26,8 +26,8 @@ use tilo_user_identity::{
 };
 
 use tilo_server::{
-    Envelope, RelayClient, RelayConfig, WorkspaceId,
-    daemon::{Relay, RelayIdentity},
+    Envelope, ServerClient, ServerConfig, WorkspaceId,
+    daemon::{Server, ServerIdentity},
     host::{HostConfig, HostIdentity, WorkspaceHost},
 };
 use tilo_server_protocol::WorkSetting;
@@ -78,98 +78,98 @@ impl TestDevice {
     }
 }
 
-/// Spin up a relay bound to `workspace_ids`. Every listed
+/// Spin up a server bound to `workspace_ids`. Every listed
 /// workspace is created pinned + with `members` as the membership
 /// set.
-pub struct TestRelay {
-    pub relay: Relay,
+pub struct TestServer {
+    pub server: Server,
     pub state_root: PathBuf,
     #[allow(
         dead_code,
-        reason = "keeps the temporary state root alive for the relay's lifetime"
+        reason = "keeps the temporary state root alive for the server's lifetime"
     )]
     tmp: TempDir,
 }
 
-pub async fn spawn_relay(
+pub async fn spawn_server(
     user: &TestUser,
-    relay_dev: TestDevice,
+    server_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
-) -> TestRelay {
+) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
-    let relay = Box::pin(spawn_relay_on(
+    let server = Box::pin(spawn_server_on(
         &state_root,
         user,
-        relay_dev,
+        server_dev,
         workspaces,
         members,
     ))
     .await;
-    TestRelay {
-        relay,
+    TestServer {
+        server,
         state_root,
         tmp,
     }
 }
 
-/// Start a relay bound to `workspaces` (all pinned) with `members`,
-/// persisting to a caller-owned `state_root`. Unlike [`spawn_relay`]
+/// Start a server bound to `workspaces` (all pinned) with `members`,
+/// persisting to a caller-owned `state_root`. Unlike [`spawn_server`]
 /// the caller keeps the directory alive, so it can drop the returned
 /// `Relay` and call this again on the same `state_root` to model a
 /// host that restarts — the on-disk pending queues + iroh secret
-/// survive the restart. The relay device cert is minted fresh on
+/// survive the restart. The server device cert is minted fresh on
 /// each call (only its *user* identity must be stable), mirroring a
 /// host that re-enrols a device key on reinstall.
-pub async fn spawn_relay_on(
+pub async fn spawn_server_on(
     state_root: &std::path::Path,
     user: &TestUser,
-    relay_dev: TestDevice,
+    server_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
-) -> Relay {
-    Box::pin(spawn_relay_with(
-        state_root, user, relay_dev, workspaces, members, None,
+) -> Server {
+    Box::pin(spawn_server_with(
+        state_root, user, server_dev, workspaces, members, None,
     ))
     .await
 }
 
-/// [`spawn_relay`] for a host that serves apps through `server` and asks to
+/// [`spawn_server`] for a host that serves apps through `server` and asks to
 /// advertise `app_serving`.
-pub async fn spawn_relay_serving_apps(
+pub async fn spawn_server_serving_apps(
     user: &TestUser,
-    relay_dev: TestDevice,
+    server_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
     server: std::sync::Arc<dyn tilo_server::AppActionServer>,
-) -> TestRelay {
+) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
-    let relay = Box::pin(spawn_relay_with(
+    let server = Box::pin(spawn_server_with(
         &state_root,
         user,
-        relay_dev,
+        server_dev,
         workspaces,
         members,
         Some(server),
     ))
     .await;
-    TestRelay {
-        relay,
+    TestServer {
+        server,
         state_root,
         tmp,
     }
 }
 
-async fn spawn_relay_with(
+async fn spawn_server_with(
     state_root: &std::path::Path,
     user: &TestUser,
-    relay_dev: TestDevice,
+    server_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
     server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
-) -> Relay {
+) -> Server {
     if std::env::var_os("TILO_SERVER_CORRELATED_DIAGNOSTICS").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -179,22 +179,22 @@ async fn spawn_relay_with(
             .with_writer(|| PhaseWriter)
             .try_init();
     }
-    let mut cfg = RelayConfig {
+    let mut cfg = ServerConfig {
         state_root: state_root.to_path_buf(),
         ..Default::default()
     };
-    let identity = RelayIdentity {
+    let identity = ServerIdentity {
         user_public_key: user.user_pk,
-        device_signing_key: relay_dev.sk.clone(),
-        device_cert: relay_dev.cert.clone(),
+        device_signing_key: server_dev.sk.clone(),
+        device_cert: server_dev.cert.clone(),
         revocations: RevocationList::new(),
     };
     cfg.services.app_serving = server.is_some();
-    let relay = start_relay_serving(cfg, identity, server).await.unwrap();
+    let server = start_server_serving(cfg, identity, server).await.unwrap();
     for id in workspaces {
-        admit_members(&relay, *id, members, state_root).await;
+        admit_members(&server, *id, members, state_root).await;
     }
-    relay
+    server
 }
 
 /// A host under test on this machine's loopback packet relay: the one way these tests start a
@@ -205,30 +205,30 @@ async fn spawn_relay_with(
 ///
 /// # Errors
 ///
-/// As [`Relay::start`].
-pub fn start_relay(
-    cfg: RelayConfig,
-    identity: RelayIdentity,
+/// As [`Server::start`].
+pub fn start_server(
+    cfg: ServerConfig,
+    identity: ServerIdentity,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Relay, tilo_server::RelayError>> + Send>,
+    Box<dyn std::future::Future<Output = Result<Server, tilo_server::ServerError>> + Send>,
 > {
-    start_relay_serving(cfg, identity, None)
+    start_server_serving(cfg, identity, None)
 }
 
-/// [`start_relay`], with the app action server `server` when a test hosts apps.
+/// [`start_server`], with the app action server `server` when a test hosts apps.
 ///
 /// # Errors
 ///
-/// As [`Relay::start`].
-pub fn start_relay_serving(
-    cfg: RelayConfig,
-    identity: RelayIdentity,
+/// As [`Server::start`].
+pub fn start_server_serving(
+    cfg: ServerConfig,
+    identity: ServerIdentity,
     server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Relay, tilo_server::RelayError>> + Send>,
+    Box<dyn std::future::Future<Output = Result<Server, tilo_server::ServerError>> + Send>,
 > {
     Box::pin(async move {
-        Relay::start_with_app_serving_and_relay_mode(
+        Server::start_with_app_serving_and_relay_mode(
             cfg,
             identity,
             server,
@@ -239,20 +239,20 @@ pub fn start_relay_serving(
 }
 
 /// Make `members` the workspace's member devices, as the workspace's governor does:
-/// the devices are all the relay owner's.
+/// the devices are all the server owner's.
 pub async fn admit_members(
-    relay: &Relay,
+    server: &Server,
     workspace: WorkspaceId,
     members: &[[u8; 32]],
     state_root: &std::path::Path,
 ) {
-    relay
+    server
         .replace_governed_workspace_access(
             workspace,
             true,
             tilo_peer_state::GovernedAccess {
                 member_devices: members.to_vec(),
-                member_user_roots: vec![relay.own_user_public_key()],
+                member_user_roots: vec![server.own_user_public_key()],
             },
             state_root.to_path_buf(),
         )
@@ -333,8 +333,8 @@ pub async fn host_in(
 }
 
 /// A session of `device` to the certified host `host` of its own person.
-pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> RelayClient {
-    RelayClient::connect_v2_to_enrolled_home_peer(
+pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> ServerClient {
+    ServerClient::connect_v2_to_enrolled_home_peer(
         device_endpoint(device).await,
         host.host.node_addr(),
         user.user_pk,
@@ -348,7 +348,7 @@ pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> 
 }
 
 /// The next delta `client` receives.
-pub async fn next_delta(client: &RelayClient) -> Vec<u8> {
+pub async fn next_delta(client: &ServerClient) -> Vec<u8> {
     tilo_test_env::within("the delta arrives", async {
         loop {
             if let Envelope::Delta { delta, .. } =
@@ -362,19 +362,19 @@ pub async fn next_delta(client: &RelayClient) -> Vec<u8> {
 }
 
 /// The publisher a shell is: a coedit session of `author` to `relay`, dialing
-/// as the shell dials an enrolled home peer, once the relay has it.
+/// as the shell dials an enrolled home peer, once the server has it.
 pub async fn publisher(
-    relay: &TestRelay,
+    server: &TestServer,
     user: &TestUser,
     author: &TestDevice,
     workspace: WorkspaceId,
-) -> tilo_server::RelayCoeditSession {
-    let publisher = tilo_server::RelayCoeditSession::join(
-        RelayClient::connect_v2_to_enrolled_home_peer(
+) -> tilo_server::ServerCoeditSession {
+    let publisher = tilo_server::ServerCoeditSession::join(
+        ServerClient::connect_v2_to_enrolled_home_peer(
             client_endpoint().await,
-            relay.relay.node_addr(),
+            server.server.node_addr(),
             user.user_pk,
-            relay.relay.handle().mesh_profile().device,
+            server.server.handle().mesh_profile().device,
             author.cert.clone(),
             author.sk.clone(),
             RevocationList::new(),
@@ -395,15 +395,15 @@ pub async fn publisher(
     publisher
 }
 
-/// A client of `device` subscribed to `workspace` on the relay at `addr`, once
-/// the relay admits it.
+/// A client of `device` subscribed to `workspace` on the server at `addr`, once
+/// the server admits it.
 pub async fn connect(
     user: &TestUser,
     device: &TestDevice,
     addr: iroh_base::EndpointAddr,
     workspace: WorkspaceId,
-) -> RelayClient {
-    let client = RelayClient::connect(
+) -> ServerClient {
+    let client = ServerClient::connect(
         client_endpoint().await,
         addr,
         user.user_pk,
@@ -422,7 +422,7 @@ pub async fn connect(
     client
 }
 
-/// How many queued deltas a relay's state root holds in `dir`.
+/// How many queued deltas a server's state root holds in `dir`.
 pub fn pending_count(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |rd| {
         rd.flatten()
@@ -433,7 +433,7 @@ pub fn pending_count(dir: &std::path::Path) -> usize {
 
 /// The next envelope from `client` that `want` accepts: the wait ends as soon
 /// as one arrives, and only a hang reaches the bound.
-pub async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {
+pub async fn next(client: &ServerClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {
     tilo_test_env::within("the next envelope", async {
         loop {
             let env = client.recv().await.expect("session open");
@@ -445,13 +445,13 @@ pub async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool)
     .await
 }
 
-/// Wait until `relay` has accepted `peer`'s subscription to `workspace`.
+/// Wait until `server` has accepted `peer`'s subscription to `workspace`.
 ///
-/// From then on a delta published on `relay` reaches `peer`; a test waits for
+/// From then on a delta published on `server` reaches `peer`; a test waits for
 /// it instead of sleeping and hoping the handshake finished in time.
-pub async fn wait_until_subscribed(relay: &Relay, workspace: WorkspaceId, peer: &[u8; 32]) {
+pub async fn wait_until_subscribed(server: &Server, workspace: WorkspaceId, peer: &[u8; 32]) {
     tilo_test_env::within("the peer subscribed to the workspace", async {
-        while !relay.is_subscribed(workspace, peer).await {
+        while !server.is_subscribed(workspace, peer).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -504,7 +504,7 @@ pub fn print_phase_diagnostic() {
 
 /// The app surfaces a process decides received changes against
 /// (`tilo_peer_state::decide_with_surfaces`) are one per process, and a
-/// relay or replica reads them when it starts. A test that installs some
+/// server or replica reads them when it starts. A test that installs some
 /// runs in a process of its own ([`in_own_process`]), so no other test of
 /// this binary ever runs under them.
 pub fn install_process_surfaces(

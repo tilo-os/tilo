@@ -96,7 +96,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -169,7 +169,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         page.close();
     }
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A page that entered a workspace through its entry asks for that workspace's
@@ -187,7 +187,7 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
         .publish(
@@ -265,5 +265,5 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
         page.close();
     }
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

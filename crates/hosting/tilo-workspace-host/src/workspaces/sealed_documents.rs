@@ -1,10 +1,10 @@
 //! The governor's own reads and writes of records its members write sealed.
 //!
-//! In a workspace whose channels this relay takes part in, members seal every
+//! In a workspace whose channels this server takes part in, members seal every
 //! write of a record, and the governor's copy keeps those writes as the
 //! record's ciphertext history
 //! ([`tilo_peer_state::PeerPublication::is_sealed_document`]). As a member of
-//! the channels the relay holds their content keys: it reads such a record by
+//! the channels the server holds their content keys: it reads such a record by
 //! opening that history over the record's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
 //! its bound, so its copy goes on following the record however long the
@@ -327,7 +327,7 @@ pub(super) async fn whole_document(
 /// holds it, stuck behind a change their own writer never sent, opened with `device`'s keys: no
 /// device will ever send what they wait for (see [`UnmergedReason::BehindUnsent`]). The governor
 /// is the record's store, which every write of it reaches, so what it names so is what the
-/// relay's fold leaves out of the record for good. Empty for a record held in the clear, or one
+/// server's fold leaves out of the record for good. Empty for a record held in the clear, or one
 /// this host holds no keys of.
 pub(crate) async fn unsent_writes(
     peer: &StatePeer,
@@ -519,8 +519,8 @@ pub(super) fn publish_changes_for(
     )
 }
 
-/// The relay's compactor folds the sealed history of the channels this
-/// relay takes part in with their keys, so a newcomer replays one snapshot and
+/// The server's compactor folds the sealed history of the channels this
+/// server takes part in with their keys, so a newcomer replays one snapshot and
 /// the writes since rather than every write the workspace's members ever made.
 impl crate::compaction::GroupKeys for Workspaces {
     fn keys<'a>(
@@ -570,7 +570,7 @@ impl Workspaces {
 
     /// Everything the governor's copy holds of `record` of `app` in
     /// `workspace`: its cleartext base and, for a sealed record, every write
-    /// of its history opened with the channel's keys this relay holds, none
+    /// of its history opened with the channel's keys this server holds, none
     /// merged. What an operator repairing a record that does not read whole
     /// reads it from; `None` for a record not held here.
     ///
@@ -652,8 +652,8 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Seal the records the workspaces this relay takes part in hold in the clear, from
-    /// now on: the host's operator decided it (the relay's `reseal`).
+    /// Seal the records the workspaces this server takes part in hold in the clear, from
+    /// now on: the host's operator decided it (the server's `reseal`).
     #[cfg(feature = "agents")]
     pub fn reseal_existing(&self) {
         self.inner
@@ -667,7 +667,7 @@ impl Workspaces {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Seal every record of the workspaces this relay takes part in: open the channel
+    /// Seal every record of the workspaces this server takes part in: open the channel
     /// of each that has none yet, and seal what each channel retains in the
     /// clear, as `compactor` does ([`crate::compaction::Compactor::reseal`]):
     /// records written before their channels were opened.
@@ -830,7 +830,7 @@ impl Workspaces {
     }
 
     /// The keys the governor writes `record` of `app` with: in a workspace whose
-    /// channels this relay takes part in every new record is sealed from its
+    /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its
     /// genesis, published before anything is written there). A record it
     /// already holds in the clear stays so until the host's operator decides

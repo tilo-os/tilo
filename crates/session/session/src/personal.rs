@@ -174,7 +174,7 @@ mod tests {
     }
 
     /// The person's other devices are dialled as this session's siblings from the devices their
-    /// store holds, at the relay the person's settings name, and this device is not dialled at all:
+    /// store holds, at the server the person's settings name, and this device is not dialled at all:
     /// that session is where the two sessions tell each other the workspaces they hold, so one adopts
     /// what the other keeps.
     #[test]

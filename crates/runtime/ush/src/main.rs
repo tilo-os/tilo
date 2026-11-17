@@ -219,8 +219,8 @@ fn images() -> Arc<dyn Images> {
 }
 
 /// How `pkg install` builds tool images: into the store [`images`] reads
-/// them from on this device, or, for a member's supervisor on a relay, by
-/// the relay's worker, which holds the key this process must not.
+/// them from on this device, or, for a member's supervisor on a server, by
+/// the server's worker, which holds the key this process must not.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
     if let Some(remote) = env_tools::delegated::RemoteBuilder::from_env() {
         return Arc::new(remote);

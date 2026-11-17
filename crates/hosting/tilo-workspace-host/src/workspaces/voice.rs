@@ -1,10 +1,10 @@
-//! Calls in the workspaces this relay governs.
+//! Calls in the workspaces this server governs.
 //!
 //! A call is workspace governance: [`WorkspaceMediaV1`] in the workspace document, which the
 //! governor authors and every member verifies. Any member opens a voice
-//! channel's call to join it ([`CallOperation::Open`]): the relay, as the
+//! channel's call to join it ([`CallOperation::Open`]): the server, as the
 //! governor, starts the channel's call when it has none, and restarts it
-//! when it was ended. The relay's own user, and any member the workspace's
+//! when it was ended. The server's own user, and any member the workspace's
 //! governance grants its `call` action (no role preset below the owner's
 //! does), ends and moderates calls; any member device joins an active one
 //! and gets a grant naming its participation and the call's roster (see
@@ -23,13 +23,13 @@
 //! workspace's live session (`tilo_live`), by the keys their participation and
 //! the workspace's channels give them.
 //!
-//! A workspace this relay only carries, governed elsewhere or by no one (a
+//! A workspace this server only carries, governed elsewhere or by no one (a
 //! person's own workspace, synced across their devices through it), has
 //! calls all the same: every workspace has voice. Its calls are held here
-//! ([`carried_call_workspace`]), not in governance this relay cannot author:
+//! ([`carried_call_workspace`]), not in governance this server cannot author:
 //! any device subscribed to the workspace, and so admitted to it, opens a voice
 //! channel's call and takes part with both directions, and a call stands
-//! until the relay restarts. The workspace's admission is the only authority:
+//! until the server restarts. The workspace's admission is the only authority:
 //! each envelope is answered only for a device still subscribed, so one
 //! that leaves the workspace stops being granted, and its participation ends
 //! within [`PARTICIPATION_TTL`] of its last heartbeat. No one moderates
@@ -90,13 +90,13 @@ struct State {
     watchers: HashMap<String, Vec<Watcher>>,
     /// Workspaces whose call list changed since their watchers were last told.
     changed: std::collections::BTreeSet<String>,
-    /// The calls of each workspace this relay carries but does not govern,
+    /// The calls of each workspace this server carries but does not govern,
     /// by [`carried_call_workspace`]: the policy it would otherwise read from the
     /// workspace's governance.
     carried: HashMap<String, WorkspaceMediaV1>,
 }
 
-/// The name a workspace this relay carries, but does not govern, has among the
+/// The name a workspace this server carries, but does not govern, has among the
 /// workspaces with calls: no governed workspace is named so, as those are uuids.
 pub(crate) fn carried_call_workspace(workspace_id: WorkspaceId) -> String {
     format!("{CARRIED}{workspace_id}")
@@ -104,7 +104,7 @@ pub(crate) fn carried_call_workspace(workspace_id: WorkspaceId) -> String {
 
 const CARRIED: &str = "carried-";
 
-/// Whether `workspace` names a workspace this relay only carries.
+/// Whether `workspace` names a workspace this server only carries.
 fn carried(workspace: &str) -> bool {
     workspace.starts_with(CARRIED)
 }
@@ -179,7 +179,7 @@ impl State {
     }
 }
 
-/// The calls of every workspace this relay governs.
+/// The calls of every workspace this server governs.
 #[derive(Default)]
 pub(super) struct Calls {
     state: Mutex<State>,
@@ -339,13 +339,13 @@ impl Calls {
 struct Policy {
     calls: Option<WorkspaceMediaV1>,
     access: GovernedAccess,
-    /// Whether the workspace is one this relay carries: its admission, which
+    /// Whether the workspace is one this server carries: its admission, which
     /// every call envelope is checked against, decides who is a member.
     carried: bool,
 }
 
 impl Policy {
-    /// `workspace`'s policy. A relay that takes part in the workspace's channels resolved
+    /// `workspace`'s policy. A server that takes part in the workspace's channels resolved
     /// every call's binding through their keys when it opened the call, so
     /// a call bound to a Chat its members write sealed still stands; any
     /// other replica keeps such a Chat as ciphertext and fails closed.
@@ -364,7 +364,7 @@ impl Policy {
         })
     }
 
-    /// The policy of `workspace`, one this relay carries: the calls it holds for
+    /// The policy of `workspace`, one this server carries: the calls it holds for
     /// it.
     fn carried(calls: Option<WorkspaceMediaV1>) -> Self {
         Self {
@@ -377,8 +377,8 @@ impl Policy {
 
 /// What `device` of person `user` may do in `call` under `policy`: the
 /// call's epoch and directions, or why it may not take part. A person's
-/// every certified device takes part, as the relay admits them all to the
-/// workspace; the relay verified the certificate when the device connected.
+/// every certified device takes part, as the server admits them all to the
+/// workspace; the server verified the certificate when the device connected.
 fn current(
     policy: &Policy,
     device: [u8; 32],
@@ -409,7 +409,7 @@ fn current(
 impl GovernedWorkspace {
     /// The call binding of voice channel `channel` of `record` of `app`. A
     /// Chat its members write sealed is read through the channel keys this
-    /// relay holds as a member of the workspace's channels: members of a hosted workspace seal
+    /// server holds as a member of the workspace's channels: members of a hosted workspace seal
     /// every write, so without that no one could open a call in any Chat
     /// somebody had written to.
     async fn call_binding(
@@ -428,7 +428,7 @@ impl GovernedWorkspace {
     }
 
     /// [`Self::call_binding`] of a sealed Chat, opened with the channel's
-    /// keys this relay holds as a member.
+    /// keys this server holds as a member.
     #[cfg(any(feature = "agents", feature = "web"))]
     async fn sealed_call_binding(
         &self,
@@ -444,7 +444,7 @@ impl GovernedWorkspace {
         media::resolve_chat_binding(app, record, channel, &doc).map_err(|error| error.to_string())
     }
 
-    /// A relay built without the browser listener takes part in no channels, so
+    /// A server built without the browser listener takes part in no channels, so
     /// it cannot read a sealed Chat.
     #[cfg(not(any(feature = "agents", feature = "web")))]
     #[expect(
@@ -457,7 +457,7 @@ impl GovernedWorkspace {
         _record: &str,
         _channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        Err("the Chat is sealed and this relay does not take part in its channel".into())
+        Err("the Chat is sealed and this server does not take part in its channel".into())
     }
 }
 
@@ -700,8 +700,8 @@ fn moderate(
 
 impl Workspaces {
     /// Open, start, end or moderate a call of `workspace` for `caller`: opening a channel's call takes a member, everything else a
-    /// device of the relay's user, or of a member the workspace lets run its
-    /// calls. In a workspace this relay carries, the caller is a member by its
+    /// device of the server's user, or of a member the workspace lets run its
+    /// calls. In a workspace this server carries, the caller is a member by its
     /// subscription and opening is all there is.
     pub(crate) async fn voice_call(
         &self,
@@ -717,7 +717,7 @@ impl Workspaces {
 
     /// Open the call of a voice channel of `workspace`, one this relay carries:
     /// started when the channel has none, restarted when it ended. Its
-    /// Chat is the members' to read, sealed with keys this relay does not
+    /// Chat is the members' to read, sealed with keys this server does not
     /// hold, so the call is bound to the channel as named.
     fn carried_voice_call(
         &self,
@@ -780,7 +780,7 @@ impl Workspaces {
     }
 
     /// The workspace of `workspace` and the call policy it is under now: its
-    /// governance's when this relay governs it, else the calls it holds
+    /// governance's when this server governs it, else the calls it holds
     /// for a workspace it carries.
     async fn call_policy(&self, workspace: &str) -> Result<(WorkspaceId, Policy), String> {
         if let Some(workspace_id) = workspace.strip_prefix(CARRIED).and_then(WorkspaceId::parse) {
@@ -796,7 +796,7 @@ impl Workspaces {
     }
 
     /// [`Self::voice_call`] for the device `caller` certifies, however it
-    /// reached the relay: the envelope and the workspace's `call` action share
+    /// reached the server: the envelope and the workspace's `call` action share
     /// it, and with it the one authorization.
     pub async fn voice_call_as(
         &self,

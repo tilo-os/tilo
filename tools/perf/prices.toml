@@ -1,4 +1,4 @@
-# Price sheet for the relay hosting-cost records, read by
+# Price sheet for the server hosting-cost records, read by
 # tools/perf/adapters.py hosting-load.
 #
 # The VM prices are the cost model's assumptions (#3965, "Hosting cost model
@@ -9,7 +9,7 @@
 #
 #   capacity     = min(vCPU-seconds the VM sells per hour / CPU-seconds per
 #                      member-hour,
-#                      (memory - the idle relay) / resident MiB per member)
+#                      (memory - the idle server) / resident MiB per member)
 #                  at `target_utilisation`: members one VM carries at once
 #   compute      = VM price per hour / capacity
 #   egress       = transport bytes per member-hour beyond the VM's

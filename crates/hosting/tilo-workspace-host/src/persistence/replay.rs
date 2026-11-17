@@ -47,7 +47,7 @@ pub(crate) struct Authority {
     reserved: Option<std::time::Instant>,
     released: OnceLock<std::time::Instant>,
     /// The replay includes on-demand records: the subscriber is a peer
-    /// relay, which keeps all of the workspace.
+    /// server, which keeps all of the workspace.
     every_document: bool,
     /// The replay covers only these record channels: a browser environment's
     /// device reaches its own record and nothing else of the workspace.
@@ -132,7 +132,7 @@ impl Authority {
         self.active() && self.session_guard().is_some()
     }
     /// Whether the replay carries all of the workspace: its subscriber is a
-    /// peer relay, which keeps every frame it is sent.
+    /// peer server, which keeps every frame it is sent.
     pub(crate) const fn every_document(&self) -> bool {
         self.every_document
     }
@@ -280,7 +280,7 @@ fn discard_retired(retired: WorkDiscard) -> Result<(), StoreError> {
     let queue = QUEUE.get_or_init(|| {
         let (queue, retired) = std::sync::mpsc::sync_channel::<WorkDiscard>(RETIRED_BACKLOG);
         std::thread::Builder::new()
-            .name("relay-retired-work".into())
+            .name("server-retired-work".into())
             .spawn(move || {
                 for mut discard in retired {
                     let discarding = crate::timing::start();

@@ -5,7 +5,7 @@
 //! permission prompts or request/response control frames would make them
 //! execute late.
 //!
-//! This is the one host-retention classifier: native publication, the relay
+//! This is the one host-retention classifier: native publication, the server
 //! and browser peers all call it, so a host keeps the same history whichever
 //! client wrote it.
 

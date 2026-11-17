@@ -8,7 +8,7 @@ workspace it names, and approves a key of their own on the site's sign-in
 page. The answer is `{key, person, joined}`, where `joined` is the workspace
 the link landed them in with the role their key finds them holding there.
 
-    python3 reviewer.py PORT SITE RELAY API_URL TILO_BIN OUT_DIR
+    python3 reviewer.py PORT SITE SERVER API_URL TILO_BIN OUT_DIR
 
 Prints `{"invitee": URL}` once it listens.
 """
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from tilo import AsyncTilo
 
-PORT, SITE, RELAY, API_URL, TILO_BIN, OUT = sys.argv[1:7]
+PORT, SITE, SERVER, API_URL, TILO_BIN, OUT = sys.argv[1:7]
 PERSON = Path(__file__).with_name("person.mjs")
 counter = itertools.count(1)
 
@@ -46,7 +46,7 @@ def review(link: str) -> dict:
     # it, so a reviewer still on their way when the visa run stops waiting
     # has said how far they got.
     with subprocess.Popen(
-        ["node", str(PERSON), SITE, RELAY, str(out), "--follow", link,
+        ["node", str(PERSON), SITE, SERVER, str(out), "--follow", link,
          "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", API_URL],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     ) as browser:

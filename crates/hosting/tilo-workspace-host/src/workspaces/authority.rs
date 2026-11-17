@@ -1,13 +1,13 @@
-//! Who may administer a workspace this relay governs, decided in one place.
+//! Who may administer a workspace this server governs, decided in one place.
 //!
 //! Every administration entry (the `tilo.workspace` and `tilo.host` actions,
 //! the `/workspaces` pages, calls, the moderation
 //! agent) asks [`Workspaces::authorize`] with what it is about to do. The answer comes in three steps:
 //!
 //! 1. The device must be a person's current device: certified now, not
-//!    revoked, and not one of the relay's agents (an agent governs nothing;
+//!    revoked, and not one of the server's agents (an agent governs nothing;
 //!    it joins workspaces through its delegation).
-//! 2. A device of the relay's own person administers every workspace here. That
+//! 2. A device of the server's own person administers every workspace here. That
 //!    person is the host's, so what no workspace decides ([`HostOperation`]) is
 //!    theirs alone, but for making a person's own workspace, which a host
 //!    that keeps them does for anyone.
@@ -84,7 +84,7 @@ impl WorkspaceOp<'_> {
 /// Why a device of another person cannot do what only the host's person
 /// does. Kept as it was before workspaces decided their own administration, so
 /// a client reading it keeps working.
-const HOST_PERSON_ONLY: &str = "workspace administration requires a device of the relay's user";
+const HOST_PERSON_ONLY: &str = "workspace administration requires a device of the server's user";
 
 impl Workspaces {
     /// Whether `device` may do `op` in `workspace` (which every operation but a
@@ -136,13 +136,13 @@ impl Workspaces {
         now: u64,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
-        let relay_person = device.user_public_key == host;
-        // An agent is a device of the relay's user too, but it governs
+        let server_person = device.user_public_key == host;
+        // An agent is a device of the server's user too, but it governs
         // nothing: it joins workspaces only through its delegation. The registry
-        // is the relay's in every build, so is this refusal: an agent
-        // registered with a relay built without its supervisor is still no
+        // is the server's in every build, so is this refusal: an agent
+        // registered with a server built without its supervisor is still no
         // person.
-        let agent = relay_person
+        let agent = server_person
             && self
                 .inner
                 .host
@@ -185,7 +185,7 @@ impl Workspaces {
                     | HostOperation::KeepPersonalList
                     | HostOperation::ReadPersonalList
                     | HostOperation::NamePersonalDevice
-            ) && !relay_person;
+            ) && !server_person;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",
@@ -197,7 +197,7 @@ impl Workspaces {
                 Err(CollaborationError::new(HOST_PERSON_ONLY))
             };
         }
-        if relay_person {
+        if server_person {
             if let (WorkspaceOp::Change(change), Some(workspace)) = (op, workspace) {
                 refuse_changing_the_owner(workspace, change)?;
             }
@@ -263,7 +263,7 @@ fn refuse_changing_the_owner(
     Ok(())
 }
 
-/// `op` by `device`, a device of a person other than the relay's, as the
+/// `op` by `device`, a device of a person other than the server's, as the
 /// workspace's governance decides it now.
 fn decide_by_governance(
     workspace: &GovernedWorkspace,

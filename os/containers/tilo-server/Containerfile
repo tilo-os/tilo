@@ -2,31 +2,31 @@
 # ============================================================================
 # tilo-server standalone container image
 # ----------------------------------------------------------------------------
-# Ships the relay daemon + its systemd unit as a small OCI image
+# Ships the server daemon + its systemd unit as a small OCI image
 # usable outside of the full bootc host mode. Two use cases:
 #
-#   1. Home users who want a relay container next to another home
+#   1. Home users who want a server container next to another home
 #      service (Nextcloud, Home Assistant, ...) on an existing
 #      Debian/Fedora/Podman-quadlet setup.
-#   2. Enterprise cloud tier: the relay image is the deployable
+#   2. Enterprise cloud tier: the server image is the deployable
 #      unit; instances get provisioned per-tenant via k8s or a
 #      podman-quadlet fleet.
 #
-# Nothing here compiles: t builds the relay, its admin, its enroll program and
+# Nothing here compiles: t builds the server, its admin, its enroll program and
 # the filesystem replica (tools/ci/publish/server-binaries.sh, the check
-# relay-binaries) and this build lays them out with the base and the packages
+# server-binaries) and this build lays them out with the base and the packages
 # they run against, from the same frozen snapshot and mirrored base as the
-# other server images (tools/ci/publish/relay-build.sh). Its context is the
+# other server images (tools/ci/publish/server-build.sh). Its context is the
 # binaries, the entrypoint and the unit beside this file.
 #
-# Published by t: `image-relay` builds it (tools/ci/publish/relay-build.sh),
-# and `sign-relay` and `publish-relay` release it on version tags.
+# Published by t: `image-server` builds it (tools/ci/publish/server-build.sh),
+# and `sign-relay` and `publish-server` release it on version tags.
 # ============================================================================
 
 # ---- Frozen RPM repo (cross-time reproducibility) --------------------------
 # Digest-pinned snapshot and base shared with the desktop + host bootc images.
 # RPMS_REF comes from rpm-snapshot-ref.sh — see os/dev/build-image.sh and
-# tools/ci/publish/relay-build.sh. Declared before the first FROM so it is
+# tools/ci/publish/server-build.sh. Declared before the first FROM so it is
 # global rather than scoped to the preceding stage.
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
@@ -38,7 +38,7 @@ FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
-# Runtime dependency: CA roots for rustls connections to hosted Iroh relay
+# Runtime dependency: CA roots for rustls connections to hosted Iroh server
 # endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
 # linked, so it remains usable after removing the package manager, coreutils,
 # and their otherwise inherited OpenSSL dependency closure.
@@ -81,4 +81,4 @@ EXPOSE 4433/udp
 
 # Default command: daemon. Operator can override with `admin`.
 ENTRYPOINT ["/usr/bin/tilo-home-peer"]
-CMD ["--config", "/etc/tilo/relay.toml", "run"]
+CMD ["--config", "/etc/tilo/server.toml", "run"]

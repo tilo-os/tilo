@@ -8,7 +8,7 @@ use super::{
 };
 use tilo_server_protocol::WorkspaceId;
 
-/// `envelope` as the relay stream carries it (a zero-signature delta goes
+/// `envelope` as the server stream carries it (a zero-signature delta goes
 /// without its signature), for a frame about to be written, charged to its
 /// workspace's egress. `live` marks live fan-out (a delta or presence forwarded as
 /// it arrived), as opposed to replay, replies and positions.

@@ -2,7 +2,7 @@
 //! that sends it.
 //!
 //! The addressed device answers it on its own engine, with no host, store or
-//! relay in between. The QUIC
+//! server in between. The QUIC
 //! connection already proves which device is on the other end, so why the
 //! signature: an invocation recorded in the workspace has to prove to *every*
 //! device who asked, not only to the one that answered.

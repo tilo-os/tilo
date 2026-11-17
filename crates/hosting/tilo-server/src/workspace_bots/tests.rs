@@ -5,7 +5,7 @@
 )]
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "every test here keeps its relay and workspace alive to the end"
+    reason = "every test here keeps its server and workspace alive to the end"
 )]
 
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
@@ -51,7 +51,7 @@ pub(super) async fn bot_host(
 }
 
 /// The same host run on a device that takes part in its workspaces' channels,
-/// as a relay whose device owns workspaces does.
+/// as a server whose device owns workspaces does.
 async fn bot_host_taking_part(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
@@ -320,8 +320,8 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
 async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_bot() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     let catalogue = AppCatalogue::native();
     workspaces
@@ -505,8 +505,8 @@ fn on_the_clock(channel: &str, trigger: tilo_automation::TriggerSpec) -> install
 async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     let catalogue = AppCatalogue::native();
     workspaces
@@ -627,8 +627,8 @@ async fn ada_says(
 async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
     let start = || {
@@ -679,8 +679,8 @@ const SECOND_TICK_MS: u64 = 3_720_000;
 async fn a_scheduled_bot_runs_at_its_time_once_and_again_at_the_next() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
     let mut runner = member_runner(
@@ -736,8 +736,8 @@ async fn a_scheduled_bot_runs_at_its_time_once_and_again_at_the_next() {
 async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("ticker.json");
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
@@ -784,8 +784,8 @@ async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up()
 async fn a_restarted_host_skips_the_times_it_missed() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("ticker.json");
     let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
@@ -837,8 +837,8 @@ async fn ticks(workspaces: &Workspaces, workspace: &str) -> usize {
 async fn a_moment_fires_once_at_its_time_and_never_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("reminder.json");
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -910,8 +910,8 @@ async fn a_moment_fires_once_at_its_time_and_never_again() {
 async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("reminder.json");
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -1196,8 +1196,8 @@ async fn a_program_acts_on_every_tenth_firing_and_its_count_survives_a_restart()
     use tilo_automation::{Binding, Condition};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("counting.json");
     let ada = hex::encode(ADA);
@@ -1262,8 +1262,8 @@ async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() 
     use tilo_automation::{Binding, Condition};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("noting.json");
     let ada = hex::encode(ADA);
@@ -1373,8 +1373,8 @@ async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() 
 async fn a_paused_program_fires_nothing_until_its_person_lets_it_go_on() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("pausing.json");
     let ada = hex::encode(ADA);
@@ -1422,8 +1422,8 @@ async fn a_paused_program_fires_nothing_until_its_person_lets_it_go_on() {
 async fn a_programs_work_may_send_unasked_only_what_its_person_permitted() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("permitted.json");
     let ada = hex::encode(ADA);
@@ -1495,8 +1495,8 @@ async fn a_programs_work_may_send_unasked_only_what_its_person_permitted() {
 async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
     let ada = hex::encode(ADA);
@@ -1600,8 +1600,8 @@ async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
 async fn a_reminder_hands_its_instruction_to_its_persons_assistant_once() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("reminder.json");
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -1671,8 +1671,8 @@ async fn a_reminder_hands_its_instruction_to_its_persons_assistant_once() {
 async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_letter() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
     let ada = hex::encode(ADA);
@@ -1782,8 +1782,8 @@ async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_let
 async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
     // Its answer goes to a channel the chat does not have.
@@ -1817,8 +1817,8 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     use membership::{DELEGATION_LIFETIME_NS, HostRootCertifier, Kept, keep_member};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let mut bot = greeter(general.as_str());
     bot.installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into();
@@ -1869,8 +1869,8 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     use tilo_automation::{ActorFilter, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let trigger = TriggerSpec::ResourceChanged {
         kind: "chat.messages".into(),
@@ -1970,8 +1970,8 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
 async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let mut bridge = greeter(general.as_str());
     let mut shortcut = bridge.shortcut().unwrap();
@@ -2029,8 +2029,8 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
 async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let bot = greeter(general.as_str());
     let certifier = membership::HostRootCertifier::new(owner_root());
@@ -2203,8 +2203,8 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host_taking_part(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest).await;
@@ -2371,8 +2371,8 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     const BO: [u8; 32] = [9; 32];
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let content = crate::content::stores(scratch.path());
     workspaces.serve_content(std::sync::Arc::new(crate::content::StoresContent(
@@ -2596,8 +2596,8 @@ async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceC
 async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_goes_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     bridged_lounge(&workspaces, &workspace, &cert).await;
     let catalogue = AppCatalogue::native();
@@ -2722,8 +2722,8 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
 
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let file = scratch.path().join("discord-bridge.json");
     let entry = file.to_str().unwrap();
@@ -2816,8 +2816,8 @@ async fn a_bot_program_pushed_into_a_running_workspace_replaces_the_one_it_runs(
     const ENTRY: &str = "dev.ada.greeter";
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let first = greeter(general.as_str()).program;
     let second = first.replace("welcome!", "welcome, again!");
@@ -2916,8 +2916,8 @@ async fn a_bot_a_governed_workspace_asks_for_runs_beside_that_workspace() {
     const ENTRY: &str = "dev.ada.greeter";
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     // The workspace the operator started, and one of a person's own.
     let (started, _) = chat_workspace(&workspaces, &cert).await;
     let (annex, annex_general) = chat_workspace(&workspaces, &cert).await;

@@ -43,7 +43,7 @@ pub struct HostCommit {
     pub checkpoint: bool,
 }
 
-/// In-process access to the workspaces this relay hosts.
+/// In-process access to the workspaces this server hosts.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {
     workspaces: WorkspaceRegistry,
@@ -308,7 +308,7 @@ impl WorkspaceDocuments {
     }
 
     /// The channel governance `workspace_id` retains, each frame with its
-    /// author, in order: what a linking device is handed, as a relay session
+    /// author, in order: what a linking device is handed, as a server session
     /// replays it.
     pub(crate) async fn channel_governance(
         &self,
@@ -461,7 +461,7 @@ impl WorkspaceDocuments {
     /// Admit `commit`, `author`'s frame the workspace admitted on another
     /// carrier (its direct link), in `author`'s name: ordered, retained and
     /// fanned out to every subscriber like the host's own, so a member that
-    /// takes part through a relay session reads what a linked member wrote,
+    /// takes part through a server session reads what a linked member wrote,
     /// live and on catch-up.
     pub(crate) async fn carry(
         &self,

@@ -82,7 +82,7 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 std::time::SystemTime::now(),
             )

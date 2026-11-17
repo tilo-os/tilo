@@ -98,25 +98,25 @@ impl From<crate::session::CallError> for ApiError {
     }
 }
 
-impl From<crate::relay::RelayError> for ApiError {
-    fn from(error: crate::relay::RelayError) -> Self {
-        use crate::relay::RelayError;
+impl From<crate::server::ServerError> for ApiError {
+    fn from(error: crate::server::ServerError) -> Self {
+        use crate::server::ServerError;
         match error {
-            RelayError::NotFound => Self::new("not_found", "no such workspace of yours")
+            ServerError::NotFound => Self::new("not_found", "no such workspace of yours")
                 .next("GET /v1/workspaces names them"),
             // The host's own wording stays in the log; the caller reads
             // what it can do about the refusal.
-            RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => {
+            ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => {
                 Self::new("refused", error.to_string())
             }
-            RelayError::Unavailable(_) => {
+            ServerError::Unavailable(_) => {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }
             // Nothing that can read the workspace answered: what to do is in
             // the message itself.
-            RelayError::NoHolder => Self::new("unavailable", error.to_string())
+            ServerError::NoHolder => Self::new("unavailable", error.to_string())
                 .next("open Tilo on a device that holds the workspace, then try again"),
-            RelayError::RateLimited { retry_after_ms } => {
+            ServerError::RateLimited { retry_after_ms } => {
                 let mut refused = Self::new("rate_limited", error.to_string());
                 refused.body.retry_after_ms = Some(retry_after_ms);
                 refused

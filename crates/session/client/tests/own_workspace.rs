@@ -40,7 +40,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
-    let workspaces = host.relay.workspaces().unwrap();
+    let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
 
     let bob = new_key();
@@ -327,5 +327,5 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     laptop_peer.close();
     tab.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

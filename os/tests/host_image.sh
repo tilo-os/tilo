@@ -77,7 +77,7 @@ grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' <<<"$guest_policy" || die 'the
 grep -q '^tilo-hosted:x:10001:' "$root/etc/passwd" || die 'no tilo-hosted account at 10001'
 grep -q '^tilo-api:x:65532:' "$root/etc/passwd" || die 'no tilo-api account at 65532'
 
-# What boots, and what judges the boot: the relay and the replica, the hosted-VM
+# What boots, and what judges the boot: the server and the replica, the hosted-VM
 # service, the API (inert), and the assessment that rolls a bad update back,
 # judged by this image's own server probe.
 wants=$root/etc/systemd/system

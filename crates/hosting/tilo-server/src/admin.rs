@@ -14,9 +14,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use collab_types::WorkspaceId;
-use tilo_server::RelayConfig;
+use tilo_server::ServerConfig;
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
+const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
 
 #[derive(Parser)]
 #[command(
@@ -25,7 +25,7 @@ const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
     about = "Administer a tilo-server daemon"
 )]
 struct Cli {
-    /// Path to the relay TOML config.
+    /// Path to the server TOML config.
     #[arg(long, global = true, default_value = DEFAULT_CONFIG_PATH)]
     config: PathBuf,
     #[command(subcommand)]
@@ -125,11 +125,11 @@ enum Cmd {
     },
 }
 
-fn load(path: &std::path::Path) -> anyhow::Result<RelayConfig> {
+fn load(path: &std::path::Path) -> anyhow::Result<ServerConfig> {
     if path.exists() {
-        Ok(RelayConfig::load(path).with_context(|| format!("load {}", path.display()))?)
+        Ok(ServerConfig::load(path).with_context(|| format!("load {}", path.display()))?)
     } else {
-        Ok(RelayConfig::default())
+        Ok(ServerConfig::default())
     }
 }
 
@@ -213,14 +213,14 @@ fn remote_home_peer(
         .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
     let expected_device = device_key(device)?;
     let service = device_key(service)?;
-    let relay_addr = registered_home_peer_addr(identity_root, device, service)?;
+    let server_addr = registered_home_peer_addr(identity_root, device, service)?;
     tilo_rt::block_on(async move {
         let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            tilo_server::client::RelayClient::manage_home_peer(
+            tilo_server::client::ServerClient::manage_home_peer(
                 &endpoint,
-                relay_addr,
+                server_addr,
                 user,
                 expected_device,
                 cert,
@@ -266,12 +266,11 @@ fn registered_home_peer_addr(
         tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?
             .into_iter()
             .find(|entry| {
-                entry.device_node_id == device
-                    && entry.relay_service_node_id == hex::encode(service)
+                entry.device_node_id == device && entry.server_node_id == hex::encode(service)
             })
             .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     Ok(registration
-        .relay_endpoint
+        .server_endpoint
         .filter(|endpoint| endpoint.id == service_id && !endpoint.is_empty())
         .unwrap_or_else(|| iroh_base::EndpointAddr::new(service_id)))
 }
@@ -282,19 +281,19 @@ fn refresh_home_peer_endpoint(
     service: [u8; 32],
     response: &tilo_server::transport::HomePeerManagementResponse,
 ) -> anyhow::Result<()> {
-    let endpoint = &response.relay_endpoint;
+    let endpoint = &response.server_endpoint;
     if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
-        anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
+        anyhow::bail!("home peer returned an invalid server endpoint advertisement");
     }
     let mut registrations =
         tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?;
     let registration = registrations
         .iter_mut()
         .find(|entry| {
-            entry.device_node_id == device && entry.relay_service_node_id == hex::encode(service)
+            entry.device_node_id == device && entry.server_node_id == hex::encode(service)
         })
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
-    registration.relay_endpoint = Some(endpoint.clone());
+    registration.server_endpoint = Some(endpoint.clone());
     tilo_server::write_home_peers(
         &tilo_server::home_peer_registry_path(identity_root),
         &registrations,
@@ -383,7 +382,7 @@ fn cmd_home_peer_remove(
     }
     let response = remote.unwrap_or(tilo_server::transport::HomePeerManagementResponse {
         device_public_key: target,
-        relay_endpoint: iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(
+        server_endpoint: iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(
             &device_key(&intent.service)?,
         )?),
         label: "Removed".into(),
@@ -438,10 +437,10 @@ fn retry_pending_removals(
         let paths = tilo_user_identity::IdentityPaths::under(identity_root);
         let target = device_key(&intent.device)?;
         persist_canonical_revocation(&paths, &intent.revocation)?;
-        let mut relay_revocations = tilo_server::store::load_revocations(identity_root)?;
-        relay_revocations.retain(|entry| entry.revoked_device_public_key != target);
-        relay_revocations.push(intent.revocation.clone());
-        tilo_server::store::save_revocations(identity_root, &relay_revocations)?;
+        let mut server_revocations = tilo_server::store::load_revocations(identity_root)?;
+        server_revocations.retain(|entry| entry.revoked_device_public_key != target);
+        server_revocations.push(intent.revocation.clone());
+        tilo_server::store::save_revocations(identity_root, &server_revocations)?;
         persist_fleet_revocation(identity_root, identity_dir, &intent.revocation)?;
         if tilo_server::home_peer_registry_path(identity_root).exists() {
             update_home_peer_registry(identity_root, &intent.device, None)?;

@@ -1,6 +1,6 @@
 //! A device revoked by its person's root, announced in a governed workspace by
-//! another device of that person, stops at the relay: it is admitted to no
-//! workspace the relay governs, administers none of them, and every member's
+//! another device of that person, stops at the server: it is admitted to no
+//! workspace the server governs, administers none of them, and every member's
 //! replica refuses it from the workspace's governance.
 use ed25519_dalek::SigningKey;
 use governance_actions::{admitted, connected, host_action};
@@ -33,8 +33,8 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
     }
 }
 
-async fn enter(relay: &Relay, device: &TestDevice, workspace: &str) {
-    let home = connected(relay, device).await;
+async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
+    let home = connected(server, device).await;
     let _: EnteredWorkspace = host_action(
         &home,
         ENTER_WORKSPACE,
@@ -46,13 +46,13 @@ async fn enter(relay: &Relay, device: &TestDevice, workspace: &str) {
 /// `device` of `person` redeems an editor's invitation to `workspace` that
 /// `issuer` issues, and builds its replica from the bootstrap.
 async fn join(
-    relay: &Relay,
+    server: &Server,
     issuer: &TestDevice,
     workspace: &str,
     person: &TestUser,
     device: &TestDevice,
 ) -> StatePeer {
-    let invitation = invite(relay, issuer, workspace, Role::Editor, person.user_pk).await;
+    let invitation = invite(server, issuer, workspace, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -82,7 +82,7 @@ async fn join(
     peer.select_exact_admissions().unwrap();
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(
-            TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
+            TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
             SystemTime::now(),
         )
@@ -91,9 +91,14 @@ async fn join(
     peer
 }
 
-async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) {
+async fn until_refused(
+    what: &str,
+    server: &Server,
+    device: &TestDevice,
+    workspace_id: WorkspaceId,
+) {
     tilo_test_env::within(what, async {
-        while admitted(relay, device, workspace_id).await {
+        while admitted(server, device, workspace_id).await {
             tokio::task::yield_now().await;
         }
     })
@@ -101,7 +106,7 @@ async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_revocation_announced_in_one_workspace_reaches_the_relay_and_every_workspace_it_governs()
+async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_workspace_it_governs()
 {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
@@ -111,40 +116,40 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_relay_and_every_wor
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
     let bob_laptop = bob.enrol("bob-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
+    let server = start(state.path(), &alice, &host).await;
 
-    // Alice's laptop governs two workspaces through her relay; her phone is in
+    // Alice's laptop governs two workspaces through her server; her phone is in
     // the first, and Bob is in it with two devices.
-    let plans = create_and_enter(&relay, &laptop, "Plans").await;
-    let other = create_and_enter(&relay, &laptop, "Other").await;
-    enter(&relay, &phone, &plans.workspace).await;
-    let mut tablet_peer = join(&relay, &laptop, &plans.workspace, &bob, &tablet).await;
-    join(&relay, &laptop, &plans.workspace, &bob, &bob_laptop).await;
+    let plans = create_and_enter(&server, &laptop, "Plans").await;
+    let other = create_and_enter(&server, &laptop, "Other").await;
+    enter(&server, &phone, &plans.workspace).await;
+    let mut tablet_peer = join(&server, &laptop, &plans.workspace, &bob, &tablet).await;
+    join(&server, &laptop, &plans.workspace, &bob, &bob_laptop).await;
     for workspace in [plans.workspace_id, other.workspace_id] {
-        assert!(admitted(&relay, &laptop, workspace).await);
+        assert!(admitted(&server, &laptop, workspace).await);
     }
-    assert!(admitted(&relay, &bob_laptop, plans.workspace_id).await);
+    assert!(admitted(&server, &bob_laptop, plans.workspace_id).await);
 
     // Alice's laptop is stolen. Her root revokes it, and her phone says so in
-    // the workspace it shares with the relay.
-    let phone_session = session(&relay, &phone, plans.workspace_id).await;
+    // the workspace it shares with the server.
+    let phone_session = session(&server, &phone, plans.workspace_id).await;
     publish(
         &phone_session,
         &hello(&phone, vec![revoke(&alice, &laptop)]),
     );
 
-    // The relay admits the laptop to none of its workspaces and lets it
+    // The server admits the laptop to none of its workspaces and lets it
     // administer none of them.
     until_refused(
-        "the relay stops admitting the revoked laptop",
-        &relay,
+        "the server stops admitting the revoked laptop",
+        &server,
         &laptop,
         plans.workspace_id,
     )
     .await;
-    assert!(!admitted(&relay, &laptop, other.workspace_id).await);
+    assert!(!admitted(&server, &laptop, other.workspace_id).await);
     assert!(
-        relay
+        server
             .workspaces()
             .unwrap()
             .issue(
@@ -165,7 +170,7 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_relay_and_every_wor
     );
 
     // Bob's replica refuses the laptop from the workspace's own governance.
-    let tablet_session = session(&relay, &tablet, plans.workspace_id).await;
+    let tablet_session = session(&server, &tablet, plans.workspace_id).await;
     let mut seen = Vec::new();
     receive_until(
         "Bob's replica refuses the revoked laptop",
@@ -185,27 +190,27 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_relay_and_every_wor
         &hello(&tablet, vec![revoke(&bob, &bob_laptop)]),
     );
     until_refused(
-        "the relay stops admitting Bob's revoked laptop",
-        &relay,
+        "the server stops admitting Bob's revoked laptop",
+        &server,
         &bob_laptop,
         plans.workspace_id,
     )
     .await;
-    assert!(admitted(&relay, &tablet, plans.workspace_id).await);
+    assert!(admitted(&server, &tablet, plans.workspace_id).await);
 
-    // The revocations survive a restart of the relay.
+    // The revocations survive a restart of the server.
     phone_session.close().await;
     tablet_session.close().await;
-    relay.shutdown().await;
-    let relay = start(state.path(), &alice, &host).await;
-    assert!(!admitted(&relay, &laptop, other.workspace_id).await);
-    assert!(!admitted(&relay, &bob_laptop, plans.workspace_id).await);
-    assert!(admitted(&relay, &phone, plans.workspace_id).await);
-    relay.shutdown().await;
+    server.shutdown().await;
+    let server = start(state.path(), &alice, &host).await;
+    assert!(!admitted(&server, &laptop, other.workspace_id).await);
+    assert!(!admitted(&server, &bob_laptop, plans.workspace_id).await);
+    assert!(admitted(&server, &phone, plans.workspace_id).await);
+    server.shutdown().await;
 }
 
-/// A person's root revokes the stand-in approver the relay's host holds for
-/// them: a key no workspace lists, because a stand-in is no device. The relay keeps
+/// A person's root revokes the stand-in approver the server's host holds for
+/// them: a key no workspace lists, because a stand-in is no device. The server keeps
 /// the entry in its own revocation log — the list its approvals read — and what
 /// the stand-in signed after the revocation is refused there while what it
 /// signed before stays valid.
@@ -221,9 +226,9 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let plans = create_and_enter(&relay, &laptop, "Plans").await;
-    join(&relay, &laptop, &plans.workspace, &bob, &tablet).await;
+    let server = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&server, &laptop, "Plans").await;
+    join(&server, &laptop, &plans.workspace, &bob, &tablet).await;
 
     // Bob set Tilo up through an agent: this host holds a stand-in approver for
     // him, and it certified a browser of his while his root lived in one tab.
@@ -266,7 +271,7 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     .unwrap();
 
     // He keeps the root with a passkey: his tablet announces the revocation his
-    // root signed in the workspace it shares with the relay.
+    // root signed in the workspace it shares with the server.
     let revoked_at = stand_in.issued_at_ns + 2;
     let mut revocation = RevocationEntry {
         user_public_key: bob.user_pk,
@@ -276,12 +281,12 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut revocation, &bob.user_sk).unwrap();
-    let tablet_session = session(&relay, &tablet, plans.workspace_id).await;
+    let tablet_session = session(&server, &tablet, plans.workspace_id).await;
     publish(&tablet_session, &hello(&tablet, vec![revocation.clone()]));
 
-    // The relay's revocation log holds it: the list every handshake and every
+    // The server's revocation log holds it: the list every handshake and every
     // approval this host makes reads, and a restart reads again.
-    let logged = tilo_test_env::within("the relay keeps the revocation", async {
+    let logged = tilo_test_env::within("the server keeps the revocation", async {
         loop {
             if let Ok(entries) = tilo_server::store::load_revocations(state.path())
                 && entries.iter().any(|known| known == &revocation)
@@ -320,12 +325,12 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     );
 
     tablet_session.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
-/// Alice's root revokes thousands of keys, more than the relay's log once
-/// had room for, and last her phone, a device in none of the relay's workspaces:
-/// only the relay's own log refuses it. The relay restarts as its daemon
+/// Alice's root revokes thousands of keys, more than the server's log once
+/// had room for, and last her phone, a device in none of the server's workspaces:
+/// only the server's own log refuses it. The server restarts as its daemon
 /// does, from that log, and refuses the phone and every key revoked before
 /// it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -335,15 +340,15 @@ async fn every_revocation_is_refused_after_a_restart() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let plans = create_and_enter(&relay, &laptop, "Plans").await;
-    let connects = |relay: &Relay| {
-        let relay_addr = relay.node_addr();
+    let server = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&server, &laptop, "Plans").await;
+    let connects = |server: &Server| {
+        let server_addr = server.node_addr();
         let phone = &phone;
         async move {
-            RelayClient::connect_to_pinned_host(
+            ServerClient::connect_to_pinned_host(
                 device_endpoint(phone).await,
-                relay_addr,
+                server_addr,
                 phone.cert.clone(),
                 phone.sk.clone(),
                 RevocationList::new(),
@@ -352,7 +357,7 @@ async fn every_revocation_is_refused_after_a_restart() {
             .is_ok()
         }
     };
-    assert!(connects(&relay).await, "the phone reaches its relay");
+    assert!(connects(&server).await, "the phone reaches its server");
 
     let mut revoked = (0..5000_u32)
         .map(|n| {
@@ -370,9 +375,9 @@ async fn every_revocation_is_refused_after_a_restart() {
         })
         .collect::<Vec<_>>();
     revoked.push(revoke(&alice, &phone));
-    let laptop_session = session(&relay, &laptop, plans.workspace_id).await;
+    let laptop_session = session(&server, &laptop, plans.workspace_id).await;
     publish(&laptop_session, &hello(&laptop, revoked.clone()));
-    tilo_test_env::within("the relay keeps every revocation", async {
+    tilo_test_env::within("the server keeps every revocation", async {
         while tilo_server::store::load_revocations(state.path()).map_or(0, |entries| entries.len())
             < revoked.len()
         {
@@ -381,11 +386,11 @@ async fn every_revocation_is_refused_after_a_restart() {
     })
     .await;
     laptop_session.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 
     // The daemon starts from the identity its log refuses.
     let identity = tilo_server::daemon::with_persisted_revocations(
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),
             device_cert: host.cert.clone(),
@@ -402,20 +407,20 @@ async fn every_revocation_is_refused_after_a_restart() {
             "every key revoked before the restart is refused after it"
         );
     }
-    let relay = crate::common::start_relay(
-        RelayConfig {
+    let server = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
             iroh_listen: "127.0.0.1:0".parse().unwrap(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
         identity,
     )
     .await
     .unwrap();
     assert!(
-        !connects(&relay).await,
+        !connects(&server).await,
         "the phone, revoked past the old log's workspace, is refused after the restart"
     );
-    assert!(admitted(&relay, &laptop, plans.workspace_id).await);
-    relay.shutdown().await;
+    assert!(admitted(&server, &laptop, plans.workspace_id).await);
+    server.shutdown().await;
 }

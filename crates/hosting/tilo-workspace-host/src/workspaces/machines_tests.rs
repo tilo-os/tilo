@@ -91,8 +91,8 @@ mod branching {
     async fn a_branch_takes_its_sources_machine_before_it_is_the_persons() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
         let noted = machines(workspaces, Ok(true), Ok(()));
 
@@ -107,15 +107,15 @@ mod branching {
             "the machine was copied once, into the branch while it was there to hold"
         );
         assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_source_without_a_machine_branches_without_one() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
         machines(workspaces, Ok(false), Ok(()));
 
@@ -125,15 +125,15 @@ mod branching {
             .map_err(|not| not.refusal())
             .expect("nothing to copy is no failure");
         assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_whose_machine_did_not_come_is_removed_saying_so() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
         let noted = machines(
             workspaces,
@@ -166,15 +166,15 @@ mod branching {
             "the branch is gone"
         );
         assert!(!workspaces.own().unwrap().is_of(&PERSON, BRANCH));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_whose_machine_did_not_come_is_made_again_under_its_identity() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
         let refusing = machines(workspaces, Err("no room".into()), Ok(()));
         assert!(
@@ -211,15 +211,15 @@ mod branching {
         );
         assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
         assert!(!workspaces.unfinished_branch(BRANCH));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_branch_a_stop_cut_short_opens_as_nothing_and_is_made_again() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
         // A fill the host stopped in: the branch made and even recorded as the
         // person's, its marker not yet gone.
@@ -229,10 +229,10 @@ mod branching {
             .await
             .unwrap();
         workspaces.own().unwrap().record(&PERSON, BRANCH).unwrap();
-        relay.shutdown().await;
+        server.shutdown().await;
 
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         workspaces
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
             .unwrap();
@@ -265,15 +265,15 @@ mod branching {
         );
         assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
         assert!(workspaces.summary(BRANCH).await.is_ok());
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_host_that_runs_no_machines_branches_as_before() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         let source = source(workspaces).await;
 
         workspaces
@@ -282,7 +282,7 @@ mod branching {
             .map_err(|not| not.refusal())
             .unwrap();
         assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }
 
@@ -290,8 +290,8 @@ mod branching {
 async fn a_workspace_is_deleted_after_its_machine_and_stays_when_that_fails() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let kept = workspaces.create("Kept").await.unwrap().workspace;
     let gone = workspaces.create("Gone").await.unwrap().workspace;
 
@@ -320,15 +320,15 @@ async fn a_workspace_is_deleted_after_its_machine_and_stays_when_that_fails() {
         "its machine went first, while the workspace was still there for its host to hold"
     );
     assert!(workspaces.summary(&gone).await.is_err());
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let made = workspaces.create("Gone").await.unwrap();
     workspaces.delete(&made.workspace).await.unwrap();
     assert!(workspaces.deleted(made.workspace_id));
@@ -337,11 +337,11 @@ async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
         .await
         .unwrap_err();
     assert!(again.contains("deleted here"), "{again}");
-    relay.shutdown().await;
+    server.shutdown().await;
 
     // Also after the host opens again.
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     assert!(workspaces.deleted(made.workspace_id));
     assert!(
         workspaces
@@ -349,17 +349,17 @@ async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
             .await
             .is_err()
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_that_runs_no_machines_deletes_as_before() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
     let gone = workspaces.create("Gone").await.unwrap().workspace;
     workspaces.delete(&gone).await.unwrap();
     assert!(workspaces.summary(&gone).await.is_err());
-    relay.shutdown().await;
+    server.shutdown().await;
 }

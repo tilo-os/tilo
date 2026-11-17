@@ -5,12 +5,12 @@ use std::sync::{Arc, Weak};
 use super::{Workspaces, WorkspacesInner};
 
 /// [`Workspaces`] for whoever must not keep them alive: the browser action service, which
-/// hands sessions the calls of the workspaces this relay carries.
+/// hands sessions the calls of the workspaces this server carries.
 #[derive(Clone)]
 pub struct WeakWorkspaces(pub(super) Weak<WorkspacesInner>);
 
 impl WeakWorkspaces {
-    /// The workspaces, while the relay still has them.
+    /// The workspaces, while the server still has them.
     #[must_use]
     pub fn upgrade(&self) -> Option<Workspaces> {
         self.0.upgrade().map(|inner| Workspaces { inner })

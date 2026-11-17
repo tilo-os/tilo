@@ -13,7 +13,7 @@
 //! proving the queued CRDT delta is durable across a host restart,
 //! not merely held in RAM.
 //!
-//! Asserted on the real `Relay`/`WorkspaceRuntime` path with a
+//! Asserted on the real `Server`/`WorkspaceRuntime` path with a
 //! genuine Automerge document, so "converge" means identical heads,
 //! not byte-equality of an opaque blob.
 
@@ -30,10 +30,10 @@ use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, pending_count, spawn_server_on};
 use tilo_server::WorkspaceId;
 
 /// A connects to `addr1`, subscribes, drains Ready(0), publishes
@@ -46,7 +46,7 @@ async fn publish_and_leave(
     ws: WorkspaceId,
     pending_dir: &std::path::Path,
 ) -> AutoCommit {
-    let a_client = RelayClient::connect(
+    let a_client = ServerClient::connect(
         client_endpoint().await,
         addr1,
         user.user_pk,
@@ -110,7 +110,7 @@ async fn catch_up_after_restart(
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
 ) -> AutoCommit {
-    let b_client = RelayClient::connect(
+    let b_client = ServerClient::connect(
         client_endpoint().await,
         addr2,
         user.user_pk,
@@ -178,7 +178,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     // ---- Host boots; A publishes an edit and leaves. B has never
     //      connected. ----
     let host1_dev = user.enrol("home-server", DeviceCapabilities::member());
-    let host1 = Box::pin(spawn_relay_on(
+    let host1 = Box::pin(spawn_server_on(
         &state_root,
         &user,
         host1_dev,
@@ -213,7 +213,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     );
 
     let host2_dev = user.enrol("home-server-2", DeviceCapabilities::member());
-    let host2 = Box::pin(spawn_relay_on(
+    let host2 = Box::pin(spawn_server_on(
         &state_root,
         &user,
         host2_dev,

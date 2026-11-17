@@ -1,5 +1,5 @@
 //! The bridge live against a real Discord server: a workspace on an in-process
-//! relay with Chat and the guild resource, the bridge bot installed from its
+//! server with Chat and the guild resource, the bridge bot installed from its
 //! program file, and this binary started again as the `discord-worker`
 //! under the connector host. Ada's side is scripted through her own Chat
 //! changes; the Discord side through a webhook of its own, so what it posts
@@ -431,13 +431,13 @@ async fn live(token: String, guild_id: String) -> usize {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let _ = AppCatalogue::native();
-    tilo_server::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
-    let relay = tilo_server::daemon::Relay::start_with_relay_mode(
-        tilo_server::RelayConfig {
-            state_root: scratch.path().join("relay"),
+    tilo_server::surfaces::decide_receipt(&scratch.path().join("server").join("surfaces"));
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig {
+            state_root: scratch.path().join("server"),
             ..Default::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),
             device_cert: cert.clone(),
@@ -447,7 +447,7 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await
     .unwrap();
-    let workspaces = relay.workspaces().unwrap().clone();
+    let workspaces = server.workspaces().unwrap().clone();
     let workspace = Workspace {
         id: workspaces.create(&server_name).await.unwrap().workspace,
         workspaces,
@@ -950,6 +950,6 @@ async fn live(token: String, guild_id: String) -> usize {
 
     rest.call(Method::DELETE, &format!("/webhooks/{hook_id}"), None)
         .await;
-    drop(relay);
+    drop(server);
     report.failed
 }

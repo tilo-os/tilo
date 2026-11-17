@@ -1,31 +1,31 @@
 //! A backend keeps a workspace per customer through the API server on the
-//! relay, as tilo.sh runs them: it makes them at once, each labelled with its
+//! server, as tilo.sh runs them: it makes them at once, each labelled with its
 //! own id for the customer, finds each again by that id, mints a key per
 //! workspace for that customer's agent, revokes some, exports and deletes
 //! them. Each agent, over MCP with only its own key, works in its own
 //! workspace; no tool and no `/v1` route takes a key into another
 //! customer's workspace, or the account.
 use super::api::{ISSUER, Mcp};
-use super::api_on_relay::{OnRelay, api_on_relay, approved_key, headers, json_of};
+use super::api_on_server::{OnServer, api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 use tilo_api::Server;
 
 /// How many customers the backend serves here at once: enough that their
-/// workspaces are made, joined and worked in side by side on the one relay.
+/// workspaces are made, joined and worked in side by side on the one server.
 /// `sdk/typescript/examples/workspace_per_customer.ts` runs the same day at a
 /// backend's scale (hundreds) against a whole host.
 const CUSTOMERS: usize = 8;
 
-/// A server key of a new person's on `on_relay`, approved on a page of theirs.
-async fn server_key(on_relay: &OnRelay, name: &str) -> String {
+/// A server key of a new person's on `on_server`, approved on a page of theirs.
+async fn server_key(on_server: &OnServer, name: &str) -> String {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
     let page = enrol(
         &root,
         &format!("{name}'s browser"),
         DeviceCapabilities::member(),
     );
-    approved_key(on_relay, &root, &page, "Visa backend").await
+    approved_key(on_server, &root, &page, "Visa backend").await
 }
 
 /// `method path?query` with `body` as `token`: the status and JSON answer.
@@ -198,9 +198,9 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let key = server_key(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let key = server_key(&on_server, "Ada").await;
 
     // Every customer's workspace at once, each labelled with its id.
     let mut making = tokio::task::JoinSet::new();
@@ -471,9 +471,9 @@ fn route_against(template: &str, other: &str, page: &str, content: &str, grant: 
     reason = "every tool and every route, against one other workspace"
 )]
 async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let key = server_key(&on_relay, "Ada").await;
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let key = server_key(&on_server, "Ada").await;
     let make = |name: &'static str| {
         let (api, key) = (Arc::clone(&api), key.clone());
         async move {

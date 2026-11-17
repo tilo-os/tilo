@@ -41,14 +41,14 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let lounge = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Lounge")
         .await
         .unwrap();
     // Listed, so its entry lets people in, as the site's entry names it.
-    host.relay
+    host.server
         .workspaces()
         .unwrap()
         .publish(
@@ -211,5 +211,5 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     agent.close();
     tab.close();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

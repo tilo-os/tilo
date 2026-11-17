@@ -23,13 +23,13 @@
 // runs this needs Accessibility permission (System Settings > Privacy).
 //
 // usage: node collab-e2e.mjs --bundle DIR [--apps notes,sheets,scratchpad]
-//          [--out DIR] [--relay BIN] [--bin-dir DIR] [--no-agent] [--build]
+//          [--out DIR] [--server BIN] [--bin-dir DIR] [--no-agent] [--build]
 //   --bundle   build.sh --bundle desktop output (with --build and no
 //              --bundle: built into OUT/bundle with --profile dev)
-//   --relay    tilo-server with features web,agents (default: target/release,
+//   --server    tilo-server with features web,agents (default: target/release,
 //              else target/debug)
 //   --bin-dir  tilo-runtime-mcp and the app binaries (default: target/debug)
-//   --build    cargo build the relay, runtime and apps first
+//   --build    cargo build the server, runtime and apps first
 // Exits 1 when a check fails. macOS only.
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, openSync} from 'node:fs';
@@ -167,9 +167,9 @@ if (!bundle && flag('--build')) {
 }
 if (!bundle || !existsSync(join(bundle, 'pkg/tilo_browser_runtime.js'))) throw new Error('--bundle DIR (build.sh --bundle desktop output) is required');
 bundle = resolve(bundle);
-const relayBin = resolve(option('--relay', [join(repo, 'target/release/tilo-server'), join(repo, 'target/debug/tilo-server')].find(existsSync) ?? 'tilo-server'));
+const serverBin = resolve(option('--server', [join(repo, 'target/release/tilo-server'), join(repo, 'target/debug/tilo-server')].find(existsSync) ?? 'tilo-server'));
 const runtimeBin = join(binDir, 'tilo-runtime-mcp');
-for (const bin of [relayBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[a].bin))]) {
+for (const bin of [serverBin, runtimeBin, ...appNames.map(a => join(binDir, APPS[a].bin))]) {
   if (!existsSync(bin)) throw new Error(`missing ${bin}; build it or pass --build`);
 }
 
@@ -186,7 +186,7 @@ if (/"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(execFileSync('ioreg', ['-n', 'Ro
 // ---------------------------------------------------------------------------
 // The host, the native runtime daemon and the page server.
 
-const summary = {started: new Date().toISOString(), repo, revision: '', out, bundle, relay: relayBin, binDir, apps: {}};
+const summary = {started: new Date().toISOString(), repo, revision: '', out, bundle, server: serverBin, binDir, apps: {}};
 try {
   summary.revision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {cwd: repo, encoding: 'utf8'}).trim() +
     (execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {cwd: repo, encoding: 'utf8'}).trim() ? ' (dirty)' : '');
@@ -235,11 +235,11 @@ const pages = createServer((request, response) => {
 }).listen(staticPort, '127.0.0.1');
 const pagesOrigin = `http://127.0.0.1:${staticPort}`;
 
-const relayPort = await freePort();
-const relayState = join(out, 'relay-state');
-const relay = detached('relay', relayBin, ['dev', '--state', relayState, '--web', `127.0.0.1:${relayPort}`,
+const serverPort = await freePort();
+const serverState = join(out, 'server-state');
+const server = detached('server', serverBin, ['dev', '--state', serverState, '--web', `127.0.0.1:${serverPort}`,
   '--allowed-origin', pagesOrigin, ...(withAgent ? ['--agents', '--agent-model', 'scripted'] : [])],
-{env: {TILO_SERVER_LOG: process.env.COLLAB_E2E_RELAY_LOG ?? 'tilo_server=info,warn'}});
+{env: {TILO_SERVER_LOG: process.env.COLLAB_E2E_SERVER_LOG ?? 'tilo_server=info,warn'}});
 const hostLine = await until(async () => read(relay.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
 if (!hostLine) throw new Error(`the relay did not start: ${read(relay.stderr).slice(-600)}`);
 const host = JSON.parse(hostLine);
@@ -258,7 +258,7 @@ const pageArgs = [pinnedCertificates([{...hostCertificate, sha256: host.certific
 const NATIVE_LABEL = 'Mac native';
 async function startNative(name) {
   const profile = join(out, name, 'native-profile');
-  const seed = readFileSync(join(relayState, 'dev-identity.bin')).subarray(0, 32);
+  const seed = readFileSync(join(serverState, 'dev-identity.bin')).subarray(0, 32);
   const identity = join(profile, 'config', 'tilo', 'identity');
   mkdirSync(identity, {recursive: true, mode: 0o700});
   for (const dir of [profile, join(profile, 'config'), join(profile, 'config', 'tilo'), identity]) chmodSync(dir, 0o700);

@@ -40,7 +40,7 @@ async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out(
     )
     .await;
     let board = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create_workspace("Board", Some(WORKSPACE))

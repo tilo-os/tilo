@@ -304,34 +304,34 @@ fn open_profile_workspace(
     Ok((workspace, identity, actor))
 }
 
-/// The relay whose work this profile takes, when it is a member: what the
+/// The server whose work this profile takes, when it is a member: what the
 /// environment names, read before anything of the profile is opened, so a
 /// broken configuration is no profile's. An admission profile is a session
 /// of an existing owner, never a member.
-fn taking_work(serving: Serving) -> io::Result<Option<take_work::Relay>> {
+fn taking_work(serving: Serving) -> io::Result<Option<take_work::Server>> {
     match serving {
-        Serving::Profile | Serving::Dev => take_work::Relay::from_env(),
+        Serving::Profile | Serving::Dev => take_work::Server::from_env(),
         Serving::Admission { .. } => Ok(None),
     }
     .map_err(io::Error::other)
 }
 
-/// The device action service this profile answers its relay's work on, when it takes
+/// The device action service this profile answers its server's work on, when it takes
 /// work: served on the endpoint its other devices reach it at.
 fn take_work_action_service(
     root: &Path,
     joined: &Arc<Joined>,
-    relay: Option<take_work::Relay>,
+    server: Option<take_work::Server>,
     replicas: &files::ReplicaSlot,
     stage: &mut dyn FnMut(&str),
 ) -> io::Result<Option<ActionService>> {
-    let Some(relay) = relay else {
+    let Some(server) = server else {
         return Ok(None);
     };
     stage("taking the work of the workspaces relayed here");
     // Browser environments start on the hosted-VM service this host's
     // environment names, when it runs one.
-    take_work::action_service(root, joined, relay, Some(Arc::clone(replicas)), None).map(Some)
+    take_work::action_service(root, joined, server, Some(Arc::clone(replicas)), None).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps
@@ -1042,7 +1042,7 @@ struct PersonalServing<'a> {
     joined: &'a Joined,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-    /// The device action service this profile answers its relay's work on, when it
+    /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
     take_work: Option<ActionService>,
     /// The workspace host this device runs, when it governs the profile's
@@ -1098,7 +1098,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let mut router = iroh::protocol::Router::builder(joined.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
         // The workspace host answers the person's keys as every host does.
-        // A member that takes its relay's work answers the device action service with
+        // A member that takes its server's work answers the device action service with
         // that work's action service instead, registered after it.
         for (alpn, handler) in host
             .map(tilo_workspace_host::host::WorkspaceHost::protocols)
@@ -1489,7 +1489,7 @@ fn listen_endpoint(
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
     }
     if let Some(port) = listen {
-        // Every interface, on the port a relay reaches this member at: IPv4,
+        // Every interface, on the port a server reaches this member at: IPv4,
         // and IPv6 where the machine has it.
         builder = builder
             .clear_ip_transports()

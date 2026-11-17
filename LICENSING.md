@@ -15,7 +15,7 @@
   nonfree product. A Python or TypeScript SDK on top of them can be MIT too.
   [`tools/sdk/license-policy.toml`](tools/sdk/license-policy.toml) names the
   crates, and `tools/sdk/check_client_licenses.py` refuses an AGPL crate
-  anywhere in their dependency graph. A crate that only a desktop, a relay or a
+  anywhere in their dependency graph. A crate that only a desktop, a server or a
   workspace's own host needs — the shell, the live session, the channels, the
   runtime that serves a workspace — is not part of that side and stays AGPL.
 - **Bundled fonts:** OFL-1.1, LPPL-1.3c, or GPL-3.0-or-later with the Font

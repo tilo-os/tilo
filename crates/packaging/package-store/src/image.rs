@@ -89,7 +89,7 @@ pub enum MaterializeError {
 /// A store that serves one person's environments also trusts that person's
 /// devices ([`ImageTrust::with_fleet`]): an image signed by a device key the
 /// user's identity certified is admitted, so a tool one of their devices or
-/// their relay built is fetched on the others instead of rebuilt. The rule,
+/// their server built is fetched on the others instead of rebuilt. The rule,
 /// asked of the [`FleetSource`] at every admission rather than remembered:
 ///
 /// - the publisher holds a certificate from the user's identity that is
@@ -98,8 +98,8 @@ pub enum MaterializeError {
 ///   every image the key signed, including ones signed before it and ones
 ///   already materialised on this device, because a lost key can back-date
 ///   what it signs. The user's remaining devices rebuild what is refused;
-/// - a relay counts as one of the user's devices exactly when it holds such
-///   a certificate (a home peer is enrolled with one). A relay without one is
+/// - a server counts as one of the user's devices exactly when it holds such
+///   a certificate (a home peer is enrolled with one). A server without one is
 ///   anyone: its images need a publisher trusted outright, the CI catalog
 ///   key.
 ///

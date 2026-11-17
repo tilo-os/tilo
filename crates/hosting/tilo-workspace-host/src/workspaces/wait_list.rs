@@ -567,7 +567,7 @@ pub struct WaitListMail {
     pub removal: [u8; 32],
 }
 
-/// What whoever runs the relay decided about the entry's wait list, set once
+/// What whoever runs the server decided about the entry's wait list, set once
 /// at its start: where an invitation a member asks for is mailed, and what the
 /// entry says to someone it turns away.
 #[derive(Default)]
@@ -584,7 +584,7 @@ pub(super) struct EntrySettings {
 }
 
 impl super::Workspaces {
-    /// The wait list the entry keeps, as whoever runs the relay configured it:
+    /// The wait list the entry keeps, as whoever runs the server configured it:
     /// what a person the entry turns away is told about leaving an address
     /// there ([`EntryRefused::wait_list`](tilo_server_protocol::directory::EntryRefused)).
     /// `false` once called before.
@@ -593,14 +593,14 @@ impl super::Workspaces {
         self.inner.entry.wait_list.set(entry).is_ok()
     }
 
-    /// The wait list the entry keeps, when whoever runs the relay offered one.
+    /// The wait list the entry keeps, when whoever runs the server offered one.
     #[must_use]
     pub fn wait_list_page(&self) -> Option<&tilo_server_protocol::directory::EntryWaitList> {
         self.inner.entry.wait_list.get()
     }
 
     /// The invitations members ask to mail to addresses on a wait list,
-    /// for whoever runs the relay to send from the web entry `entry`: until
+    /// for whoever runs the server to send from the web entry `entry`: until
     /// this is called, the workspaces send no mail and refuse to, and they mail
     /// only invitations on that entry
     /// ([`tilo_server_protocol::workspaces::invitation_on_entry`]). `None` once

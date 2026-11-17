@@ -4,7 +4,7 @@
  *
  * A workspace is data that names its host:
  * `{name, host: {origin, key?}, workspace?, admission?}`. `host.origin` is the
- * HTTPS origin of the relay that hosts the workspace, `host.key` the host's root
+ * HTTPS origin of the server that hosts the workspace, `host.key` the host's root
  * key (hex) once known, `workspace` its id once known (a listed public
  * workspace learns it when admitted), and `admission` the base URL of the
  * host's admission entry, present only when that host lets people in without
@@ -339,7 +339,7 @@ function admissionEntry(workspace) {
 }
 
 /** The workspace a listing's entry admits into, when it names one, or its
- * entry's address does (`<relay>/peer/v1/directory/<workspace>/`, a site's
+ * entry's address does (`<server>/peer/v1/directory/<workspace>/`, a site's
  * home); else `null`. */
 export function entryWorkspace(workspace) {
   if (typeof workspace?.workspace === 'string' && workspace.workspace) return workspace.workspace;
@@ -688,7 +688,7 @@ export async function joinViaHost({
    * this browser kept. `fresh`: join as a new device of the person. */
   const throughEntry = async (deviceKey, refused, fresh) => {
     // The entry admits into its workspace's own host (`directory.rs` in the
-    // relay's protocol).
+    // server's protocol).
     const origin = workspace.host.origin;
     const sameHost = deviceKey && known && originOf(origin) === originOf(known.origin);
     if (deviceKey && !sameHost) await deviceKey.close();

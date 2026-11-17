@@ -3,11 +3,11 @@
 // deployment writes — its home is the Lounge, joined through the entry the
 // relay lists it at, and its directory is the relay's. Under `/i/` it is the
 // site a sealed invitation's link opens: the page for a browser, and the
-// relay's shelf for the page's own request for the invitation (the web entry
+// server's shelf for the page's own request for the invitation (the web entry
 // image's `TILO_WEB_SHELF`).
 //
 // usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
-// SHELF_ORIGIN is the relay's plain listener, which is where a deployment's
+// SHELF_ORIGIN is the server's plain listener, which is where a deployment's
 // ingress hands what it terminates TLS for: the shelf needs no certificate of
 // its own there.
 // HOST_INFO is the line `tilo-server page-host` prints for the workspace's
@@ -70,7 +70,7 @@ const serve = (response, file) => {
   response.end(body);
 };
 
-/** Hand `request` to the relay at `shelfOrigin` under the path it serves the
+/** Hand `request` to the server at `shelfOrigin` under the path it serves the
  * shelf at, and its answer back as it came. That is the plain listener an
  * ingress forwards to once it terminated TLS, so this hop is the deployment's
  * own and no certificate stands on it. */
@@ -99,7 +99,7 @@ const server = createServer({cert: readFileSync(cert), key: readFileSync(key)}, 
     return;
   }
   // A sealed invitation's link: the page for a browser that accepts HTML,
-  // with the files it names relative to itself, and the relay answering under
+  // with the files it names relative to itself, and the server answering under
   // the handle for everyone else (the page fetching an invitation, and the
   // inviter leaving one there).
   if (path.startsWith('/i/')) {

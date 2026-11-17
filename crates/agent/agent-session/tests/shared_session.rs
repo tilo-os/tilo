@@ -51,7 +51,7 @@ use tilo_agent_session::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::certify::{ApproverDecision, ApproverReply};
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::Approver;
 use tilo_server_client::certify;
@@ -106,14 +106,14 @@ async fn start_host(
     supervisor: &Arc<AgentSupervisor>,
 ) -> TestHost {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_server::RelayConfig {
+    let mut cfg = tilo_server::ServerConfig {
         state_root: state.to_path_buf(),
         ..Default::default()
     };
     cfg.services.app_serving = true;
-    let relay = Relay::start_with_app_serving(
+    let server = Server::start_with_app_serving(
         cfg,
-        RelayIdentity {
+        ServerIdentity {
             user_public_key: user,
             device_signing_key: host.key.clone(),
             device_cert: host.cert.clone(),
@@ -125,7 +125,7 @@ async fn start_host(
     )
     .await
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {
@@ -142,7 +142,7 @@ async fn start_host(
         })
         .await
         .unwrap();
-    TestHost { relay, web }
+    TestHost { server, web }
 }
 
 /// The laptop approves the one pending request as an agent device: a
@@ -154,7 +154,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
         .unwrap();
     let mut approver = Approver::connect(
         &endpoint,
-        host.relay.node_addr(),
+        host.server.node_addr(),
         laptop.cert.clone(),
         &laptop.key,
         &RevocationList::new(),
@@ -339,7 +339,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -379,7 +379,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_cert, delegation.clone())
         .await
         .unwrap();
@@ -843,7 +843,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     // Every edit the host carried, the page's and the agent's, is sealed.
     let retained = host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace())
         .await
@@ -859,5 +859,5 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     agent.close();
     browser.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

@@ -371,7 +371,7 @@ mod tests {
             fixture
                 .governor
                 .receive(
-                    TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                    TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                     message,
                 )
                 .unwrap();
@@ -412,7 +412,7 @@ mod tests {
         fixture
             .governor
             .receive(
-                TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key),
                 message,
             )
             .unwrap();
@@ -437,7 +437,7 @@ mod tests {
             reopened
                 .receive(
                     workspace,
-                    TransportOrigin::RetainedRelayDelta(governor),
+                    TransportOrigin::RetainedServerDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
                     fixture.now,
                 )

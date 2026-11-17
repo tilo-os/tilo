@@ -34,7 +34,7 @@ pub use tilo_actions::document_sync::{
 use serde::{Deserialize, Serialize};
 
 /// The device ↔ device interface's one version: the certified handshake
-/// (`tilo_server_protocol::auth`), the relay session's frames and the
+/// (`tilo_server_protocol::auth`), the server session's frames and the
 /// peer-sync messages they carry. Two devices sync only when theirs are
 /// equal; there is no negotiation and nothing kept for an older version
 /// (docs/architecture/compatibility.md). `interface.toml` beside this crate

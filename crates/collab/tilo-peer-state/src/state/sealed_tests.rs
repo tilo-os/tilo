@@ -28,7 +28,7 @@ fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
+    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
 /// `key`'s sealed write number `seq` to the seeded record.

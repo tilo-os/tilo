@@ -58,7 +58,7 @@ if (( run_cargo )); then
     # Resolve support, imager and relay helpers together. Separate Cargo
     # graphs repeatedly rebuild feature-unified dependencies; keep every
     # shipped target, and leave the compositor's no-default-features graph
-    # separate below. Explicit bins avoid developer-only relay/launcher tools.
+    # separate below. Explicit bins avoid developer-only server/launcher tools.
     ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \

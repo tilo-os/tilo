@@ -63,7 +63,7 @@ fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
         .map(|c| c.raw_bytes().to_vec())
         .collect();
     peer.receive_from(
-        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+        TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
             workspace: workspace.into(),
             changes,

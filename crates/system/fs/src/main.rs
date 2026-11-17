@@ -299,11 +299,11 @@ enum Command {
         /// Additional members held by the host identity.
         #[arg(long = "member")]
         members: Vec<String>,
-        /// Relay workspace shard backed by this filesystem workspace.
-        #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<collab_types::WorkspaceId>,
+        /// Server workspace shard backed by this filesystem workspace.
+        #[arg(long = "server-workspace-id")]
+        server_workspace_ids: Vec<collab_types::WorkspaceId>,
     },
-    /// Register a direct filesystem endpoint obtained from authenticated relay
+    /// Register a direct filesystem endpoint obtained from authenticated server
     /// discovery with the running local filesystem daemon.
     RegisterContentPeer {
         #[arg(long)]
@@ -476,7 +476,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             replica_cache_dir,
             status_file,
             members,
-            relay_workspace_ids,
+            server_workspace_ids,
         } => export_home_peer(
             &cache_dir,
             &acl,
@@ -484,7 +484,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             &replica_cache_dir,
             status_file,
             members,
-            relay_workspace_ids,
+            server_workspace_ids,
         ),
         Command::RegisterContentPeer {
             cache_dir,
@@ -537,12 +537,12 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
         serde_json::from_slice::<fs::workspace_authority::ContentPeerRequest>(&encoded)
             .or_else(|_| {
                 // The original CLI accepted a raw EndpointAddr. Keep that wire contract
-                // while letting relay discovery carry the NAS ticket a stock `fs serve` needs.
+                // while letting server discovery carry the NAS ticket a stock `fs serve` needs.
                 serde_json::from_slice::<iroh_base::EndpointAddr>(&encoded).map(|endpoint| {
                     fs::workspace_authority::ContentPeerRequest {
                         endpoint,
                         ticket: None,
-                        relay_service_id: None,
+                        server_service_id: None,
                     }
                 })
             })
@@ -552,7 +552,7 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
         &local_content_socket_path(ticket.workspace_id()),
         registration.endpoint,
         registration.ticket,
-        registration.relay_service_id,
+        registration.server_service_id,
     )
     .await?;
     if response.rebind_required && !response.restart_scheduled {
@@ -819,7 +819,7 @@ fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
 }
 
 /// Record the workspace this cache serves. The person's own tools read the ticket: approving
-/// a home server hands it the ticket, and the session registers relay-discovered content
+/// a home server hands it the ticket, and the session registers server-discovered content
 /// peers against its workspace. The daemon runs as root with a private umask, so the ticket
 /// is made readable to the device-trust group, which the cache directory hands down.
 fn save_workspace_ticket(cache_dir: &Path, ticket: &Ticket) -> Result<()> {
@@ -891,7 +891,7 @@ fn export_home_peer(
     replica_cache_dir: &Path,
     status_file: PathBuf,
     members: Vec<String>,
-    mut relay_workspace_ids: Vec<collab_types::WorkspaceId>,
+    mut server_workspace_ids: Vec<collab_types::WorkspaceId>,
 ) -> Result<()> {
     let ticket_path = workspace_ticket_path(cache_dir);
     let ticket = std::fs::read_to_string(&ticket_path)
@@ -909,8 +909,8 @@ fn export_home_peer(
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
-    relay_workspace_ids.sort_unstable();
-    relay_workspace_ids.dedup();
+    server_workspace_ids.sort_unstable();
+    server_workspace_ids.dedup();
     let authority = WorkspaceAuthorityEnvelope::sign(
         decoded_ticket.workspace_id(),
         1,
@@ -924,7 +924,7 @@ fn export_home_peer(
         capability_json,
         authority: Some(authority),
         members,
-        relay_workspace_ids,
+        server_workspace_ids,
     };
     let mut bundle = if output.exists() {
         toml::from_str::<HomePeerSet>(&std::fs::read_to_string(output)?)
@@ -976,7 +976,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     let bundle: HomePeerSet = toml::from_str(&config_text)
         .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
     validate_home_peer_set(&bundle)?;
-    // Held for the life of the process: the relay honours a ready status only while this lock
+    // Held for the life of the process: the server honours a ready status only while this lock
     // is held (or its stamp is a few seconds old), so the status is written when it changes
     // rather than every second. Taken before the status is touched, so a second replica
     // refused here cannot clobber a running one's status.
@@ -2685,7 +2685,7 @@ mod tests {
                 let peers = vec![fs::workspace_authority::PersistedContentPeer {
                     endpoint: nas,
                     ticket: Some(ticket),
-                    relay_service_id: None,
+                    server_service_id: None,
                 }];
                 tilo_files::native::atomic::write(
                     &fs::workspace_authority::content_peers_path(temp.path()),

@@ -31,7 +31,7 @@ pub enum StoreError {
     Json(String),
 }
 
-/// fsyncs the relay's workspace stores issued since this process started.
+/// fsyncs the server's workspace stores issued since this process started.
 static FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(any(test, feature = "test-support"))]
@@ -51,7 +51,7 @@ fn count_fsyncs(count: u64) {
     THREAD_FSYNCS.with(|fsyncs| fsyncs.set(fsyncs.get().saturating_add(count)));
 }
 
-/// fsyncs (file and directory barriers) the relay's workspace stores have
+/// fsyncs (file and directory barriers) the server's workspace stores have
 /// issued in this process: the cost the hosting bench divides by edits.
 #[must_use]
 pub fn fsyncs() -> u64 {

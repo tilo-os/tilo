@@ -274,7 +274,7 @@ fn decision(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
 #[cfg(test)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay handle a test binds is kept until the test ends"
+    reason = "the server handle a test binds is kept until the test ends"
 )]
 mod tests {
     use super::*;
@@ -293,14 +293,14 @@ mod tests {
         dir: &std::path::Path,
         (key, cert): &(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     ) -> crate::workspaces::fixtures::TestHost {
-        let relay = test_host(dir, key, cert).await;
+        let server = test_host(dir, key, cert).await;
         assert!(
-            relay
+            server
                 .workspaces()
                 .offer_own_workspaces(crate::workspaces::OwnWorkspaceOffer::free("tilo.test"))
                 .unwrap()
         );
-        relay
+        server
     }
 
     fn asked(role: Role, administrator: bool, owner: bool) -> HostInvitation {
@@ -348,8 +348,8 @@ mod tests {
     async fn a_host_made_invitation_is_from_the_workspace_and_lets_a_newcomer_in() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();
-        let relay = site(dir.path(), &host).await;
-        let workspaces = relay.workspaces();
+        let server = site(dir.path(), &host).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
 
         for (admitted, (role, administrator)) in [
@@ -392,7 +392,7 @@ mod tests {
             !workspaces.has_owner(&workspace).await,
             "no invitation made an owner"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// The owner link: an owner invitation, opened by someone whose key the
@@ -403,8 +403,8 @@ mod tests {
     async fn an_owner_invitation_makes_whoever_accepts_it_the_owner() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();
-        let relay = site(dir.path(), &host).await;
-        let workspaces = relay.workspaces();
+        let server = site(dir.path(), &host).await;
+        let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         assert!(!workspaces.has_owner(&workspace).await);
 
@@ -412,10 +412,10 @@ mod tests {
             .invite_as_host(&workspace, asked(Role::Viewer, false, true))
             .await
             .unwrap();
-        relay.shutdown().await;
+        server.shutdown().await;
 
-        let relay = site(dir.path(), &host).await;
-        let workspaces = relay.workspaces();
+        let server = site(dir.path(), &host).await;
+        let workspaces = server.workspaces();
         let JoinReply::Invitation { inviter, role, .. } = workspaces
             .inspect_invitation(&issued.signed_invitation)
             .await
@@ -454,7 +454,7 @@ mod tests {
             matches!(again, JoinReply::Refused(_)),
             "one owner link, one owner: {again:?}"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// The owner link's opener is the workspace's owner on its pages: the
@@ -464,8 +464,8 @@ mod tests {
     async fn an_owner_links_opener_reads_as_owner_and_governs_peoples_roles() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();
-        let relay = site(dir.path(), &host).await;
-        let workspaces = relay.workspaces();
+        let server = site(dir.path(), &host).await;
+        let workspaces = server.workspaces();
         let lounge = workspaces.create("Lounge").await.unwrap().workspace;
 
         let owner_link = workspaces
@@ -554,7 +554,7 @@ mod tests {
             panic!("the owner may change a role: {changed:?}");
         };
         assert_eq!(row(&changed, &member).role, Some(Role::Viewer));
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 
     /// Someone invited into any workspace on the host is past its home's
@@ -564,8 +564,8 @@ mod tests {
     async fn an_invitation_anywhere_on_the_host_opens_the_invite_only_home() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
         assert!(
             workspaces
                 .offer_own_workspaces(crate::workspaces::OwnWorkspaceOffer::free("tilo.test"))
@@ -620,6 +620,6 @@ mod tests {
             matches!(reply, JoinReply::Admitted { .. }),
             "in Acme, so in the Lounge: {reply:?}"
         );
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

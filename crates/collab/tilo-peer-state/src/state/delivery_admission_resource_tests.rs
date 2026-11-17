@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
             .publication_mut()
             .publish_document("test.app", "tab:1", current_document, &key, later)
             .unwrap();
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         receiver.select_exact_admissions().unwrap();
         let pending = receiver
             .receive_from_report(origin, snapshot, later)

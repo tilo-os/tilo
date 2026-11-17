@@ -3,8 +3,8 @@
 # installs it: one archive per platform, tilo-<os>-<arch>.tar.gz holding the program `tilo`
 # alone, the SHA-256 of each in SHA256SUMS, and SHA256SUMS.sig, a DER ECDSA P-256 signature of
 # SHA256SUMS by the release key (keys/cosign.pub, AWS KMS alias/tilo-release-signing). It is
-# published with the release tags (vX.Y.Z) that release the relay and the OS, so a command
-# talks to the relay of its own release; `latest` follows the newest final version.
+# published with the release tags (vX.Y.Z) that release the server and the OS, so a command
+# talks to the server of its own release; `latest` follows the newest final version.
 #
 #   cli-release.sh build TARGET OUT    the program for TARGET, x86_64-unknown-linux-musl or
 #                                      aarch64-unknown-linux-musl (statically linked, both on the

@@ -258,7 +258,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
-        # The lounge's end-to-end tests start a persistent relay workspace, a program
+        # The lounge's end-to-end tests start a persistent server workspace, a program
         # of another package that only its `agents` feature builds: the
         # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
@@ -273,11 +273,11 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'}),
                  ("package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)",
                   {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the relay for the lounge's tests",
+                f"the {profile} profile builds the server for the lounge's tests",
             )
-        # The relay's coding-agent tests start the guest's own agent program in its
+        # The server's coding-agent tests start the guest's own agent program in its
         # serving mode, as a workspace's machine starts it: a program of another
-        # package, which Cargo builds for no test of the relay's.
+        # package, which Cargo builds for no test of the server's.
         machine = scripts.pop("machine-siblings")
         self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
                                               "legacy-agent:tilo-legacy-agent"])
@@ -288,7 +288,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-server) and test(coding_agents::)",
                   {"host": 'cfg(target_os = "linux")'})],
-                f"the {profile} profile builds the guest's agent for the relay's coding-agent tests",
+                f"the {profile} profile builds the guest's agent for the server's coding-agent tests",
             )
         # The browser peer's page tests drive the page's modules beside a
         # runtime module the harness builds once, before they start.

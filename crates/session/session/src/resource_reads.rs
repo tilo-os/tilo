@@ -633,7 +633,7 @@ mod tests {
                 .owner()
                 .receive(
                     workspace,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(
                         host.key.verifying_key().to_bytes(),
                     ),
                     message,
@@ -794,7 +794,7 @@ mod tests {
                 .owner()
                 .receive(
                     workspace,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    tilo_peer_state::TransportOrigin::RetainedServerDelta(
                         host.key.verifying_key().to_bytes(),
                     ),
                     message,

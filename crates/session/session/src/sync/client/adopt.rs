@@ -153,7 +153,7 @@ async fn through_entry(
         request_id,
         through: Through::Entry,
     };
-    let session = tilo_server_session::RelayClient::connect_with_signer(
+    let session = tilo_server_session::ServerClient::connect_with_signer(
         endpoint,
         address.endpoint_addr,
         Some(info.host_cert.user_public_key),

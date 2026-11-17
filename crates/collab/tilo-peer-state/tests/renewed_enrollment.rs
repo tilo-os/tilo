@@ -6,7 +6,7 @@
 
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay serves the whole test"
+    reason = "the server serves the whole test"
 )]
 #![allow(
     clippy::unwrap_used,
@@ -25,7 +25,7 @@ use tilo_identity_host::identity_store::HostIdentity;
 use tilo_peer_state::join::{self, Role};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::IssueInvitationRequest;
-use tilo_server::{Relay, RelayConfig};
+use tilo_server::{Server, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const SECOND: u64 = 1_000_000_000;
@@ -55,11 +55,11 @@ fn ownership(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     HostIdentity::kept(cert.clone(), key.clone())
 }
 
-/// A workspace on a relay with an invitation for Bob, which Bob's device proved
+/// A workspace on a server with an invitation for Bob, which Bob's device proved
 /// with `held` and the host admitted, but whose answer it never took in:
 /// the proof stays retained, to be sent again.
 struct Admitted {
-    relay: Relay,
+    server: Server,
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
@@ -85,12 +85,12 @@ impl Admitted {
         // The host reaches no packet relay: the link it hands out then names the addresses it
         // has here, which the device dials directly. A host with a public relay names only that
         // relay, which this test's device would reach over the internet or not at all.
-        let relay = Relay::start_with_relay_mode(
-            RelayConfig {
+        let server = Server::start_with_relay_mode(
+            ServerConfig {
                 state_root: state.path().to_path_buf(),
-                ..RelayConfig::default()
+                ..ServerConfig::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
                 device_cert: host.clone(),
@@ -100,7 +100,7 @@ impl Admitted {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap();
+        let workspaces = server.workspaces().unwrap();
         let workspace = workspaces.create("Design review").await.unwrap();
         workspaces
             .enter(&workspace.workspace, &laptop)
@@ -139,7 +139,7 @@ impl Admitted {
         .unwrap();
         assert_eq!(unanswered.bootstrap().device_cert, held);
         Self {
-            relay,
+            server,
             _state: state,
             _directory: directory,
             workspace: workspace.workspace,
@@ -155,7 +155,7 @@ impl Admitted {
     /// longer replays its answer: the device takes the workspace in through the
     /// membership exchange.
     async fn moves_on(&self) {
-        self.relay
+        self.server
             .workspaces()
             .unwrap()
             .rename(&self.workspace, "Lounge")

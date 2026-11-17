@@ -176,15 +176,15 @@ fn main() -> ExitCode {
     reason = "the host stays open until every record is repaired, then read back"
 )]
 async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
-    let relay_root = tilo_server_protocol::metrics::workspace_relay_root(&args.state);
+    let server_root = tilo_server_protocol::metrics::workspace_server_root(&args.state);
     // Nothing else runs on this state while it is repaired.
-    let _lock = tilo_server::state_lock::StateLock::acquire(&relay_root)
+    let _lock = tilo_server::state_lock::StateLock::acquire(&server_root)
         .map_err(anyhow::Error::msg)
         .context("the host must be stopped")?;
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
-    let relay = open_host(args, &relay_root, &root, &host).await?;
-    let workspaces = relay
+    let server = open_host(args, &server_root, &root, &host).await?;
+    let workspaces = server
         .workspaces()
         .context("the host governs no workspaces")?
         .clone();
@@ -202,7 +202,7 @@ async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
             &summary.workspace,
             args.app.as_deref(),
             args.dry_run,
-            &relay_root.join(ARCHIVE),
+            &server_root.join(ARCHIVE),
         )
         .await?;
         if found.is_empty() {
@@ -214,19 +214,19 @@ async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
         reports.extend(found);
     }
     drop(workspaces);
-    relay.shutdown().await;
+    server.shutdown().await;
     if reports.iter().any(|report| report.repaired) {
         // What the host serves from now on is what it reads when it starts
         // on the repaired state: started again, it is read back from there.
         println!("reading the repaired records back as the host starts on them");
-        let relay = open_host(args, &relay_root, &root, &host).await?;
-        let workspaces = relay
+        let server = open_host(args, &server_root, &root, &host).await?;
+        let workspaces = server
             .workspaces()
             .context("the host governs no workspaces")?
             .clone();
         verify(&workspaces, &mut reports).await;
         drop(workspaces);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
     Ok(reports)
 }
@@ -237,10 +237,10 @@ async fn run(args: &Args) -> anyhow::Result<Vec<RecordReport>> {
 /// repaired.
 async fn open_host(
     args: &Args,
-    relay_root: &Path,
+    server_root: &Path,
     root: &SigningKey,
     host: &SigningKey,
-) -> anyhow::Result<tilo_server::Relay> {
+) -> anyhow::Result<tilo_server::Server> {
     let cert = host_cert(root, host, &args.persistent)?;
     let scratch = tempfile::tempdir()?;
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -249,15 +249,15 @@ async fn open_host(
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))?
         .bind()
         .await?;
-    tilo_server::Relay::start_on_endpoint_with_protocols(
-        tilo_server::RelayConfig {
-            state_root: relay_root.to_path_buf(),
+    tilo_server::Server::start_on_endpoint_with_protocols(
+        tilo_server::ServerConfig {
+            state_root: server_root.to_path_buf(),
             identity_root: args.state.join("identity"),
             full_replica_status: scratch.path().join("status.json"),
             home_peer_bundle: scratch.path().join("home-peer.toml"),
             ..Default::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host.clone(),
             device_cert: cert,
@@ -1278,7 +1278,7 @@ mod tests {
 
     /// Two pages of one person write the chat's messages under the one writer
     /// a saved row carried, each from the same messages: both number their
-    /// next changes the same, and the relay keeps both writes in the record's
+    /// next changes the same, and the server keeps both writes in the record's
     /// sealed history. The record then no longer reads whole. The repair
     /// keeps one branch, writes what the other posted again as the host, and
     /// every message of both is in the record, which reads whole and is
@@ -1291,9 +1291,9 @@ mod tests {
         // The device's channel keys outlive the host, as its channel service
         // keeps them across a restart.
         let keys = std::sync::Arc::new(TestGroupKeys::default());
-        let relay =
+        let server =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
-        let workspaces = relay.workspaces().clone();
+        let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         Box::pin(two_pages_write_one_writer(
             &workspaces,
@@ -1334,9 +1334,9 @@ mod tests {
 
         // The host started again on the repaired state reads it whole.
         drop(workspaces);
-        relay.shutdown().await;
-        let relay = test_host_holding(scratch.path(), &key, &cert, keys).await;
-        let workspaces = relay.workspaces().clone();
+        server.shutdown().await;
+        let server = test_host_holding(scratch.path(), &key, &cert, keys).await;
+        let workspaces = server.workspaces().clone();
         verify(&workspaces, &mut reports).await;
         let [report] = reports.as_slice() else {
             panic!("one record repaired: {reports:?}");
@@ -1393,9 +1393,9 @@ mod tests {
         let (key, cert) = governor();
         let _ = tilo_agent_session::AppCatalogue::native();
         let keys = std::sync::Arc::new(TestGroupKeys::default());
-        let relay =
+        let server =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
-        let workspaces = relay.workspaces().clone();
+        let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         let catalogue = tilo_agent_session::AppCatalogue::native();
         workspaces
@@ -1461,9 +1461,9 @@ mod tests {
         }
 
         drop(workspaces);
-        relay.shutdown().await;
-        let relay = test_host_holding(scratch.path(), &key, &cert, keys).await;
-        let workspaces = relay.workspaces().clone();
+        server.shutdown().await;
+        let server = test_host_holding(scratch.path(), &key, &cert, keys).await;
+        let workspaces = server.workspaces().clone();
         verify(&workspaces, &mut reports).await;
         assert_eq!(reports[0].reads_whole, Some(true), "{:?}", reports[0]);
         let read = workspaces

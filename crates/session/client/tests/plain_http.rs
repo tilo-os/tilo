@@ -47,7 +47,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
 
     let refused = host
-        .relay
+        .server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {

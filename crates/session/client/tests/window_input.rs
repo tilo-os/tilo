@@ -40,7 +40,7 @@ async fn a_pages_input_on_a_window_reaches_the_device_hosting_it() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &page.cert).await;
+    crate::support::place(&host.server, &page.cert).await;
     let start = |device: &crate::support::Device| {
         start_peer(
             host.iroh(),

@@ -1,4 +1,4 @@
-//! A person's device hosts the workspaces placed on it with the relay's own workspace
+//! A person's device hosts the workspaces placed on it with the server's own workspace
 //! host, opened on an endpoint the device owns: another person it invited
 //! joins through the workspace's join exchange, the person's other devices list
 //! and enter its workspaces on a session of their own, and a member in the same
@@ -15,7 +15,7 @@ use tilo_server::workspaces::{
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     IssueInvitationRequest, LIST_WORKSPACES, WorkspaceListing, WorkspaceSummary, ask_host,
 };
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
@@ -25,7 +25,7 @@ use tilo_server::WorkspaceId;
 const HOME: WorkspaceId = WorkspaceId::from_u128(0x686f_6d65);
 
 /// Subscribe `client` to `workspace_id` and wait until the host lets it in.
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) {
+async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the host admits the subscription", async {
         loop {
@@ -50,7 +50,7 @@ async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) {
 /// The host operation `action` with `argument`, asked by `client` of its
 /// host directly, and what it produced.
 async fn host_action<T: serde::de::DeserializeOwned>(
-    client: &RelayClient,
+    client: &ServerClient,
     action: &str,
     argument: serde_json::Value,
 ) -> T {
@@ -81,8 +81,8 @@ async fn host_action<T: serde::de::DeserializeOwned>(
 }
 
 /// A session of `device` to its own person's `host`, pinned to that device.
-async fn own_session(user: &TestUser, device: &TestDevice, hosted: &Hosted) -> RelayClient {
-    RelayClient::connect_v2_to_own_device(
+async fn own_session(user: &TestUser, device: &TestDevice, hosted: &Hosted) -> ServerClient {
+    ServerClient::connect_v2_to_own_device(
         device_endpoint(device).await,
         hosted.host.node_addr(),
         user.user_pk,
@@ -102,7 +102,7 @@ async fn own_device_enters(
     phone: &TestDevice,
     hosted: &Hosted,
     workspace: &WorkspaceSummary,
-) -> RelayClient {
+) -> ServerClient {
     let session = own_session(alice, phone, hosted).await;
     let listed: Vec<WorkspaceListing> =
         host_action(&session, LIST_WORKSPACES, serde_json::json!({})).await;
@@ -199,7 +199,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
 
     // Bob's phone reaches the workspace on the laptop, by the trust the join
     // gave it, and nothing else of the laptop's.
-    let bobs_session = RelayClient::connect_to_workspace_device(
+    let bobs_session = ServerClient::connect_to_workspace_device(
         bobs_endpoint,
         hosted.host.node_addr(),
         served,
@@ -211,7 +211,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     .unwrap();
     subscribe(&bobs_session, workspace.workspace_id).await;
     assert!(
-        RelayClient::connect_v2_to_own_device(
+        ServerClient::connect_v2_to_own_device(
             device_endpoint(&bobs_phone).await,
             hosted.host.node_addr(),
             alice.user_pk,
@@ -265,7 +265,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
         .await
         .unwrap();
     assert_eq!(
-        local.relay_peer.cert, laptop.cert,
+        local.server_peer.cert, laptop.cert,
         "the host is this device"
     );
     subscribe(&local, HOME).await;
@@ -306,7 +306,7 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
     }
     let router = router.spawn();
     let dial = || async {
-        RelayClient::connect_v2_to_own_device(
+        ServerClient::connect_v2_to_own_device(
             device_endpoint(&phone).await,
             endpoint.addr(),
             alice.user_pk,

@@ -81,7 +81,7 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
-# The session's workspace-service test starts the relay as the Lounge image does
+# The session's workspace-service test starts the server as the Lounge image does
 # (`tilo-server workspace --persistent` with its deployment routes), a program of
 # another package: the feature `agents` is what gives it that subcommand.
 [scripts.setup.lounge-siblings]
@@ -100,9 +100,9 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
-# The relay's coding-agent tests start the guest's own agent program in its
+# The server's coding-agent tests start the guest's own agent program in its
 # serving mode (`tilo-legacy-agent serve-run`), as a workspace's machine starts
-# it: a program of another package, which Cargo builds for no test of the relay's.
+# it: a program of another package, which Cargo builds for no test of the server's.
 [scripts.setup.machine-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
@@ -315,14 +315,14 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# Each tilo-agent-session integration test runs a relay host, agents and
+# Each tilo-agent-session integration test runs a server host, agents and
 # browser sessions that drive every web app natively against fixed deadlines;
 # the all-app coverage runs starve a concurrent session of the CPU it needs.
 [[profile.default.overrides]]
 filter = 'package(tilo-agent-session) and kind(test)'
 test-group = "agent-sessions"
 
-# A thousand keystrokes, each a durable relay commit (file and directory
+# A thousand keystrokes, each a durable server commit (file and directory
 # fsyncs) before it fans out: the run time is the node's fsync latency a
 # thousand times over, not CPU. Alone on a busy CI node it took 348 s at 0.4
 # cores; beside the parallel suite it passed the 8 min suite-wide bound while

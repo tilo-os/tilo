@@ -2,7 +2,7 @@
 //! the host that governs the call. The voice and the pictures themselves are
 //! tracks of the page's own live session ([`super::live_session`]).
 
-use super::{Envelope, RelayClient, Task};
+use super::{Envelope, ServerClient, Task};
 use crate::remote::NOT_CONNECTED;
 use tilo_server_protocol::WorkspaceId;
 
@@ -10,7 +10,7 @@ impl Task {
     pub(super) fn voice_calls(
         &self,
         workspace_id: WorkspaceId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         if let Some(client) = client {
             client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
@@ -29,7 +29,7 @@ impl Task {
         workspace_id: WorkspaceId,
         request: [u8; 16],
         operation: tilo_server_protocol::voice::CallOperation,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         if let Some(client) = client {
             client
@@ -55,7 +55,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         call: [u8; 32],
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let out = self.voice.join(workspace_id, call);
         client.is_none_or(|client| {
@@ -69,7 +69,7 @@ impl Task {
         &mut self,
         workspace_id: WorkspaceId,
         showing: tilo_server_protocol::voice::Showing,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         match (client, self.voice.show(workspace_id, showing)) {
             (Some(client), Some(show)) => client.send(show).is_ok(),
@@ -80,7 +80,7 @@ impl Task {
     pub(super) fn voice_leave(
         &mut self,
         workspace_id: WorkspaceId,
-        client: Option<&RelayClient>,
+        client: Option<&ServerClient>,
     ) -> bool {
         let out = self.voice.leave(workspace_id);
         match (client, out) {

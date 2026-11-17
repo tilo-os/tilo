@@ -235,7 +235,7 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
 }
 
 /// The public workspaces the directory at `directory` lists. Every directory
-/// route is a `POST`, as a relay serves nothing else.
+/// route is a `POST`, as a server serves nothing else.
 pub async fn fetch_directory(
     client: &Client,
     directory: &url::Url,

@@ -1,7 +1,7 @@
-//! One relay process per state directory.
+//! One server process per state directory.
 //!
-//! The relay that serves a state holds an exclusive lock on it for as long as
-//! it runs, and what must work on a state no relay is changing takes the same
+//! The server that serves a state holds an exclusive lock on it for as long as
+//! it runs, and what must work on a state no server is changing takes the same
 //! lock first.
 
 use std::fs::OpenOptions;
@@ -10,7 +10,7 @@ use std::path::Path;
 use tilo_files::native::lock::{FileLock, TryLockError};
 
 /// The lock file, in the state directory.
-pub const LOCK_FILE: &str = "relay.lock";
+pub const LOCK_FILE: &str = "server.lock";
 
 /// The exclusive lock on a state directory, released when dropped.
 #[derive(Debug)]
@@ -23,7 +23,7 @@ impl StateLock {
     ///
     /// # Errors
     ///
-    /// Another process holds the lock (a relay runs on this state), or the
+    /// Another process holds the lock (a server runs on this state), or the
     /// lock file cannot be opened.
     pub fn acquire(state_root: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(state_root)
@@ -38,7 +38,7 @@ impl StateLock {
         match FileLock::try_exclusive(file) {
             Ok(held) => Ok(Self { _held: held }),
             Err(TryLockError::WouldBlock) => Err(format!(
-                "a relay is running on {}: stop it first",
+                "a server is running on {}: stop it first",
                 state_root.display()
             )),
             Err(TryLockError::Error(error)) => Err(format!("lock {}: {error}", path.display())),

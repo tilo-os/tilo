@@ -32,7 +32,7 @@ const RECORD: &str = "welcome";
 /// real store, and a member device that writes it.
 struct Lounge {
     _dir: tempfile::TempDir,
-    relay: crate::workspaces::fixtures::TestHost,
+    server: crate::workspaces::fixtures::TestHost,
     workspaces: crate::workspaces::Workspaces,
     workspace: String,
     workspace_id: WorkspaceId,
@@ -48,8 +48,8 @@ struct Lounge {
 async fn lounge() -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     // A device of the governor's own person, as a second device of theirs is:
     // it writes the record, and the workspace has not admitted it yet.
@@ -74,7 +74,7 @@ async fn lounge() -> Lounge {
     .await;
     Lounge {
         _dir: dir,
-        relay,
+        server,
         workspaces,
         workspace: created.workspace,
         workspace_id: created.workspace_id,
@@ -91,7 +91,7 @@ impl Lounge {
     /// as its session would have been: what its change is published through.
     async fn publishing(&self) -> (crate::workspace::SharedWorkspace, Holds) {
         let runtime = self
-            .relay
+            .server
             .host()
             .runtime(self.workspace_id)
             .await
@@ -115,7 +115,7 @@ impl Lounge {
     }
 
     /// The runtime admits the member's device and holds its session, as it
-    /// does when the workspace's governance reaches the relay.
+    /// does when the workspace's governance reaches the server.
     async fn publishing_again(&self, runtime: &crate::workspace::SharedWorkspace, holds: &Holds) {
         let mut held = runtime.lock().await;
         held.admit_device(self.member.device_public_key)
@@ -201,7 +201,7 @@ impl Lounge {
     /// keeps, as the store settled it.
     async fn kept(&self) -> Vec<NeighbourMsg> {
         let channel = neighbour_wire::app_document_channel(APP, RECORD);
-        self.relay
+        self.server
             .workspace_documents()
             .retained_settled(self.workspace_id)
             .await
@@ -300,7 +300,7 @@ impl Holds {
     }
 }
 
-/// The peer `cert`'s device connects as, admitted by the relay's own person.
+/// The peer `cert`'s device connects as, admitted by the server's own person.
 fn peer_of(cert: &DeviceCert, user: [u8; 32]) -> AuthenticatedPeer {
     crate::auth::accept_hello(
         &crate::auth::Hello::new(cert.clone(), [2; 32]),
@@ -309,7 +309,7 @@ fn peer_of(cert: &DeviceCert, user: [u8; 32]) -> AuthenticatedPeer {
         &RevocationList::new(),
         unix_now_ns(),
     )
-    .expect("the relay admits its own person's device")
+    .expect("the server admits its own person's device")
 }
 
 /// A change the workspace refuses leaves nothing in the record's stored
@@ -368,7 +368,7 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
         &lounge.member,
     )
     .await;
-    // The device's admission reaches the relay's own runtime, and the
+    // The device's admission reaches the server's own runtime, and the
     // device_access its changes are decided against, as a settled decision
     // carries them there.
     lounge.publishing_again(&runtime, &holds).await;
@@ -409,5 +409,5 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     })
     .await;
     drop(lounge.workspaces);
-    lounge.relay.shutdown().await;
+    lounge.server.shutdown().await;
 }

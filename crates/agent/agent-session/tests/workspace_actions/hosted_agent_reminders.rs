@@ -7,9 +7,9 @@ use super::*;
 use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
 use tilo_server::{
-    RelayConfig as Config,
+    ServerConfig as Config,
     agents::start_serving_documents_and_events,
-    daemon::{Relay as Server, RelayIdentity as Identity},
+    daemon::{Server as Server, ServerIdentity as Identity},
     workspace_bots::events::PersonEvents,
     workspaces::Workspaces,
 };

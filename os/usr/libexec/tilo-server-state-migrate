@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-marker=/var/lib/tilo/.relay-unprivileged-v1
+marker=/var/lib/tilo/.server-unprivileged-v1
 if [ -e "$marker" ] || [ -L "$marker" ]; then
     [ -f "$marker" ] && [ ! -L "$marker" ] \
         && [ "$(stat -c '%u:%a:%h:%s' -- "$marker" 2>/dev/null)" = 0:600:1:0 ] \

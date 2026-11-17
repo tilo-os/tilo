@@ -2,7 +2,7 @@
 //!
 //! Subcommands:
 //! - `init` — write a default config to `--config` (or
-//!   `/etc/tilo/relay.toml`) and exit.
+//!   `/etc/tilo/server.toml`) and exit.
 //! - `run` — long-running daemon (systemd `Type=notify`); with feature
 //!   `web`, `--web <addr> --allowed-origin <origin> --tls dev|files:<chain>,<key>`
 //!   also serves browsers (HTTPS).
@@ -34,7 +34,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
-use tilo_server::{RelayConfig, daemon::RelayIdentity};
+use tilo_server::{ServerConfig, daemon::ServerIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
 // The tests in this binary open records, which an app worker serves: libtest
@@ -58,12 +58,12 @@ mod workspace_discussions;
 mod workspace_strips;
 
 /// Default location for the daemon config on a Fedora bootc image.
-const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
+const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
 
 #[derive(Parser)]
-#[command(name = "tilo-server", version, about = "Tilo host + relay daemon")]
+#[command(name = "tilo-server", version, about = "Tilo host + server daemon")]
 struct Cli {
-    /// Path to the relay TOML config.
+    /// Path to the server TOML config.
     #[arg(long, global = true, default_value = DEFAULT_CONFIG_PATH)]
     config: PathBuf,
 
@@ -76,7 +76,7 @@ enum Cmd {
     /// Write a default config file and exit (no-op if the file
     /// already exists).
     Init,
-    /// Run the relay daemon (long-running).
+    /// Run the server daemon (long-running).
     Run {
         #[cfg(feature = "web")]
         #[command(flatten)]
@@ -94,8 +94,8 @@ enum Cmd {
     /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
     #[cfg(feature = "web")]
     PageHost(web_cli::PageHostArgs),
-    /// The people a released relay kept: read them out of that release's state
-    /// directory (read-only), and take them into this relay's workspace.
+    /// The people a released server kept: read them out of that release's state
+    /// directory (read-only), and take them into this server's workspace.
     #[cfg(feature = "agents")]
     ReleasePeople {
         #[command(subcommand)]
@@ -104,7 +104,7 @@ enum Cmd {
 }
 
 /// Logs go to stderr: a persistent workspace's stdout is the line protocol its
-/// workspace service reads, which dropped every log line, so a hosted relay's
+/// workspace service reads, which dropped every log line, so a hosted server's
 /// refusals and errors were never seen anywhere.
 fn install_logging() {
     // The channel service says at info what an operator acts on once: state
@@ -123,11 +123,11 @@ fn install_logging() {
         .init();
 }
 
-fn load_or_default(path: &std::path::Path) -> anyhow::Result<RelayConfig> {
+fn load_or_default(path: &std::path::Path) -> anyhow::Result<ServerConfig> {
     if path.exists() {
-        Ok(RelayConfig::load(path).with_context(|| format!("load {}", path.display()))?)
+        Ok(ServerConfig::load(path).with_context(|| format!("load {}", path.display()))?)
     } else {
-        Ok(RelayConfig::default())
+        Ok(ServerConfig::default())
     }
 }
 
@@ -174,7 +174,7 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
         println!("config already exists: {}", path.display());
         return Ok(());
     }
-    let cfg = RelayConfig::default();
+    let cfg = ServerConfig::default();
     cfg.save(path)
         .with_context(|| format!("save {}", path.display()))?;
     println!("wrote default config: {}", path.display());
@@ -183,17 +183,17 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
 
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay must keep serving until shutdown().await consumes it"
+    reason = "the server must keep serving until shutdown().await consumes it"
 )]
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
-    // One relay per state, and nothing else changing it while it runs
-    // (`web_cli::start_relay` takes it in a build with `web`).
+    // One server per state, and nothing else changing it while it runs
+    // (`web_cli::start_server` takes it in a build with `web`).
     #[cfg(not(feature = "web"))]
     let _lock =
         tilo_server::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     tilo_rt::daemon("tilo-server").run(async move {
-        // Every change the relay receives is decided against its app's
+        // Every change the server receives is decided against its app's
         // surface: the one it runs the app with, or one the workspace keeps
         // beside it.
         tilo_server::surfaces::decide_receipt(&cfg.state_root.join("surfaces"));
@@ -203,17 +203,17 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         #[cfg(feature = "web")]
         let state_root = cfg.state_root.clone();
         #[cfg(feature = "web")]
-        let hosted = web_cli::start_relay(cfg, identity, &web, &state_root).await?;
+        let hosted = web_cli::start_server(cfg, identity, &web, &state_root).await?;
         #[cfg(feature = "web")]
-        let relay = &hosted.relay;
+        let server = &hosted.server;
         #[cfg(not(feature = "web"))]
-        let relay = tilo_server::daemon::Relay::start(cfg, identity).await?;
+        let server = tilo_server::daemon::Server::start(cfg, identity).await?;
         #[cfg(feature = "web")]
-        let _web = web_cli::serve(relay, &web, &state_root).await?;
+        let _web = web_cli::serve(server, &web, &state_root).await?;
         #[cfg(feature = "agents")]
-        let public_moderation = persistent_moderation::follow_published(relay)?;
-        let addr = relay.node_addr();
-        tracing::info!(?addr, "relay online");
+        let public_moderation = persistent_moderation::follow_published(server)?;
+        let addr = server.node_addr();
+        tracing::info!(?addr, "server online");
         // Best-effort sd_notify (silently no-ops outside systemd).
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
         // Park until Ctrl-C / SIGTERM.
@@ -226,7 +226,7 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         #[cfg(feature = "web")]
         hosted.shutdown().await;
         #[cfg(not(feature = "web"))]
-        relay.shutdown().await;
+        server.shutdown().await;
         Ok::<(), anyhow::Error>(())
     })?
 }
@@ -234,7 +234,7 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
 fn load_identity(
     root: &std::path::Path,
     state_root: &std::path::Path,
-) -> anyhow::Result<RelayIdentity> {
+) -> anyhow::Result<ServerIdentity> {
     let paths = IdentityPaths::under(root);
     let user_public_key = persist::read_public_key(&paths.user_pubkey)
         .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?;
@@ -243,7 +243,7 @@ fn load_identity(
     let device_cert = persist::read_device_cert(&paths.device_cert)
         .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;
     tilo_server::daemon::with_persisted_revocations(
-        RelayIdentity {
+        ServerIdentity {
             user_public_key,
             device_signing_key,
             device_cert,
@@ -284,7 +284,7 @@ tilo_automerge_isolate::test_worker!();
 mod tests {
     use super::*;
     use iroh_base::EndpointAddr;
-    use tilo_server::daemon::Relay;
+    use tilo_server::daemon::Server;
     use tilo_server::mesh::ServiceCapabilities;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
@@ -294,14 +294,14 @@ mod tests {
     /// Exercise the same stock init + config reload used by firstboot, then
     /// start the daemon with the handoff bundle that firstboot writes. This
     /// catches regressions where the NAS appears configured but silently
-    /// starts as a relay-only peer.
+    /// starts as a server-only peer.
     #[tokio::test]
     async fn init_reload_and_home_peer_handoff_enable_full_replication() {
         let temp = tempfile::tempdir().unwrap();
-        let config_path = temp.path().join("relay.toml");
+        let config_path = temp.path().join("server.toml");
         cmd_init(&config_path).unwrap();
 
-        let mut config = RelayConfig::load(&config_path).unwrap();
+        let mut config = ServerConfig::load(&config_path).unwrap();
         assert_eq!(
             config.home_peer_bundle,
             PathBuf::from("/etc/tilo/home-peer.toml")
@@ -336,8 +336,8 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
         fs::full_replica::save_status(&status_path, &status).unwrap();
-        // The relay judges the stamp by a clock stopped where it was written,
-        // so it stays recent however long the relay takes to start.
+        // The server judges the stamp by a clock stopped where it was written,
+        // so it stays recent however long the server takes to start.
         let stamped = fs::full_replica::load_status(&status_path)
             .unwrap()
             .unwrap()
@@ -357,7 +357,7 @@ mod tests {
                 capability_json: "[]".into(),
                 authority: None,
                 members: Vec::new(),
-                relay_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(42)],
+                server_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(42)],
             }],
         };
         std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -366,15 +366,15 @@ mod tests {
         // test hermetic instead of writing under /etc or /var/lib.
         config.home_peer_bundle = bundle_path;
         config.full_replica_status = status_path.clone();
-        config.state_root = temp.path().join("relay-state");
+        config.state_root = temp.path().join("server-state");
         config.identity_root = temp.path().join("identity");
         config.services = ServiceCapabilities::home_peer();
         config.save(&config_path).unwrap();
-        let config = RelayConfig::load(&config_path).unwrap();
+        let config = ServerConfig::load(&config_path).unwrap();
 
-        let relay = Relay::start_with_replica_clock(
+        let server = Server::start_with_replica_clock(
             config,
-            RelayIdentity {
+            ServerIdentity {
                 user_public_key: user.public_key,
                 device_signing_key: device_sk,
                 device_cert: cert,
@@ -384,9 +384,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let profile = relay.handle().mesh_profile();
+        let profile = server.handle().mesh_profile();
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
-        relay.shutdown().await;
+        server.shutdown().await;
     }
 }

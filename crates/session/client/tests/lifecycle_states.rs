@@ -53,7 +53,7 @@ async fn a_joined_workspace_and_a_write_are_told_by_their_states() {
     )
     .await;
     let board = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create_workspace("Board", Some(WORKSPACE))
@@ -121,7 +121,7 @@ async fn a_joined_workspace_and_a_write_are_told_by_their_states() {
     assert_eq!(peer.status().sync_state(), SyncState::Done);
 
     // The host goes away: the workspace is told it waits for a connection.
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     let state = told(&peer, &events, |event| match event {
         Event::Workspace { ws, state } if *ws == workspace() => Some(*state),
         _ => None,

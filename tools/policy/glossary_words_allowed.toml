@@ -16,9 +16,9 @@ paths = [
 ]
 
 [[allow]]
-reason = "The pinned source of a released relay version, kept byte for byte."
+reason = "The pinned source of a released server version, kept byte for byte."
 words = ["*"]
-paths = ["tools/relay-upgrade/*"]
+paths = ["tools/server-upgrade/*"]
 
 [[allow]]
 reason = "The BIP39 word list."

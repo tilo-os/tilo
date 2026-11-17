@@ -1,13 +1,13 @@
-//! Builds whose images another process signs: a relay member's tools.
+//! Builds whose images another process signs: a server member's tools.
 //!
-//! On a relay, a member's `ush` supervisor runs as the member's uid and must
-//! never hold the relay's device key. Its [`ToolBuilder`] is
-//! a [`RemoteBuilder`]: it asks the relay's worker over a socket the worker
+//! On a server, a member's `ush` supervisor runs as the member's uid and must
+//! never hold the server's device key. Its [`ToolBuilder`] is
+//! a [`RemoteBuilder`]: it asks the server's worker over a socket the worker
 //! made for that member. The worker runs the build itself — resolve,
 //! install, seal — as the member's uid within the member's quota
 //! (`tilo-env-tools build-for`, with an [`UnsignedStore`]), so a package
 //! scriptlet runs with the member's authority and nothing more. The child
-//! leaves a tool image for the relay's public key with a placeholder
+//! leaves a tool image for the server's public key with a placeholder
 //! signature; the worker checks it is a tool for the runtime asked for and
 //! signs it ([`sign_delegated`]) in its own process, and only the signed
 //! image is handed back where the member's supervisor reads images.
@@ -88,7 +88,7 @@ impl ToolBuilder for RemoteBuilder {
         progress: &mut dyn Write,
     ) -> Result<PackageId, ToolBuildError> {
         let unavailable = |error: std::io::Error| {
-            ToolBuildError::Unavailable(format!("the relay's tool builder: {error}"))
+            ToolBuildError::Unavailable(format!("the server's tool builder: {error}"))
         };
         let mut stream =
             std::os::unix::net::UnixStream::connect(&self.socket).map_err(unavailable)?;
@@ -108,7 +108,7 @@ impl ToolBuilder for RemoteBuilder {
                 .map_err(unavailable)?;
             if read == 0 {
                 return Err(ToolBuildError::Failed(
-                    "the relay's tool builder hung up".into(),
+                    "the server's tool builder hung up".into(),
                 ));
             }
             match serde_json::from_str::<BuildReply>(&text)
@@ -383,24 +383,24 @@ mod tests {
         {
             let tree = tree();
             let work = tempfile::tempdir().unwrap();
-            let relay = SigningIdentity::from_seed(&[7; 32]);
+            let server = SigningIdentity::from_seed(&[7; 32]);
             let runtime = PackageId::from_bytes([1; 32]);
             let arch = image::host_arch().unwrap();
             let built = work.path().join("built.tapp");
-            let unsigned_id = unsigned(tree.path(), runtime, relay.public_key_bytes(), &built);
+            let unsigned_id = unsigned(tree.path(), runtime, server.public_key_bytes(), &built);
 
             let shelf = work.path().join("shelf");
-            let id = sign_delegated(&built, &runtime, arch, &relay, &shelf).unwrap();
+            let id = sign_delegated(&built, &runtime, arch, &server, &shelf).unwrap();
             assert_ne!(id, unsigned_id, "signing makes a new package");
             let bytes = std::fs::read(shelf.join(format!("{}.tapp", id.to_hex()))).unwrap();
             let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
             let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
             assert_eq!(read.meta.id, id);
             assert!(
-                tilo_app_package::verify(&read.meta, &[relay.public_key_bytes()])
+                tilo_app_package::verify(&read.meta, &[server.public_key_bytes()])
                     .manifest()
                     .is_some(),
-                "the image verifies against the relay's key"
+                "the image verifies against the server's key"
             );
 
             assert!(matches!(
@@ -408,7 +408,7 @@ mod tests {
                     &built,
                     &PackageId::from_bytes([2; 32]),
                     arch,
-                    &relay,
+                    &server,
                     &shelf
                 ),
                 Err(DelegatedError::Refused(_))
@@ -418,7 +418,7 @@ mod tests {
             let link = work.path().join("link.tapp");
             std::os::unix::fs::symlink(&built, &link).unwrap();
             assert!(matches!(
-                sign_delegated(&link, &runtime, arch, &relay, &shelf),
+                sign_delegated(&link, &runtime, arch, &server, &shelf),
                 Err(DelegatedError::Io(_))
             ));
         }

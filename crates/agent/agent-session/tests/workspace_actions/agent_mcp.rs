@@ -359,7 +359,7 @@ async fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layou
     let state = crate::support::scratch_dir();
     let hosted = start(&operator, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Grace's workspace")

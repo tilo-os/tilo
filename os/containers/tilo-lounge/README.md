@@ -5,7 +5,7 @@ persistent public workspace, the deployment routes beside it, and the Discord
 bridge whose bot programs it runs.
 
 ```
-GET /mode                 {"relay":"up","revision":"<commit>"}   the readiness probe
+GET /mode                 {"server":"up","revision":"<commit>"}   the readiness probe
 GET /avatars/<name>       an avatar a bridged author published (immutable)
 GET /discord/callback     Discord's OAuth redirect: links the account, then
                           sends the browser back to the web entry with its
@@ -15,7 +15,7 @@ anything else             404; anything but GET     405
 
 The workspace's own pages are the Tilo app at the web entry; browsers reach
 the workspace through the ingress that forwards the workspace's origin to
-`9780`. The process serves the routes on `8790` and the relay on `9780`, both
+`9780`. The process serves the routes on `8790` and the server on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
 Pages reach the host over WebTransport, the browser's own transport: their
@@ -74,7 +74,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_WORKSPACES_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
-| `TILO_WORKSPACES_MODERATION_MODEL` | the relay's | the model it asks |
+| `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
 | `TILO_WORKSPACES_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
 | `TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
 | `TILO_WORKSPACES_DISCORD_REDIRECT_URL` | `$TILO_WORKSPACES_SERVER_ORIGIN/discord/callback` | where Discord sends the browser back |
@@ -84,7 +84,7 @@ Optional, with these defaults:
 
 `TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
 `TILO_SECRETS_DIR` already points into the state volume, where the workspace
-root is kept sealed. The relay's session limits
+root is kept sealed. The server's session limits
 (`TILO_SERVER_MAX_WEB_SESSIONS`, `TILO_SERVER_MAX_HANDSHAKES`,
 `TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
 raise.
@@ -141,7 +141,7 @@ person who runs the host sends from the workspace's wait list, and the
 workspace of their own with their agent set up in it, the passkey that brings
 them back on a browser that forgot the site, a second workspace, and a visitor
 still refused), and the chat read back after
-the relay restarts. Each flow runs alone too:
+the server restarts. Each flow runs alone too:
 
 ```
 bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call

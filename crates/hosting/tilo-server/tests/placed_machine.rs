@@ -1,6 +1,6 @@
 //! A workspace's Linux machine is branched and deleted on the VM host that
-//! holds it: the relay asks the placer where, then that host's member device,
-//! over the device action service as the relay's own device and in the workspace's name,
+//! holds it: the server asks the placer where, then that host's member device,
+//! over the device action service as the server's own device and in the workspace's name,
 //! and the member asks its hosted-VM service on the service's own socket. A
 //! deletion asks the placer whether there is a machine at all, and forgets it
 //! there only once the member deleted it.
@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_runtime::standalone::take_work;
 use tilo_server::placed_machines::PlacedMachines;
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server::workspaces::WorkspaceMachines as _;
 use tilo_server_protocol::WorkSetting;
-use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, TestUser, device_endpoint, host_on};
@@ -68,7 +68,7 @@ fn address_of(endpoint: &iroh::Endpoint) -> String {
     format!("127.0.0.1:{}", socket.port())
 }
 
-/// A relay, the member device of its one VM host with a hosted-VM service
+/// A server, the member device of its one VM host with a hosted-VM service
 /// beside it, and a placer: the two fakes answer as the test says.
 struct Fleet {
     hosted: Hosted,
@@ -116,7 +116,7 @@ async fn fleet() -> Fleet {
         &dir.path().join("member"),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Relay::new(
+        take_work::Server::new(
             &hex::encode(shell.device_pubkey()),
             &address_of(hosted.router.endpoint()),
         )
@@ -231,7 +231,7 @@ async fn a_branch_asks_the_placer_and_then_the_member_holding_the_source() {
         fleet.asked(),
         [("placer", asked.clone()), ("service", asked)],
         "the placer named the source's host, and that host's member made the branch there, \
-         for the relay's account at its size"
+         for the server's account at its size"
     );
     assert_ne!(
         fleet.generation(&branch).await,
@@ -284,7 +284,7 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
         "the placement made for the machine that did not come is forgotten"
     );
 
-    // The member takes the work of its own person's relay alone: asked by a
+    // The member takes the work of its own person's server alone: asked by a
     // device of another person, it refuses, enters nothing and asks its
     // service nothing.
     let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());

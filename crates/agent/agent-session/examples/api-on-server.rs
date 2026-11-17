@@ -1,8 +1,8 @@
-//! The API server on a relay with its app workers, on loopback, for an
+//! The API server on a server with its app workers, on loopback, for an
 //! SDK's end-to-end run: what tilo.sh runs, in one process.
 //!
-//! `api-on-relay` prints `{"api", "key", "key_file", "invitee", "person"}`
-//! and serves until its standard input closes; `api-on-relay -- <command…>`
+//! `api-on-server` prints `{"api", "key", "key_file", "invitee", "person"}`
+//! and serves until its standard input closes; `api-on-server -- <command…>`
 //! runs the command with `TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE` (a
 //! key file of a device of the person, for an SDK's native part) and
 //! `TILO_INVITEE` set and exits as it does. `POST {"link": …}` to `TILO_INVITEE` and another
@@ -10,7 +10,7 @@
 //! answers `{"key", "person", "joined"}`:
 //!
 //! ```sh
-//! api-on-relay -- python3 sdk/python/examples/visa_proof.py
+//! api-on-server -- python3 sdk/python/examples/visa_proof.py
 //! ```
 #![allow(
     clippy::expect_used,
@@ -47,7 +47,7 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_agent_session::worker::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
-    // `RUST_LOG` says what the relay, its app workers and the action API log.
+    // `RUST_LOG` says what the server, its app workers and the action API log.
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -60,5 +60,5 @@ fn main() -> std::process::ExitCode {
     let Ok(runtime) = tokio::runtime::Runtime::new() else {
         return std::process::ExitCode::FAILURE;
     };
-    runtime.block_on(fixture::api_on_relay::serve(&command))
+    runtime.block_on(fixture::api_on_server::serve(&command))
 }

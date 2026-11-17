@@ -113,7 +113,7 @@ fn ns(at: SystemTime) -> u64 {
 /// hold holds it over the start: the same whole wait runs on that clock, which
 /// passes it when nothing else can run instead of five seconds later. The
 /// clock runs again before anything else of the test does.
-async fn past_the_relay_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
+async fn past_the_server_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
     let held = matches!(
         tokio::runtime::Handle::current().runtime_flavor(),
         tokio::runtime::RuntimeFlavor::CurrentThread
@@ -180,7 +180,7 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = past_the_relay_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
+        let host = past_the_server_wait(Box::pin(tilo_workspace_host::host::WorkspaceHost::open(
             tilo_workspace_host::host::HostConfig::new(
                 directory.path().join("workspace-host"),
                 tilo_server_protocol::WorkSetting::none(),
@@ -217,7 +217,7 @@ impl Joined {
 /// once it publishes.
 struct HostedWorkspace {
     authority: Authority,
-    relay: tilo_server::Relay,
+    server: tilo_server::Server,
     workspace: WorkspaceId,
     governor: DeviceCert,
     governor_key: SigningKey,
@@ -244,14 +244,14 @@ impl HostedWorkspace {
         let workspace = WorkspaceId::parse(governing.workspace()).unwrap();
         let topic = workspace;
         let hint = governing.hint(server.addr());
-        let relay_root = dir.join("relay");
+        let server_root = dir.join("server");
         let baseline = governing
             .peer()
             .admitted_workspace()
             .unwrap()
             .clone()
             .save();
-        tilo_server::store::WorkspaceStore::open(&relay_root, topic, true)
+        tilo_server::store::WorkspaceStore::open(&server_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
             .unwrap();
@@ -263,11 +263,11 @@ impl HostedWorkspace {
             serving: tilo_peer_state::direct::Serving::new(),
         };
         let join = JoinService(hosted.clone());
-        let relay = past_the_relay_wait(Box::pin(
-            tilo_server::Relay::start_on_endpoint_with_protocols(
-                tilo_server::RelayConfig {
-                    state_root: relay_root.clone(),
-                    identity_root: dir.join("relay-identity"),
+        let server = past_the_server_wait(Box::pin(
+            tilo_server::Server::start_on_endpoint_with_protocols(
+                tilo_server::ServerConfig {
+                    state_root: server_root.clone(),
+                    identity_root: dir.join("server-identity"),
                     full_replica_status: dir.join("replica/status.json"),
                     home_peer_bundle: dir.join("home-peer.toml"),
                     trust_policy: tilo_server::TrustPolicy::AllowList {
@@ -275,7 +275,7 @@ impl HostedWorkspace {
                     },
                     ..Default::default()
                 },
-                tilo_server::daemon::RelayIdentity {
+                tilo_server::daemon::ServerIdentity {
                     user_public_key: governor.user_public_key,
                     device_signing_key: host_key,
                     device_cert: host.clone(),
@@ -299,7 +299,7 @@ impl HostedWorkspace {
         hosted.serve();
         Self {
             authority,
-            relay,
+            server,
             workspace,
             governor,
             governor_key,
@@ -954,7 +954,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         "stale identity removes the selected audience"
     );
     drop(governor);
-    governing.relay.shutdown().await;
+    governing.server.shutdown().await;
     for (file, bytes) in settled_files(directory.path()) {
         assert!(
             !bytes
@@ -1107,7 +1107,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
     drop(governor);
     tilo_rt::app()
-        .block_on(async { governing.relay.shutdown().await })
+        .block_on(async { governing.server.shutdown().await })
         .unwrap();
     // Neither the runtime's profile nor the host keeps it in the clear.
     for root in [&profile, &governor_root] {
@@ -1123,10 +1123,10 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     }
 }
 
-/// Every regular file under `root` with its contents: the host's relay store,
+/// Every regular file under `root` with its contents: the host's server store,
 /// the runtime's record. A service socket holds no data.
 ///
-/// The relay's detached store work and the joined session's record
+/// The server's detached store work and the joined session's record
 /// replacement can outlive the services' shutdown, so an entry listed but
 /// gone when read was renamed over or discarded: the scan starts again until
 /// one pass reads every entry it lists.

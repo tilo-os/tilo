@@ -635,7 +635,7 @@ pub struct SignedOp {
     pub encryption: Option<EncryptionMetadata>,
     /// What each change in `payload` claims to be: its action and the
     /// storage units it writes, one per change, signed with the op so a
-    /// receiver (a relay that cannot read a sealed payload included) decides
+    /// receiver (a server that cannot read a sealed payload included) decides
     /// every change against the author's grants before merging it. On the
     /// wire, consecutive changes that claim the same action and units share
     /// one statement of them ([`claims_wire`]).

@@ -16,7 +16,7 @@
 //! Before rank decides, the job's inputs do: a device is picked only when
 //! moving what it does not already hold there beats running the job where it
 //! was asked ([`transfer`]), the rule compute placement used to weigh on the
-//! relay. Measured rank order decides between the devices that pass, so the
+//! server. Measured rank order decides between the devices that pass, so the
 //! cheapest transfer is not a preference of its own.
 
 pub use neighbour_wire::offer::{Answer, Decline, Power, Rank, Work};

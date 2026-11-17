@@ -157,7 +157,7 @@ fn artifact() -> collab_types::ArtifactId {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::RelayDelta(key.verifying_key().to_bytes())
+    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
 fn route() -> Route {
@@ -734,7 +734,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds;
-    // The device that signs a compaction writes the record as well (a relay's host does what its
+    // The device that signs a compaction writes the record as well (a server's host does what its
     // agents do), numbering each write after its last one. A page that opens the record takes the
     // compaction first and then refuses every write of its author numbered at or below it as a
     // replay, so a compaction numbered past the writes it folds would stop the page at the fold.
@@ -1148,7 +1148,7 @@ tilo_test_env::scenario! {
 /// with the channel's keys: the record's base, the last member snapshot,
 /// the governor's own write, then two visitors' writes that build on a
 /// change of a third visitor's snapshot the governor had taken in and lost
-/// at a stop. `lost` is that snapshot, as the relay still retained it.
+/// at a stop. `lost` is that snapshot, as the server still retained it.
 /// Its postcard `Vec<(label, bytes)>`, hex.
 const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
 

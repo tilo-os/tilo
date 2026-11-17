@@ -4,10 +4,10 @@
 //! handlers.
 
 use super::{
-    AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, RelayTrust, ReplayCatchup,
-    ReplayPendingTarget, SessionCtx, SharedWorkspace, WorkspaceOperation, current_session,
-    enqueue_state, lost_session, mpsc, over_change_limit, trace_native_publication,
-    workspace_access,
+    AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, ReplayCatchup,
+    ReplayPendingTarget, ServerTrust, SessionCtx, SharedWorkspace, WorkspaceOperation,
+    current_session, enqueue_state, lost_session, mpsc, over_change_limit,
+    trace_native_publication, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -165,8 +165,8 @@ impl StateSource {
             session_live: session.connection_live.cloned(),
         }
     }
-    pub(super) fn trust(&self) -> RelayTrust<'_> {
-        RelayTrust {
+    pub(super) fn trust(&self) -> ServerTrust<'_> {
+        ServerTrust {
             revocations: &self.revocations,
             policy: &self.policy,
             own_user: &self.own_user,
@@ -516,7 +516,7 @@ pub(super) async fn handle_delta(
     Ok(None)
 }
 
-/// Why the relay refuses `env`, `peer`'s change in `ws`, once authorization
+/// Why the server refuses `env`, `peer`'s change in `ws`, once authorization
 /// let it through: a change that names nothing it writes, one its author's
 /// role grants nothing of (a Viewer writes none), one taking down what
 /// someone else made without the workspace's leave, or one the workspace's
@@ -534,7 +534,7 @@ async fn change_refusal(
         return None;
     };
     // The change itself must say what it does and stay inside what its app
-    // publishes, before the relay keeps or forwards it.
+    // publishes, before the server keeps or forwards it.
     let (device_access, payloads) =
         crate::workspace::access_deciding(ws, claimed, |device_access, payloads| {
             crate::surfaces::refusal(payloads, delta, device_access).is_some()
@@ -563,7 +563,7 @@ async fn change_refusal(
 
 /// Why the workspace refuses `env`, `author`'s change, as its own copy of the
 /// record decides it ([`crate::workspaces::Workspaces::refuses_write`]);
-/// `None` in a workspace this relay does not govern, for a change that is no
+/// `None` in a workspace this server does not govern, for a change that is no
 /// record write, and for one the workspace takes in.
 ///
 /// This is the governor's verdict, so it is the same one its copy gives the
@@ -610,7 +610,7 @@ pub(super) async fn file_refusal_of(ws: &SharedWorkspace, env: &Envelope, reason
     }
 }
 
-/// Hand `body`, a change `author` made that the relay kept, to the workspace's
+/// Hand `body`, a change `author` made that the server kept, to the workspace's
 /// governor through `tap`. Never dropped: the governor's copy is a replica
 /// of the workspace's records, and a replica that skipped a change would hold
 /// a different record than everyone else. A governor that has fallen
@@ -654,7 +654,7 @@ pub(super) fn deciding_author(
 /// Why the workspace refuses `env`, `author`'s change, when it writes the
 /// workspace's shared desktop
 /// ([`crate::workspaces::Workspaces::decide_desktop_write`]); `None` for any
-/// other change, and in a workspace this relay does not govern.
+/// other change, and in a workspace this server does not govern.
 pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
@@ -679,7 +679,7 @@ pub(super) async fn desktop_refusal(
 
 /// What the workspace's governor follows of `env`, a member's state change: its
 /// retained body. The workspace's governor takes part in its channels and creates
-/// records from these, so every change the relay keeps must reach it, one
+/// records from these, so every change the server keeps must reach it, one
 /// sent alone and one in a checkpoint prefix alike.
 pub(super) fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
     let Envelope::Delta { delta, .. } = env else {
@@ -784,7 +784,7 @@ pub(super) async fn handle_delta_prefix(
     Ok(None)
 }
 
-/// Whether the relay keeps none of `envelopes`, a checkpoint prefix: a change
+/// Whether the server keeps none of `envelopes`, a checkpoint prefix: a change
 /// of it the workspace refuses decides the whole prefix, which is kept whole
 /// or not at all.
 async fn refused_prefix(
@@ -862,12 +862,12 @@ fn writes_for_an_environment(
     outside
 }
 
-/// Why the relay took none of `peer`'s frames into the workspace: the
+/// Why the server took none of `peer`'s frames into the workspace: the
 /// admission decision's own reason where there is one, so a page that asked a
 /// channel for access is told exactly why not.
 pub(super) fn refused_reason(
     runtime: &crate::workspace::WorkspaceRuntime,
-    trust: &workspace_access::RelayTrust<'_>,
+    trust: &workspace_access::ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     channel: Option<[u8; 32]>,
@@ -890,7 +890,7 @@ fn trace_all(envelopes: &[Envelope], step: &str) {
     }
 }
 
-/// Why the relay took none of `peer`'s frames into the workspace.
+/// Why the server took none of `peer`'s frames into the workspace.
 pub(super) fn unpublished() -> tilo_server_protocol::refusal::Refusal {
     tilo_server_protocol::refusal::Refusal::NotAMember("workspace membership changed".into())
 }

@@ -3,15 +3,15 @@
 //!
 //! A host used to keep content in three places:
 //!
-//! - `<state>/relay/blobs/<hash>`, and `<state>/blobs/<hash>` where an earlier
+//! - `<state>/server/blobs/<hash>`, and `<state>/blobs/<hash>` where an earlier
 //!   build kept it: one flat directory for every workspace it governs (Chat
 //!   attachments, bridged avatars, the files members wrote);
-//! - `<state>/relay/workspace-content/<workspace>/<xx>/<hash>`: what apps and
+//! - `<state>/server/workspace-content/<workspace>/<xx>/<hash>`: what apps and
 //!   uploads kept in a workspace's records;
 //! - `<state>/agents/content/<workspace>/<xx>/<hash>`: what its hosted agents
 //!   kept.
 //!
-//! It now keeps all of it in `<state>/relay/content/<workspace>/<xx>/<hash>`
+//! It now keeps all of it in `<state>/server/content/<workspace>/<xx>/<hash>`
 //! and reads nothing from the old places. With the host stopped, this:
 //!
 //! - opens the host's workspaces as the host does (from its state, its root
@@ -24,7 +24,7 @@
 //! - links an item of the flat `blobs` into the store of each workspace whose
 //!   records name it, and of no other, so a workspace's store never holds
 //!   another's bytes; an item no workspace names goes to
-//!   `<state>/relay/unassigned/`, which nothing serves, and is listed;
+//!   `<state>/server/unassigned/`, which nothing serves, and is listed;
 //! - counts each moved item as written now, so the host keeps it at least its
 //!   grace period before it may let go of what nothing names;
 //! - removes an old item only with `--remove-sources`, and only once it is
@@ -40,11 +40,11 @@
 //! fresh backup and with the host stopped:
 //!
 //! ```text
-//! cargo build --release -p tilo-server --features agents --example move_relay_content
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --dry-run
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge
+//! cargo build --release -p tilo-server --features agents --example move_server_content
+//! move_server_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --dry-run
+//! move_server_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge
 //! # once the upgraded host serves its workspaces' files and pictures:
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --remove-sources
+//! move_server_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --remove-sources
 //! ```
 //!
 //! `--state`, `--root-file` and `--persistent` are what `tilo-server workspace` runs
@@ -160,13 +160,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> anyhow::Result<Report> {
-    let relay_root = tilo_server_protocol::metrics::workspace_relay_root(&args.state);
+    let server_root = tilo_server_protocol::metrics::workspace_server_root(&args.state);
     // Nothing else runs on this state while it moves.
-    let _lock = tilo_server::state_lock::StateLock::acquire(&relay_root)
+    let _lock = tilo_server::state_lock::StateLock::acquire(&server_root)
         .map_err(anyhow::Error::msg)
         .context("the host must be stopped")?;
     let named = tilo_rt::app()
-        .block_on(Box::pin(named_by_workspace(args, &relay_root)))
+        .block_on(Box::pin(named_by_workspace(args, &server_root)))
         .map_err(|error| anyhow::anyhow!("{error:?}"))??;
     let mut report = Report::default();
     for (workspace, found) in &named {
@@ -176,9 +176,9 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                 .push((workspace.clone(), app.clone(), record.clone(), why.clone()));
         }
     }
-    let content = relay_root.join(tilo_server::content::DIRECTORY);
+    let content = server_root.join(tilo_server::content::DIRECTORY);
     for old in [
-        relay_root.join(WORKSPACE_CONTENT),
+        server_root.join(WORKSPACE_CONTENT),
         args.state.join("agents").join("content"),
     ] {
         for (workspace, hash, source) in sharded(&old) {
@@ -186,8 +186,8 @@ fn run(args: &Args) -> anyhow::Result<Report> {
             one(args, &mut report, &source, &hash, &[target]);
         }
     }
-    let unassigned = relay_root.join(UNASSIGNED);
-    for (hash, source) in flat_blobs(args, &relay_root) {
+    let unassigned = server_root.join(UNASSIGNED);
+    for (hash, source) in flat_blobs(args, &server_root) {
         let mut targets: Vec<PathBuf> = named
             .iter()
             .filter(|(_, found)| found.names.contains(&hash))
@@ -203,18 +203,18 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     Ok(report)
 }
 
-/// The flat blob directories a host kept: under its relay's root, and, as an
+/// The flat blob directories a host kept: under its server's root, and, as an
 /// earlier build kept them, beside it in the state directory itself.
-fn flat_dirs(args: &Args, relay_root: &Path) -> Vec<PathBuf> {
-    let mut dirs = vec![relay_root.join(BLOBS), args.state.join(BLOBS)];
+fn flat_dirs(args: &Args, server_root: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![server_root.join(BLOBS), args.state.join(BLOBS)];
     dirs.dedup();
     dirs
 }
 
 /// Every item of the flat blob directories ([`flat_dirs`]), each hash once.
-fn flat_blobs(args: &Args, relay_root: &Path) -> Vec<(String, PathBuf)> {
+fn flat_blobs(args: &Args, server_root: &Path) -> Vec<(String, PathBuf)> {
     let mut seen = std::collections::BTreeSet::new();
-    flat_dirs(args, relay_root)
+    flat_dirs(args, server_root)
         .iter()
         .flat_map(|dir| flat(dir))
         .filter(|(hash, _)| seen.insert(hash.clone()))
@@ -229,7 +229,7 @@ fn flat_blobs(args: &Args, relay_root: &Path) -> Vec<(String, PathBuf)> {
 )]
 async fn named_by_workspace(
     args: &Args,
-    relay_root: &Path,
+    server_root: &Path,
 ) -> anyhow::Result<BTreeMap<String, tilo_server::content::collection::Named>> {
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
@@ -243,15 +243,15 @@ async fn named_by_workspace(
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))?
         .bind()
         .await?;
-    let relay = tilo_server::Relay::start_on_endpoint_with_protocols(
-        tilo_server::RelayConfig {
-            state_root: relay_root.to_path_buf(),
+    let server = tilo_server::Server::start_on_endpoint_with_protocols(
+        tilo_server::ServerConfig {
+            state_root: server_root.to_path_buf(),
             identity_root: args.state.join("identity"),
             full_replica_status: scratch.path().join("status.json"),
             home_peer_bundle: scratch.path().join("home-peer.toml"),
             ..Default::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host,
             device_cert: cert,
@@ -262,16 +262,16 @@ async fn named_by_workspace(
     )
     .await
     .map_err(|error| anyhow::anyhow!("open the host's workspaces: {error}"))?;
-    let workspaces = relay
+    let workspaces = server
         .workspaces()
         .context("the host governs no workspaces")?
         .clone();
-    let blobs = flat_dirs(args, relay_root);
+    let blobs = flat_dirs(args, server_root);
     let mut named = BTreeMap::new();
     for summary in workspaces.list().await {
         let workspace = summary.workspace;
         let own = [
-            relay_root.join(WORKSPACE_CONTENT).join(&workspace),
+            server_root.join(WORKSPACE_CONTENT).join(&workspace),
             args.state.join("agents").join("content").join(&workspace),
         ];
         let blobs = blobs.clone();
@@ -318,7 +318,7 @@ async fn named_by_workspace(
         }
         named.insert(workspace, found);
     }
-    relay.shutdown().await;
+    server.shutdown().await;
     Ok(named)
 }
 
@@ -565,7 +565,7 @@ mod tests {
         super::sharded_path(store, hash)
     }
 
-    /// A relay host at `state` with two workspaces, the lounge's notes naming
+    /// A server host at `state` with two workspaces, the lounge's notes naming
     /// `picture` and `earlier`; it is shut down again before the move runs.
     #[allow(
         clippy::significant_drop_tightening,
@@ -573,7 +573,7 @@ mod tests {
     )]
     fn two_workspaces(
         state: &Path,
-        relay_root: &Path,
+        server_root: &Path,
         root: &SigningKey,
         host: &SigningKey,
         picture: &str,
@@ -581,15 +581,15 @@ mod tests {
     ) -> (String, String) {
         tilo_rt::app()
             .block_on(Box::pin(async {
-                let relay = tilo_server::Relay::start(
-                    tilo_server::RelayConfig {
-                        state_root: relay_root.to_path_buf(),
+                let server = tilo_server::Server::start(
+                    tilo_server::ServerConfig {
+                        state_root: server_root.to_path_buf(),
                         identity_root: state.join("identity"),
                         full_replica_status: state.join("status.json"),
                         home_peer_bundle: state.join("home-peer.toml"),
                         ..Default::default()
                     },
-                    tilo_server::daemon::RelayIdentity {
+                    tilo_server::daemon::ServerIdentity {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_signing_key: host.clone(),
                         // As `tilo-server workspace --persistent lounge` signs it.
@@ -599,7 +599,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                let workspaces = relay.workspaces().unwrap().clone();
+                let workspaces = server.workspaces().unwrap().clone();
                 let lounge = workspaces.create("Lounge").await.unwrap().workspace;
                 let other = workspaces.create("Elsewhere").await.unwrap().workspace;
                 let governor = workspaces.serving_certificate().clone();
@@ -612,7 +612,7 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                relay.shutdown().await;
+                server.shutdown().await;
                 (lounge, other)
             }))
             .unwrap()
@@ -628,21 +628,21 @@ mod tests {
         let root_file = state.path().join("root");
         std::fs::write(&root_file, hex::encode(root.to_bytes())).unwrap();
         std::fs::write(state.path().join("host-device.key"), host.to_bytes()).unwrap();
-        let relay_root = tilo_server_protocol::metrics::workspace_relay_root(state.path());
-        let blobs = relay_root.join(BLOBS);
+        let server_root = tilo_server_protocol::metrics::workspace_server_root(state.path());
+        let blobs = server_root.join(BLOBS);
         let picture = kept(&blobs, b"a picture the lounge's notes show");
         let stray = kept(&blobs, b"an upload no record ever named");
-        // Where an earlier build kept its flat blobs: beside the relay's root.
+        // Where an earlier build kept its flat blobs: beside the server's root.
         let earlier = kept(
             &state.path().join(BLOBS),
             b"an avatar an earlier build kept",
         );
         let (lounge, other) =
-            two_workspaces(state.path(), &relay_root, &root, &host, &picture, &earlier);
+            two_workspaces(state.path(), &server_root, &root, &host, &picture, &earlier);
         // An item of a workspace's own store sits in its shard.
         let upload_bytes = b"what an app of the other workspace kept";
         let upload_hash = blake3::hash(upload_bytes).to_hex().to_string();
-        let own = relay_root.join(WORKSPACE_CONTENT).join(&other);
+        let own = server_root.join(WORKSPACE_CONTENT).join(&other);
         kept(&own.join(upload_hash.get(..2).unwrap()), upload_bytes);
 
         let args = Args {
@@ -659,7 +659,7 @@ mod tests {
             report.unread
         );
         assert!(report.mismatched.is_empty() && report.failed.is_empty());
-        let content = relay_root.join(tilo_server::content::DIRECTORY);
+        let content = server_root.join(tilo_server::content::DIRECTORY);
         assert!(intact(
             &sharded_in(&content.join(&lounge), &picture),
             &picture
@@ -672,10 +672,10 @@ mod tests {
             &sharded_in(&content.join(&other), &upload_hash),
             &upload_hash
         ));
-        assert!(intact(&relay_root.join(UNASSIGNED).join(&stray), &stray));
+        assert!(intact(&server_root.join(UNASSIGNED).join(&stray), &stray));
         assert!(
             intact(&sharded_in(&content.join(&lounge), &earlier), &earlier),
-            "a blob an earlier build kept beside the relay's root moves too"
+            "a blob an earlier build kept beside the server's root moves too"
         );
         assert!(!sharded_in(&content.join(&lounge), &stray).exists());
         assert!(!sharded_in(&content.join(&other), &stray).exists());
@@ -693,6 +693,6 @@ mod tests {
             &sharded_in(&content.join(&lounge), &picture),
             &picture
         ));
-        assert!(intact(&relay_root.join(UNASSIGNED).join(&stray), &stray));
+        assert!(intact(&server_root.join(UNASSIGNED).join(&stray), &stray));
     }
 }

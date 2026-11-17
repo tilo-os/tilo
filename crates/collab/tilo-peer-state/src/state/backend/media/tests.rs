@@ -214,7 +214,7 @@ fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
         .map(|c| c.raw_bytes().to_vec())
         .collect();
     peer.receive_from(
-        TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+        TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
             workspace: peer.workspace_id().into(),
             changes,

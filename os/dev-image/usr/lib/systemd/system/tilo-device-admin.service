@@ -13,7 +13,7 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-# TILO_DEVICE_ADMIN_RELAY=<url> uses a relay of your own instead of the
+# TILO_DEVICE_ADMIN_RELAY=<url> uses a server of your own instead of the
 # public ones.
 EnvironmentFile=-/etc/tilo/device-admin.env
 # tilo-vmd runs as root, as it does over SSH.

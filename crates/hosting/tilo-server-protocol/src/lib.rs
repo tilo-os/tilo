@@ -1,14 +1,14 @@
 //! `tilo-server-protocol` — the value types shared between the Tilo host +
-//! relay daemon (`tilo-server`) and the clients that configure, observe or
+//! server daemon (`tilo-server`) and the clients that configure, observe or
 //! route through it.
 //!
 //! Everything here is plain data plus the pure functions defined over it:
 //!
 //! - [`auth`] — the mutual challenge/response handshake messages and their
 //!   signing / verification;
-//! - [`transport`] — the relay ALPNs and the post-handshake [`Envelope`]
+//! - [`transport`] — the server ALPNs and the post-handshake [`Envelope`]
 //!   plus the discovery and home-peer management messages;
-//! - [`certify`] — relay-mediated issuance of a `DeviceCert` to a device
+//! - [`certify`] — server-mediated issuance of a `DeviceCert` to a device
 //!   that holds only its own key;
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
@@ -24,7 +24,7 @@
 //!   service and each `tilo-server workspace` child it runs;
 //! - [`mesh`] — service capabilities and the server advertisements devices
 //!   offer work with;
-//! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
+//! - [`config`] and [`policy`] — the on-disk `server.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
 //! - [`hosted`] — what a host hands the browser session in a workspace's VM when
@@ -69,11 +69,11 @@ pub mod workspaces;
 /// A workspace's id, defined beside [`delegation`].
 pub use tilo_workspace_join::WorkspaceId;
 /// Root-signed agent and bot delegations, defined in `tilo-workspace-join` so
-/// the admission core can verify them without linking the relay protocol.
+/// the admission core can verify them without linking the server protocol.
 pub use tilo_workspace_join::delegation;
 
 pub use auth::{AuthError, AuthenticatedPeer};
-pub use config::{ConfigError, RelayConfig};
+pub use config::{ConfigError, ServerConfig};
 pub use home_peer::{
     HomePeerRegistration, checked_home_peers, home_peer_registry_path, personal_device_peer_path,
     read_home_peers, remember_personal_device, valid_home_peer_label, write_home_peers,
@@ -88,23 +88,23 @@ pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, DocumentAnswer, Envelope, OwnedChannel};
 pub use work::{Machine, Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
-/// Domain-separated secret the relay binds, derived from the device secret.
+/// Domain-separated secret the server binds, derived from the device secret.
 ///
-/// The relay and the filesystem must not publish competing address records
+/// The server and the filesystem must not publish competing address records
 /// for one Iroh node id. Callers that only need the dial target use
-/// [`relay_service_node_id`].
+/// [`server_node_id`].
 #[must_use]
-pub fn relay_service_secret(device_secret: &[u8; 32]) -> [u8; 32] {
+pub fn server_node_secret(device_secret: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key("tilo-server-iroh-service-key-v1", device_secret)
 }
 
-/// Public Iroh endpoint id of the relay that belongs to this device secret.
+/// Public Iroh endpoint id of the server that belongs to this device secret.
 ///
-/// This is the value stored as `relay_service_node_id`. It is not the device
+/// This is the value stored as `server_node_id`. It is not the device
 /// public key, and deriving it does not require sending the device secret.
 #[must_use]
-pub fn relay_service_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
-    iroh_base::SecretKey::from_bytes(&relay_service_secret(device_secret))
+pub fn server_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
+    iroh_base::SecretKey::from_bytes(&server_node_secret(device_secret))
         .public()
         .as_bytes()
         .to_owned()

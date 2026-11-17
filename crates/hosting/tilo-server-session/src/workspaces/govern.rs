@@ -15,29 +15,29 @@ use tilo_actions::remote::{
 };
 use tilo_server_protocol::WorkspaceId;
 
-use crate::RelayClient;
+use crate::ServerClient;
 use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 
-/// A workspace as a device reaches it: its host's relay, the shard that
+/// A workspace as a device reaches it: its host's server, the shard that
 /// carries it there, and its id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceLink {
-    /// The host's relay endpoint.
-    pub relay: iroh_base::EndpointId,
-    /// Where the relay listens, when it is reached directly (a relay on
+    /// The host's server endpoint.
+    pub server: iroh_base::EndpointId,
+    /// Where the server listens, when it is reached directly (a server on
     /// this machine or network); otherwise found through discovery.
     pub direct: Option<std::net::SocketAddr>,
-    /// The relay shard that carries the workspace: its transport topic.
+    /// The server shard that carries the workspace: its transport topic.
     pub workspace_id: WorkspaceId,
     /// The workspace's id.
     pub workspace: String,
 }
 
 impl WorkspaceLink {
-    /// The relay's address.
+    /// The server's address.
     #[must_use]
-    pub fn relay_addr(&self) -> iroh_base::EndpointAddr {
-        let addr = iroh_base::EndpointAddr::new(self.relay);
+    pub fn server_addr(&self) -> iroh_base::EndpointAddr {
+        let addr = iroh_base::EndpointAddr::new(self.server);
         match self.direct {
             Some(direct) => addr.with_ip_addr(direct),
             None => addr,
@@ -46,9 +46,9 @@ impl WorkspaceLink {
 }
 
 impl std::fmt::Display for WorkspaceLink {
-    /// `tilo-workspace:<relay endpoint>[@<ip:port>]/<workspace id>/<workspace uuid>`.
+    /// `tilo-workspace:<server endpoint>[@<ip:port>]/<workspace id>/<workspace uuid>`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tilo-workspace:{}", self.relay)?;
+        write!(f, "tilo-workspace:{}", self.server)?;
         if let Some(direct) = self.direct {
             write!(f, "@{direct}")?;
         }
@@ -62,33 +62,33 @@ impl std::str::FromStr for WorkspaceLink {
     fn from_str(link: &str) -> Result<Self, String> {
         let shape = || {
             format!(
-                "{link}: a workspace link is tilo-workspace:<relay>[@<ip:port>]/<workspace id>/<workspace uuid>"
+                "{link}: a workspace link is tilo-workspace:<server>[@<ip:port>]/<workspace id>/<workspace uuid>"
             )
         };
         let rest = link.strip_prefix("tilo-workspace:").ok_or_else(shape)?;
         let mut parts = rest.split('/');
-        let (relay, shard, workspace) =
+        let (server, shard, workspace) =
             match (parts.next(), parts.next(), parts.next(), parts.next()) {
-                (Some(relay), Some(shard), Some(workspace), None) if !shard.is_empty() => {
-                    (relay, shard, workspace)
+                (Some(server), Some(shard), Some(workspace), None) if !shard.is_empty() => {
+                    (server, shard, workspace)
                 }
                 _ => return Err(shape()),
             };
-        let (relay, direct) = match relay.split_once('@') {
-            Some((relay, direct)) => (
-                relay,
+        let (server, direct) = match server.split_once('@') {
+            Some((server, direct)) => (
+                server,
                 Some(
                     direct
                         .parse()
                         .map_err(|error| format!("{direct}: {error}"))?,
                 ),
             ),
-            None => (relay, None),
+            None => (server, None),
         };
         Ok(Self {
-            relay: relay
+            server: server
                 .parse()
-                .map_err(|error| format!("{relay}: not a relay endpoint: {error}"))?,
+                .map_err(|error| format!("{server}: not a server endpoint: {error}"))?,
             direct,
             workspace_id: shard
                 .parse()
@@ -99,7 +99,7 @@ impl std::str::FromStr for WorkspaceLink {
 }
 
 /// A session with `link`'s host as the device `cert` signs for with `key`:
-/// directly when the link names where the relay listens, otherwise found
+/// directly when the link names where the server listens, otherwise found
 /// through discovery and relays.
 ///
 /// # Errors
@@ -110,7 +110,7 @@ pub async fn connect(
     link: &WorkspaceLink,
     cert: tilo_user_identity::DeviceCert,
     key: ed25519_dalek::SigningKey,
-) -> Result<RelayClient, String> {
+) -> Result<ServerClient, String> {
     let secret = iroh::SecretKey::from_bytes(&key.to_bytes());
     let endpoint = if link.direct.is_some() {
         iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -124,9 +124,9 @@ pub async fn connect(
             .await
     }
     .map_err(|error| format!("bind an endpoint: {error}"))?;
-    RelayClient::connect_to_pinned_host(
+    ServerClient::connect_to_pinned_host(
         endpoint,
-        link.relay_addr(),
+        link.server_addr(),
         cert,
         key,
         tilo_user_identity::RevocationList::new(),
@@ -144,7 +144,7 @@ pub async fn connect(
 /// refused the action (one the device's person may not take is unknown to
 /// them).
 pub async fn invoke(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     workspace: &str,
     action: &str,
@@ -167,7 +167,7 @@ const UPLOAD_PIECE: usize = 256 * 1024;
 /// # Errors
 /// As [`invoke`], for any piece.
 pub async fn upload(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     workspace: &str,
     file: &[u8],
@@ -189,7 +189,7 @@ pub async fn upload(
 }
 
 /// Subscribe `client` to the workspace carried by `workspace_id`.
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Result<(), String> {
+async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Result<(), String> {
     client
         .send(Envelope::Subscribe { workspace_id })
         .map_err(|_| "the session closed".to_owned())?;
@@ -209,7 +209,7 @@ async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Result<()
 
 /// Invoke `action` on a session [`subscribe`] opened.
 async fn call(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace_id: WorkspaceId,
     workspace: &str,
     action: &str,
@@ -234,7 +234,7 @@ async fn call(
         .send(Envelope::RemoteAction {
             workspace_id,
             version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: client.relay_peer.device_public_key,
+            to_device_public_key: client.server_peer.device_public_key,
             from_device_public_key: [0; 32],
             from_user_public_key: [0; 32],
             frame: RemoteActionFrame::new(request)
@@ -274,10 +274,10 @@ mod tests {
     use tilo_server_protocol::WorkspaceId;
 
     #[test]
-    fn a_link_names_its_relay_workspace_and_workspace_id() {
-        let relay = iroh::SecretKey::from_bytes(&[3; 32]).public();
+    fn a_link_names_its_server_workspace_and_workspace_id() {
+        let server = iroh::SecretKey::from_bytes(&[3; 32]).public();
         let link = WorkspaceLink {
-            relay,
+            server,
             direct: Some("127.0.0.1:4433".parse().unwrap()),
             workspace_id: WorkspaceId::from_u128(42),
             workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
@@ -293,8 +293,8 @@ mod tests {
         for wrong in [
             "https://tilo.sh/lounge".to_owned(),
             "tilo-workspace:nope/1/workspace".to_owned(),
-            format!("tilo-workspace:{relay}/not-a-number/workspace"),
-            format!("tilo-workspace:{relay}/42"),
+            format!("tilo-workspace:{server}/not-a-number/workspace"),
+            format!("tilo-workspace:{server}/42"),
         ] {
             assert!(wrong.parse::<WorkspaceLink>().is_err(), "{wrong}");
         }

@@ -4,8 +4,8 @@
 //! A host brings the transport; the client says what a member says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 //!
-//! A page, an agent or a program is a device of its person through the relay transport the client
-//! carries itself: [`start_session`] keeps one certified relay session to the person's host, held
+//! A page, an agent or a program is a device of its person through the server transport the client
+//! carries itself: [`start_session`] keeps one certified server session to the person's host, held
 //! through a [`Link`], and [`device::Device`] is the one entry a program takes it by. It carries
 //! signed document envelopes ([`document`]) as acknowledged commits from a persisted outbox
 //! replayed after every reconnect, each joined workspace's governance in its replica, the live

@@ -86,7 +86,7 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
         "{own:?}"
     );
 
-    // The page's root certifies the browser it runs in, and the relay keeps
+    // The page's root certifies the browser it runs in, and the server keeps
     // that certificate in the person's record, as it keeps every key a root
     // issues through its pairing.
     let directory = tempfile::tempdir().expect("a directory for the browser's identity");

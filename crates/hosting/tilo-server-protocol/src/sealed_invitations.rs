@@ -31,7 +31,7 @@ pub const MAX_SEALED_BYTES: usize = 8 * 1024;
 pub const MAX_STORED_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// The handle `path` names, when it names a sealed invitation: the site's own
-/// route, or the same route below a relay's API prefix.
+/// route, or the same route below a server's API prefix.
 #[must_use]
 pub fn handle_of(path: &str) -> Option<&str> {
     let route = path.strip_prefix(crate::web::API_PREFIX).unwrap_or(path);
@@ -103,7 +103,7 @@ mod tests {
             assert_eq!(
                 handle_of("/peer/v1/i/abcdefghijklmnop"),
                 Some("abcdefghijklmnop"),
-                "the same route below a relay's API prefix"
+                "the same route below a server's API prefix"
             );
             assert_eq!(handle_of("/i/abcdefghijklmnop/"), None);
             assert_eq!(handle_of("/i/abcdefghijklmno"), None);

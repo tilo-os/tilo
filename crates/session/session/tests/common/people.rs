@@ -9,7 +9,7 @@
 //! own, with its own home, its own identity root and its own state, as a
 //! device on someone's shell does.
 //!
-//! A workspace lives at a site ([`Site`]): a relay of this machine that
+//! A workspace lives at a site ([`Site`]): a server of this machine that
 //! governs it, hosts it for the people in it, admits people at the entry it
 //! serves the way a site's entry admits them, and keeps what its people record
 //! while they are away. The site is one person's own, as a home peer is: its
@@ -76,11 +76,11 @@ pub fn joined_within() -> Duration {
     tilo_session::sync::JOIN_PATIENCE.saturating_add(tilo_test_env::hang_bound())
 }
 
-/// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
+/// A site: a server of this machine that governs one workspace, hosts it for the people in it and
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
-    relay: Option<tilo_server::daemon::Relay>,
+    server: Option<tilo_server::daemon::Server>,
     /// The workspaces this site governs.
     pub workspaces: tilo_server::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
@@ -109,12 +109,12 @@ impl Site {
     /// Stop the site's host, as a site that went away: what its people's devices hold of the
     /// workspace, they read of their own.
     pub fn stop(&mut self) {
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
+        if let Some(server) = self.server.take() {
+            self.runtime.block_on(server.shutdown());
         }
     }
 
-    /// `owner`'s site: a relay of this machine governing the workspace `name`,
+    /// `owner`'s site: a server of this machine governing the workspace `name`,
     /// listening on loopback with its directory and entry served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
         // The site runs in this process: its log is this test's stderr.
@@ -135,16 +135,16 @@ impl Site {
         let host = owner.certify_as_host(&paths, "The site");
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
-        let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_server::daemon::Relay::start_with_relay_mode(
-                tilo_server::RelayConfig {
+        let (server, workspaces, workspace) = runtime.block_on(async {
+            let server = tilo_server::daemon::Server::start_with_relay_mode(
+                tilo_server::ServerConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
                     // own network.
                     iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
-                    ..tilo_server::RelayConfig::default()
+                    ..tilo_server::ServerConfig::default()
                 },
-                tilo_server::daemon::RelayIdentity {
+                tilo_server::daemon::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
                     device_cert: host.clone(),
@@ -156,7 +156,7 @@ impl Site {
             )
             .await
             .expect("the site's host");
-            let workspaces = relay
+            let workspaces = server
                 .workspaces()
                 .expect("the site governs workspaces")
                 .clone();
@@ -171,13 +171,13 @@ impl Site {
                 .enter(&workspace, &host)
                 .await
                 .expect("the site's device is in its workspace");
-            (relay, workspaces, workspace)
+            (server, workspaces, workspace)
         });
         let responder = entry_responder(&workspace, name);
         let entry = format!("{}/", responder.url());
         Self {
             runtime,
-            relay: Some(relay),
+            server: Some(server),
             workspaces,
             owner: owner.public,
             host,
@@ -196,11 +196,11 @@ impl Site {
             .expect("the site deletes its workspace");
     }
 
-    /// Where the site's relay is reached, as a link to something it hands out names it.
+    /// Where the site's server is reached, as a link to something it hands out names it.
     pub fn node_addr(&self) -> iroh::EndpointAddr {
-        self.relay
+        self.server
             .as_ref()
-            .expect("the site's relay runs")
+            .expect("the site's server runs")
             .node_addr()
     }
 
@@ -769,7 +769,7 @@ fn entry_responder(workspace: &str, name: &str) -> Responder {
     responder
 }
 
-/// The log of what runs in this test's own process — the site's relay above all — as `RUST_LOG`
+/// The log of what runs in this test's own process — the site's server above all — as `RUST_LOG`
 /// asks for it, warnings and worse by default: what the host did with a change a device published
 /// is only said there.
 pub fn install_log() {

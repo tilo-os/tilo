@@ -160,7 +160,7 @@ where
     let channel_reader = std::sync::atomic::AtomicBool::new(false);
     let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
-    // relay's are what the stream accepted, not an estimate.
+    // server's are what the stream accepted, not an estimate.
     let wire = Wire::new(EgressWrite::new(write, &metrics, peer.device_public_key));
     let (mut write, beats) = (wire.writer(), Heartbeats::default());
 
@@ -441,7 +441,7 @@ pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {
         EnvelopeV2::State(Envelope::SyncRequest { have_heads, .. }) => {
             have_heads.len().saturating_mul(32).saturating_add(256)
         }
-        EnvelopeV2::State(Envelope::PeerRelayHello { hosted_workspaces }) => hosted_workspaces
+        EnvelopeV2::State(Envelope::PeerServerHello { hosted_workspaces }) => hosted_workspaces
             .len()
             .saturating_mul(8)
             .saturating_add(256),

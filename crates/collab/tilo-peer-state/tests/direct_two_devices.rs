@@ -1,5 +1,5 @@
 //! Two devices of one person converge on a workspace directly over iroh,
-//! with no workspace host, relay or network actor in between, and a device
+//! with no workspace host, server or network actor in between, and a device
 //! outside the workspace roster is refused.
 #![allow(
     clippy::unwrap_used,

@@ -1,7 +1,7 @@
 //! Client-side dial + handshake helper.
 //!
 //! A device that wants to sync workspace CRDT deltas through a
-//! relay calls [`RelayClient::connect`] with its own identity + the
+//! server calls [`ServerClient::connect`] with its own identity + the
 //! relay's iroh endpoint address. On success the client owns the
 //! open bidirectional stream + a receiver for inbound envelopes.
 //!
@@ -44,11 +44,11 @@ use crate::session_carrier::{CarrierHandle, LinkCarrier, SessionChannels};
 use handshake::{authenticate_server, enter_server};
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
-/// A live authenticated session with a relay. Handles are cheap;
+/// A live authenticated session with a server. Handles are cheap;
 /// dropping the client tears down the connection.
-pub struct RelayClient {
-    /// The peer view of the relay (its device cert).
-    pub relay_peer: AuthenticatedPeer,
+pub struct ServerClient {
+    /// The peer view of the server (its device cert).
+    pub server_peer: AuthenticatedPeer,
     /// Outbound envelope channel — call `send` to enqueue.
     pub outbound: mpsc::Sender<Envelope>,
     /// Inbound envelope channel — call `recv` to consume.
@@ -149,7 +149,7 @@ struct ExpectedServer {
     interactive_scope: Option<InteractiveWorkspaceScope>,
 }
 
-/// This device's own relay credential: its certificate, the signer holding
+/// This device's own server credential: its certificate, the signer holding
 /// its device key (a key in memory, or a browser's non-extractable one) and
 /// the revocation list it checks the server against.
 pub struct ClientCredentials<'a> {
@@ -220,7 +220,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::Ping | Envelope::Pong | Envelope::KeyFollower => true,
         // Host business, which a workspace-scoped session does not ask: the
         // scope is one workspace's opaque trust, not a session on the host.
-        Envelope::PeerRelayHello { .. }
+        Envelope::PeerServerHello { .. }
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
         | Envelope::WorkspacesReply { .. }
@@ -236,7 +236,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
     }
 }
 
-impl Drop for RelayClient {
+impl Drop for ServerClient {
     fn drop(&mut self) {
         let mut graceful = true;
         if let Ok(subscriptions) = self.subscriptions.lock() {
@@ -262,8 +262,8 @@ impl Drop for RelayClient {
 /// Failure modes.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    /// TLS `no_application_protocol`: the other side serves no relay stream.
-    #[error("relay protocol unsupported")]
+    /// TLS `no_application_protocol`: the other side serves no server stream.
+    #[error("server protocol unsupported")]
     UnsupportedProtocol,
     /// The transport under the session: its dial, or a stream on it.
     #[error("transport: {0}")]
@@ -291,16 +291,16 @@ pub enum ClientError {
         /// The other device's version.
         theirs: u32,
     },
-    /// The host closed the relay stream without answering this device's
+    /// The host closed the server stream without answering this device's
     /// hello at all. A host that refuses a device closes it this way, and so
     /// does one from before versioned handshakes, which cannot read the
-    /// hello; [`RelayClient::probe_handshake_version`] tells the two apart.
+    /// hello; [`ServerClient::probe_handshake_version`] tells the two apart.
     #[error("the host closed the stream without answering: {0}")]
     NoHandshakeAnswer(String),
 }
 
 /// What a host answered a hello without a leading version
-/// ([`RelayClient::probe_handshake_version`]).
+/// ([`ServerClient::probe_handshake_version`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandshakeProbe {
     /// It answered with a handshake of its own, as a host from before
@@ -353,7 +353,7 @@ struct UnversionedHelloAck {
 
 impl ClientError {
     /// The peer protocol version the other side speaks, when that is why
-    /// this failed: over the relay stream ([`Self::PeerVersion`]), so a
+    /// this failed: over the server stream ([`Self::PeerVersion`]), so a
     /// device behind or ahead is told, never only logged.
     #[must_use]
     pub fn peer_version(&self) -> Option<u32> {
@@ -402,27 +402,27 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
     }
 }
 
-/// Dial the relay stream. There is one: the peer protocol version is the
+/// Dial the server stream. There is one: the peer protocol version is the
 /// handshake's first field, so another version is told apart there, never
 /// by a dial that falls back (docs/architecture/compatibility.md).
 #[cfg(not(target_arch = "wasm32"))]
 async fn dial(
     endpoint: &Endpoint,
-    relay_addr: EndpointAddr,
+    server_addr: EndpointAddr,
 ) -> Result<iroh::endpoint::Connection, ClientError> {
     endpoint
-        .connect(relay_addr, ALPN)
+        .connect(server_addr, ALPN)
         .await
         .map_err(|error| classify_connect_error(&error))
 }
 
-impl RelayClient {
+impl ServerClient {
     /// Execute an owner-authorized lifecycle operation against a pinned home
     /// peer. The mutual handshake proves both enrolled device certificates.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn manage_home_peer(
         endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
@@ -431,7 +431,7 @@ impl RelayClient {
         request: HomePeerManagementRequest,
     ) -> Result<HomePeerManagementResponse, ClientError> {
         let conn = endpoint
-            .connect(relay_addr, MANAGEMENT_ALPN)
+            .connect(server_addr, MANAGEMENT_ALPN)
             .await
             .map_err(|error| classify_connect_error(&error))?;
         let (mut send, mut recv) = conn
@@ -480,11 +480,11 @@ impl RelayClient {
         Ok(response)
     }
     /// Resolve the authenticated direct filesystem endpoint advertised by a
-    /// relay. The returned address is never the relay socket itself.
+    /// relay. The returned address is never the server socket itself.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         workspace_id: WorkspaceId,
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
@@ -494,7 +494,7 @@ impl RelayClient {
     ) -> Result<EndpointAddr, ClientError> {
         Ok(Self::discover_content_peer_with_server_trust(
             endpoint,
-            relay_addr,
+            server_addr,
             workspace_id,
             Some((own_user_public_key, expected_server_device)),
             own_cert,
@@ -510,7 +510,7 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         workspace_id: WorkspaceId,
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
@@ -520,7 +520,7 @@ impl RelayClient {
     ) -> Result<ContentPeerRegistration, ClientError> {
         Self::discover_content_peer_with_server_trust(
             endpoint,
-            relay_addr,
+            server_addr,
             workspace_id,
             Some((own_user_public_key, expected_server_device)),
             own_cert,
@@ -533,16 +533,16 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     async fn discover_content_peer_with_server_trust(
         endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         workspace_id: WorkspaceId,
         expected_server: Option<([u8; 32], [u8; 32])>,
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<ContentPeerRegistration, ClientError> {
-        let relay_service_id = *relay_addr.id.as_bytes();
+        let server_service_id = *server_addr.id.as_bytes();
         let conn = endpoint
-            .connect(relay_addr, DISCOVERY_ALPN)
+            .connect(server_addr, DISCOVERY_ALPN)
             .await
             .map_err(|error| classify_connect_error(&error))?;
         let (mut send, mut recv) = conn
@@ -594,12 +594,12 @@ impl RelayClient {
         conn.close(0u32.into(), b"");
         if advertisement.workspace_id != workspace_id {
             return Err(ClientError::Transport(
-                "relay returned a mismatched workspace".into(),
+                "server returned a mismatched workspace".into(),
             ));
         }
         if advertisement.schema_version != 1 || advertisement.filesystem_ticket.is_empty() {
             return Err(ClientError::Codec(
-                "relay returned an unsupported content registration".into(),
+                "server returned an unsupported content registration".into(),
             ));
         }
         let endpoint = advertisement
@@ -608,16 +608,16 @@ impl RelayClient {
             .next()
             .ok_or_else(|| {
                 ClientError::Transport(
-                    "relay has no ready filesystem endpoint for workspace".into(),
+                    "server has no ready filesystem endpoint for workspace".into(),
                 )
             })?;
         Ok(ContentPeerRegistration {
             endpoint,
             ticket: advertisement.filesystem_ticket,
-            relay_service_id,
+            server_service_id,
         })
     }
-    /// Dial `relay_addr` on the relay ALPN, run the auth
+    /// Dial `server_addr` on the server ALPN, run the auth
     /// handshake with `own_cert` + `own_sk`, and return a
     /// bidirectional session.
     ///
@@ -637,7 +637,7 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         own_user_public_key: [u8; 32],
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
@@ -645,7 +645,7 @@ impl RelayClient {
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
             endpoint,
-            relay_addr,
+            server_addr,
             Some(own_user_public_key),
             None,
             own_cert,
@@ -655,7 +655,7 @@ impl RelayClient {
         .await
     }
 
-    /// Ask the host at `relay_addr` whether it predates versioned
+    /// Ask the host at `server_addr` whether it predates versioned
     /// handshakes: send it a hello as such a host reads it (no leading
     /// version) and read its first answer. A host that closed the stream on
     /// this device's versioned hello without a word may have refused it, or
@@ -664,10 +664,10 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn probe_handshake_version(
         endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         own_cert: &DeviceCert,
     ) -> Result<HandshakeProbe, ClientError> {
-        let conn = dial(endpoint, relay_addr).await?;
+        let conn = dial(endpoint, server_addr).await?;
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -699,14 +699,14 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_to_pinned_host(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
             endpoint,
-            relay_addr,
+            server_addr,
             None,
             None,
             own_cert,
@@ -719,7 +719,7 @@ impl RelayClient {
     /// Connect with a device key held by `credentials`' signer, for devices
     /// that cannot hand over the key bytes (a browser's non-extractable
     /// `WebCrypto` key).
-    /// `expected_server_user` pins the relay's user root (`None` accepts any
+    /// `expected_server_user` pins the server's user root (`None` accepts any
     /// valid host certificate behind the pinned endpoint);
     /// `expected_server_device` additionally pins its device key. With
     /// `credentials.entering`, a device the host has not admitted yet enters a workspace
@@ -737,14 +737,14 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_with_signer(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
         credentials: ClientCredentials<'_>,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
             endpoint,
-            relay_addr,
+            server_addr,
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
@@ -758,7 +758,7 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     async fn connect_with_server_trust(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
@@ -767,7 +767,7 @@ impl RelayClient {
     ) -> Result<Self, ClientError> {
         Self::connect_version(
             endpoint,
-            relay_addr,
+            server_addr,
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
@@ -788,7 +788,7 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_v2_to_enrolled_home_peer(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
@@ -797,7 +797,7 @@ impl RelayClient {
     ) -> Result<Self, ClientError> {
         Self::connect_version(
             endpoint,
-            relay_addr,
+            server_addr,
             ExpectedServer {
                 user: Some(expected_server_user),
                 device: Some(expected_server_device),
@@ -826,7 +826,7 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_v2_to_own_device(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         own_user: [u8; 32],
         expected_device: [u8; 32],
         own_cert: DeviceCert,
@@ -838,7 +838,7 @@ impl RelayClient {
         }
         Self::connect_version(
             endpoint,
-            relay_addr,
+            server_addr,
             ExpectedServer {
                 user: Some(own_user),
                 device: Some(expected_device),
@@ -875,7 +875,7 @@ impl RelayClient {
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let relay_peer = authenticate_server(
+        let server_peer = authenticate_server(
             &mut write,
             &mut read,
             &own_cert,
@@ -908,7 +908,7 @@ impl RelayClient {
             }
         });
         Ok(Self::from_authenticated_session(
-            relay_peer,
+            server_peer,
             SessionChannels {
                 outbound: outbound_tx,
                 inbound: inbound_rx,
@@ -923,13 +923,13 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_to_workspace_device(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         served: tilo_delivery_protocol::workspace_join::ServedWorkspace,
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        if *relay_addr.id.as_bytes() != served.service_public_key() {
+        if *server_addr.id.as_bytes() != served.service_public_key() {
             return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
         }
         let scope = InteractiveWorkspaceScope {
@@ -938,7 +938,7 @@ impl RelayClient {
         };
         Self::connect_version(
             endpoint,
-            relay_addr,
+            server_addr,
             ExpectedServer {
                 user: None,
                 device: None,
@@ -957,11 +957,11 @@ impl RelayClient {
     #[cfg(not(target_arch = "wasm32"))]
     async fn connect_version(
         endpoint: Endpoint,
-        relay_addr: EndpointAddr,
+        server_addr: EndpointAddr,
         server: ExpectedServer,
         credentials: ClientCredentials<'_>,
     ) -> Result<Self, ClientError> {
-        let conn = dial(&endpoint, relay_addr).await?;
+        let conn = dial(&endpoint, server_addr).await?;
         Self::over_link(Link::iroh(conn), server, credentials, Some(endpoint)).await
     }
 
@@ -1017,7 +1017,7 @@ impl RelayClient {
             .await
             .map_err(|e| ClientError::Transport(e.to_string()))?;
         let entrance_server = server.clone();
-        let (relay_peer, awaiting) = match entering {
+        let (server_peer, awaiting) = match entering {
             None => (
                 authenticate_server(
                     &mut send,
@@ -1082,11 +1082,11 @@ impl RelayClient {
                 let _ = n0_future::time::timeout(std::time::Duration::from_secs(2), send.stopped())
                     .await;
             }
-            pump_link.close("relay pump ended");
+            pump_link.close("server pump ended");
         });
 
         let mut client = Self::from_authenticated_session(
-            relay_peer,
+            server_peer,
             SessionChannels {
                 outbound: outbound_tx,
                 inbound: inbound_rx,
@@ -1113,12 +1113,12 @@ impl RelayClient {
     /// crate-private: applications cannot turn payload DTOs into a certified
     /// transport. A future v3 verifier must satisfy the same trust boundary.
     pub(crate) fn from_authenticated_session(
-        relay_peer: AuthenticatedPeer,
+        server_peer: AuthenticatedPeer,
         channels: SessionChannels,
         carrier: CarrierHandle,
     ) -> Self {
         Self {
-            relay_peer,
+            server_peer,
             outbound: channels.outbound,
             inbound: Arc::new(AsyncMutex::new(channels.inbound)),
             subscriptions: Mutex::new(HashSet::new()),
@@ -1203,13 +1203,13 @@ impl RelayClient {
         self.carrier.transport_stats()
     }
 
-    /// Disconnect this session, waiting until the relay has been told, and
+    /// Disconnect this session, waiting until the server has been told, and
     /// leave the endpoint it dialled from open for the next connection.
     ///
     /// Prefer this to dropping the handle whenever the disconnect is
     /// deliberate. `Connection::close` only queues `CONNECTION_CLOSE` and there
     /// is no per-connection flush, so the wait is what puts it on the wire;
-    /// without it the relay keeps the subscription until its idle timeout —
+    /// without it the server keeps the subscription until its idle timeout —
     /// fanning deltas out to a connection that is gone rather than queueing
     /// them for store-and-forward.
     pub async fn disconnect(&self) {
@@ -1217,17 +1217,17 @@ impl RelayClient {
     }
 
     /// Disconnect and close the endpoint this client was built on, which
-    /// [`RelayClient::connect`] takes by value on the understanding that the
+    /// [`ServerClient::connect`] takes by value on the understanding that the
     /// client owns it. A caller that kept a clone and is still using it — a
     /// page redialling from the endpoint beside its live sessions — calls
-    /// [`RelayClient::disconnect`] instead.
+    /// [`ServerClient::disconnect`] instead.
     pub async fn close(self) {
         self.carrier.close_owned().await;
     }
 }
 
 /// Prove this device to the host on `send`/`recv`, a link's first stream,
-/// with the relay handshake the session opens with
+/// with the server handshake the session opens with
 /// ([`crate::auth`]): the device signs the host's challenge with the key
 /// `cert` names, and the host must prove `expected_server_user` (and
 /// `expected_server_device`, when named). What a link over a carrier that
@@ -1236,7 +1236,7 @@ impl RelayClient {
 ///
 /// # Errors
 ///
-/// As the session's handshake ([`RelayClient::connect_over_link`]).
+/// As the session's handshake ([`ServerClient::connect_over_link`]).
 pub async fn prove<R, W>(
     send: &mut W,
     recv: &mut R,
@@ -1398,7 +1398,7 @@ async fn run_v2_reader<R>(
             // build does not serve, so the session ends rather than dropping
             // what it cannot route.
             Ok(Some(_)) => {
-                tracing::warn!("relay session closed: a peer sent a retired action frame");
+                tracing::warn!("server session closed: a peer sent a retired action frame");
                 return;
             }
             Ok(None) | Err(_) => return,
@@ -1592,7 +1592,7 @@ mod scheduling_tests {
             released: false,
             bytes: written.clone(),
         };
-        let (mut relay_write, client_read) = tokio::io::duplex(4096);
+        let (mut server_write, client_read) = tokio::io::duplex(4096);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
             let handshake = Mutex::new(None);
@@ -1613,7 +1613,7 @@ mod scheduling_tests {
         let response = Envelope::Subscribe {
             workspace_id: WorkspaceId::from_u128(7),
         };
-        relay_write
+        server_write
             .write_all(
                 &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(response.clone()))
                     .unwrap(),
@@ -1664,7 +1664,7 @@ mod scheduling_tests {
             states: state_tx,
             frames: frames.clone(),
         };
-        let (mut relay_write, client_read) = tokio::io::duplex(4096);
+        let (mut server_write, client_read) = tokio::io::duplex(4096);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
             let handshake = Mutex::new(None);
@@ -1681,7 +1681,7 @@ mod scheduling_tests {
         });
 
         let response = Envelope::Subscribe { workspace_id };
-        relay_write
+        server_write
             .write_all(
                 &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(response.clone()))
                     .unwrap(),
@@ -1701,7 +1701,7 @@ mod scheduling_tests {
             "the writer wrote while the reader made progress"
         );
 
-        drop(relay_write);
+        drop(server_write);
         assert!(
             !tilo_test_env::within("reader EOF did not stop the shared pump", pump)
                 .await
@@ -1722,7 +1722,7 @@ mod scheduling_tests {
             released: false,
             bytes: Arc::new(Mutex::new(Vec::new())),
         };
-        let (relay_write, client_read) = tokio::io::duplex(4096);
+        let (server_write, client_read) = tokio::io::duplex(4096);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
             let handshake = Mutex::new(None);
@@ -1739,7 +1739,7 @@ mod scheduling_tests {
         });
 
         started_rx.await.unwrap();
-        drop(relay_write);
+        drop(server_write);
         assert!(
             !tilo_test_env::within("reader EOF did not stop the shared pump", pump)
                 .await
@@ -1796,7 +1796,7 @@ mod scheduling_tests {
     }
 
     #[test]
-    fn only_tls_no_application_protocol_reads_as_an_unsupported_relay() {
+    fn only_tls_no_application_protocol_reads_as_an_unsupported_server() {
         use iroh::endpoint::{ConnectError, ConnectionError, TransportError, TransportErrorCode};
         for code in [40, 42, 120] {
             let error: ConnectError = ConnectionError::TransportError(TransportError::new(

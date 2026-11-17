@@ -235,7 +235,7 @@ fn hold_workspace(state: &Path, keys: &Keys) {
         owner
             .receive(
                 workspace,
-                TransportOrigin::RetainedRelayDelta(host),
+                TransportOrigin::RetainedServerDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
                 std::time::SystemTime::now(),
             )

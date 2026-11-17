@@ -27,7 +27,7 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
 use crate::auth::AuthenticatedPeer;
-use crate::host::RelayProtocol;
+use crate::host::ServerProtocol;
 use crate::workspace_access::{self, WorkspaceOperation};
 use collab_types::WorkspaceId;
 
@@ -176,7 +176,7 @@ type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 /// and nothing else — a device that never opened a live session is
 /// nobody here.
 pub(crate) struct Authority {
-    relay: RelayProtocol,
+    relay: ServerProtocol,
     /// The devices this host certified for its browser environments: they
     /// publish their window's page and are offered nobody else's tracks.
     environments: crate::environment::EnvironmentRegistry,
@@ -184,7 +184,7 @@ pub(crate) struct Authority {
 }
 
 impl Authority {
-    pub(crate) fn new(relay: RelayProtocol) -> Self {
+    pub(crate) fn new(relay: ServerProtocol) -> Self {
         let environments = relay.environments.clone();
         Self {
             relay,
@@ -342,7 +342,7 @@ impl LiveOrigin {
     /// Start the live origin for `relay`'s workspace: the origin its sessions copy
     /// into, and the answer that cuts an admitted one when the workspace moves
     /// its membership. Must be called inside a Tokio runtime.
-    pub(crate) fn start(relay: RelayProtocol) -> Self {
+    pub(crate) fn start(relay: ServerProtocol) -> Self {
         let authority = Arc::new(Authority::new(relay));
         let origin = Relay::new(authority.clone());
         let refreshing = authority.clone();
@@ -396,7 +396,7 @@ impl LiveOrigin {
 /// carrier's.
 pub(crate) async fn serve_web(
     origin: &Relay,
-    protocol: &RelayProtocol,
+    protocol: &ServerProtocol,
     session: tilo_net::webtransport::Session,
 ) {
     let link = tilo_server_client::link::Link::web(session.clone());

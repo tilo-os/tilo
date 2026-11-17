@@ -2,8 +2,8 @@
 //!
 //! The `ui` collaboration layer (`ui::collaboration`) speaks
 //! `CollabRequest` / `CollabEvent` frames carrying Automerge deltas and
-//! presence; the host speaks [`Envelope`]. [`RelayCoeditSession`] wraps a
-//! [`RelayClient`] and exposes the co-edit verbs an app needs — publish
+//! presence; the host speaks [`Envelope`]. [`ServerCoeditSession`] wraps a
+//! [`ServerClient`] and exposes the co-edit verbs an app needs — publish
 //! a document delta, publish presence, receive peer deltas/presence —
 //! mapping each onto an [`Envelope`]. Because document deltas travel as
 //! [`Envelope::Delta`] they inherit the host's fan-out **and** its
@@ -29,9 +29,9 @@
 //! document delta is attributed to its publisher for free. But
 //! [`Envelope::RetiredPresence`] has **no** author slot — the host fans the
 //! opaque bytes out without inspecting or stamping them. So presence
-//! attribution has to ride *inside* the payload: [`RelayCoeditSession::publish_presence`]
+//! attribution has to ride *inside* the payload: [`ServerCoeditSession::publish_presence`]
 //! wraps the toolkit body in an [`AttributedPresence`] carrying the
-//! session's own device key, and [`RelayCoeditSession::recv`] unwraps it
+//! session's own device key, and [`ServerCoeditSession::recv`] unwraps it
 //! into [`Inbound::Presence`]`{ author, payload }`. Without this a
 //! remote cursor would arrive unauthored and could not be drawn against
 //! the right member.
@@ -49,17 +49,17 @@ pub use tilo_server_client::coedit::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_server_client::coedit::{RetentionKind, retention_metadata, retention_view};
 
-use crate::client::RelayClient;
+use crate::client::ServerClient;
 use crate::transport::Envelope;
 use collab_types::WorkspaceId;
 
 /// A co-edit session bound to one workspace on one host connection.
 ///
-/// Construct it from an already-connected [`RelayClient`] via
-/// [`RelayCoeditSession::join`]; then publish document deltas / presence
-/// and drain inbound events with [`RelayCoeditSession::recv`].
-pub struct RelayCoeditSession {
-    client: RelayClient,
+/// Construct it from an already-connected [`ServerClient`] via
+/// [`ServerCoeditSession::join`]; then publish document deltas / presence
+/// and drain inbound events with [`ServerCoeditSession::recv`].
+pub struct ServerCoeditSession {
+    client: ServerClient,
     workspace_id: WorkspaceId,
     author: [u8; 32],
     /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
@@ -78,7 +78,7 @@ pub struct RelayCoeditSession {
     when_opened: std::sync::atomic::AtomicBool,
 }
 
-impl RelayCoeditSession {
+impl ServerCoeditSession {
     /// Subscribe `client` to `workspace_id` and wrap it as a co-edit
     /// session authored as `author` (the device public key). The host
     /// replies with a `Ready` (and flushes any queued deltas first);
@@ -89,7 +89,7 @@ impl RelayCoeditSession {
     /// Returns [`CoeditError::Disconnected`] if `client`'s outbound
     /// channel is already closed.
     pub fn join(
-        client: RelayClient,
+        client: ServerClient,
         workspace_id: WorkspaceId,
         author: [u8; 32],
     ) -> Result<Self, CoeditError> {
@@ -246,7 +246,7 @@ impl RelayCoeditSession {
     }
 
     /// The host connection's packet and frame counters
-    /// ([`RelayClient::transport_stats`]).
+    /// ([`ServerClient::transport_stats`]).
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn transport_stats(&self) -> Option<iroh::endpoint::ConnectionStats> {
@@ -271,19 +271,19 @@ impl RelayCoeditSession {
         self.workspace_id
     }
 
-    /// The device key of the relay this session is with, as its handshake
-    /// authenticated it: the device a remote action for the relay itself is
+    /// The device key of the server this session is with, as its handshake
+    /// authenticated it: the device a remote action for the server itself is
     /// addressed to.
     #[must_use]
-    pub const fn relay_device_public_key(&self) -> [u8; 32] {
-        self.client.relay_peer.device_public_key
+    pub const fn server_device_public_key(&self) -> [u8; 32] {
+        self.client.server_peer.device_public_key
     }
 
     /// Publish and retain a complete checkpoint for `channel`.
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// Returns [`CoeditError::Disconnected`] if the server connection is
     /// gone, or [`CoeditError::Encode`] if the payload can't be
     /// postcard-encoded.
     pub fn publish_checkpoint(&self, channel: [u8; 32], body: Vec<u8>) -> Result<(), CoeditError> {
@@ -295,7 +295,7 @@ impl RelayCoeditSession {
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// Returns [`CoeditError::Disconnected`] if the server connection is
     /// gone, or [`CoeditError::Encode`] if the payload can't be
     /// postcard-encoded.
     pub fn publish_retained_delta(
@@ -314,7 +314,7 @@ impl RelayCoeditSession {
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// Returns [`CoeditError::Disconnected`] if the server connection is
     /// gone, or [`CoeditError::Encode`] if the payload can't be
     /// postcard-encoded.
     pub fn commit(&self, op: [u8; 16], payload: &CoeditPayload) -> Result<(), CoeditError> {
@@ -347,7 +347,7 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Ask the current authenticated relay owner to refresh its genuine retained
+    /// Ask the current authenticated server owner to refresh its genuine retained
     /// checkpoint. Queue acceptance is neither durability nor a checkpoint ACK.
     ///
     /// # Errors
@@ -374,7 +374,7 @@ impl RelayCoeditSession {
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// Returns [`CoeditError::Disconnected`] if the server connection is
     /// gone, or [`CoeditError::Encode`] if the wrapped payload can't be
     /// postcard-encoded.
     pub fn publish_presence(&self, payload: Vec<u8>) -> Result<(), CoeditError> {
@@ -691,7 +691,7 @@ impl RelayCoeditSession {
 
     /// Consume the session and hand back the underlying client (e.g. to
     /// unsubscribe or reuse the connection for another workspace).
-    pub fn into_client(self) -> RelayClient {
+    pub fn into_client(self) -> ServerClient {
         self.client
     }
 }
@@ -849,12 +849,12 @@ mod tests {
         for frame in bad {
             let (outbound, _outgoing) = tokio::sync::mpsc::channel(4);
             let (incoming, inbound) = tokio::sync::mpsc::channel(4);
-            let client = RelayClient::from_authenticated_session(
+            let client = ServerClient::from_authenticated_session(
                 peer.clone(),
                 SessionChannels { outbound, inbound },
                 Box::new(Carrier),
             );
-            let session = RelayCoeditSession::join(
+            let session = ServerCoeditSession::join(
                 client,
                 tilo_server_protocol::WorkspaceId::from_u128(41),
                 [9; 32],

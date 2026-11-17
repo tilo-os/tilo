@@ -11,7 +11,7 @@
 //!
 //! - in total and for live fan-out ([`MetricsSnapshot::bytes_sent`],
 //!   [`MetricsSnapshot::bytes_sent_live`]);
-//! - per relay workspace, for the frames that belong to one
+//! - per server workspace, for the frames that belong to one
 //!   ([`Metrics::workspace_egress`]): a workspace's counters are created on its first
 //!   frame and read under a shared lock, so writers never wait on each
 //!   other;
@@ -56,7 +56,7 @@ pub struct Metrics {
     bytes_sent: AtomicU64,
     /// Bytes of live fan-out frames written to peer sessions.
     bytes_sent_live: AtomicU64,
-    /// Egress per relay workspace.
+    /// Egress per server workspace.
     workspaces: RwLock<HashMap<WorkspaceId, WorkspaceCounters>>,
     /// Egress per connected session, keyed by a serial number.
     sessions: Mutex<HashMap<u64, Arc<SessionCounters>>>,
@@ -165,7 +165,7 @@ impl Metrics {
             .add(bytes, live);
     }
 
-    /// Egress per relay workspace since start, for workspaces that were sent anything.
+    /// Egress per server workspace since start, for workspaces that were sent anything.
     pub fn workspace_egress(&self) -> BTreeMap<WorkspaceId, WorkspaceEgress> {
         self.workspaces
             .read_recover()
@@ -250,7 +250,7 @@ impl Drop for SessionLease {
 }
 
 /// A peer session's outbound stream that counts what it writes into the
-/// session's and the relay's egress. The session is listed in
+/// session's and the server's egress. The session is listed in
 /// [`Metrics::session_egress`] while this lives.
 #[derive(Debug)]
 pub struct EgressWrite<W> {
@@ -400,7 +400,7 @@ mod tests {
         let mut first = EgressWrite::new(Vec::new(), &metrics, [1; 32]);
         let mut second = EgressWrite::new(Vec::new(), &metrics, [2; 32]);
         first.write_all(b"hello").await.unwrap();
-        second.write_all(b"relay frame").await.unwrap();
+        second.write_all(b"server frame").await.unwrap();
         first.write_all(b"!").await.unwrap();
         assert_eq!(first.bytes_sent(), 6);
         assert_eq!(metrics.snapshot().bytes_sent, 17);
@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(
             metrics.snapshot().bytes_sent,
             17,
-            "the relay keeps its total"
+            "the server keeps its total"
         );
     }
 }

@@ -21,8 +21,8 @@ use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelRequest, Role, ToolChoice,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_protocol::WorkspaceId;
 use tilo_resource::Resource as _;
+use tilo_server_protocol::WorkspaceId;
 
 use super::{CHAT, HostAgents, Reply, Turn, invoke_named, later};
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};

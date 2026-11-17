@@ -161,7 +161,7 @@ impl Device {
         let through_entry = entering.is_some();
         let device = Self::entering(sign_in, signer, entering);
         // An entry that fails, or that its caller gives up on, ends the session it started: the
-        // device's next try opens another under the same key, and a relay keeps one connection
+        // device's next try opens another under the same key, and a server keeps one connection
         // per key, so the two would cut each other off for as long as both dial.
         let unentered = Unentered(Some(device.peer.clone()));
         if through_entry {

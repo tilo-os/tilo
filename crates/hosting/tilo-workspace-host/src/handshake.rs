@@ -1,4 +1,4 @@
-//! The relay's server side of the certified-device handshake
+//! The server's server side of the certified-device handshake
 //! ([`crate::auth`]), once for every endpoint.
 //!
 //! Each endpoint names who it admits with an [`EndpointTrust`] and runs
@@ -58,7 +58,7 @@ pub trait Admit: Send + Sync {
 
 #[derive(Clone, Copy, Debug)]
 pub enum EndpointTrust<'a> {
-    /// [`HandshakeTrust::Live`], read from the relay's live policy when the
+    /// [`HandshakeTrust::Live`], read from the server's live policy when the
     /// hello is checked.
     Live(&'a RwLock<TrustPolicy>),
     /// A fixed, named requirement such as [`HandshakeTrust::OwnerDevicesOnly`].
@@ -90,9 +90,9 @@ pub enum HandshakeError {
     #[error("auth reject: {0}")]
     Auth(#[from] AuthError),
     /// The peer speaks another peer protocol version, `theirs`. It was told
-    /// this relay's ([`auth::version_answer`]) and nothing else was read.
+    /// this server's ([`auth::version_answer`]) and nothing else was read.
     #[error(
-        "peer speaks protocol {theirs}, this relay {}",
+        "peer speaks protocol {theirs}, this server {}",
         auth::PEER_PROTOCOL_VERSION
     )]
     Version {
@@ -105,11 +105,11 @@ pub enum HandshakeError {
     NotEntering,
 }
 
-/// The relay's own identity and its live revocation list, shared by every
+/// The server's own identity and its live revocation list, shared by every
 /// endpoint and outbound dial.
 #[derive(Clone)]
 pub struct LiveIdentity {
-    /// The user root this relay chains to.
+    /// The user root this server chains to.
     pub user_public_key: [u8; 32],
     pub cert: DeviceCert,
     pub signing_key: ed25519_dalek::SigningKey,
@@ -399,7 +399,7 @@ async fn read<R: AsyncRead + Unpin + Send>(
         .map_err(|source| HandshakeError::Io { stage, source })
 }
 
-/// The client's hello; at another version, this relay's version is the
+/// The client's hello; at another version, this server's version is the
 /// answer and the handshake ends.
 async fn decode_hello<W: AsyncWrite + Unpin + Send>(
     bytes: &[u8],
@@ -412,13 +412,13 @@ async fn decode_hello<W: AsyncWrite + Unpin + Send>(
                 stage: "encode version answer",
                 source,
             })?;
-            // The peer learns this relay's version even if the write fails;
+            // The peer learns this server's version even if the write fails;
             // there is nothing more to tell it either way.
             let _ = write_frame(send, &answer).await;
             tracing::info!(
                 theirs,
                 ours = auth::PEER_PROTOCOL_VERSION,
-                "a peer at another protocol version was told this relay's"
+                "a peer at another protocol version was told this server's"
             );
             Err(HandshakeError::Version { theirs })
         }
@@ -670,7 +670,7 @@ mod tests {
     async fn pending_budget_queues_a_burst_and_releases_on_cancellation_and_success() {
         let identity = identity("host").unwrap();
         let hello = hello(&identity);
-        // Local budgets isolate this test from unrelated relay tests.
+        // Local budgets isolate this test from unrelated server tests.
         let budget = Semaphore::new(MAX_PENDING_HANDSHAKES);
         let mut held: Vec<_> = (0..MAX_PENDING_HANDSHAKES)
             .map(|_| budget.try_acquire().unwrap())

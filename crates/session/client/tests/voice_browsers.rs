@@ -238,7 +238,7 @@ impl Native {
             Vec::new(),
         )
         .expect("a native grant");
-        let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.relay.node_addr());
+        let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.server.node_addr());
         let live_session = LiveSession::join(
             std::sync::Arc::new(carrier),
             &grant.encode(),
@@ -272,7 +272,7 @@ impl Native {
     /// camera picture, and take what the page sent.
     fn step(
         &mut self,
-        client: &tilo_server::RelayClient,
+        client: &tilo_server::ServerClient,
         workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],

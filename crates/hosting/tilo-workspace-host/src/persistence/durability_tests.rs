@@ -320,7 +320,7 @@ fn with_history(root: &Path, stored: u32) -> State {
 
 /// CPU nanoseconds and listed directory entries per edit of `count` commits
 /// after `stored` records, the first commit after start-up excluded (a
-/// long-running relay is past it).
+/// long-running server is past it).
 fn cost_per_edit(stored: u32, count: u32) -> (u64, u64) {
     let dir = tempfile::tempdir().unwrap();
     let mut state = with_history(dir.path(), stored);

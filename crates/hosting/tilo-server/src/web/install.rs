@@ -1,4 +1,4 @@
-//! A host provisioned without a certificate: before the relay can start, the
+//! A host provisioned without a certificate: before the server can start, the
 //! browser listener serves the one route that installs it.
 //!
 //! The host's device key exists already (its public half was handed out of
@@ -9,7 +9,7 @@
 //! The certificate must be for this key, verify, be a device of the person
 //! and not admit devices; it is then written as a joined device's
 //! ([`tilo_user_identity::install_device_cert`]) and [`await_certificate`]
-//! returns, so the caller starts the relay on the same address.
+//! returns, so the caller starts the server on the same address.
 //!
 //! A node runs a session beside it ([`SessionDevice`]): the shell that runs
 //! the person's apps and agents, with a device key of its own. `GET` on the
@@ -33,7 +33,7 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 use tokio::sync::{mpsc, watch};
 
 use super::{Body, WebConfig, body, reply, status, tls};
-use crate::daemon::RelayError;
+use crate::daemon::ServerError;
 
 /// The session beside a node, certified at install with it.
 #[derive(Clone, Debug)]
@@ -83,10 +83,14 @@ impl InstallListener {
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::Iroh`] (the transport error kind) for a token
+    /// Returns [`ServerError::Iroh`] (the transport error kind) for a token
     /// shorter than 16 characters, or when the certificate cannot be loaded
     /// or an address cannot be bound.
-    pub fn bind(config: &WebConfig, paths: IdentityPaths, token: &str) -> Result<Self, RelayError> {
+    pub fn bind(
+        config: &WebConfig,
+        paths: IdentityPaths,
+        token: &str,
+    ) -> Result<Self, ServerError> {
         Self::bind_with_session(config, paths, token, None)
     }
 
@@ -100,8 +104,8 @@ impl InstallListener {
         paths: IdentityPaths,
         token: &str,
         session: Option<SessionDevice>,
-    ) -> Result<Self, RelayError> {
-        let failed = |message: String| RelayError::Iroh(format!("install listener: {message}"));
+    ) -> Result<Self, ServerError> {
+        let failed = |message: String| ServerError::Iroh(format!("install listener: {message}"));
         let key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .map_err(|error| failed(format!("device key: {error}")))?;
         let device = key.verifying_key().to_bytes();
@@ -165,17 +169,17 @@ impl InstallListener {
 
     /// Wait for the certificate, then stop serving: stop accepting, and
     /// let the requests in flight finish (the installing page reads its
-    /// answer) before the address is free for the relay.
+    /// answer) before the address is free for the server.
     ///
     /// # Errors
     ///
-    /// Returns [`RelayError::Iroh`] when the listener stopped first.
-    pub async fn installed(mut self) -> Result<DeviceCert, RelayError> {
+    /// Returns [`ServerError::Iroh`] when the listener stopped first.
+    pub async fn installed(mut self) -> Result<DeviceCert, ServerError> {
         let cert = self
             .done
             .recv()
             .await
-            .ok_or_else(|| RelayError::Iroh("install listener: stopped".into()))?;
+            .ok_or_else(|| ServerError::Iroh("install listener: stopped".into()))?;
         let _ = self.close.send(true);
         let drained = tokio::time::timeout(DRAIN, async {
             while self.tasks.join_next().await.is_some() {}
@@ -199,7 +203,7 @@ pub async fn await_certificate(
     paths: IdentityPaths,
     token: &str,
     session: Option<SessionDevice>,
-) -> Result<DeviceCert, RelayError> {
+) -> Result<DeviceCert, ServerError> {
     InstallListener::bind_with_session(config, paths, token, session)?
         .installed()
         .await
@@ -212,7 +216,7 @@ fn bind(listen: SocketAddr) -> Result<tokio::net::TcpListener, String> {
         tokio::net::TcpSocket::new_v6()
     }
     .map_err(|error| error.to_string())?;
-    // The relay binds this address again once the certificate is in.
+    // The server binds this address again once the certificate is in.
     socket
         .set_reuseaddr(true)
         .map_err(|error| error.to_string())?;
@@ -631,13 +635,13 @@ mod tests {
             "stopped serving"
         );
 
-        crate::daemon::Relay::start(
-            crate::RelayConfig {
+        crate::daemon::Server::start(
+            crate::ServerConfig {
                 state_root: dir.path().join("state"),
                 identity_root: dir.path().join("identity"),
                 ..Default::default()
             },
-            crate::daemon::RelayIdentity {
+            crate::daemon::ServerIdentity {
                 user_public_key: tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
                     .unwrap(),
                 device_signing_key: device,
@@ -652,7 +656,7 @@ mod tests {
         .await;
     }
 
-    /// The relay waits for the certificate while a page installs it: the
+    /// The server waits for the certificate while a page installs it: the
     /// page still reads its whole answer before the listener stops.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_installing_page_reads_its_answer() {

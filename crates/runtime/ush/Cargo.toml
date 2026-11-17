@@ -54,7 +54,7 @@ tilo-app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 # Images are tapp packages the package store materialises read-only.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
-# Images a node did not ship (a relay's), from the OCI registry CI
+# Images a node did not ship (a server's), from the OCI registry CI
 # publishes them to.
 tilo-oci-images = { path = "../../packaging/oci-images" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
@@ -99,7 +99,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The real guest agent behind a fake VM link: a hosted program's terminal
-# relay is tested against what serves it in the VM.
+# server is tested against what serves it in the VM.
 legacy-agent = { path = "../legacy-agent" }
 ed25519-dalek.workspace = true
 serde_json.workspace = true

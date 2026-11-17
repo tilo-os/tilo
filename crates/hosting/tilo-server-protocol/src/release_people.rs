@@ -1,12 +1,12 @@
-//! The people a released relay kept, as its state reads them, and what taking
+//! The people a released server kept, as its state reads them, and what taking
 //! them into a release's own workspace did.
 //!
-//! A release of tilo.sh starts its relay on fresh state: the workspace's people
+//! A release of tilo.sh starts its server on fresh state: the workspace's people
 //! are not read back from what the earlier release wrote. They are carried over
 //! by hand instead: [`People`] is what `tilo-server release-people export` reads
 //! out of the earlier release's state directory (read-only), and what
 //! `tilo-server release-people import` hands the new relay over its operator
-//! socket. [`Imported`] is what the new relay answers: the addresses now on its
+//! socket. [`Imported`] is what the new server answers: the addresses now on its
 //! wait list, the people declared or invited, and the link each invitation
 //! carries, mailed where the person's address is known.
 

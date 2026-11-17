@@ -23,7 +23,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::certify::{ApproverDecision, ApproverReply};
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server::workspaces::PreAdmitRequest;
 use tilo_server_client::Host;
@@ -47,7 +47,7 @@ pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 /// admission is a chain of synced writes (request, admission, acknowledgement),
 /// and a page's keys then took longer than the host waits for them. These
 /// tests prove what a page and a host do, not that a disk keeps data; the
-/// relay's durability tests keep the real disk.
+/// server's durability tests keep the real disk.
 pub fn scratch_dir() -> tempfile::TempDir {
     if let Some(memory) = tilo_paths::memory_temp_dir()
         && let Ok(directory) = tempfile::Builder::new()
@@ -122,12 +122,12 @@ pub fn workspace() -> tilo_server_protocol::WorkspaceId {
     tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
-/// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
+/// Have `server` govern [`WORKSPACE`], the person's workspace, unless it does,
 /// and admit `device` to it as its owner: what a page asks of its host
 /// before it joins ([`Outbox::join_placed`](tilo_session_client::Outbox::join_placed)), done here for a peer
 /// that reaches the host without the route that administers them.
-pub async fn place(relay: &Relay, device: &DeviceCert) {
-    let workspaces = relay.workspaces().unwrap();
+pub async fn place(server: &Server, device: &DeviceCert) {
+    let workspaces = server.workspaces().unwrap();
     if workspaces.summary(WORKSPACE).await.is_err()
         && let Err(error) = workspaces
             .create_workspace("Workspace", Some(WORKSPACE))
@@ -161,7 +161,7 @@ pub fn enrol(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -
 }
 
 pub struct TestHost {
-    pub relay: Relay,
+    pub server: Server,
     pub web: WebHandle,
 }
 
@@ -228,7 +228,7 @@ pub async fn start_host_limiting(
 
 /// A host restarted with its state reset, at the ports the kernel picks: the
 /// same identity, and so the same endpoint its pages dial, which reaches its
-/// relay as it comes up, as a host process restarted does. Nothing of the
+/// server as it comes up, as a host process restarted does. Nothing of the
 /// stopped host's address is waited for or taken back.
 pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> TestHost {
     start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
@@ -285,7 +285,7 @@ pub async fn start_host_serving(
         relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_server::RelayConfig {
+    let mut cfg = tilo_server::ServerConfig {
         state_root: state.to_path_buf(),
         member_limits: limits,
         ..Default::default()
@@ -298,9 +298,9 @@ pub async fn start_host_serving(
     // The loopback relay outlives the host, as a relay a host is deployed
     // with does: a page finds a restarted host there by its identity. A host
     // without one is dialled directly and looks up no relay: the sandboxed
-    // runner refuses the public relay network, so a restarted host would never
+    // runner refuses the public server network, so a restarted host would never
     // be found at its new port.
-    let identity = RelayIdentity {
+    let identity = ServerIdentity {
         user_public_key: user,
         device_signing_key: host.key.clone(),
         device_cert: host.cert.clone(),
@@ -311,10 +311,10 @@ pub async fn start_host_serving(
     } else {
         iroh::RelayMode::Disabled
     };
-    let relay = Relay::start_with_relay_mode(cfg, identity, mode)
+    let server = Server::start_with_relay_mode(cfg, identity, mode)
         .await
         .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: web_listen,
             tls: TlsSource::Development {
@@ -332,17 +332,17 @@ pub async fn start_host_serving(
         .await
         .unwrap();
     if relayed {
-        names_its_relay(&relay);
+        names_its_server(&server);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { relay, web }
+    TestHost { server, web }
 }
 
 /// A host reached through a packet relay names it in its address from the start: what
 /// `Relay::start` waits for before it answers anything.
-fn names_its_relay(relay: &Relay) {
+fn names_its_server(server: &Server) {
     assert!(
-        relay.node_addr().relay_urls().next().is_some(),
+        server.node_addr().relay_urls().next().is_some(),
         "the host names its packet relay"
     );
 }
@@ -369,12 +369,12 @@ pub async fn start_workspace_host_relaying(
     keep_web_identity: bool,
     packet_relay: bool,
 ) -> TestHost {
-    let config = tilo_server::RelayConfig {
+    let config = tilo_server::ServerConfig {
         state_root: state.to_path_buf(),
         packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    let identity = RelayIdentity {
+    let identity = ServerIdentity {
         user_public_key: root.verifying_key().to_bytes(),
         device_signing_key: host.key.clone(),
         device_cert: host.cert.clone(),
@@ -385,13 +385,13 @@ pub async fn start_workspace_host_relaying(
     // public relay or address: an invitation names what a stranger can dial
     // of its host, which would otherwise be a relay and an address out on
     // the internet, and the test would stand on whether those answer.
-    let relay = if packet_relay {
-        Relay::start(config, identity).await
+    let server = if packet_relay {
+        Server::start(config, identity).await
     } else {
-        Relay::start_with_relay_mode(config, identity, iroh::RelayMode::Disabled).await
+        Server::start_with_relay_mode(config, identity, iroh::RelayMode::Disabled).await
     }
     .unwrap();
-    let web = relay
+    let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: TlsSource::Development {
@@ -409,10 +409,10 @@ pub async fn start_workspace_host_relaying(
         .await
         .unwrap();
     if packet_relay {
-        names_its_relay(&relay);
+        names_its_server(&server);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { relay, web }
+    TestHost { server, web }
 }
 
 impl TestHost {
@@ -423,7 +423,7 @@ impl TestHost {
     /// The host as a session reaches it: its iroh endpoint, and the
     /// WebTransport listener pages reach it at.
     pub fn iroh(&self) -> Host {
-        Host::at(self.relay.node_addr()).with_web(Some(self.web.link.clone()))
+        Host::at(self.server.node_addr()).with_web(Some(self.web.link.clone()))
     }
 
     /// The host as a device reaches it over `carrier`.
@@ -625,7 +625,7 @@ pub async fn ready(peers: &[&Link]) {
 /// and replayed. A session that has joined no workspace yet is
 /// [`ready`] too, so a page that is about to act in one waits on that one
 /// rather than on the session: an action sent before the host subscribed the
-/// page is refused by the relay and never answered.
+/// page is refused by the server and never answered.
 pub async fn admitted_to(peer: &Link, workspace: tilo_server_protocol::WorkspaceId) {
     wait_for("the session admitted to its workspace", || {
         let status = peer.status();
@@ -816,7 +816,7 @@ pub async fn entry_grant(
     };
     grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
     let issued = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .pre_admit(
@@ -843,7 +843,7 @@ pub async fn redeem(
     _key: &SigningKey,
 ) {
     let admitted = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .admit_proven(

@@ -345,7 +345,7 @@ fn waiting_for(state: Option<&LiveState>) -> String {
         Some(LiveState::WaitingForKeys) => t("session-window-share-live-keys"),
         Some(LiveState::Keyless) => t("session-window-share-live-keyless"),
         Some(LiveState::Unread) => t("session-window-share-live-unread"),
-        Some(LiveState::NoRelay) => t("session-window-share-live-no-relay"),
+        Some(LiveState::NoRelay) => t("session-window-share-live-no-carrier"),
         Some(LiveState::Unreached { relay }) => t_args(
             "session-window-share-live-unreached",
             &[("device", called(relay).into())],

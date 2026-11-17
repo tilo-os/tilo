@@ -23,7 +23,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use key_group::{Access, GroupPeer};
 use neighbour_wire::NeighbourMsg;
-use tilo_server::{Inbound, RelayCoeditSession};
+use tilo_server::{Inbound, ServerCoeditSession};
 use tilo_session_client::PeerStore as _;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -42,10 +42,10 @@ fn epoch(peer: &GroupPeer) -> u64 {
 }
 
 /// `device`'s own session with the workspace on `host`.
-async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> RelayCoeditSession {
-    crate::support::place(&host.relay, &device.cert).await;
+async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> ServerCoeditSession {
+    crate::support::place(&host.server, &device.cert).await;
     connect(
-        &host.relay,
+        &host.server,
         root.verifying_key().to_bytes(),
         device,
         workspace(),
@@ -63,9 +63,9 @@ struct Laptop {
 
 impl Laptop {
     async fn start(host: &TestHost, root: &SigningKey, device: Device) -> Self {
-        crate::support::place(&host.relay, &device.cert).await;
+        crate::support::place(&host.server, &device.cert).await;
         let native = NativeDevice::start(
-            &host.relay,
+            &host.server,
             root.verifying_key().to_bytes(),
             device,
             workspace(),
@@ -263,7 +263,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     assert!(!said(&peer, &route()).contains("in the clear"));
     phone_session.close().await;
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// An edit the browser wrote before it was admitted survives a page reload:
@@ -285,7 +285,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     // The host is down while the page writes, so nothing can admit it.
     let iroh = host.iroh();
     drop(host.web);
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
     let start = |host: tilo_server_client::Host| {
@@ -330,7 +330,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         DocumentFrame::Whole(edit)
     );
     reloaded.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A page that joined before the workspace's group existed holds its edit
@@ -372,5 +372,5 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         peer.status().key_state
     );
     peer.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }

@@ -1,4 +1,4 @@
-//! Trust policy — which peer certs the relay accepts.
+//! Trust policy — which peer certs the server accepts.
 //!
 //! Every inbound connection carries a `DeviceCert`. The auth
 //! handshake ([`crate::auth`]) checks the cert's signature; this
@@ -7,7 +7,7 @@
 //!
 //! Three shapes:
 //!
-//! - `AllowMatchingUser` (default) — cert must chain to the relay's
+//! - `AllowMatchingUser` (default) — cert must chain to the server's
 //!   own user identity. A home server for one household.
 //! - `AllowList(pubkeys)` — cert must chain to one of the listed
 //!   user public keys. Useful for a small multi-tenant deployment
@@ -22,13 +22,13 @@ use serde::{Deserialize, Serialize};
 
 use tilo_user_identity::DeviceCert;
 
-/// Which certs the relay accepts.
+/// Which certs the server accepts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 #[derive(Default)]
 pub enum TrustPolicy {
-    /// Only accept certs that chain to the relay's own user identity.
-    /// This is the default — a self-hosted relay for one household.
+    /// Only accept certs that chain to the server's own user identity.
+    /// This is the default — a self-hosted server for one household.
     #[default]
     AllowMatchingUser,
 
@@ -41,7 +41,7 @@ pub enum TrustPolicy {
     },
 
     /// Accept any cert with a valid signature. Only useful for
-    /// public-relay experiments. The workspace-id keying still
+    /// public-server experiments. The workspace-id keying still
     /// isolates tenants from each other.
     AllowAny,
 }
@@ -50,7 +50,7 @@ impl TrustPolicy {
     /// Returns true if a cert's user identity is admissible under
     /// this policy.
     ///
-    /// `own_user_pubkey` is the relay's own user identity — passed
+    /// `own_user_pubkey` is the server's own user identity — passed
     /// in rather than stored on the enum so the policy stays
     /// serialisable without embedding secrets.
     pub fn admits(&self, cert: &DeviceCert, own_user_pubkey: &[u8; 32]) -> bool {

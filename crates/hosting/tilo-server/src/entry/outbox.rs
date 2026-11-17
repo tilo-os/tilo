@@ -202,7 +202,7 @@ impl Outbox {
         self.wake.notify_one();
     }
 
-    /// The relay suppresses repeat confirmations for an hour. Only durable
+    /// The server suppresses repeat confirmations for an hour. Only durable
     /// acceptance by this outbox is evidence that suppression is successful.
     pub(crate) fn confirmation_kept(&self, contact: &str) -> bool {
         let key = receipt_key(contact);
@@ -258,7 +258,7 @@ impl Outbox {
         true
     }
 
-    /// The relay's durable removal is authoritative even if a file cannot
+    /// The server's durable removal is authoritative even if a file cannot
     /// be deleted. The eligibility check also covers other removal tokens
     /// for the same entry and restarts during cancellation.
     pub(crate) fn cancel(&self, removal: &str, contact_sha256: Option<&str>) {
@@ -284,7 +284,7 @@ impl Outbox {
         state.items = kept;
         // Only a confirmation that never left loses its receipt: one already
         // delivered still confirms, so an address left again within the
-        // relay's hour is answered as mailed, not refused.
+        // server's hour is answered as mailed, not refused.
         let mut receipts_changed = false;
         for contact in cancelled_contacts {
             receipts_changed |= state.receipts.remove(&receipt_key(&contact)).is_some();
@@ -438,7 +438,7 @@ impl Outbox {
         {
             return false;
         }
-        // Eligibility is not a provider attempt: a relay restart must not
+        // Eligibility is not a provider attempt: a server restart must not
         // consume the finite send budget while its durable state is offline.
         let (candidate, revision) = {
             let state = self.state.lock_recover();
@@ -1213,7 +1213,7 @@ mod tests {
         assert!(outbox.enqueue_for(Kind::Invite, a_mail(), Some("aa".repeat(32))));
         assert!(outbox.deliver_due(tilo_clock::unix_now_ms()).await);
         assert_eq!(scripted.count(), 1);
-        // Removal used a different valid token. The durable relay state,
+        // Removal used a different valid token. The durable server state,
         // not equality with this mail's token, decides whether to retry.
         outbox.cancel(&"bb".repeat(32), None);
         drop(outbox);

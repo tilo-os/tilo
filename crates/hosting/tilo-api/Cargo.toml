@@ -3,7 +3,7 @@ name = "tilo-api"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The Tilo API server: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants and API keys, and the agent surface served for each session over the grant's own session with the relay."
+description = "The Tilo API server: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants and API keys, and the agent surface served for each session over the grant's own session with the server."
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -30,7 +30,7 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-client = { path = "../../session/client" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
-# HTTPS to the relay and the site, as every client of the relay makes its requests.
+# HTTPS to the server and the site, as every client of the server makes its requests.
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }

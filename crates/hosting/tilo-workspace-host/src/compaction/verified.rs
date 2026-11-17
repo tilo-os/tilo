@@ -1,7 +1,7 @@
 //! What compaction may rely on in a retained entry, and the signatures it
 //! has already verified.
 //!
-//! The relay's admission authenticates the device that sent a delta and
+//! The server's admission authenticates the device that sent a delta and
 //! authorises it for the workspace, but it does not open the `AppDocument`
 //! inside or verify its `SignedOp`; the host's payload adapter
 //! ([`ShellPayloads::open_document`]) is what reads the route and envelope. Compaction is where the host first
@@ -53,8 +53,8 @@ pub(super) struct Signatures {
     current: HashSet<BodyHash>,
 }
 
-/// Tests read the desktop's frames, as a relay started with
-/// a relay does when it starts.
+/// Tests read the desktop's frames, as a server started with
+/// a server does when it starts.
 #[cfg(test)]
 impl Default for Signatures {
     fn default() -> Self {

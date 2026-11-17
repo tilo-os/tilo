@@ -41,10 +41,10 @@ use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_server};
 use tilo_server::WorkspaceId;
 
 /// How long a device waits for an answer the host owes it. Every wait below
@@ -56,7 +56,7 @@ const REPLY: Duration = Duration::from_secs(180);
 
 /// Receive the next envelope, failing with `what` on a hang or a closed
 /// connection.
-async fn recv_reply(client: &RelayClient, what: &str) -> Envelope {
+async fn recv_reply(client: &ServerClient, what: &str) -> Envelope {
     tokio::time::timeout(REPLY, client.recv())
         .await
         .unwrap_or_else(|_| panic!("{what}: no reply from the host"))
@@ -66,7 +66,7 @@ async fn recv_reply(client: &RelayClient, what: &str) -> Envelope {
 /// Round-trip a Ping/Pong on `client`. The host handles a peer's stream in
 /// order and answers Ping only after the preceding envelope's handling has
 /// completed, so Pong proves everything sent before it has been applied.
-async fn round_trip(client: &RelayClient, what: &str) {
+async fn round_trip(client: &ServerClient, what: &str) {
     client.send(Envelope::Ping).unwrap();
     loop {
         match recv_reply(client, what).await {
@@ -80,7 +80,7 @@ async fn round_trip(client: &RelayClient, what: &str) {
 /// Receive envelopes until a `Delta` arrives (skipping any interleaved
 /// `Ready`/`Pong`), returning its delta bytes. A delta that never arrives
 /// hangs, and nextest's slow-timeout reports it.
-async fn recv_delta(client: &RelayClient, what: &str) -> Vec<u8> {
+async fn recv_delta(client: &ServerClient, what: &str) -> Vec<u8> {
     loop {
         match recv_reply(client, what).await {
             Envelope::Delta { delta, .. } => return delta,
@@ -90,7 +90,7 @@ async fn recv_delta(client: &RelayClient, what: &str) -> Vec<u8> {
     }
 }
 
-/// Connect A and B to the relay at `addr`, subscribe both to `ws`, and
+/// Connect A and B to the server at `addr`, subscribe both to `ws`, and
 /// drain their initial `Ready(ws, 0)` acks (nothing queued yet).
 async fn connect_and_subscribe(
     addr: iroh_base::EndpointAddr,
@@ -98,9 +98,9 @@ async fn connect_and_subscribe(
     a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
-) -> (RelayClient, RelayClient) {
+) -> (ServerClient, ServerClient) {
     let ep_a = client_endpoint().await;
-    let a_client = RelayClient::connect(
+    let a_client = ServerClient::connect(
         ep_a,
         addr.clone(),
         user.user_pk,
@@ -111,7 +111,7 @@ async fn connect_and_subscribe(
     .await
     .expect("A connect");
     let ep_b = client_endpoint().await;
-    let b_client = RelayClient::connect(
+    let b_client = ServerClient::connect(
         ep_b,
         addr,
         user.user_pk,
@@ -150,7 +150,7 @@ async fn connect_and_subscribe(
 /// Unsubscribe was fully applied — B is no longer a subscriber, so
 /// the next delta is guaranteed to be store-and-forwarded rather
 /// than racing a half-torn-down live channel.
-async fn take_b_offline(b_client: &RelayClient, ws: WorkspaceId) {
+async fn take_b_offline(b_client: &ServerClient, ws: WorkspaceId) {
     b_client
         .send(Envelope::Unsubscribe { workspace_id: ws })
         .unwrap();
@@ -168,7 +168,7 @@ async fn reconnect_b_and_catch_up(
     doc_b: &mut AutoCommit,
 ) {
     let ep_b2 = client_endpoint().await;
-    let b2 = RelayClient::connect(
+    let b2 = ServerClient::connect(
         ep_b2,
         addr,
         user.user_pk,
@@ -230,14 +230,14 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     // A durable host that pins workspace 7 and knows A + B are members.
-    let host = Box::pin(spawn_relay(
+    let host = Box::pin(spawn_server(
         &user,
         host_dev,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey()],
     ))
     .await;
-    let addr = host.relay.node_addr();
+    let addr = host.server.node_addr();
 
     // Both devices dial the host, subscribe, and drain their initial Ready acks.
     let (a_client, b_client) = connect_and_subscribe(addr.clone(), &user, &a, &b, WS).await;

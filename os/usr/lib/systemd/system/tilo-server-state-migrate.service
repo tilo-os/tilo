@@ -1,5 +1,5 @@
 [Unit]
-Description=Migrate host relay state to its unprivileged account
+Description=Migrate host server state to its unprivileged account
 After=systemd-tmpfiles-setup.service
 Before=tilo-server.service tilo-fs-replica.service
 [Service]

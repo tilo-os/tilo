@@ -19,10 +19,10 @@
 //!    back to relay1 it drains.
 //!
 //! The test therefore confirms:
-//!   (a) the peer can dial either relay, opportunistically,
-//!   (b) each relay independently maintains its own pending
+//!   (a) the peer can dial either server, opportunistically,
+//!   (b) each server independently maintains its own pending
 //!       queue for offline members it knows about (so a fleet of
-//!       relays does not "leak" a peer's messages onto a relay
+//!       relays does not "leak" a peer's messages onto a server
 //!       the peer never talks to).
 
 #![allow(
@@ -38,10 +38,10 @@
 
 use std::time::Duration;
 
-use tilo_server::{Envelope, RelayClient};
+use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
+use crate::common::{TestUser, client_endpoint, spawn_server, wait_until};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(3);
@@ -54,10 +54,10 @@ async fn connect_both_to_relay1(
     relay1_addr: iroh_base::EndpointAddr,
     p1: &crate::common::TestDevice,
     p2: &crate::common::TestDevice,
-) -> (RelayClient, RelayClient) {
+) -> (ServerClient, ServerClient) {
     let ep1 = client_endpoint().await;
     let ep2 = client_endpoint().await;
-    let c1 = RelayClient::connect(
+    let c1 = ServerClient::connect(
         ep1,
         relay1_addr.clone(),
         user.user_pk,
@@ -67,7 +67,7 @@ async fn connect_both_to_relay1(
     )
     .await
     .unwrap();
-    let c2 = RelayClient::connect(
+    let c2 = ServerClient::connect(
         ep2,
         relay1_addr,
         user.user_pk,
@@ -105,20 +105,20 @@ async fn connect_both_to_relay1(
 /// this polls rather than assumes it — a fixed sleep is a race that only
 /// shows up under load.
 async fn fail_p2_over_from_relay1(
-    c2_r1: RelayClient,
-    relay1: &crate::common::TestRelay,
+    c2_r1: ServerClient,
+    relay1: &crate::common::TestServer,
     p2_pubkey: [u8; 32],
 ) {
     c2_r1.close().await;
     // Polls for up to 30 s; only a hang uses the whole budget.
     for _ in 0..1500 {
-        if !relay1.relay.is_subscribed(WORKSPACE, &p2_pubkey).await {
+        if !relay1.server.is_subscribed(WORKSPACE, &p2_pubkey).await {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        !relay1.relay.is_subscribed(WORKSPACE, &p2_pubkey).await,
+        !relay1.server.is_subscribed(WORKSPACE, &p2_pubkey).await,
         "relay1 never noticed p2 disconnect"
     );
 }
@@ -130,7 +130,7 @@ async fn p2_returns_and_drains(
     user: &TestUser,
     p2: &crate::common::TestDevice,
 ) {
-    let c2_r1_again = RelayClient::connect(
+    let c2_r1_again = ServerClient::connect(
         client_endpoint().await,
         relay1_addr,
         user.user_pk,
@@ -186,20 +186,20 @@ async fn peers_use_several_relays_and_fail_over() {
     // Phase `peer_can_dial_multiple_relays_and_pending_stays_local`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev_1 = user.enrol("home-server-1", DeviceCapabilities::member());
-        let relay_dev_2 = user.enrol("home-server-2", DeviceCapabilities::member());
+        let server_dev_1 = user.enrol("home-server-1", DeviceCapabilities::member());
+        let server_dev_2 = user.enrol("home-server-2", DeviceCapabilities::member());
         let p1 = user.enrol("laptop", DeviceCapabilities::primary());
         let p2 = user.enrol("phone", DeviceCapabilities::member());
 
         let members = vec![p1.device_pubkey(), p2.device_pubkey()];
 
-        let relay1 = Box::pin(spawn_relay(&user, relay_dev_1, &[WORKSPACE], &members)).await;
-        let relay2 = Box::pin(spawn_relay(&user, relay_dev_2, &[WORKSPACE], &members)).await;
+        let relay1 = Box::pin(spawn_server(&user, server_dev_1, &[WORKSPACE], &members)).await;
+        let relay2 = Box::pin(spawn_server(&user, server_dev_2, &[WORKSPACE], &members)).await;
 
         // Peers dial relay1 first — verify they can both dial and
         // fan-out works via relay1.
         let (c1_r1, c2_r1) =
-            connect_both_to_relay1(&user, relay1.relay.node_addr(), &p1, &p2).await;
+            connect_both_to_relay1(&user, relay1.server.node_addr(), &p1, &p2).await;
 
         // p1 publishes a delta via relay1; p2 receives via relay1.
         let d1 = Envelope::Delta {
@@ -223,9 +223,9 @@ async fn peers_use_several_relays_and_fail_over() {
         // Now p2 fails over to relay2.
         fail_p2_over_from_relay1(c2_r1, &relay1, p2.device_pubkey()).await;
         let ep3 = client_endpoint().await;
-        let c2_r2 = RelayClient::connect(
+        let c2_r2 = ServerClient::connect(
             ep3,
-            relay2.relay.node_addr(),
+            relay2.server.node_addr(),
             user.user_pk,
             p2.cert.clone(),
             p2.sk.clone(),
@@ -313,25 +313,25 @@ async fn peers_use_several_relays_and_fail_over() {
 
         // p2 returns to relay1 and drains the queue.
         drop(c2_r2);
-        p2_returns_and_drains(relay1.relay.node_addr(), &user, &p2).await;
+        p2_returns_and_drains(relay1.server.node_addr(), &user, &p2).await;
     }
-    // Phase `client_falls_over_to_reachable_relay`.
+    // Phase `client_falls_over_to_reachable_server`.
     // Failover latency: if the first host doesn't respond, the client
     // tries the next. We simulate an unresponsive host by dialing an
     // unknown iroh node id — the connect should time out quickly and
     // the next dial should succeed within the same time budget.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
+        let server_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let relay = Box::pin(spawn_relay(
+        let server = Box::pin(spawn_server(
             &user,
-            relay_dev,
+            server_dev,
             &[OTHER_WORKSPACE],
             &[a.device_pubkey()],
         ))
         .await;
-        let real_addr = relay.relay.node_addr();
+        let real_addr = server.server.node_addr();
 
         // Ghost address: a randomly-generated node id nobody listens on.
         let ghost_secret = iroh::SecretKey::from_bytes(&[42u8; 32]);
@@ -342,7 +342,7 @@ async fn peers_use_several_relays_and_fail_over() {
         let ep = client_endpoint().await;
         let ghost_res = tokio::time::timeout(
             Duration::from_secs(3),
-            RelayClient::connect(
+            ServerClient::connect(
                 ep,
                 ghost_addr,
                 user.user_pk,
@@ -360,11 +360,11 @@ async fn peers_use_several_relays_and_fail_over() {
             "ghost host must not appear reachable",
         );
 
-        // Dial the real relay — succeeds.
+        // Dial the real server — succeeds.
         let ep2 = client_endpoint().await;
         let real = tilo_test_env::within(
             "real dial timed out",
-            RelayClient::connect(
+            ServerClient::connect(
                 ep2,
                 real_addr,
                 user.user_pk,

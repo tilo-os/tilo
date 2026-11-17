@@ -46,7 +46,7 @@ that preserves secrecy by irrecoverably losing a user's data has failed.
 - A compromised legacy desktop app runs under the compatibility Linux account.
 - A hostile member has a valid identity and whatever old material they
   legitimately received. They may replay, reorder, fork and forge network data.
-- A network/relay operator observes endpoints, timing and sizes, drops or replays
+- A network/server operator observes endpoints, timing and sizes, drops or replays
   traffic, and tries machine-in-the-middle substitution.
 - A registry attacker can rewrite, delete and split-view tags and blobs but lacks
   the release signing key.
@@ -77,7 +77,7 @@ source + pinned inputs -> two builds -> boot check -> candidate digest
   -> KMS signature + SBOM + SLSA + transparency log -> release channel
 ```
 
-Crossing inward requires evidence; a name, UID, registry tag, relay connection,
+Crossing inward requires evidence; a name, UID, registry tag, server connection,
 or locally cached role is not evidence by itself.
 
 ## Abuse-case analysis and current controls

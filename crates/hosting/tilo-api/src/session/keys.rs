@@ -14,7 +14,7 @@
 //! API server the caller reaches.
 
 use crate::account::{Outcome, failed};
-use crate::relay::Connection;
+use crate::server::Connection;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -86,7 +86,7 @@ async fn call(
     arguments: Map<String, Value>,
 ) -> Result<Value, Outcome> {
     let id = connection
-        .relay()
+        .server()
         .enter(connection, workspace)
         .await
         .map_err(|error| crate::account::refused(&error))?;

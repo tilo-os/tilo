@@ -26,7 +26,7 @@ use tilo_server_client::{
     LinkError,
     https::{HttpClient, HttpFuture},
 };
-use tilo_server_session::client::RelayClient;
+use tilo_server_session::client::ServerClient;
 use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
     UNHOST_WORKSPACE, ask_host,
@@ -151,7 +151,7 @@ impl Workspaces {
     /// is named in the workspaces it governs, so an invitation always carries
     /// an address a stranger can dial. A host that has lost its relays names
     /// nothing: the address it named stays what a workspace says, and a member
-    /// reaches it again through the relay once it comes back.
+    /// reaches it again through the server once it comes back.
     pub(super) fn follow_own_address(&self) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
@@ -613,7 +613,7 @@ impl Workspaces {
     async fn reach_host(&self, device: [u8; 32], addr: EndpointAddr) -> Result<OtherHost, String> {
         let host = &self.inner.host;
         let revocations = host.revocations.read_recover().clone();
-        let client = RelayClient::connect_with_signer(
+        let client = ServerClient::connect_with_signer(
             host.endpoint.clone(),
             addr,
             None,
@@ -638,7 +638,7 @@ impl Workspaces {
             other => other.to_string(),
         })?;
         Ok(OtherHost {
-            certificate: client.relay_peer.cert.clone(),
+            certificate: client.server_peer.cert.clone(),
             client,
         })
     }
@@ -648,7 +648,7 @@ impl Workspaces {
 struct OtherHost {
     /// Its certificate, as its handshake proved it.
     certificate: DeviceCert,
-    client: RelayClient,
+    client: ServerClient,
 }
 
 impl OtherHost {

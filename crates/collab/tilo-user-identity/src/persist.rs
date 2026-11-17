@@ -473,7 +473,7 @@ pub enum RevocationsError {
 }
 
 /// Where this device keeps the revocations it verified: beside the person's
-/// public key, where the filesystem daemon, the relay and every other reader
+/// public key, where the filesystem daemon, the server and every other reader
 /// of the identity root find them.
 #[must_use]
 pub fn revocations_path(paths: &IdentityPaths) -> std::path::PathBuf {

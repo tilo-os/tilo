@@ -379,7 +379,7 @@ approve_from_a() {
   [ "$(jq -r .verification_code <<<"$candidate")" = "$code" ] \
     || die "A sees code $(jq -r .verification_code <<<"$candidate"), B shows $code"
   device="$(jq -r .device_node_id <<<"$candidate")"
-  service="$(jq -r .relay_service_node_id <<<"$candidate")"
+  service="$(jq -r .server_node_id <<<"$candidate")"
   printf '%s\n' "$device" > "$out/$log-device.txt"
   # The signed-in person's own session bus answers for their identity record.
   vm_a ssh "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u)/bus \

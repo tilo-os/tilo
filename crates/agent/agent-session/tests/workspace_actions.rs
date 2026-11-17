@@ -46,8 +46,8 @@ mod api_links;
 #[cfg(test)]
 #[path = "workspace_actions/api_notebook.rs"]
 mod api_notebook;
-#[path = "workspace_actions/api_on_relay.rs"]
-pub mod api_on_relay;
+#[path = "workspace_actions/api_on_server.rs"]
+pub mod api_on_server;
 #[cfg(test)]
 #[path = "workspace_actions/api_programs.rs"]
 mod api_programs;
@@ -209,7 +209,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let state = crate::support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
     let workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Native resource fixture")
@@ -428,7 +428,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "a missing exact source must not create a record, keys or a locator"
     );
     let other_workspace = hosted
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .create("Isolated resource fixture")
@@ -470,7 +470,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         let link = Arc::new(DeliveryReadFixture {
             member: tilo_agent_session::workspace_actions::HostDevice {
                 endpoint: tilo_agent_session::HostEndpoint::iroh(
-                    hosted.relay.node_addr(),
+                    hosted.server.node_addr(),
                     host.cert.clone(),
                 ),
                 key: host.key.clone(),
@@ -523,7 +523,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     }
     browser.peer.close();
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 /// Deterministically changes authority after a real Chat snapshot is read.
@@ -868,7 +868,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         );
     }
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(crate::support::workspace())
         .await
@@ -882,7 +882,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1084,7 +1084,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     );
 
     let retained = hosted
-        .relay
+        .server
         .workspace_documents()
         .retained(crate::support::workspace())
         .await
@@ -1098,7 +1098,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
-    hosted.relay.shutdown().await;
+    hosted.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

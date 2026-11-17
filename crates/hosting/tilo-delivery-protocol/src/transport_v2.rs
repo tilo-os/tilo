@@ -1,5 +1,5 @@
-//! The relay stream's frames: every value a device and its relay exchange
-//! after the certified handshake, on the relay ALPN
+//! The server stream's frames: every value a device and its server exchange
+//! after the certified handshake, on the server ALPN
 //! (`tilo_server_protocol::transport::ALPN`). There is one framing, at the
 //! peer protocol version the handshake names
 //! (docs/architecture/compatibility.md): state is [`EnvelopeV2::State`],
@@ -49,7 +49,7 @@ pub enum EnvelopeV2 {
     RetiredDirected,
     /// Retired: the host refused to deliver an action.
     RetiredUnavailable,
-    /// Retired: [`Self::RetiredDirected`] with the source user the relay
+    /// Retired: [`Self::RetiredDirected`] with the source user the server
     /// attested.
     RetiredDelivered,
     /// Retired: a connection spoke the broker's protocol extensions.
@@ -154,7 +154,7 @@ pub struct SessionReader<R> {
     expanded: std::collections::VecDeque<EnvelopeV2>,
 }
 impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
-    /// A reader of the relay stream `inner`, after its handshake.
+    /// A reader of the server stream `inner`, after its handshake.
     pub fn new(inner: R) -> Self {
         Self {
             inner,
@@ -273,7 +273,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
     }
 }
 
-/// Encode one state envelope as the relay stream carries it: a delta whose
+/// Encode one state envelope as the server stream carries it: a delta whose
 /// signature is all zero becomes [`EnvelopeV2::UnsignedDelta`], every other
 /// envelope [`EnvelopeV2::State`].
 ///
@@ -445,7 +445,7 @@ mod tests {
         );
     }
 
-    /// One whole-payload presence item, as this relay writes it.
+    /// One whole-payload presence item, as this server writes it.
     fn presence_item(payload: &[u8]) -> PresenceItem {
         PresenceItem {
             slot: None,

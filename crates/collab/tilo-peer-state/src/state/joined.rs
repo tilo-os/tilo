@@ -54,8 +54,8 @@ impl StatePeer {
             return Err("not a document message".into());
         };
         let (source, retained) = match origin {
-            TransportOrigin::RelayDelta(source) => (source, false),
-            TransportOrigin::RetainedRelayDelta(source) => (source, true),
+            TransportOrigin::ServerDelta(source) => (source, false),
+            TransportOrigin::RetainedServerDelta(source) => (source, true),
             _ => return Err("a relayed document comes from the workspace's host".into()),
         };
         if *cluster_id != self.core.workspace

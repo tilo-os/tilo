@@ -2,7 +2,7 @@
 //! ([`HostOperation::KeepPersonalList`], [`HostOperation::ReadPersonalList`]).
 //!
 //! The person's devices hold their list: every workspace of theirs, wherever
-//! it is hosted (a desktop of theirs, a paired device, a relay), each with its
+//! it is hosted (a desktop of theirs, a paired device, a server), each with its
 //! host's own signed address. One of their devices keeps a copy here, and any
 //! certified key of theirs (a script, an agent's grant, the entry that serves
 //! the person's agents) reads it back: how a key that runs on no device of

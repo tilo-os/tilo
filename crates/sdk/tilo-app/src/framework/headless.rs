@@ -610,7 +610,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// holds `documents`, each stamped with the identity beside it and named
     /// in the app's workspace index by its name: records this device was
     /// given from elsewhere — a window on another device, an agent in a
-    /// hosted workspace — rather than started here. What a relay publishes
+    /// hosted workspace — rather than started here. What a server publishes
     /// reaches a reader this way.
     pub fn with_named_resources(
         documents: &mut [(&str, ui_core::resource::DocumentId, tilo_resource::Doc)],

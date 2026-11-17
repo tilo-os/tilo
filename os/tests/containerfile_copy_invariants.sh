@@ -121,9 +121,9 @@ done
 # Component metadata must actually enter the assembly stage: a manifest-only
 # dry run cannot prove that the build context supplies the installed bytes.
 for path in \
-  usr/lib/tilo/node-relay.toml \
+  usr/lib/tilo/node-server.toml \
   usr/lib/sysusers.d/tilo-server.conf \
-  usr/lib/systemd/system/tilo-node-relay@.service \
+  usr/lib/systemd/system/tilo-node-server@.service \
   usr/lib/systemd/system/tilo-node-session-key@.service \
   usr/lib/systemd/system/tilo-node-session@.service \
   usr/lib/systemd/system/tilo-node-session@.path; do
@@ -131,11 +131,11 @@ for path in \
     awk -F '\t' -v source="os/$path" -v destination="/tilo-components/$path" '
       $1 == "context" && $2 == source && $3 == destination { n++ }
       END { exit n != 1 }' || {
-        echo "relay component input is not staged exactly once: $path" >&2
+        echo "server component input is not staged exactly once: $path" >&2
         exit 1
       }
 done
-python3 "$repo/os/scripts/install-components.py" relay --dry-run --format json |
+python3 "$repo/os/scripts/install-components.py" server --dry-run --format json |
   python3 -c 'import json,sys
 rows = [row for row in json.load(sys.stdin) if (row["from"] or "").startswith("@manifest/")]
 assert len(rows) == 6, rows

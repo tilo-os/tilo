@@ -1560,7 +1560,7 @@ codegen-units = 16
 # codegen units for incremental builds and without the ThinLTO pass across
 # them, so a change re-optimises the units it touched and nothing those units
 # were inlined into: with sixteen units and that pass, a one-line change to
-# the relay's library took 48 s of rustc, without it 21 s. A build that
+# the server's library took 48 s of rustc, without it 21 s. A build that
 # starts from an empty directory (a check's) gains nothing from it and keeps
 # `lounge-check`, whose crates the compiler cache stores.
 [profile.lounge-local]
@@ -1659,7 +1659,7 @@ serde_json = { path = "vendor/serde_json" }
 # kernel cancels on resume or a clock step replaces it). See each crate's
 # TILO-PATCH.md.
 iroh = { path = "vendor/iroh" }
-# A relay client sends right behind its answer to the relay's challenge
+# A server client sends right behind its answer to the server's challenge
 # instead of waiting a round trip for the relay to confirm it; iroh turns that
 # on for its relay connections. See vendor/iroh-relay/TILO-PATCH.md.
 iroh-relay = { path = "vendor/iroh-relay" }

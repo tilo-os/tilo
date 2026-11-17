@@ -1,10 +1,10 @@
-//! The relay under measurement, in a process of its own.
+//! The server under measurement, in a process of its own.
 //!
 //! The parent starts this binary again with `--serve` and talks to it over
 //! its standard streams, one JSON line each way: the [`Setup`] first (the
-//! relay's identity travels through the pipe, never through a file), then a
+//! server's identity travels through the pipe, never through a file), then a
 //! `sample` command per measurement, answered with a [`Sample`]. A closed
-//! pipe or `stop` shuts the relay down, so it never outlives the bench.
+//! pipe or `stop` shuts the server down, so it never outlives the bench.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -16,22 +16,22 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use tilo_server::RelayConfig;
-use tilo_server::daemon::{Relay, RelayIdentity};
+use tilo_server::ServerConfig;
+use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::workload::Fleet;
 
-/// Bounds a relay process that does not answer: only a hang reaches it.
+/// Bounds a server process that does not answer: only a hang reaches it.
 const ANSWER: Duration = Duration::from_secs(120);
 
-/// What the relay process needs to start: its identity and its workspaces.
+/// What the server process needs to start: its identity and its workspaces.
 #[derive(Serialize, Deserialize)]
 pub struct Setup {
     pub state_root: PathBuf,
     pub user_public_key: [u8; 32],
-    pub relay_secret_key: [u8; 32],
-    pub relay_cert: DeviceCert,
+    pub server_secret_key: [u8; 32],
+    pub server_cert: DeviceCert,
     /// Each workspace's id and the device keys of its members.
     pub workspaces: Vec<(collab_types::WorkspaceId, Vec<[u8; 32]>)>,
 }
@@ -41,10 +41,10 @@ struct Ready {
     addr: EndpointAddr,
 }
 
-/// The relay process's counters at one moment.
+/// The server process's counters at one moment.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Sample {
-    /// User plus system CPU time of the whole relay process.
+    /// User plus system CPU time of the whole server process.
     pub cpu_ns: u64,
     /// Resident memory now (Linux); the peak elsewhere.
     pub rss_bytes: u64,
@@ -58,7 +58,7 @@ pub struct Sample {
     pub deltas_received: u64,
     pub deltas_fanned_out: u64,
     pub subscriber_dropped: u64,
-    /// File and directory barriers the relay's workspace stores issued
+    /// File and directory barriers the server's workspace stores issued
     /// ([`tilo_server::store::fsyncs`]).
     pub store_fsyncs: u64,
     /// Directory entries the stores listed to retain history
@@ -71,8 +71,8 @@ pub struct Sample {
     pub compaction_signature_checks: u64,
 }
 
-/// The parent's handle on the relay process.
-pub struct RelayProcess {
+/// The parent's handle on the server process.
+pub struct ServerProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
@@ -80,16 +80,16 @@ pub struct RelayProcess {
     device: [u8; 32],
 }
 
-impl RelayProcess {
-    /// Start the relay process for `fleet`, with its state under `state`.
-    /// With `cpus`, the relay process runs on those CPUs alone.
+impl ServerProcess {
+    /// Start the server process for `fleet`, with its state under `state`.
+    /// With `cpus`, the server process runs on those CPUs alone.
     pub async fn spawn(
         fleet: &Fleet,
         state: &Path,
         cpus: Option<&[usize]>,
     ) -> anyhow::Result<Self> {
-        let setup = fleet.relay_setup(state);
-        let device = setup.relay_cert.device_public_key;
+        let setup = fleet.server_setup(state);
+        let device = setup.server_cert.device_public_key;
         let mut command = Command::new(std::env::current_exe()?);
         command.arg("--serve");
         if let Some(cpus) = cpus {
@@ -102,8 +102,8 @@ impl RelayProcess {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .context("start the relay process")?;
-        let mut stdin = child.stdin.take().context("relay stdin")?;
+            .context("start the server process")?;
+        let mut stdin = child.stdin.take().context("server stdin")?;
         let mut stdout = BufReader::new(child.stdout.take().context("relay stdout")?).lines();
         let mut line = serde_json::to_vec(&setup)?;
         line.push(b'\n');
@@ -127,14 +127,14 @@ impl RelayProcess {
         self.device
     }
 
-    /// The relay's counters now.
+    /// The server's counters now.
     pub async fn sample(&mut self) -> anyhow::Result<Sample> {
         self.stdin.write_all(b"sample\n").await?;
         self.stdin.flush().await?;
         Ok(serde_json::from_str(&answer(&mut self.stdout).await?)?)
     }
 
-    /// Shut the relay down, and kill it if it does not go.
+    /// Shut the server down, and kill it if it does not go.
     pub async fn stop(&mut self) {
         let _ = self.stdin.write_all(b"stop\n").await;
         let _ = self.stdin.flush().await;
@@ -150,28 +150,28 @@ impl RelayProcess {
 async fn answer(stdout: &mut Lines<BufReader<ChildStdout>>) -> anyhow::Result<String> {
     tokio::time::timeout(ANSWER, stdout.next_line())
         .await
-        .context("the relay process did not answer")??
-        .context("the relay process exited")
+        .context("the server process did not answer")??
+        .context("the server process exited")
 }
 
-/// The `--serve` side: run the relay on the daemon's own runtime profile,
+/// The `--serve` side: run the server on the daemon's own runtime profile,
 /// on `cpus` alone when the bench names any. The daemon sizes its runtime
 /// from the CPUs this process may use, so it starts as on a VM with that many.
 pub fn serve(cpus: &[usize]) -> anyhow::Result<()> {
     if !cpus.is_empty() {
         affinity::set(cpus)?;
     }
-    tilo_rt::daemon("tilo-server").run(serve_relay())?
+    tilo_rt::daemon("tilo-server").run(serve_server())?
 }
 
-/// Give the relay the first `count` CPUs this process may use and keep the
+/// Give the server the first `count` CPUs this process may use and keep the
 /// rest for this process, which starts its own runtime on them afterwards.
-/// Returns the relay's CPUs.
+/// Returns the server's CPUs.
 pub fn split_cpus(count: usize) -> anyhow::Result<Vec<usize>> {
     let mut cpus = affinity::get()?;
     anyhow::ensure!(
         count >= 1 && count < cpus.len(),
-        "--relay-cpus {count} must leave the members at least one of the {} CPUs",
+        "--server-cpus {count} must leave the members at least one of the {} CPUs",
         cpus.len()
     );
     let members = cpus.split_off(count);
@@ -219,34 +219,34 @@ mod affinity {
 #[cfg(not(target_os = "linux"))]
 mod affinity {
     pub fn get() -> anyhow::Result<Vec<usize>> {
-        anyhow::bail!("--relay-cpus needs Linux's sched_setaffinity")
+        anyhow::bail!("--server-cpus needs Linux's sched_setaffinity")
     }
 
     pub fn set(_cpus: &[usize]) -> anyhow::Result<()> {
-        anyhow::bail!("--relay-cpus needs Linux's sched_setaffinity")
+        anyhow::bail!("--server-cpus needs Linux's sched_setaffinity")
     }
 }
 
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay must keep serving until shutdown().await consumes it"
+    reason = "the server must keep serving until shutdown().await consumes it"
 )]
-async fn serve_relay() -> anyhow::Result<()> {
+async fn serve_server() -> anyhow::Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let setup: Setup = serde_json::from_str(&stdin.next_line().await?.context("no setup")?)?;
-    let cfg = RelayConfig {
+    let cfg = ServerConfig {
         state_root: setup.state_root.clone(),
-        ..RelayConfig::default()
+        ..ServerConfig::default()
     };
-    let identity = RelayIdentity {
+    let identity = ServerIdentity {
         user_public_key: setup.user_public_key,
-        device_signing_key: ed25519_dalek::SigningKey::from_bytes(&setup.relay_secret_key),
-        device_cert: setup.relay_cert,
+        device_signing_key: ed25519_dalek::SigningKey::from_bytes(&setup.server_secret_key),
+        device_cert: setup.server_cert,
         revocations: RevocationList::new(),
     };
     // Loopback only: no home-relay connection, whose keep-alives would be
-    // counted as the relay's egress.
-    let relay = Relay::start_with_app_serving_and_relay_mode(
+    // counted as the server's egress.
+    let server = Server::start_with_app_serving_and_relay_mode(
         cfg,
         identity,
         None,
@@ -254,9 +254,9 @@ async fn serve_relay() -> anyhow::Result<()> {
     )
     .await?;
     for (id, members) in setup.workspaces {
-        // The workspaces are the relay owner's; their governor admits exactly
+        // The workspaces are the server owner's; their governor admits exactly
         // the load's devices.
-        relay
+        server
             .replace_governed_workspace_access(
                 id,
                 true,
@@ -269,15 +269,15 @@ async fn serve_relay() -> anyhow::Result<()> {
             .await?;
     }
     say(&Ready {
-        addr: relay.node_addr(),
+        addr: server.node_addr(),
     })?;
     while let Some(command) = stdin.next_line().await? {
         if command != "sample" {
             break;
         }
-        say(&sample(&relay))?;
+        say(&sample(&server))?;
     }
-    relay.shutdown().await;
+    server.shutdown().await;
     Ok(())
 }
 
@@ -287,9 +287,9 @@ fn say(value: &impl Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn sample(relay: &Relay) -> Sample {
-    let metrics = relay.handle().metrics.snapshot();
-    let socket = &relay.endpoint.metrics().socket;
+fn sample(server: &Server) -> Sample {
+    let metrics = server.handle().metrics.snapshot();
+    let socket = &server.endpoint.metrics().socket;
     let (cpu_ns, rss_bytes) = usage();
     Sample {
         cpu_ns,

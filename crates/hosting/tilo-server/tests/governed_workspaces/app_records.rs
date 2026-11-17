@@ -30,9 +30,9 @@ fn first_state(peer: &StatePeer) -> Option<String> {
 }
 
 /// Admit `member`'s person to `workspace` as a Viewer, through an invitation the
-/// relay issues and `member`'s device redeems.
-async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, workspace: &str) {
-    let issued = relay
+/// server issues and `member`'s device redeems.
+async fn admit_viewer(server: &Server, host: &TestDevice, member: &TestDevice, workspace: &str) {
+    let issued = server
         .workspaces()
         .unwrap()
         .issue(
@@ -80,13 +80,13 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let viewer = carol.enrol("private-viewer", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
-    let relay = start(scratch.path(), &alice, &host).await;
-    let hosted = create_and_enter(&relay, &laptop, "Private app records").await;
+    let server = start(scratch.path(), &alice, &host).await;
+    let hosted = create_and_enter(&server, &laptop, "Private app records").await;
     let workspace = hosted.workspace_id;
-    members::admit(&relay, &host, &member, &hosted.workspace).await;
-    admit_viewer(&relay, &host, &viewer, &hosted.workspace).await;
+    members::admit(&server, &host, &member, &hosted.workspace).await;
+    admit_viewer(&server, &host, &viewer, &hosted.workspace).await;
 
-    let member_session = session(&relay, &member, workspace).await;
+    let member_session = session(&server, &member, workspace).await;
     let roster = vec![
         host.cert.clone(),
         laptop.cert.clone(),
@@ -118,7 +118,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     // An editor's own change of an app's record is theirs: the record's
     // genesis is theirs to start, and it is published only under an
     // application id.
-    let laptop_session = session(&relay, &laptop, workspace).await;
+    let laptop_session = session(&server, &laptop, workspace).await;
     assert!(
         genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
         "a malformed application id is refused"
@@ -129,7 +129,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
             "{malformed:?} is not an application id"
         );
     }
-    crate::common::wait_until_subscribed(&relay, workspace, &member.device_pubkey()).await;
+    crate::common::wait_until_subscribed(&server, workspace, &member.device_pubkey()).await;
     let created = genesis(&mut member_peer, OPENED, &member.sk).unwrap();
     publish(&member_session, &created);
     receive_until(
@@ -175,11 +175,11 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     .await;
 
     // A viewer's client that skips its own checks and writes the record
-    // anyway, as a modified page could: the relay neither keeps nor
+    // anyway, as a modified page could: the server neither keeps nor
     // forwards the write. Another member's replica would refuse it loudly
     // (`receive_until` unwraps every delta it applies), and only the
     // editor's later write reaches it.
-    let viewer_session = session(&relay, &viewer, workspace).await;
+    let viewer_session = session(&server, &viewer, workspace).await;
     let mut viewer_peer = replica();
     receive_until(
         "the viewer holds the member's first state",
@@ -208,7 +208,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
         collab_types::sign_op(envelope, &viewer.sk).unwrap();
     }
     publish(&viewer_session, &forged);
-    // Past the time the relay takes a write in, so a forwarded forgery
+    // Past the time the server takes a write in, so a forwarded forgery
     // would arrive before the editor's write below.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let second = retitle(&mut member_peer, "Second note", &member.sk);
@@ -223,7 +223,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     .await;
     viewer_session.close().await;
     member_session.close().await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// What a record of the workspace names, in any version of it, stays in the
@@ -235,10 +235,10 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     let host = alice.enrol("collecting-host", DeviceCapabilities::member());
     let laptop = alice.enrol("collecting-laptop", DeviceCapabilities::primary());
     let scratch = tempfile::tempdir().unwrap();
-    let relay = start(scratch.path(), &alice, &host).await;
-    let hosted = create_and_enter(&relay, &laptop, "Collected content").await;
-    let workspaces = relay.workspaces().unwrap().clone();
-    let stores = relay.content();
+    let server = start(scratch.path(), &alice, &host).await;
+    let hosted = create_and_enter(&server, &laptop, "Collected content").await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let stores = server.content();
     let store = stores.get(&hosted.workspace).unwrap();
     let earlier = store.put(b"the picture the note showed first").unwrap();
     let current = store.put(b"the picture it shows now").unwrap();
@@ -282,12 +282,12 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     );
     assert!(store.has(&current), "the picture the note shows stays");
     assert!(!store.has(&dropped), "content nothing names is let go of");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// A Viewer writes nothing of the workspace's, but their own record of an app
 /// (of a kind its manifest declares each member's own, their settings) is theirs whatever their role: the
-/// relay keeps their change of it and their other device takes it in.
+/// server keeps their change of it and their other device takes it in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_writes_their_own_record() {
     Box::pin(a_viewer_writes_their_own_record_of(
@@ -317,10 +317,10 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     let viewer = carol.enrol("own-viewer", DeviceCapabilities::member());
     let phone = carol.enrol("own-viewer-phone", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
-    let relay = start(scratch.path(), &alice, &host).await;
-    let hosted = create_and_enter(&relay, &laptop, "A viewer's own record").await;
+    let server = start(scratch.path(), &alice, &host).await;
+    let hosted = create_and_enter(&server, &laptop, "A viewer's own record").await;
     let workspace = hosted.workspace_id;
-    admit_viewer(&relay, &host, &viewer, &hosted.workspace).await;
+    admit_viewer(&server, &host, &viewer, &hosted.workspace).await;
     let roster = vec![
         host.cert.clone(),
         laptop.cert.clone(),
@@ -344,9 +344,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         .document_id();
     // The workspace's owner is live while Carol writes: a member like any other
     // for her own record, which never reaches the owner's device.
-    let owner_session = session(&relay, &laptop, workspace).await;
-    let viewer_session = session(&relay, &viewer, workspace).await;
-    let phone_session = session(&relay, &phone, workspace).await;
+    let owner_session = session(&server, &laptop, workspace).await;
+    let viewer_session = session(&server, &viewer, workspace).await;
+    let phone_session = session(&server, &phone, workspace).await;
     let mut viewer_peer = replica();
     let mut phone_peer = replica();
     for (session, peer) in [
@@ -362,7 +362,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         )
         .await;
     }
-    crate::common::wait_until_subscribed(&relay, workspace, &phone.device_pubkey()).await;
+    crate::common::wait_until_subscribed(&server, workspace, &phone.device_pubkey()).await;
 
     let created = viewer_peer
         .publication_mut()
@@ -424,7 +424,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     );
     // Joined again, the owner's device is replayed the workspace without it.
     owner_session.close().await;
-    let owner_session = session(&relay, &laptop, workspace).await;
+    let owner_session = session(&server, &laptop, workspace).await;
     assert_eq!(
         answer_to_opening(&owner_session, own_app, &own).await,
         tilo_server_protocol::DocumentAnswer::NotYours,
@@ -448,7 +448,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         )
         .unwrap();
     publish(&viewer_session, &away);
-    let phone_session = session(&relay, &phone, workspace).await;
+    let phone_session = session(&server, &phone, workspace).await;
     receive_until(
         "her phone, back, takes in the write made while it was away",
         &phone_session,
@@ -464,7 +464,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     // host neither keeps nor forwards it; her phone would refuse it loudly
     // (`receive_until` unwraps every delta it applies), and only her own
     // later write reaches it.
-    let owner_session = session(&relay, &laptop, workspace).await;
+    let owner_session = session(&server, &laptop, workspace).await;
     let heads = doc.get_heads();
     doc.put(ROOT, "theme", "the owner's").unwrap();
     doc.commit_edit("fixture", "theme");
@@ -538,7 +538,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         tilo_server_protocol::DocumentAnswer::NotYours,
         "another member's own record is not hers, written or not"
     );
-    let owner_session = session(&relay, &laptop, workspace).await;
+    let owner_session = session(&server, &laptop, workspace).await;
     assert_eq!(
         answer_to_opening_own(&owner_session, &alices).await,
         tilo_server_protocol::DocumentAnswer::Sent { frames: 0 },
@@ -568,9 +568,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         matches!(&unretained, NeighbourMsg::AppDocument { own: Some(said), .. } if said.owner == carol.user_pk),
         "her write names her own record on the wire"
     );
-    let raw = RelayClient::connect_to_pinned_host(
+    let raw = ServerClient::connect_to_pinned_host(
         device_endpoint(&viewer).await,
-        relay.node_addr(),
+        server.node_addr(),
         viewer.cert.clone(),
         viewer.sk.clone(),
         RevocationList::new(),
@@ -615,9 +615,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     })
     .await;
     assert_eq!(pending(&laptop), 0, "nor for the owner's device");
-    let back = RelayClient::connect_to_pinned_host(
+    let back = ServerClient::connect_to_pinned_host(
         device_endpoint(&phone).await,
-        relay.node_addr(),
+        server.node_addr(),
         phone.cert.clone(),
         phone.sk.clone(),
         RevocationList::new(),
@@ -640,13 +640,13 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         },
     )
     .await;
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 /// [`answer_to_opening`] for a member's own record named with its kind and
 /// person, which the host answers even before anything of it was written.
 async fn answer_to_opening_own(
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     own: &tilo_server_protocol::OwnedChannel,
 ) -> tilo_server_protocol::DocumentAnswer {
     let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.document_id());
@@ -679,7 +679,7 @@ fn theme(peer: &StatePeer, app: &str, record: &str) -> Option<String> {
 /// frame that arrives first is checked: none may be a change of `record`
 /// unless the answer says the record was sent.
 async fn answer_to_opening(
-    session: &RelayCoeditSession,
+    session: &ServerCoeditSession,
     app: &str,
     record: &str,
 ) -> tilo_server_protocol::DocumentAnswer {

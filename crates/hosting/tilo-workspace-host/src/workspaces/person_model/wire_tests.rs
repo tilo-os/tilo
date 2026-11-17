@@ -71,9 +71,9 @@ async fn linked(
 ) -> (tempfile::TempDir, TestHost) {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    relay.workspaces().call_private_model_addresses(true);
-    relay
+    let server = test_host(dir.path(), &key, &owner).await;
+    server.workspaces().call_private_model_addresses(true);
+    server
         .workspaces()
         .link_model_for(
             &ADA,
@@ -87,7 +87,7 @@ async fn linked(
             true,
         )
         .unwrap();
-    (dir, relay)
+    (dir, server)
 }
 
 /// A stream as an OpenAI-compatible provider writes one.
@@ -168,7 +168,7 @@ fn keyed_only_in(request: &test_http::Request, header: &str, value: &str) {
 #[tokio::test]
 async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
     let model = "gpt-4o-mini";
-    let served = Responder::start(vec![openai_stream(&[
+    let responder = Responder::start(vec![openai_stream(&[
         chunk(
             model,
             &json!({"role": "assistant", "content": "Good "}),
@@ -178,13 +178,13 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
         chunk(model, &json!({}), &json!("stop")),
         usage(model, 1_000, 500),
     ])]);
-    let (_dir, relay) = linked(
+    let (_dir, server) = linked(
         ("A provider", OPENAI),
-        &format!("{}/v1", served.url()),
+        &format!("{}/v1", responder.url()),
         model,
     )
     .await;
-    let asked = relay.workspaces().person_model(ADA, Interaction::Request);
+    let asked = server.workspaces().person_model(ADA, Interaction::Request);
 
     let mut stream = StreamState::default();
     let mut pieces = Vec::new();
@@ -213,7 +213,7 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
     // A thousand tokens in at 0.15 and five hundred out at 0.60 a million.
     assert_eq!(answer.response.cost_micros, 450);
 
-    let request = served.next_request();
+    let request = responder.next_request();
     assert_eq!(request.method, "POST");
     assert_eq!(request.target, "/v1/chat/completions");
     keyed_only_in(&request, "authorization", &format!("Bearer {KEY}"));
@@ -232,20 +232,20 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
 #[tokio::test]
 async fn an_openai_compatible_providers_tool_call_comes_back_whole() {
     let model = "gpt-4o-mini";
-    let served = Responder::start(vec![openai_stream(&[
+    let responder = Responder::start(vec![openai_stream(&[
         calling(model, None),
         chunk(model, &json!({}), &json!("tool_calls")),
         usage(model, 2_000, 100),
     ])]);
-    let (_dir, relay) = linked(
+    let (_dir, server) = linked(
         ("A provider", OPENAI),
-        &format!("{}/v1", served.url()),
+        &format!("{}/v1", responder.url()),
         model,
     )
     .await;
 
     let mut deltas = Vec::new();
-    let calling = relay
+    let calling = server
         .workspaces()
         .person_model(ADA, Interaction::Request)
         .answer(
@@ -269,7 +269,7 @@ async fn an_openai_compatible_providers_tool_call_comes_back_whole() {
             .all(|event| matches!(event, StreamEvent::ToolCallDelta { .. })),
         "{deltas:?}"
     );
-    let sent = body_of(&served.next_request());
+    let sent = body_of(&responder.next_request());
     assert_eq!(sent["tools"][0]["function"]["name"], "lookup");
 }
 
@@ -278,7 +278,7 @@ async fn an_openai_compatible_providers_tool_call_comes_back_whole() {
 #[tokio::test]
 async fn anthropic_is_asked_at_its_messages_api() {
     let model = "claude-sonnet-4-5";
-    let served = Responder::start(vec![anthropic_stream(&[
+    let responder = Responder::start(vec![anthropic_stream(&[
         json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
             "role": "assistant", "model": model, "content": [], "stop_reason": null,
             "stop_sequence": null, "usage": {"input_tokens": 1_000, "output_tokens": 1}}}),
@@ -299,15 +299,15 @@ async fn anthropic_is_asked_at_its_messages_api() {
             "usage": {"output_tokens": 200}}),
         json!({"type": "message_stop"}),
     ])]);
-    let (_dir, relay) = linked(
+    let (_dir, server) = linked(
         ("Anthropic", ProviderProtocol::Anthropic),
-        &served.url(),
+        &responder.url(),
         model,
     )
     .await;
 
     let mut stream = StreamState::default();
-    let answer = relay
+    let answer = server
         .workspaces()
         .person_model(ADA, Interaction::Subtask)
         .answer(
@@ -330,7 +330,7 @@ async fn anthropic_is_asked_at_its_messages_api() {
     // A thousand tokens in at 3 and two hundred out at 15 a million.
     assert_eq!(answer.response.cost_micros, 6_000);
 
-    let request = served.next_request();
+    let request = responder.next_request();
     assert_eq!(request.target, "/v1/messages");
     keyed_only_in(&request, "x-api-key", KEY);
     assert!(request.header("authorization").is_none());
@@ -369,23 +369,23 @@ fn anthropic_calling(model: &str) -> Vec<Value> {
 #[tokio::test]
 async fn a_claude_model_that_refuses_a_forced_tool_call_is_left_to_choose() {
     for (model, choice) in [("claude-opus-5-5", "auto"), ("claude-sonnet-4-6", "any")] {
-        let served = Responder::start(vec![anthropic_stream(&anthropic_calling(model))]);
-        let (_dir, relay) = linked(
+        let responder = Responder::start(vec![anthropic_stream(&anthropic_calling(model))]);
+        let (_dir, server) = linked(
             ("Anthropic", ProviderProtocol::Anthropic),
-            &served.url(),
+            &responder.url(),
             model,
         )
         .await;
         let mut request = asking("Look it up", vec![lookup()]);
         request.tool_choice = ToolChoice::Required;
-        let answer = relay
+        let answer = server
             .workspaces()
             .person_model(ADA, Interaction::Task)
             .answer(&request, soon(), &mut |_| {})
             .await
             .unwrap();
         assert_eq!(answer.response.tool_calls().unwrap().len(), 1, "{model}");
-        let sent = body_of(&served.next_request());
+        let sent = body_of(&responder.next_request());
         assert_eq!(sent["tool_choice"]["type"], choice, "{model}: {sent}");
     }
 }
@@ -397,7 +397,7 @@ async fn a_claude_model_that_refuses_a_forced_tool_call_is_left_to_choose() {
 async fn gemini_is_asked_through_its_openai_endpoint_and_gets_its_signature_back() {
     let model = "gemini-2.5-flash";
     let signature = json!({"google": {"thought_signature": "opaque-signed-thought"}});
-    let served = Responder::start(vec![
+    let responder = Responder::start(vec![
         openai_stream(&[
             calling(model, Some(&signature)),
             chunk(model, &json!({}), &json!("tool_calls")),
@@ -413,16 +413,16 @@ async fn gemini_is_asked_through_its_openai_endpoint_and_gets_its_signature_back
             usage(model, 1_200, 10),
         ]),
     ]);
-    let endpoint = format!("{}/v1beta/openai", served.url());
-    let (_dir, relay) = linked(("Google", OPENAI), &endpoint, model).await;
-    let asked = relay.workspaces().person_model(ADA, Interaction::Request);
+    let endpoint = format!("{}/v1beta/openai", responder.url());
+    let (_dir, server) = linked(("Google", OPENAI), &endpoint, model).await;
+    let asked = server.workspaces().person_model(ADA, Interaction::Request);
 
     let mut request = asking("How many?", vec![lookup()]);
     let first = asked.answer(&request, soon(), &mut |_| {}).await.unwrap();
     let call = first.response.tool_calls().unwrap()[0].clone();
     assert_eq!(call.extra_content, Some(signature.clone()));
     assert!(first.response.cost_micros > 0);
-    let sent = served.next_request();
+    let sent = responder.next_request();
     assert_eq!(sent.target, "/v1beta/openai/chat/completions");
     keyed_only_in(&sent, "authorization", &format!("Bearer {KEY}"));
 
@@ -438,7 +438,7 @@ async fn gemini_is_asked_through_its_openai_endpoint_and_gets_its_signature_back
     });
     let second = asked.answer(&request, soon(), &mut |_| {}).await.unwrap();
     assert_eq!(second.text(), "Two.");
-    let sent = body_of(&served.next_request());
+    let sent = body_of(&responder.next_request());
     let replayed = sent["messages"]
         .as_array()
         .unwrap()
@@ -458,7 +458,7 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
         .header("Content-Type", "application/json")
         .header("Retry-After", "0")
         .body(r#"{"error":{"code":"rate_limit_exceeded","type":"rate_limit_error"}}"#);
-    let served = Responder::start(vec![
+    let responder = Responder::start(vec![
         busy.clone(),
         busy,
         openai_stream(&[
@@ -476,20 +476,24 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
                 r#"{{"error":{{"message":"Incorrect API key provided: {KEY}","code":"invalid_api_key"}}}}"#
             )),
     ]);
-    let (_dir, relay) = linked(
+    let (_dir, server) = linked(
         ("A provider", OPENAI),
-        &format!("{}/v1", served.url()),
+        &format!("{}/v1", responder.url()),
         model,
     )
     .await;
-    let asked = relay.workspaces().person_model(ADA, Interaction::Task);
+    let asked = server.workspaces().person_model(ADA, Interaction::Task);
 
     let answer = asked
         .answer(&asking("When?", Vec::new()), soon(), &mut |_| {})
         .await
         .unwrap();
     assert_eq!(answer.text(), "Now.");
-    assert_eq!(served.drain_requests().len(), 3, "asked until it answered");
+    assert_eq!(
+        responder.drain_requests().len(),
+        3,
+        "asked until it answered"
+    );
 
     let refused = asked
         .answer(&asking("Again?", Vec::new()), soon(), &mut |_| {})
@@ -508,7 +512,7 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
 async fn a_call_let_go_of_ends_the_providers_request() {
     let (closed, was_closed) = std::sync::mpsc::channel();
     let closed = std::sync::Mutex::new(closed);
-    let served = Responder::serve(move |peer| {
+    let responder = Responder::serve(move |peer| {
         let first = chunk(
             "gpt-4o-mini",
             &json!({"role": "assistant", "content": "One moment"}),
@@ -524,13 +528,13 @@ async fn a_call_let_go_of_ends_the_providers_request() {
         let hung_up = wrote && peer.wait_for_close();
         let _ = closed.lock().unwrap().send(hung_up);
     });
-    let (_dir, relay) = linked(
+    let (_dir, server) = linked(
         ("A provider", OPENAI),
-        &format!("{}/v1", served.url()),
+        &format!("{}/v1", responder.url()),
         "gpt-4o-mini",
     )
     .await;
-    let asked = relay.workspaces().person_model(ADA, Interaction::Request);
+    let asked = server.workspaces().person_model(ADA, Interaction::Request);
 
     let (seen, first) = tokio::sync::oneshot::channel();
     let mut seen = Some(seen);
@@ -564,14 +568,14 @@ async fn a_call_let_go_of_ends_the_providers_request() {
 /// provider on the host's own machine or network is never dialled.
 #[tokio::test]
 async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
-    let served = Responder::silent();
+    let responder = Responder::silent();
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     for endpoint in [
-        format!("{}/v1", served.url()),
-        format!("https://127.0.0.1:{}/v1", served.port()),
+        format!("{}/v1", responder.url()),
+        format!("https://127.0.0.1:{}/v1", responder.port()),
         // The address a cloud machine reads its own credentials from.
         "https://169.254.169.254/v1".to_owned(),
         // A carrier-grade private range and a mapped private address.
@@ -605,5 +609,5 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
             "{endpoint}"
         );
     }
-    served.assert_untouched();
+    responder.assert_untouched();
 }

@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                    TransportOrigin::ServerDelta(governor_key.verifying_key().to_bytes()),
                     frame,
                     joined.now,
                 )

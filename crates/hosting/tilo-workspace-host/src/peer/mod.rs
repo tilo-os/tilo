@@ -109,7 +109,7 @@ use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
-use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
+use crate::workspace_access::{self, Decision, ServerTrust, WorkspaceOperation};
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::refusal::Refusal;
@@ -158,7 +158,7 @@ const fn autobind_has_capacity(current: usize) -> bool {
 pub struct WorkspaceAutobind {
     pub state_root: std::path::PathBuf,
     /// The adapter a newly seen workspace's store classifies co-edit bodies
-    /// with: the one the relay was started with.
+    /// with: the one the server was started with.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
 
@@ -170,7 +170,7 @@ impl std::fmt::Debug for WorkspaceAutobind {
     }
 }
 
-/// Relay-wide state a peer session needs for its whole lifetime — the
+/// Server-wide state a peer session needs for its whole lifetime — the
 /// workspace registry, autobind policy, live revocation list, own
 /// user chain, and metrics. Bundled into one struct so [`run_peer`]'s
 /// argument count stays reasonable; see `SessionCtx` for the subset
@@ -184,18 +184,18 @@ pub struct PeerContext {
     pub revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     /// Live signed-workspace-derived member admission policy.
     pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
-    /// The user pubkey this relay itself chains to.
+    /// The user pubkey this server itself chains to.
     pub own_user_public_key: [u8; 32],
-    /// Exact certified device running this relay. Private actions may use this
+    /// Exact certified device running this server. Private actions may use this
     /// identity for a local durable-broker self-connection even though its
     /// certificate says it may host.
     pub own_device_cert: tilo_user_identity::DeviceCert,
     /// Metrics — cheap counters.
     pub metrics: Arc<crate::metrics::Metrics>,
-    /// This relay's own device key: the address remote-action frames use to
+    /// This server's own device key: the address remote-action frames use to
     /// reach the app action server.
     pub own_device_public_key: [u8; 32],
-    /// Answers remote-action frames addressed to this relay. `None` unless
+    /// Answers remote-action frames addressed to this server. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
@@ -292,9 +292,9 @@ struct SessionCtx<'a> {
 }
 
 impl SessionCtx<'_> {
-    /// This relay's certificate and agent trust, as the session sees it.
-    fn trust(&self) -> RelayTrust<'_> {
-        RelayTrust {
+    /// This server's certificate and agent trust, as the session sees it.
+    fn trust(&self) -> ServerTrust<'_> {
+        ServerTrust {
             revocations: self.revocations,
             policy: self.trust_policy,
             own_user: self.own_user_public_key,

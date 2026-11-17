@@ -23,8 +23,8 @@
 //! the workspace best right now ([`hosts`]), and that host admits the grant's
 //! key as its person's agent, within the grant's scope and until it expires
 //! ([`relay`]). It serves each MCP session itself, with the agent surface
-//! `tilo mcp` serves, over the grant's own session with the relay, where
-//! record actions run on the relay's app workers ([`session`]). Every
+//! `tilo mcp` serves, over the grant's own session with the server, where
+//! record actions run on the server's app workers ([`session`]). Every
 //! session is one agent run, attributed separately in History and named for
 //! the person ("Claude Code #1"). The person revokes a grant at `/grants`;
 //! its tokens and sessions end at once and its key is forgotten.
@@ -38,7 +38,7 @@ pub mod hosts;
 pub mod keys;
 pub mod oauth;
 pub mod pages;
-pub mod relay;
+pub mod server;
 pub mod session;
 pub mod sign_in;
 pub mod store;
@@ -52,7 +52,7 @@ use hyper::{
     body::{Bytes, Incoming},
     header::{self, HeaderValue},
 };
-use relay::Connection;
+use server::Connection;
 use serde_json::{Value, json};
 use session::{SESSION_HEADER, Session};
 use std::{
@@ -166,8 +166,8 @@ pub struct Server {
     browsers: sign_in::Browsers,
     pending: Mutex<HashMap<String, Pending>>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// Each grant's session with the relay, by grant id, which all its runs,
-    /// uploads and account calls share: the relay keeps one session per key,
+    /// Each grant's session with the server, by grant id, which all its runs,
+    /// uploads and account calls share: the server keeps one session per key,
     /// so a second would cut the first off. It ends with the last run that
     /// holds it, or when the grant is revoked.
     connections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Weak<Connection>>>>>,
@@ -206,7 +206,7 @@ pub fn body(bytes: impl Into<Bytes>) -> Body {
 
 impl Server {
     /// # Errors
-    /// The web entry is not a URL, or the HTTP client for the relay and the
+    /// The web entry is not a URL, or the HTTP client for the server and the
     /// site could not be built.
     pub fn new(config: &Config, store: Store) -> io::Result<Arc<Self>> {
         let http = tilo_net::Client::builder()
@@ -827,7 +827,7 @@ impl Server {
     /// Check `proof` answers `pending`'s challenge for this server: the
     /// person it is, hex, or why not. The grant's own certificate, which the
     /// person's root signed, is checked against their revocations by the
-    /// relay at every handshake.
+    /// server at every handshake.
     fn check_proof(
         &self,
         pending: &Pending,
@@ -1024,7 +1024,7 @@ impl Server {
                 let named = async {
                     let connection = self.connection(&grant, &key).await.ok()?;
                     connection
-                        .relay()
+                        .server()
                         .workspace(&connection, &workspace)
                         .await
                         .ok()?
@@ -1420,7 +1420,7 @@ impl Server {
     }
 
     /// A new run of `grant` acting in `scope`, named `label`: the grant's own
-    /// session with the relay, and for a minted grant the session of the
+    /// session with the server, and for a minted grant the session of the
     /// grant that minted it, which asks for its invitation.
     pub(crate) async fn new_session(
         self: &Arc<Self>,
@@ -1465,13 +1465,13 @@ impl Server {
         });
     }
 
-    /// `grant`'s session with the relay: the live one its other runs hold,
+    /// `grant`'s session with the server: the live one its other runs hold,
     /// else a new one. Runs starting at once wait for the one connecting.
     async fn connection(
         &self,
         grant: &str,
         key: &GrantKey,
-    ) -> Result<Arc<Connection>, relay::RelayError> {
+    ) -> Result<Arc<Connection>, server::ServerError> {
         let slot = {
             let mut connections = lock(&self.connections);
             // Forget the grants whose session ended with their last run.

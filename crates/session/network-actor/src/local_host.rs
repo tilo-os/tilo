@@ -1,4 +1,4 @@
-//! This device's own workspace host: the same host a relay runs
+//! This device's own workspace host: the same host a server runs
 //! (`workspace_host::WorkspaceHost`), in this process, serving the workspaces placed
 //! on this device.
 //!
@@ -14,7 +14,7 @@
 //! in-process carrier (`WorkspaceHost::connect_local`), through the same
 //! handshake and session code a remote member's takes over iroh. An
 //! endpoint cannot dial itself, and a session that never leaves the
-//! process keeps no relay up and arms no timer.
+//! process keeps no server up and arms no timer.
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Where the workspace host lives: the one place its path is named.

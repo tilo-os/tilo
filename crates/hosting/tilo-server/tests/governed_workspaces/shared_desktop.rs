@@ -1,4 +1,4 @@
-//! A workspace's shared desktop through a real relay: guests close and move the
+//! A workspace's shared desktop through a real server: guests close and move the
 //! windows they opened, never someone else's, and a moderator the workspace
 //! made closes anyone's. A refused write is neither kept nor forwarded, and
 //! a page committing one is told.
@@ -9,7 +9,7 @@ use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
 use tilo_server::workspaces::SetMemberRoleRequest;
-use tilo_server::{CoeditPayload, RelayClient};
+use tilo_server::{CoeditPayload, ServerClient};
 
 use super::*;
 
@@ -68,8 +68,8 @@ fn person(user: &TestUser) -> String {
 
 /// The windows on the workspace's desktop as its governor follows them, as
 /// `(tab, group)` in order; empty while it holds none.
-async fn windows(relay: &Relay, workspace: &str) -> Vec<(u64, u64)> {
-    let Some(bytes) = relay
+async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
+    let Some(bytes) = server
         .workspaces()
         .unwrap()
         .resource_document(workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
@@ -89,9 +89,9 @@ async fn windows(relay: &Relay, workspace: &str) -> Vec<(u64, u64)> {
         .collect()
 }
 
-async fn wait_for_windows(relay: &Relay, workspace: &str, want: &[(u64, u64)]) {
+async fn wait_for_windows(server: &Server, workspace: &str, want: &[(u64, u64)]) {
     tilo_test_env::within(format!("the workspace's desktop holds {want:?}"), async {
-        while windows(relay, workspace).await != want {
+        while windows(server, workspace).await != want {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -110,16 +110,20 @@ struct Page<'a> {
 impl Page<'_> {
     /// `desktop` written over what the workspace's desktop holds now, as one
     /// signed document message.
-    async fn write(&mut self, relay: &Relay, desktop: &SharedDesktop) -> NeighbourMsg {
-        let mut frames = self.write_frames(relay, desktop).await;
+    async fn write(&mut self, server: &Server, desktop: &SharedDesktop) -> NeighbourMsg {
+        let mut frames = self.write_frames(server, desktop).await;
         assert_eq!(frames.len(), 1, "a small write is one frame");
         frames.remove(0)
     }
 
     /// `desktop` written as [`Self::write`] does, as the signed frames that
     /// carry it: one, or one per segment of a larger write.
-    async fn write_frames(&mut self, relay: &Relay, desktop: &SharedDesktop) -> Vec<NeighbourMsg> {
-        let held = relay
+    async fn write_frames(
+        &mut self,
+        server: &Server,
+        desktop: &SharedDesktop,
+    ) -> Vec<NeighbourMsg> {
+        let held = server
             .workspaces()
             .unwrap()
             .resource_document(&self.workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
@@ -179,21 +183,25 @@ impl Page<'_> {
 }
 
 /// A write that opens nothing: a page's first desktop publication.
-async fn ada_page_probe(relay: &Relay, device: &TestDevice, workspace: &str) -> NeighbourMsg {
+async fn ada_page_probe(server: &Server, device: &TestDevice, workspace: &str) -> NeighbourMsg {
     let mut page = Page {
         device,
         workspace: workspace.to_owned(),
         actor: 9,
         seq: 1,
     };
-    page.write(relay, &desktop(&[])).await
+    page.write(server, &desktop(&[])).await
 }
 
 /// `device`'s page session in the workspace: connected, subscribed.
-async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
-    let client = RelayClient::connect_to_pinned_host(
+async fn page_client(
+    server: &Server,
+    device: &TestDevice,
+    workspace_id: WorkspaceId,
+) -> ServerClient {
+    let client = ServerClient::connect_to_pinned_host(
         device_endpoint(device).await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert.clone(),
         device.sk.clone(),
         RevocationList::new(),
@@ -211,7 +219,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: Workspace
 /// Commit `message` as a page does, and the host's answer: `Ok` with its
 /// order, or why it refused.
 pub(super) async fn commit(
-    client: &RelayClient,
+    client: &ServerClient,
     device: &TestDevice,
     workspace_id: WorkspaceId,
     message: &NeighbourMsg,
@@ -260,14 +268,14 @@ pub(super) async fn commit(
 
 /// Admit `person`'s `device` to `workspace` as `role`.
 async fn admit(
-    relay: &Relay,
+    server: &Server,
     owner: &TestDevice,
     workspace: &str,
     (person, device): (&TestUser, &TestDevice),
     role: Role,
     request: u8,
 ) {
-    let invitation = invite(relay, owner, workspace, role, person.user_pk).await;
+    let invitation = invite(server, owner, workspace, role, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -301,12 +309,12 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let cy = TestUser::fresh("Cy");
     let cy_laptop = cy.enrol("cy-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let hosted = create_and_enter(&relay, &laptop, "Lounge").await;
+    let server = start(state.path(), &alice, &host).await;
+    let hosted = create_and_enter(&server, &laptop, "Lounge").await;
     // Guests are Editors, as a public workspace admits them; Mo is made the
     // workspace's Moderator once he is in.
     admit(
-        &relay,
+        &server,
         &laptop,
         &hosted.workspace,
         (&ada, &ada_browser),
@@ -315,7 +323,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     )
     .await;
     admit(
-        &relay,
+        &server,
         &laptop,
         &hosted.workspace,
         (&ben, &ben_browser),
@@ -324,7 +332,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     )
     .await;
     admit(
-        &relay,
+        &server,
         &laptop,
         &hosted.workspace,
         (&mo, &mo_browser),
@@ -333,7 +341,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     )
     .await;
     admit(
-        &relay,
+        &server,
         &laptop,
         &hosted.workspace,
         (&cy, &cy_laptop),
@@ -342,11 +350,11 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     )
     .await;
     let workspace = hosted.workspace_id;
-    let ada_client = page_client(&relay, &ada_browser, workspace).await;
-    let ben_client = page_client(&relay, &ben_browser, workspace).await;
-    let mo_client = page_client(&relay, &mo_browser, workspace).await;
+    let ada_client = page_client(&server, &ada_browser, workspace).await;
+    let ben_client = page_client(&server, &ben_browser, workspace).await;
+    let mo_client = page_client(&server, &mo_browser, workspace).await;
     // Mo is made the workspace's moderator while his page is in it.
-    relay
+    server
         .workspaces()
         .unwrap()
         .set_member_role(
@@ -361,7 +369,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         .await
         .unwrap();
     // His page goes on taking the workspace's changes, live.
-    let probe = ada_page_probe(&relay, &ada_browser, &hosted.workspace).await;
+    let probe = ada_page_probe(&server, &ada_browser, &hosted.workspace).await;
     commit(&ada_client, &ada_browser, workspace, &probe)
         .await
         .unwrap();
@@ -380,7 +388,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     .await;
     // What each page asks before it offers a close on someone else's window.
     let moderates = |device: &TestDevice| {
-        let workspaces = relay.workspaces().unwrap();
+        let workspaces = server.workspaces().unwrap();
         let cert = device.cert.clone();
         let request = tilo_server_protocol::workspaces::WorkspacesRequest::Permits {
             workspace: hosted.workspace.clone(),
@@ -412,29 +420,29 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
 
     // Ada opens window 1, Ben window 2.
     let opens = ada_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
     commit(&ada_client, &ada_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &hosted.workspace, &[(1, 100)]).await;
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100)]).await;
     let both = desktop(&[(1, 100, a.clone()), (2, 200, b.clone())]);
-    let opens = ben_page.write(&relay, &both).await;
+    let opens = ben_page.write(&server, &both).await;
     commit(&ben_client, &ben_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &hosted.workspace, &[(1, 100), (2, 200)]).await;
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
 
     // Ada may not close Ben's window, nor move it into hers.
     let closes = ada_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
     let refused = commit(&ada_client, &ada_browser, workspace, &closes)
         .await
         .unwrap_err();
     assert!(refused.contains("may not close"), "{refused}");
     let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
-    let moves = ada_page.write(&relay, &into_hers).await;
+    let moves = ada_page.write(&server, &into_hers).await;
     let refused = commit(&ada_client, &ada_browser, workspace, &moves)
         .await
         .unwrap_err();
@@ -449,7 +457,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
             write!(title, "{:x}", n.wrapping_mul(2_654_435_761)).unwrap();
             title
         });
-    let frames = ada_page.write_frames(&relay, &huge).await;
+    let frames = ada_page.write_frames(&server, &huge).await;
     assert!(frames.len() > 1, "{} frames", frames.len());
     let (last, first) = frames.split_last().unwrap();
     for frame in first {
@@ -463,8 +471,8 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     assert!(refused.contains("may not close"), "{refused}");
     // Nor may Cy, through a native session's plain delta: it is dropped,
     // and his next write, which is his to make, lands without it.
-    let cy_session = session(&relay, &cy_laptop, workspace).await;
-    crate::common::wait_until_subscribed(&relay, workspace, &cy_laptop.device_pubkey()).await;
+    let cy_session = session(&server, &cy_laptop, workspace).await;
+    crate::common::wait_until_subscribed(&server, workspace, &cy_laptop.device_pubkey()).await;
     // Both over the same desktop: had the workspace kept the close, Ada's
     // window would be gone beside Cy's new one.
     let three = desktop(&[
@@ -472,40 +480,40 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         (2, 200, b.clone()),
         (3, 300, person(&cy)),
     ]);
-    let cy_opens = cy_page.write(&relay, &three).await;
+    let cy_opens = cy_page.write(&server, &three).await;
     let cy_closes = cy_page
-        .write(&relay, &desktop(&[(2, 200, b.clone())]))
+        .write(&server, &desktop(&[(2, 200, b.clone())]))
         .await;
     publish(&cy_session, &cy_closes);
     publish(&cy_session, &cy_opens);
-    wait_for_windows(&relay, &hosted.workspace, &[(1, 100), (2, 200), (3, 300)]).await;
-    let cy_closes_his = cy_page.write(&relay, &both).await;
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200), (3, 300)]).await;
+    let cy_closes_his = cy_page.write(&server, &both).await;
     publish(&cy_session, &cy_closes_his);
-    wait_for_windows(&relay, &hosted.workspace, &[(1, 100), (2, 200)]).await;
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
     // She may move her own window past his.
     let reordered = desktop(&[(2, 200, b.clone()), (1, 100, a.clone())]);
-    let hers = ada_page.write(&relay, &reordered).await;
+    let hers = ada_page.write(&server, &reordered).await;
     commit(&ada_client, &ada_browser, workspace, &hers)
         .await
         .unwrap();
-    wait_for_windows(&relay, &hosted.workspace, &[(2, 200), (1, 100)]).await;
+    wait_for_windows(&server, &hosted.workspace, &[(2, 200), (1, 100)]).await;
 
     // Ben closes his own window.
     let closes = ben_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
     commit(&ben_client, &ben_browser, workspace, &closes)
         .await
         .unwrap();
-    wait_for_windows(&relay, &hosted.workspace, &[(1, 100)]).await;
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100)]).await;
 
     // Mo moderates the workspace: he closes Ada's.
-    let clears = mo_page.write(&relay, &desktop(&[])).await;
+    let clears = mo_page.write(&server, &desktop(&[])).await;
     commit(&mo_client, &mo_browser, workspace, &clears)
         .await
         .unwrap();
-    wait_for_windows(&relay, &hosted.workspace, &[]).await;
-    relay.shutdown().await;
+    wait_for_windows(&server, &hosted.workspace, &[]).await;
+    server.shutdown().await;
 }
 
 /// What a guest's page asks the workspace to learn its person's role
@@ -520,10 +528,10 @@ async fn a_public_workspaces_guest_is_answered_the_role_it_was_admitted_with() {
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let hosted = create_and_enter(&relay, &laptop, "Lounge").await;
+    let server = start(state.path(), &alice, &host).await;
+    let hosted = create_and_enter(&server, &laptop, "Lounge").await;
     admit(
-        &relay,
+        &server,
         &laptop,
         &hosted.workspace,
         (&ada, &ada_browser),
@@ -532,7 +540,7 @@ async fn a_public_workspaces_guest_is_answered_the_role_it_was_admitted_with() {
     )
     .await;
     let answered = |device: &TestDevice| {
-        let workspaces = relay.workspaces().unwrap();
+        let workspaces = server.workspaces().unwrap();
         let cert = device.cert.clone();
         let workspace = hosted.workspace.clone();
         async move {
@@ -557,5 +565,5 @@ async fn a_public_workspaces_guest_is_answered_the_role_it_was_admitted_with() {
         answered(&ada_browser).await,
         tilo_action_policy::Role::Editor
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }

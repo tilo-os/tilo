@@ -92,7 +92,7 @@ impl HostedWorkspaces {
     ///
     /// `endpoint` is where this session's own endpoint lands once it bound, and `None` for a
     /// session that binds none: this device's key names one endpoint, and one bound beside it for
-    /// a host's session took this device's place at its relay, so the person's other devices
+    /// a host's session took this device's place at its server, so the person's other devices
     /// reached nothing of it there once they started, or came back, after it.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
@@ -149,7 +149,7 @@ impl HostedWorkspaces {
         let identity = self.0.engine.identity();
         // It reads and asks with this device's own keys, and dials from this device's own
         // endpoint: the device holds one place in each workspace's key group, and one connection
-        // per relay, which a second key service or endpoint of its own would take.
+        // per server, which a second key service or endpoint of its own would take.
         let device = Device::over_lent(
             PeerConfig {
                 host: tilo_server_client::Host::at(placed.host.endpoint_addr.clone()),

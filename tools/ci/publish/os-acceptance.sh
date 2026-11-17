@@ -12,7 +12,7 @@
 #
 #   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
 #            a third device through one without the identity key, sibling unlock and, on
-#            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a relay
+#            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a server
 #            (os/dev/test-device-admin-reach.sh)
 #   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh)
 #   splash   the boot splash on a panel larger than the firmware's mode (os/dev/check-boot-splash.py)

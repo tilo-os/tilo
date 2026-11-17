@@ -97,13 +97,13 @@ pub struct HomePeerRegistration {
     pub schema_version: u16,
     /// Certified filesystem/device endpoint key, lowercase hex.
     pub device_node_id: String,
-    /// Domain-separated relay service endpoint key, lowercase hex.
-    pub relay_service_node_id: String,
+    /// Domain-separated server service endpoint key, lowercase hex.
+    pub server_node_id: String,
     /// Last authenticated, network-addressable endpoint advertisement for
-    /// the relay service. The service id alone is insufficient without an
+    /// the server service. The service id alone is insufficient without an
     /// address lookup service; absent until the peer advertises one.
     #[serde(default)]
-    pub relay_endpoint: Option<iroh_base::EndpointAddr>,
+    pub server_endpoint: Option<iroh_base::EndpointAddr>,
     /// User-visible device name.
     pub label: String,
     /// Root identity key, lowercase hex.
@@ -112,8 +112,8 @@ pub struct HomePeerRegistration {
     /// manage a headless peer.
     #[serde(default)]
     pub device_cert: Option<tilo_user_identity::DeviceCert>,
-    /// Relay workspace shards this peer was last configured to retain.
-    pub relay_workspace_ids: Vec<WorkspaceId>,
+    /// Server workspace shards this peer was last configured to retain.
+    pub server_workspace_ids: Vec<WorkspaceId>,
 }
 
 impl HomePeerRegistration {
@@ -190,14 +190,14 @@ fn writable(entry: &HomePeerRegistration) -> bool {
             .is_some_and(|bytes| bytes.len() == 32)
     };
     entry.schema_version == HomePeerRegistration::CURRENT_SCHEMA
-        && entry.relay_workspace_ids.len() <= 4096
+        && entry.server_workspace_ids.len() <= 4096
         && valid_home_peer_label(&entry.label)
         && key(&entry.device_node_id)
-        && key(&entry.relay_service_node_id)
+        && key(&entry.server_node_id)
         && key(&entry.user_public_key)
-        && entry.relay_endpoint.as_ref().is_none_or(|endpoint| {
+        && entry.server_endpoint.as_ref().is_none_or(|endpoint| {
             !endpoint.is_empty()
-                && hex::decode(&entry.relay_service_node_id)
+                && hex::decode(&entry.server_node_id)
                     .ok()
                     .is_some_and(|service| service.as_slice() == endpoint.id.as_bytes())
         })

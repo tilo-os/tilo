@@ -14,7 +14,7 @@ tilo_test_env::scenario! {
         let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let route = |record: &str| Route {
             app: "test.app".into(),
             record: record.into(),
@@ -57,7 +57,7 @@ tilo_test_env::scenario! {
         let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let before = committed.durable_parts().unwrap();
         assert_eq!(before.concat(), committed.durable_whole().unwrap());
         assert_eq!(committed.durable().unwrap(), before.concat());

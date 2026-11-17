@@ -755,7 +755,7 @@ fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
 /// authored against, and check that it produces exactly that change: same
 /// operations, same actor, time and message, so the same hash. This is what
 /// a device that has the app does with every change it receives, beside the
-/// relay's grant check: an author granted an action who wrote something else
+/// server's grant check: an author granted an action who wrote something else
 /// inside its storage units is caught here.
 pub fn verify_change(
     doc: &mut Doc,

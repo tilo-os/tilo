@@ -1354,7 +1354,7 @@ fn changed<H: ActionHost>(
 /// A versioned [`RemoteActionMessage`], the unit a transport carries.
 ///
 /// The encoding is self-describing JSON: action arguments and outputs are
-/// open JSON values, and a relay forwarding the bytes need not understand
+/// open JSON values, and a server forwarding the bytes need not understand
 /// them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemoteActionFrame {

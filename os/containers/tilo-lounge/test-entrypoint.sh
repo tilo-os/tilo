@@ -25,7 +25,7 @@ fail() {
   exit 1
 }
 
-# lounge [NAME=VALUE…]: the entrypoint's relay invocation, with only the
+# lounge [NAME=VALUE…]: the entrypoint's server invocation, with only the
 # environment given here.
 lounge() {
   env -i PATH="$work/bin:/usr/bin:/bin" \
@@ -96,7 +96,7 @@ subsequence "$work/want" "$work/args" || fail "the plain deployment maps other a
 # The state is the workspace's own directory under the state root, the volume
 # the old wrapper left.
 grep -Fqx -- "--state" "$work/args" || fail "no state flag"
-grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
+grep -Fqx -- "$work/state/lounge/server" "$work/args" || fail "the server state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/workspace-id" "$work/args" || fail "the workspace id is not kept with the workspace"
 grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
 # The packet relay binds where the ingress forwards; without a named origin the
@@ -267,17 +267,17 @@ done
 # that; where a built `tilo-server` is here (a developer's checkout, the builder),
 # the real one takes the entrypoint's arguments and says whether it would start.
 # `TILO_SERVER_BIN` names one; without either, this part says it was skipped.
-relay=${TILO_SERVER_BIN:-}
-if [[ -z $relay ]]; then
+server=${TILO_SERVER_BIN:-}
+if [[ -z $server ]]; then
   for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-server" \
     "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-server"; do
-    [[ -x $candidate ]] && relay=$candidate && break
+    [[ -x $candidate ]] && server=$candidate && break
   done
 fi
-if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
+if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
   # `workspace --help` names every flag the persistent workspace reads; the entrypoint's
   # arguments must be among them. `--help` answers without starting anything.
-  "$relay" workspace --help >"$work/workspace-help" 2>&1
+  "$server" workspace --help >"$work/workspace-help" 2>&1
   # The arguments the entrypoint hands the host for eu1's environment.
   lounge \
     TILO_WORKSPACES_NAME=Lounge \
@@ -292,7 +292,7 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
     TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
     TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
-    >"$work/real-args" || fail "the deployment did not start against the real relay"
+    >"$work/real-args" || fail "the deployment did not start against the real server"
   # Every argument that is a flag (starts with `--`) must be one `workspace --help`
   # lists.
   while IFS= read -r argument; do
@@ -304,8 +304,8 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
         ;;
     esac
   done <"$work/real-args"
-  [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real relay"
-  echo "ok: every flag the entrypoint passes is one tilo-server workspace reads ($relay)"
+  [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real server"
+  echo "ok: every flag the entrypoint passes is one tilo-server workspace reads ($server)"
 else
   echo "skipped: no built tilo-server (TILO_SERVER_BIN) to check the entrypoint's flags against"
 fi

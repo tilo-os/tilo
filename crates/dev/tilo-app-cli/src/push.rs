@@ -22,7 +22,7 @@ pub struct PushArgs {
     /// current directory.
     path: Option<PathBuf>,
     /// The workspace to push to, by its host's link:
-    /// `tilo-workspace:<relay>[@<ip:port>]/<workspace>/<id>`.
+    /// `tilo-workspace:<server>[@<ip:port>]/<workspace>/<id>`.
     #[arg(long = "workspace")]
     workspace: String,
     /// This machine's Tilo identity: a device of yours, enrolled for the

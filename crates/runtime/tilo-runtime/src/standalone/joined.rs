@@ -311,7 +311,7 @@ impl Joined {
         self.owner.workspaces().is_empty()
     }
 
-    // Use the same current ownership check as an enrolled relay session. Merely
+    // Use the same current ownership check as an enrolled server session. Merely
     // retaining a peer or its device key cannot authenticate a selected root.
     fn current_workspace(&self, workspace: WorkspaceId) -> Result<(Workspace, String), String> {
         let (_, cert, continuity) =

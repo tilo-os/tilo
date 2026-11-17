@@ -312,7 +312,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
                 request_id,
                 kind: EngineRequestKind::Send,
                 context: "send".into(),
-                message: "relay denied".into(),
+                message: "server denied".into(),
             })
             .unwrap();
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
@@ -325,7 +325,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
         let outbox = TestMail::outbox(&doc);
         assert!(
-            matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
+            matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("server denied")),
             "{outbox:?}"
         );
         assert!(

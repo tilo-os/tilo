@@ -1,9 +1,9 @@
 //! A workspace's shell command runs on the VM host that holds the workspace's
-//! VM: the relay asks the placer which host runs it, waits while none has
-//! workspace, and asks that VM host's member device, a device of the relay's own
+//! VM: the server asks the placer which host runs it, waits while none has
+//! workspace, and asks that VM host's member device, a device of the server's own
 //! person, to run it over the device action service. The member holds the workspace as
-//! any member does — entering it the first time the relay asks about it, with
-//! the invitation the relay's own `workspace.enter` answers — and its command works
+//! any member does — entering it the first time the server asks about it, with
+//! the invitation the server's own `workspace.enter` answers — and its command works
 //! on the member's copy of the workspace's files, its output coming back as
 //! the run.
 
@@ -26,9 +26,9 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_runtime::standalone::take_work;
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;
-use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, TestUser, device_endpoint, host_on};
@@ -64,7 +64,7 @@ fn placer() -> (String, Arc<AtomicUsize>) {
     (address, asked)
 }
 
-/// The `host:port` an endpoint of this process listens on, as a relay's
+/// The `host:port` an endpoint of this process listens on, as a server's
 /// members file names a member.
 fn address_of(endpoint: &iroh::Endpoint) -> String {
     let socket = endpoint
@@ -80,7 +80,7 @@ fn host_address(hosted: &Hosted) -> String {
     address_of(hosted.router.endpoint())
 }
 
-/// `device`'s address, as the relay reaches the member it asks.
+/// `device`'s address, as the server reaches the member it asks.
 fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
     let id = EndpointId::from_bytes(&device).unwrap();
     EndpointAddr::from_parts(
@@ -91,7 +91,7 @@ fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
     )
 }
 
-/// A run of `command` in a session, as the relay asks it.
+/// A run of `command` in a session, as the server asks it.
 fn run_request(session: &str, command: &str) -> InvokeRequest {
     let argument = serde_json::to_value(CommandRequest {
         session: session.into(),
@@ -118,7 +118,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
 }
 
 /// A workspace whose VM host is a member device that takes its work, with the
-/// relay's placed shells asking it.
+/// server's placed shells asking it.
 struct Placed {
     workspace: String,
     shells: Arc<PlacedShells>,
@@ -151,8 +151,8 @@ async fn placed() -> Arc<Placed> {
         .workspace;
 
     // The VM host is a member device that takes work: it holds the workspace
-    // the relay places on it as any member does, entering it the first time
-    // the relay asks about it, and answers the relay's runs with the
+    // the server places on it as any member does, entering it the first time
+    // the server asks about it, and answers the server's runs with the
     // workspace's shells on its own copy of the files.
     let profile = tempfile::tempdir().unwrap();
     let member_endpoint = device_endpoint(&vm_host).await;
@@ -161,12 +161,13 @@ async fn placed() -> Arc<Placed> {
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Relay::new(&hex::encode(shell.device_pubkey()), &host_address(&hosted)).unwrap(),
+        take_work::Server::new(&hex::encode(shell.device_pubkey()), &host_address(&hosted))
+            .unwrap(),
         None,
     )
     .unwrap();
 
-    // The relay knows its VM hosts' members, and asks the placer.
+    // The server knows its VM hosts' members, and asks the placer.
     let (placer, asked) = placer();
     let members = Members::from([(
         VM_HOST.to_owned(),
@@ -220,7 +221,7 @@ async fn stop(placed: Arc<Placed>) {
 async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     let placed = placed().await;
 
-    // Nothing in this test admitted the member to the workspace: the relay's
+    // Nothing in this test admitted the member to the workspace: the server's
     // first run is what makes it enter, and that run is answered.
     let ran = run(
         &placed,
@@ -268,7 +269,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     );
     let Ok(Some(answered)) = member_device
         .invoke(
-            &Caller::local_app("tilo.relay"),
+            &Caller::local_app("tilo.server"),
             run_request("run:2", "echo stranger > stranger.txt"),
         )
         .wait_timeout(Duration::from_secs(30))
@@ -295,8 +296,8 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         "nothing ran on the member for another person"
     );
 
-    // A workspace the relay places here later is entered the same way: the
-    // member takes the work of every workspace the relay governs, not only
+    // A workspace the server places here later is entered the same way: the
+    // member takes the work of every workspace the server governs, not only
     // the first it heard of.
     let later = placed
         .hosted
@@ -336,7 +337,7 @@ async fn generation(placed: &Placed, workspace: &str) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn only_the_relay_makes_the_member_enter_a_workspace() {
+async fn only_the_server_makes_the_member_enter_a_workspace() {
     let placed = placed().await;
     let later = placed
         .hosted
@@ -349,7 +350,7 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
     let before = generation(&placed, &later).await;
 
     // Another device naming a workspace the member does not hold is refused,
-    // and the relay admits nothing for it.
+    // and the server admits nothing for it.
     let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
     let stranger_endpoint = device_endpoint(&stranger).await;
     let asking = ActionService::new(stranger.sk.clone(), Arc::new(NoActions));
@@ -360,13 +361,13 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
             &later,
         )
         .invoke(
-            &Caller::local_app("tilo.relay"),
+            &Caller::local_app("tilo.server"),
             run_request("run:1", "echo stranger > stranger.txt"),
         )
         .wait_timeout(Duration::from_secs(30));
     assert!(
         matches!(answered, Ok(Some(Err(_)))),
-        "a device that is not the relay is refused a workspace the member does not hold"
+        "a device that is not the server is refused a workspace the member does not hold"
     );
     assert_eq!(
         generation(&placed, &later).await,
@@ -374,7 +375,7 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
         "a stranger's request made the member enter a workspace"
     );
 
-    // The relay's own run is what enters it.
+    // The server's own run is what enters it.
     let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
     let ran = tokio::task::spawn_blocking(move || {
         shells.run(&asked, "run:1", "pwd", true, Watching::default())
@@ -386,7 +387,7 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
     assert_ne!(
         generation(&placed, &later).await,
         before,
-        "the relay's run admitted the member"
+        "the server's run admitted the member"
     );
 
     stop(placed).await;

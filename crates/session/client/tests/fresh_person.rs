@@ -37,10 +37,10 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let state = tempfile::tempdir().unwrap();
     let hosted = start_workspace_host(&alice, &host, state.path(), false).await;
     let https = hosted.iroh();
-    let relay = &hosted.relay;
+    let server = &hosted.server;
 
-    let lounge = relay.workspaces().unwrap().create("Lounge").await.unwrap();
-    crate::call::enter(relay, &alice_laptop.cert, &lounge.workspace).await;
+    let lounge = server.workspaces().unwrap().create("Lounge").await.unwrap();
+    crate::call::enter(server, &alice_laptop.cert, &lounge.workspace).await;
     let lounge_id = tilo_server::WorkspaceId::parse(&lounge.workspace).unwrap();
     let welcome = DocumentRoute {
         app_id: "so.tilo.notes".into(),
@@ -107,7 +107,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     for page in pages {
         page.close();
     }
-    let TestHost { relay, web, .. } = hosted;
+    let TestHost { server, web, .. } = hosted;
     drop(web);
-    relay.shutdown().await;
+    server.shutdown().await;
 }

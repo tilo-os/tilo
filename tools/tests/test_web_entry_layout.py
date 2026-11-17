@@ -269,9 +269,9 @@ class ShippedGraph(unittest.TestCase):
         self.assertIn('host.mjs', names)
         self.assertIn('entry-page.mjs', names)
         # A module a dynamic import names is preloaded only if a static import
-        # reaches it too: the relay a page connects to when it has one is not
+        # reaches it too: the server a page connects to when it has one is not
         # preloaded.
-        self.assertNotIn('relay.mjs', names)
+        self.assertNotIn('server.mjs', names)
 
     @unittest.skipUnless((WEB / 'entry-page.mjs').is_file(), 'the runtime sources are not here')
     def test_every_hint_is_a_file_of_the_runtime(self):

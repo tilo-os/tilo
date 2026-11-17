@@ -1,19 +1,19 @@
-//! Workspace administration from a device: the names of the actions a relay
+//! Workspace administration from a device: the names of the actions a server
 //! serves for it, and the requests they carry.
 //!
-//! A relay serves what it governs as actions addressed to its own device:
+//! A server serves what it governs as actions addressed to its own device:
 //!
 //! - a workspace's own governance (provider `tilo.workspace`, named in
 //!   `tilo-actions`), over `Envelope::RemoteAction` on the workspace;
 //! - the host's own business, which no workspace decides (creating, listing and
 //!   entering workspaces, letting an app author a workspace), as provider
-//!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
+//!   [`HOST_ACTIONS_PROVIDER`], to the devices of the server's own person
 //!   only, over `Envelope::HostAction` on their session with it, naming no
 //!   workspace ([`ask_host`]), or on a workspace they hold there.
 //!
 //! What a member does for themselves (their effect receipts, their shares,
 //! the empty record of an app they open first) their own device writes into
-//! the workspace; no relay is asked for it.
+//! the workspace; no server is asked for it.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
@@ -29,7 +29,7 @@ use tilo_actions::remote::{
 };
 use tilo_workspace_join::{Member, MemberId, Role};
 
-use crate::client::RelayClient;
+use crate::client::ServerClient;
 use crate::transport::Envelope;
 
 /// Ask `client`'s host its own operation `invoke`, directly over the
@@ -41,7 +41,7 @@ use crate::transport::Envelope;
 /// The session closed before the host answered, or the invocation could not
 /// be encoded.
 pub async fn ask_host(
-    client: &RelayClient,
+    client: &ServerClient,
     invoke: InvokeRequest,
 ) -> Result<ReceiptStatus, String> {
     let invocation = invoke.invocation;
@@ -77,7 +77,7 @@ pub async fn ask_host(
 ///
 /// The host did not answer, refused, or answered no invitation.
 pub async fn enter_invitation(
-    client: &RelayClient,
+    client: &ServerClient,
     workspace: &str,
     expires_in_seconds: u64,
 ) -> Result<String, String> {
@@ -102,23 +102,23 @@ pub async fn enter_invitation(
     let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
         ReceiptStatus::Completed { output } => {
             serde_json::from_value(output.value.unwrap_or_default())
-                .map_err(|error| format!("the relay answered no invitation: {error}"))?
+                .map_err(|error| format!("the server answered no invitation: {error}"))?
         }
         ReceiptStatus::Rejected { error } => {
-            return Err(format!("the relay refused to enter it: {error}"));
+            return Err(format!("the server refused to enter it: {error}"));
         }
         ReceiptStatus::Failed { error } => return Err(error.message),
         ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-            return Err("the relay did not answer the entry".into());
+            return Err("the server did not answer the entry".into());
         }
     };
     let signed = entered.invitation.decode()?.signed_invitation;
     Ok(tilo_workspace_join::encode_invitation_text(&signed))
 }
 
-/// The provider a relay answers its host operations under: creating,
+/// The provider a server answers its host operations under: creating,
 /// listing and entering the workspaces it governs. Only the devices of the
-/// relay's own person are offered them, and invoking one is decided as
+/// server's own person are offered them, and invoking one is decided as
 /// every action API decides a host operation.
 pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
 /// The one resource the host operations are published on.
@@ -241,7 +241,7 @@ pub const HOST_WORKSPACE: &str = "workspace.host";
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
-/// wherever it is hosted (one of their desktops, a paired device, a relay),
+/// wherever it is hosted (one of their desktops, a paired device, a server),
 /// with that host's signed address. Only a device of the person's own keeps
 /// it, never an agent's grant or a stand-in; each keep replaces the last.
 /// The devices the list carries are added to the person's devices kept
@@ -371,7 +371,7 @@ pub struct PersonalWorkspace {
 /// Where a workspace is hosted, as a device dials it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceHostAddress {
-    /// The host as people know it: a relay's name (`eu1.tilo.sh`), or the
+    /// The host as people know it: a server's name (`eu1.tilo.sh`), or the
     /// label of the person's device that hosts it.
     pub name: String,
     /// The host's own signed address for the workspace
@@ -472,12 +472,12 @@ pub struct HostedWorkspace {
     pub host_hint: String,
 }
 
-/// One workspace a relay governs, as its host actions answer it.
+/// One workspace a server governs, as its host actions answer it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceListing {
     /// The workspace's UUID.
     pub workspace: String,
-    /// The relay workspace carrying the workspace.
+    /// The server workspace carrying the workspace.
     pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,
@@ -563,7 +563,7 @@ pub fn check_labels(labels: &WorkspaceLabels) -> Result<(), String> {
     Ok(())
 }
 
-/// An invitation a relay's workspace action issued, as it answers it.
+/// An invitation a server's workspace action issued, as it answers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionInvitation {
     /// Digest of the signed invitation, 64 hex characters.
@@ -585,9 +585,9 @@ impl ActionInvitation {
     pub fn decode(&self) -> Result<IssuedInvitation, String> {
         let mut invite_id = [0; 32];
         hex::decode_to_slice(&self.invite, &mut invite_id)
-            .map_err(|_| "the relay named an invalid invitation id".to_owned())?;
+            .map_err(|_| "the server named an invalid invitation id".to_owned())?;
         let signed_invitation = hex::decode(&self.invitation)
-            .map_err(|_| "the relay sent an invalid invitation".to_owned())?;
+            .map_err(|_| "the server sent an invalid invitation".to_owned())?;
         Ok(IssuedInvitation {
             invite_id,
             signed_invitation,
@@ -643,7 +643,7 @@ pub struct RemoveMemberRequest {
 pub struct WorkspaceSummary {
     /// The workspace's UUID.
     pub workspace: String,
-    /// The relay workspace carrying the workspace.
+    /// The server workspace carrying the workspace.
     pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,

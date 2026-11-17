@@ -1,4 +1,4 @@
-//! Native governance can add and remove independent people while the relay is live.
+//! Native governance can add and remove independent people while the server is live.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,19 +16,19 @@
 use std::time::Duration;
 
 use tilo_peer_state::GovernedAccess;
-use tilo_server::{Envelope, Relay, RelayClient, RelayConfig};
+use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};
 use tilo_server::WorkspaceId;
 
 async fn connect(
-    relay: &Relay,
+    server: &Server,
     device: crate::common::TestDevice,
-) -> Result<RelayClient, tilo_server::ClientError> {
-    RelayClient::connect_to_pinned_host(
+) -> Result<ServerClient, tilo_server::ClientError> {
+    ServerClient::connect_to_pinned_host(
         client_endpoint().await,
-        relay.node_addr(),
+        server.node_addr(),
         device.cert,
         device.sk,
         RevocationList::new(),
@@ -36,9 +36,9 @@ async fn connect(
     .await
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
+async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("relay answered subscription", client.recv()).await
+    tilo_test_env::within("server answered subscription", client.recv()).await
 }
 
 fn retained_delta(body: &[u8]) -> Vec<u8> {
@@ -73,12 +73,12 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     let state = tempfile::tempdir().unwrap();
     let host_cert = host.cert.clone();
     let host_key = host.sk.clone();
-    let relay = crate::common::start_relay(
-        RelayConfig {
+    let server = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: provider.user_pk,
             device_signing_key: host_key.clone(),
             device_cert: host_cert.clone(),
@@ -88,7 +88,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     .await
     .unwrap();
 
-    relay
+    server
         .replace_governed_workspace_access(
             WorkspaceId::from_u128(701),
             true,
@@ -100,7 +100,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         )
         .await
         .unwrap();
-    relay
+    server
         .replace_governed_workspace_access(
             WorkspaceId::from_u128(702),
             true,
@@ -113,8 +113,8 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         .await
         .unwrap();
 
-    let alice_client = connect(&relay, alice_a).await.unwrap();
-    let bob_client = connect(&relay, bob_device).await.unwrap();
+    let alice_client = connect(&server, alice_a).await.unwrap();
+    let bob_client = connect(&server, bob_device).await.unwrap();
     assert!(matches!(
         subscribe(&alice_client, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
@@ -125,22 +125,22 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     ));
     // Charlie's device may host workspaces of his own; here it is the member
     // device his workspace authority names, so it takes part like any other.
-    let charlie_client = connect(&relay, charlie_device).await.unwrap();
+    let charlie_client = connect(&server, charlie_device).await.unwrap();
     assert!(matches!(
         subscribe(&charlie_client, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
     ));
-    assert!(connect(&relay, diana_device).await.is_err());
+    assert!(connect(&server, diana_device).await.is_err());
 
     // A valid certificate under an admitted root is still not an exact member device.
-    let alice_unlisted = connect(&relay, alice_b).await.unwrap();
+    let alice_unlisted = connect(&server, alice_b).await.unwrap();
     assert!(matches!(
         subscribe(&alice_unlisted, WorkspaceId::from_u128(701)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
     drop(alice_unlisted);
 
-    relay
+    server
         .replace_governed_workspace_access(
             WorkspaceId::from_u128(701),
             true,
@@ -155,9 +155,9 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
 
     // The already-connected writer gets an explicit authenticated refusal;
     // closure or lack of fanout alone is not sufficient revocation evidence.
-    // The relay sends it as it removes her, before an audit may close her
+    // The server sends it as it removes her, before an audit may close her
     // stream, so a write racing the removal can find the session already
-    // ended (the client fails closed when the relay closes); it never lands.
+    // ended (the client fails closed when the server closes); it never lands.
     let _ = alice_client.send(Envelope::Delta {
         workspace_id: WorkspaceId::from_u128(701),
         author_device_public_key: alice_a_key,
@@ -200,19 +200,19 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
             .is_none()
     );
     assert!(
-        !relay
+        !server
             .is_subscribed(WorkspaceId::from_u128(701), &alice_a_key)
             .await
     );
     assert!(
-        relay
+        server
             .is_subscribed(WorkspaceId::from_u128(701), &bob_key)
             .await
     );
 
-    let alice_reconnect = RelayClient::connect_to_pinned_host(
+    let alice_reconnect = ServerClient::connect_to_pinned_host(
         client_endpoint().await,
-        relay.node_addr(),
+        server.node_addr(),
         alice_reconnect_cert,
         alice_reconnect_key,
         RevocationList::new(),
@@ -248,7 +248,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     );
 
     let alice_workspace_b = connect(
-        &relay,
+        &server,
         alice.enrol("alice-workspace-b", DeviceCapabilities::primary()),
     )
     .await
@@ -273,14 +273,14 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     drop(alice_workspace_b);
     drop(alice_reconnect);
     drop(bob_client);
-    relay.shutdown().await;
+    server.shutdown().await;
 
-    let restarted = crate::common::start_relay(
-        RelayConfig {
+    let restarted = crate::common::start_server(
+        ServerConfig {
             state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
+            ..ServerConfig::default()
         },
-        tilo_server::daemon::RelayIdentity {
+        tilo_server::daemon::ServerIdentity {
             user_public_key: provider.user_pk,
             device_signing_key: host_key,
             device_cert: host_cert,
@@ -289,7 +289,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     )
     .await
     .unwrap();
-    // A relay holds no list of workspaces of its own: on start, each workspace's
+    // A server holds no list of workspaces of its own: on start, each workspace's
     // governance restates who it admits, as the governor and a hosting
     // member do when they resume.
     for (workspace, devices, roots) in [
@@ -317,7 +317,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
             .await
             .unwrap();
     }
-    let bob_after_restart = RelayClient::connect_to_pinned_host(
+    let bob_after_restart = ServerClient::connect_to_pinned_host(
         client_endpoint().await,
         restarted.node_addr(),
         bob_restart_cert,

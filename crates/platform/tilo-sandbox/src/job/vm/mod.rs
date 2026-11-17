@@ -600,7 +600,7 @@ pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
     // as the caller starts it through [`crate::job::helper::spawn`] in a network namespace of the
     // step's own. The guest may connect out and resolve names; nothing reaches it from outside.
     // With `gateway_to_loopback` the guest's gateway address leads to that namespace's loopback,
-    // where only what the caller put there for the step listens (a relay to its cache); without, no
+    // where only what the caller put there for the step listens (a server to its cache); without, no
     // address leads to any loopback.
     for a in [
         "--mtu",

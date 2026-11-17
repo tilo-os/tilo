@@ -1,4 +1,4 @@
-//! Authenticated handshake between a relay and a peer.
+//! Authenticated handshake between a server and a peer.
 //!
 //! As soon as a connection opens, both sides perform this challenge/response:
 //!
@@ -26,7 +26,7 @@
 //! **Why nonces both ways.** A pure "prove you hold the private key"
 //! flow only needs one nonce. We do two so the client also
 //! authenticates the server — otherwise a MITM could accept a
-//! client's connection and forward its cert to the real relay.
+//! client's connection and forward its cert to the real server.
 
 use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ pub struct Hello {
 pub struct HelloAck {
     /// The server's [`PEER_PROTOCOL_VERSION`]. First, and never moved.
     pub protocol: u32,
-    /// Server's device cert (the relay's cert).
+    /// Server's device cert (the server's cert).
     pub cert: DeviceCert,
     /// Fresh 32-byte challenge nonce the server wants the client
     /// to sign.
@@ -227,26 +227,26 @@ pub enum AuthError {
     EndpointMismatch,
 }
 
-/// Who a relay endpoint admits at the handshake, by name.
+/// Who a server endpoint admits at the handshake, by name.
 ///
 /// Every server endpoint states its requirement here rather than passing a
 /// [`TrustPolicy`] literal, so a reviewer reads the admission rule at the
 /// call site and a new endpoint has to choose one.
 #[derive(Clone, Copy, Debug)]
 pub enum HandshakeTrust<'a> {
-    /// The relay's live trust policy: its own user and every user it
-    /// currently admits (the main relay ALPN, content-endpoint discovery,
+    /// The server's live trust policy: its own user and every user it
+    /// currently admits (the main server ALPN, content-endpoint discovery,
     /// compute and browser sessions).
     Live(&'a TrustPolicy),
-    /// Only devices of the relay's own user (home-peer management).
+    /// Only devices of the server's own user (home-peer management).
     OwnerDevicesOnly,
-    /// Only devices of the relay's own user that may admit devices
+    /// Only devices of the server's own user that may admit devices
     /// (device-certification approvers).
     OwnerDeviceAdmitters,
     /// Any device whose certificate is valid and unrevoked, of any user.
     /// Authentication only: the endpoint must authorize every request
     /// itself (workspace administration, whose owner-only verbs check the
-    /// relay's user and whose members' receipts check workspace membership).
+    /// server's user and whose members' receipts check workspace membership).
     AnyCertifiedDevice,
 }
 
@@ -262,14 +262,14 @@ impl HandshakeTrust<'_> {
     }
 }
 
-/// The relay's own identity, as the server side of a handshake needs it.
+/// The server's own identity, as the server side of a handshake needs it.
 #[derive(Clone, Copy)]
 pub struct ServerIdentity<'a> {
-    /// The relay's user root public key.
+    /// The server's user root public key.
     pub own_user: &'a [u8; 32],
-    /// The relay's device certificate, sent in [`HelloAck`].
+    /// The server's device certificate, sent in [`HelloAck`].
     pub cert: &'a DeviceCert,
-    /// The relay's device signing key, which signs the client's nonce.
+    /// The server's device signing key, which signs the client's nonce.
     pub key: &'a ed25519_dalek::SigningKey,
 }
 
@@ -458,7 +458,7 @@ pub fn accept_hello(
 }
 
 /// Server-side: build the `HelloAck` reply — signs the client's
-/// nonce with the relay's device signing key.
+/// nonce with the server's device signing key.
 pub fn build_hello_ack(
     own_cert: DeviceCert,
     own_signing_key: &ed25519_dalek::SigningKey,
@@ -776,7 +776,7 @@ mod tests {
         phase a_signature_from_one_direction_is_never_a_proof_in_the_other;
         {
             let (root_sk, user) = UserIdentity::generate("Alice", 1);
-            let relay = enrol(
+            let server = enrol(
                 &root_sk,
                 user.public_key,
                 "server",
@@ -795,8 +795,8 @@ mod tests {
             // client nonce; the resulting server signature is not a client proof.
             let victim_server_nonce = [9u8; 32];
             let oracle = build_hello_ack(
-                relay.cert.clone(),
-                &relay.sk,
+                server.cert.clone(),
+                &server.sk,
                 [3u8; 32],
                 &victim_server_nonce,
             );
@@ -807,7 +807,7 @@ mod tests {
                 matches!(
                     verify_hello_ack2(
                         &reflected,
-                        &relay.cert.device_public_key,
+                        &server.cert.device_public_key,
                         &victim_server_nonce
                     ),
                     Err(AuthError::BadChallengeSig)
@@ -840,7 +840,7 @@ mod tests {
         phase client_rejects_acks_from_strangers_non_hosts_and_bad_signatures;
         {
             let (root_sk, alice) = UserIdentity::generate("Alice", 1);
-            let relay = enrol(
+            let server = enrol(
                 &root_sk,
                 alice.public_key,
                 "server",
@@ -885,14 +885,14 @@ mod tests {
             ));
 
             let client_nonce = [4u8; 32];
-            let mut ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &client_nonce);
+            let mut ack = build_hello_ack(server.cert.clone(), &server.sk, [0u8; 32], &client_nonce);
             ack.sig_over_client_nonce[0] ^= 0x01;
             assert!(matches!(
                 verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &client_nonce).unwrap_err(),
                 AuthError::BadChallengeSig
             ));
 
-            let ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &[9u8; 32]);
+            let ack = build_hello_ack(server.cert.clone(), &server.sk, [0u8; 32], &[9u8; 32]);
             assert!(matches!(
                 verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &[8u8; 32]).unwrap_err(),
                 AuthError::BadChallengeSig
@@ -906,7 +906,7 @@ mod tests {
         phase server_accepts_only_trusted_unrevoked_devices_and_completes_mutual_auth;
         {
             let (root_sk, user) = UserIdentity::generate("Alice", 1);
-            let relay = enrol(
+            let server = enrol(
                 &root_sk,
                 user.public_key,
                 "server",
@@ -933,14 +933,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
-            let ack = build_hello_ack(relay.cert.clone(), &relay.sk, server_nonce, &client_nonce);
+            let ack = build_hello_ack(server.cert.clone(), &server.sk, server_nonce, &client_nonce);
             let client_peer =
                 verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
-            assert_eq!(client_peer.device_public_key, relay.cert.device_public_key);
+            assert_eq!(client_peer.device_public_key, server.cert.device_public_key);
             let ack2 = build_hello_ack2(&client.sk, &server_nonce);
             verify_hello_ack2(&ack2, &client.cert.device_public_key, &server_nonce).unwrap();
 
-            // Wrong user: the relay is Alice's; the client presents Bob's cert.
+            // Wrong user: the server is Alice's; the client presents Bob's cert.
             let (bob_root, bob) = UserIdentity::generate("Bob", 1);
             let bob_client = enrol(
                 &bob_root,
@@ -988,11 +988,11 @@ mod tests {
 
         phase server_begin_finish_round_trip;
         {
-            let (relay, laptop, _, alice, _) = alice_relay_and_bob();
+            let (server, laptop, _, alice, _) = alice_relay_and_bob();
             let revocations = RevocationList::new();
             let policy = TrustPolicy::default();
             let (pending, ack) = server_begin(
-                &identity(&relay, &alice),
+                &identity(&server, &alice),
                 HandshakeTrust::Live(&policy),
                 &revocations,
                 &hello(&laptop),
@@ -1013,7 +1013,7 @@ mod tests {
 
         phase owner_devices_only_rejects_admitted_member;
         {
-            let (relay, laptop, member, alice, _) = alice_relay_and_bob();
+            let (server, laptop, member, alice, _) = alice_relay_and_bob();
             let revocations = RevocationList::new();
             let live = TrustPolicy::AllowList {
                 users: vec![
@@ -1023,7 +1023,7 @@ mod tests {
             };
             let begin = |trust, party: &Party| {
                 server_begin(
-                    &identity(&relay, &alice),
+                    &identity(&server, &alice),
                     trust,
                     &revocations,
                     &hello(party),
@@ -1048,13 +1048,13 @@ mod tests {
 
         phase owner_device_admitters_requires_can_admit_devices;
         {
-            let (relay, _, _, alice, alice_root) = alice_relay_and_bob();
+            let (server, _, _, alice, alice_root) = alice_relay_and_bob();
             let member = enrol(&alice_root, alice, "member", DeviceCapabilities::member());
             assert!(!member.cert.capabilities.can_admit_devices);
             let revocations = RevocationList::new();
             let begin = |trust| {
                 server_begin(
-                    &identity(&relay, &alice),
+                    &identity(&server, &alice),
                     trust,
                     &revocations,
                     &hello(&member),
@@ -1071,7 +1071,7 @@ mod tests {
 
         phase revoked_device_rejected_in_begin;
         {
-            let (relay, laptop, _, alice, alice_root) = alice_relay_and_bob();
+            let (server, laptop, _, alice, alice_root) = alice_relay_and_bob();
             let mut entry = RevocationEntry {
                 user_public_key: alice,
                 revoked_device_public_key: laptop.cert.device_public_key,
@@ -1088,7 +1088,7 @@ mod tests {
             ] {
                 assert!(matches!(
                     server_begin(
-                        &identity(&relay, &alice),
+                        &identity(&server, &alice),
                         trust,
                         &revocations,
                         &hello(&laptop),
@@ -1115,10 +1115,10 @@ mod tests {
 
         phase wrong_ack2_signature_rejected_in_finish;
         {
-            let (relay, laptop, member, alice, _) = alice_relay_and_bob();
+            let (server, laptop, member, alice, _) = alice_relay_and_bob();
             let start = || {
                 server_begin(
-                    &identity(&relay, &alice),
+                    &identity(&server, &alice),
                     HandshakeTrust::OwnerDevicesOnly,
                     &RevocationList::new(),
                     &hello(&laptop),
@@ -1199,7 +1199,7 @@ mod tests {
 
     fn alice_relay_and_bob() -> (Party, Party, Party, [u8; 32], SigningKey) {
         let (alice_root, alice) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(
+        let server = enrol(
             &alice_root,
             alice.public_key,
             "server",
@@ -1218,14 +1218,14 @@ mod tests {
             "bob-laptop",
             DeviceCapabilities::primary(),
         );
-        (relay, laptop, member, alice.public_key, alice_root)
+        (server, laptop, member, alice.public_key, alice_root)
     }
 
-    fn identity<'a>(relay: &'a Party, own_user: &'a [u8; 32]) -> ServerIdentity<'a> {
+    fn identity<'a>(server: &'a Party, own_user: &'a [u8; 32]) -> ServerIdentity<'a> {
         ServerIdentity {
             own_user,
-            cert: &relay.cert,
-            key: &relay.sk,
+            cert: &server.cert,
+            key: &server.sk,
         }
     }
 
@@ -1233,7 +1233,7 @@ mod tests {
         Hello::new(party.cert.clone(), [3; 32])
     }
 
-    fn relay_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
+    fn server_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
         let hello: Hello = decode_handshake(frame).ok()?;
         let policy = TrustPolicy::default();
         accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
@@ -1257,16 +1257,16 @@ mod tests {
             postcard::to_stdvec(&hello).unwrap()
         };
 
-        // The same version: the relay admits it, with the marker the workspace's
+        // The same version: the server admits it, with the marker the workspace's
         // role cap reads.
-        let peer = relay_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
+        let peer = server_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
         assert!(peer.cert.capabilities.foreign);
 
         // Another version, older or newer: refused as such, whatever follows.
         for theirs in [PEER_PROTOCOL_VERSION - 1, PEER_PROTOCOL_VERSION + 1] {
             let refused = decode_handshake::<Hello>(&frame(theirs)).unwrap_err();
             assert_eq!(refused.peer_version(), Some(theirs));
-            assert!(relay_accepts(&frame(theirs), &user.public_key).is_none());
+            assert!(server_accepts(&frame(theirs), &user.public_key).is_none());
         }
         let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 1)).unwrap();
         newer.extend_from_slice(b"a shape this build has never seen");

@@ -993,10 +993,10 @@ impl tilo_actions::remote::ActionHost for PageHost {
     }
 }
 
-/// The relay writes the workspace and the agent key into the client's `initialize` and nothing
+/// The server writes the workspace and the agent key into the client's `initialize` and nothing
 /// else: a probe before it and every line after it reach the API as sent.
 #[test]
-fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
+fn the_server_writes_the_workspace_and_key_into_the_initialize_alone() {
     let sent = concat!(
         r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
         "\n",

@@ -266,7 +266,7 @@ host's memory and CPU. Against a local tilo.sh:
 ```sh
 eval "$(os/containers/tilo-sh/stack.sh env)"             # TILO_API_URL, TILO_SITE: the local stack
 eval "$(os/containers/tilo-sh/stack.sh owner --here)"    # TILO_API_KEY: the stack's own person, an owner
-CUSTOMERS=300 SAMPLE_PIDS=relay:$(cat ~/.local/state/tilo-sh-local/run/relay.pid) \
+CUSTOMERS=300 SAMPLE_PIDS=server:$(cat ~/.local/state/tilo-sh-local/run/server.pid) \
   bun sdk/typescript/examples/workspace_per_customer.ts
 ```
 

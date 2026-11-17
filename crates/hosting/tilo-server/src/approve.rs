@@ -14,7 +14,7 @@
 //!
 //! usage: tilo-approve person --person PERSON.json --root DIR
 //!        tilo-approve pair --root DIR --device DIR [--label NAME]
-//!        tilo-approve next --root DIR --relay KEY@HOST:PORT [--device DIR] [--answer allow|deny|none] [--within SECS]
+//!        tilo-approve next --root DIR --server KEY@HOST:PORT [--device DIR] [--answer allow|deny|none] [--within SECS]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -75,10 +75,10 @@ enum Command {
         /// Answer as the device [`Command::Pair`] wrote here, not the root.
         #[arg(long)]
         device: Option<PathBuf>,
-        /// The host as a page's `TILO_HOSTED_BROWSER_RELAY` names it:
+        /// The host as a page's `TILO_HOSTED_BROWSER_SERVER` names it:
         /// `KEY@HOST:PORT`.
         #[arg(long)]
-        relay: String,
+        server: String,
         /// `allow` or `deny` the next question, or `none` to answer nothing
         /// and only say what was asked.
         #[arg(long, default_value = "allow")]
@@ -142,7 +142,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         Command::Next {
             root,
             device,
-            relay,
+            server,
             answer,
             within,
         } => {
@@ -152,7 +152,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
                 .block_on(next(
                     &root,
                     device.as_deref(),
-                    &relay,
+                    &server,
                     answer,
                     Duration::from_secs(within),
                 ))?;
@@ -233,7 +233,7 @@ fn pair(
     Ok(cert)
 }
 
-/// Answer the next question the host at `relay` puts to the person whose
+/// Answer the next question the host at `server` puts to the person whose
 /// root `root` holds: their root signs each command, as a member's does, or
 /// the device `device` holds when one is named, as a paired device does.
 /// Answers the exit status: a question answered, no question seen while
@@ -241,12 +241,12 @@ fn pair(
 async fn next(
     root: &std::path::Path,
     device: Option<&std::path::Path>,
-    relay: &str,
+    server: &str,
     answer: Answer,
     within: Duration,
 ) -> anyhow::Result<u8> {
-    let host = tilo_server_protocol::hosted::endpoint(relay)
-        .map_err(|error| anyhow::anyhow!("--relay: {error}"))?;
+    let host = tilo_server_protocol::hosted::endpoint(server)
+        .map_err(|error| anyhow::anyhow!("--server: {error}"))?;
     if let Some(device) = device {
         let key = tilo_user_identity::persist::read_owned_signing_key(&device.join(DEVICE_KEY))
             .context("read the device's key: run `tilo-approve pair` first")?;

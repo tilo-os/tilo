@@ -320,7 +320,7 @@ fn shared_route(
             "200 OK",
             serde_json::json!({
                 "app": workspace.app_id,
-                "workspace": workspace.relay_workspace,
+                "workspace": workspace.server_workspace,
                 "name": workspace.name,
             }),
         ),

@@ -194,7 +194,7 @@ async fn caller(
     let workspaces = member_of(web, user).await;
     // The person this host runs for may use it before any of their workspaces is
     // bound here: their fetches count against their device's budget alone.
-    if workspaces.is_empty() && user != web.context.relay.identity.user_public_key {
+    if workspaces.is_empty() && user != web.context.server.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
     Ok((Caller(device), workspaces))
@@ -205,7 +205,7 @@ async fn caller(
 async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Workspace> {
     let workspaces: Vec<_> = web
         .context
-        .relay
+        .server
         .workspaces
         .lock()
         .await
@@ -213,7 +213,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Workspace> {
         .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
     let mut admitted = Vec::new();
-    let own_user = web.context.relay.identity.user_public_key;
+    let own_user = web.context.server.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace.admits_person(&user, &own_user) {

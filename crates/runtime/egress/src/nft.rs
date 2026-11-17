@@ -1366,7 +1366,7 @@ table inet tilo_egress {
             for proto in [Proto::Tcp, Proto::Udp] {
                 assert!(
                     passes(&filter, endpoint, 7704, proto),
-                    "the relay's endpoint passes, {proto:?}"
+                    "the server's endpoint passes, {proto:?}"
                 );
                 assert!(
                     !passes(&filter, endpoint, 7705, proto),

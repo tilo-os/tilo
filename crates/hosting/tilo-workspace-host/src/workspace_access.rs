@@ -1,20 +1,20 @@
 //! The one answer to "may this device act in this workspace now?".
 //!
-//! Every relay protocol that admits a device into a workspace — subscribe, the
+//! Every server protocol that admits a device into a workspace — subscribe, the
 //! access audit, state delivery, replay, remote actions, the browser live
 //! protocol, content discovery, compute and environments — asks [`decide`] with
 //! its [`WorkspaceOperation`]. The rule is written once:
 //!
-//! 1. The certificate is current relay-wide ([`RelayTrust::cert`]): not
+//! 1. The certificate is current server-wide ([`ServerTrust::cert`]): not
 //!    expired, not revoked, admitted by the live trust policy.
 //! 2. An agent device acts only inside its live delegation.
 //! 3. A host this workspace is attached to is admitted on the protocols that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
 //! 4. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the workspace's signed authority admits is admitted.
-//! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
+//! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the server
 //!    owner's own devices are admitted, and enrolled where the protocol enrols.
-//!    In a workspace this relay governs, a device of a person its governance
+//!    In a workspace this server governs, a device of a person its governance
 //!    has as a member ([`person_device`]: a browser tab, a new computer of
 //!    theirs) is enrolled when it subscribes: governance records it under its
 //!    person, as the entry does for a further device of a member, so it holds
@@ -50,7 +50,7 @@
 //! A hosted browser environment's device is certified as a member device of
 //! the workspace's person, and is no member: a page that escapes Chromium
 //! holds its key, so its rule replaces steps 4 to 6 as an agent's does. After
-//! step 1, it is admitted iff the relay registered it for this workspace
+//! step 1, it is admitted iff the server registered it for this workspace
 //! ([`crate::environment`]), on the protocols a window's session works on — and
 //! its one record is what it reaches within them: the state protocol's replay,
 //! live fan-out, opening and changes ask its scope what a frame's record is,
@@ -65,18 +65,18 @@
 //! records take part in like any other.
 //!
 //! And one protocol admits a device to a workspace's governance itself:
-//! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this relay's own
-//! user joining, as a governed member, a workspace this relay governs. Agents are
+//! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this server's own
+//! user joining, as a governed member, a workspace this server governs. Agents are
 //! members: each has its own device key, a certificate and a
 //! delegation its person's root signed, and the governor records it on the
 //! workspace's roster bound to that delegation, so every member admits its
 //! changes as its own, at its person's role and never above Editor, only
 //! within the delegation, and only until the governor withdraws it. The
 //! rule, after steps 1 to 3: admit iff the workspace's admission is governance's,
-//! this relay governs it, and the device is a registered agent of this
-//! relay's own user whose delegation (step 2) is live and names this workspace. A
+//! this server governs it, and the device is a registered agent of this
+//! server's own user whose delegation (step 2) is live and names this workspace. A
 //! device that is no agent, an agent of another user, and any workspace this
-//! relay does not govern are refused; nothing is admitted by membership,
+//! server does not govern are refused; nothing is admitted by membership,
 //! enrolment or attachment. Being a governed member is what admits the agent
 //! to the workspace on the other protocols and lets the workspace's key holders admit it
 //! to the channels of its records.
@@ -101,7 +101,7 @@ pub(crate) enum AdmissionMode {
     /// Only exact member devices and admitted user roots.
     #[default]
     Explicit,
-    /// Same-owner home host: the relay owner's devices are admitted, and
+    /// Same-owner home host: the server owner's devices are admitted, and
     /// enrolled by the protocols that enrol.
     SameOwner,
     /// Native governance owns admission; nothing is ever auto-enrolled, and
@@ -147,8 +147,8 @@ pub enum WorkspaceOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// A delegated agent of this relay's user becoming a governed member of
-    /// a workspace this relay governs (see the module documentation).
+    /// A delegated agent of this server's user becoming a governed member of
+    /// a workspace this server governs (see the module documentation).
     #[cfg(any(test, feature = "agents"))]
     DelegateMembership,
 }
@@ -243,13 +243,13 @@ pub enum DenyReason {
     /// Not a member of the workspace.
     NotAMember,
     /// A hosted browser environment's device, outside the one workspace and
-    /// the one record the relay confines it to.
+    /// the one record the server confines it to.
     OutOfEnvironmentScope,
     /// A hosted browser environment's device whose environment stopped: it
     /// reaches nothing, and no protocol admits it, until its certificate expires.
     EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
-    /// delegated agent of this relay's user, or for a workspace this relay does
+    /// delegated agent of this server's user, or for a workspace this server does
     /// not govern.
     #[cfg(any(test, feature = "agents"))]
     NotADelegatedAgent,
@@ -284,30 +284,30 @@ impl DenyReason {
             }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
-                "only a delegated agent of this relay's user joins a workspace it governs as an agent"
+                "only a delegated agent of this server's user joins a workspace it governs as an agent"
             }
         }
     }
 }
 
-/// Relay-wide certificate validity and agent delegation: one copy.
+/// Server-wide certificate validity and agent delegation: one copy.
 #[derive(Clone, Copy)]
-pub struct RelayTrust<'a> {
+pub struct ServerTrust<'a> {
     pub revocations: &'a RwLock<RevocationList>,
     /// Live handshake trust policy.
     pub policy: &'a RwLock<TrustPolicy>,
-    /// The user this relay chains to.
+    /// The user this server chains to.
     pub own_user: &'a [u8; 32],
-    /// Agent delegations this relay was told about.
+    /// Agent delegations this server was told about.
     pub agents: &'a AgentRegistry,
     /// Hosted browser environments' devices, and the one record each reaches
     /// ([`crate::environment`]).
     pub environments: &'a crate::environment::EnvironmentRegistry,
 }
 
-impl RelayTrust<'_> {
-    /// Whether `device` is an agent this relay was told about, delegated or
-    /// withdrawn. An agent is a device of the relay's own person, yet no
+impl ServerTrust<'_> {
+    /// Whether `device` is an agent this server was told about, delegated or
+    /// withdrawn. An agent is a device of the server's own person, yet no
     /// person: what only the host's person may do (its compute, its workspaces'
     /// administration) is never its to do. A poisoned registry counts every
     /// device as an agent, so it refuses rather than admits.
@@ -318,7 +318,7 @@ impl RelayTrust<'_> {
             .is_ok_and(|agents| !agents.contains_key(device))
     }
 
-    /// Whether `peer`'s certificate is current relay-wide at `now_ns`. A
+    /// Whether `peer`'s certificate is current server-wide at `now_ns`. A
     /// poisoned list or policy refuses.
     pub fn cert(&self, peer: &AuthenticatedPeer, now_ns: u64) -> Result<(), DenyReason> {
         if peer
@@ -447,7 +447,7 @@ impl<'a> WorkspaceFacts<'a> {
             .is_none_or(|ceiling| ceiling.contains(device))
     }
 
-    /// Whether governance owns this workspace's admission and this relay's own
+    /// Whether governance owns this workspace's admission and this server's own
     /// workspace authority governs it.
     #[cfg(any(test, feature = "agents"))]
     fn governed_here(&self) -> bool {
@@ -455,7 +455,7 @@ impl<'a> WorkspaceFacts<'a> {
             && self.runtime.workspace_authority.is_some()
     }
 
-    /// Whether a subscribe enrols `peer`'s device here (step 5): this relay
+    /// Whether a subscribe enrols `peer`'s device here (step 5): this server
     /// governs the workspace, its governance has the device's person as a
     /// member, the device is one of theirs, and no pending replacement keeps
     /// it out.
@@ -481,7 +481,7 @@ impl<'a> WorkspaceFacts<'a> {
 
 /// Whether the workspace lists `peer` for `op`: steps 4 to 6 of the rule, with
 /// no certificate, agent, cross-user, local-person or same-owner question. Only for
-/// a recipient check that has no relay trust at hand; everything else asks
+/// a recipient check that has no server trust at hand; everything else asks
 /// [`decide`].
 pub(crate) fn listed(
     workspace: WorkspaceFacts<'_>,
@@ -495,7 +495,7 @@ pub(crate) fn listed(
 /// The one admission decision for every protocol, at the current time.
 pub fn decide(
     workspace: &WorkspaceRuntime,
-    trust: &RelayTrust<'_>,
+    trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
 ) -> Decision {
@@ -511,7 +511,7 @@ pub fn decide(
 /// [`decide`] over explicit workspace facts at `now_ns`.
 pub(crate) fn decide_in(
     workspace: WorkspaceFacts<'_>,
-    trust: &RelayTrust<'_>,
+    trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     now_ns: u64,
@@ -534,7 +534,7 @@ pub(crate) fn decide_in(
     let own_user = &peer.user_public_key == trust.own_user;
     #[cfg(any(test, feature = "agents"))]
     if op == WorkspaceOperation::DelegateMembership {
-        // Never by membership, enrolment or attachment: only this relay's
+        // Never by membership, enrolment or attachment: only this server's
         // user's own agent, inside its delegation, in a workspace governed here.
         let delegated = own_user
             && trust
@@ -584,7 +584,7 @@ pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
             .is_none_or(|issuer| issuer.capabilities.stand_in)
 }
 
-/// The rule for a hosted browser environment's device, whose scope the relay
+/// The rule for a hosted browser environment's device, whose scope the server
 /// registered when it placed the environment ([`crate::environment`]): its one
 /// workspace, on the protocols a window's session works on, and no other. Its
 /// record is narrower than a protocol, so what a frame carries decides it: the
@@ -603,7 +603,7 @@ fn environment_decision(
     }
 }
 
-/// The rule for an agent's grant whose certificate holds relay-wide (see the
+/// The rule for an agent's grant whose certificate holds server-wide (see the
 /// module): its person's agent, only where its scope reaches, it redeemed
 /// its person's invitation and its person is a member, on an agent's protocols.
 fn grant_decision(

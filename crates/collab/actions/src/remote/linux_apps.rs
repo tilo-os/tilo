@@ -10,7 +10,7 @@
 //! it runs is shared with the workspace's members, who see it in their shell
 //! and drive it with their keyboard and pointer.
 //!
-//! The relay asks the member device over the device action service, as it asks for
+//! The server asks the member device over the device action service, as it asks for
 //! Browser:
 //!
 //! - [`target`] names an open, an action of the workspace's environment
@@ -22,7 +22,7 @@
 //!
 //! The session in the VM is started with [`MARK`] in its environment and
 //! reads its standard input a line at a time: the first line is the
-//! workspace's material (the relay's, the same as Browser's),
+//! workspace's material (the server's, the same as Browser's),
 //! and every later one is an [`AppLaunch`] in JSON, one app to start. It
 //! reports on its standard output as Browser's does
 //! ([`super::browser::Report`]): `ready`, `up linux` once it has joined, and
@@ -142,7 +142,7 @@ impl AppLaunch {
 pub struct OpenApp {
     /// The workspace whose VM runs it: the caller's.
     pub workspace: String,
-    /// Who the machine's time is booked to, as the relay knows the account.
+    /// Who the machine's time is booked to, as the server knows the account.
     #[serde(default)]
     pub account: String,
     /// What the session joins the workspace with, opaque to the host running

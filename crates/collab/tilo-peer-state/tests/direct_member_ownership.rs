@@ -564,7 +564,7 @@ fn host_refused_none(hosted: &Hosted, device: [u8; 32]) -> bool {
 
 /// A member's cleartext write that waited in its ownership past the live window, while its host was
 /// unreachable for six minutes, lands on the host once the member links again: the hosting device
-/// judges the member's own writes on its link as history, as a relay host judges what a member's
+/// judges the member's own writes on its link as history, as a server host judges what a member's
 /// session hands it, so a write is decided by its signature, its author's sequence and the
 /// author's access, never by how long it waited. The host answers it durable, holds the edit,
 /// and the member keeps it and lets it go from ownership. Judged as a live frame, the host refused

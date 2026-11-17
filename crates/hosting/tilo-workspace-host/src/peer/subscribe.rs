@@ -265,7 +265,7 @@ pub(super) async fn subscribe(
 }
 
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
-/// workspace's binding (autobinding it for the relay owner's own devices), and
+/// workspace's binding (autobinding it for the server owner's own devices), and
 /// the workspace's decision under a fresh membership read, enrolling the device
 /// when the workspace says so. A connection whose own authorization changed
 /// meanwhile ends.
@@ -296,7 +296,7 @@ async fn admit_subscription(
             refusal: reason.refusal(),
         }));
     }
-    // Only the relay owner's own devices can be enrolled into an autobound
+    // Only the server owner's own devices can be enrolled into an autobound
     // workspace, so only they may cause one to be bound.
     let autobind = session
         .autobind

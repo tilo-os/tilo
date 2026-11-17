@@ -1,4 +1,4 @@
-//! The bridge bot end to end: its program installed in a workspace on a relay,
+//! The bridge bot end to end: its program installed in a workspace on a server,
 //! the `discord-worker` binary under the connector host, and fake-discord
 //! as the server. A message crosses in both directions, each side showing
 //! who wrote it, and edits, replies, reactions and deletes follow.
@@ -61,7 +61,7 @@ impl BlobAccess for Blobs {
     }
 }
 
-/// The relay's device, certified to own the workspaces it governs: their
+/// The server's device, certified to own the workspaces it governs: their
 /// resources are the sealed channels a Lounge's are, and everything that reads
 /// or writes them — the bridge included — goes through their keys.
 fn governor() -> (SigningKey, DeviceCert) {
@@ -388,7 +388,7 @@ struct Bridge {
     /// The Chat channel Discord's #general is bridged to.
     general: String,
     ada: String,
-    _relay: tilo_server::daemon::Relay,
+    _server: tilo_server::daemon::Server,
     _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
@@ -427,12 +427,12 @@ impl Bridge {
         // probe before it opens its workspaces: five seconds in which nothing
         // of the bridge runs.
         let packet_relay = tilo_test_env::relay::relay().await;
-        let relay = tilo_server::daemon::Relay::start_with_relay_mode(
-            tilo_server::RelayConfig {
-                state_root: scratch.path().join("relay"),
+        let server = tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: scratch.path().join("server"),
                 ..Default::default()
             },
-            tilo_server::daemon::RelayIdentity {
+            tilo_server::daemon::ServerIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
                 device_cert: cert.clone(),
@@ -442,7 +442,7 @@ impl Bridge {
         )
         .await
         .unwrap();
-        let workspaces = relay.workspaces().unwrap().clone();
+        let workspaces = server.workspaces().unwrap().clone();
         let workspace = Workspace {
             id: workspaces.create("Bridged").await.unwrap().workspace,
             workspaces,
@@ -598,7 +598,7 @@ impl Bridge {
             blobs,
             general,
             ada,
-            _relay: relay,
+            _server: server,
             _packet_relay: packet_relay,
             _scratch: scratch,
         };

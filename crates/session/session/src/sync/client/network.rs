@@ -208,7 +208,7 @@ impl Bound {
 /// The address a host advertises for itself is the one it sees from its own network: behind a NAT,
 /// a port forward or a VM's network, that is its loopback or a private address, which from here is
 /// nobody or this machine itself. The address this device was handed (a VM's host rewrites the
-/// relay's to the one the VM reaches it at) and reached the host at is the one that works, so it is
+/// server's to the one the VM reaches it at) and reached the host at is the one that works, so it is
 /// kept apart from everything heard about the host: an invitation, a join's answer or a host's
 /// signed address adds paths beside it, and never replaces it. The endpoint dials every address it
 /// knows of a host at once, so the one that answers carries the connection.
@@ -877,7 +877,7 @@ async fn carry_out(
             .await
             .is_ok(),
         Cmd::Stop => return None,
-        // A relay session's own commands: this desktop's peer network carries none of them, and an answer
+        // A server session's own commands: this desktop's peer network carries none of them, and an answer
         // one asks for is dropped unanswered.
         _ => false,
     })

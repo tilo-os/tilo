@@ -20,7 +20,7 @@ a device's identity:
   ``tilo-server``'s diagnostic subcommands and its daemon, the initrd's
   sibling unlock. Each lives as
   long as the command that started it, dials an address it was handed, or is
-  the relay devices are meant to find. They are listed so that a device
+  the server devices are meant to find. They are listed so that a device
   endpoint added beside one has to be argued for rather than absorbed.
 """
 
@@ -45,9 +45,9 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 # handed; the session's and the filesystem's endpoints are not here.
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
-    # The relay's own diagnostic probes.
-    "crates/hosting/tilo-server/src/files_probe.rs": "relay diagnostic probe",
-    "crates/hosting/tilo-server/src/admin.rs": "relay admin client",
+    # The server's own diagnostic probes.
+    "crates/hosting/tilo-server/src/files_probe.rs": "server diagnostic probe",
+    "crates/hosting/tilo-server/src/admin.rs": "server admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
     "crates/hosting/tilo-server-session/src/workspaces/govern.rs": "workspace governance client of one command",
     # A client of the device administrator, which chooses its own relays.
@@ -57,8 +57,8 @@ EXEMPT = {
     "crates/system/tilo-sibling-unlock/src/exchange.rs": "initrd unlock exchange",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
-    # The relay daemon's own endpoint, which is what devices dial.
-    "crates/hosting/tilo-server/src/daemon.rs": "relay daemon",
+    # The server daemon's own endpoint, which is what devices dial.
+    "crates/hosting/tilo-server/src/daemon.rs": "server daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

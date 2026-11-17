@@ -83,7 +83,7 @@ async fn on_the_scan(
     );
     let requests = sent.try_iter().collect();
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     (info, requests)
 }
 

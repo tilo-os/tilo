@@ -163,7 +163,7 @@ impl Session {
     ) -> Result<Invocations, Outcome> {
         let id = self
             .connection
-            .relay()
+            .server()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;

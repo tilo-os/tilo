@@ -1,4 +1,4 @@
-//! Explicit, trusted-host compatibility entry point for relay operators.
+//! Explicit, trusted-host compatibility entry point for server operators.
 //!
 //! This is not an RPC and must never be wired to sandbox-controlled endpoints,
 //! file paths or keys. Sandboxed apps use `Complete` over their launcher-issued

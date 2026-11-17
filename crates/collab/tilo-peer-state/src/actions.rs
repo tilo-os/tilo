@@ -358,7 +358,7 @@ impl ActionService {
 
     /// Take a connection from the endpoint `endpoint` as one from the device
     /// `device`: a device whose endpoint is keyed apart from its device key,
-    /// as a Tilo relay's is, asks from that endpoint and signs as the device.
+    /// as a Tilo server's is, asks from that endpoint and signs as the device.
     /// Every other connection asks as the device its endpoint is keyed by.
     pub fn reach_device_at(&self, device: [u8; 32], endpoint: [u8; 32]) {
         if device != endpoint {

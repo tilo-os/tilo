@@ -4,7 +4,7 @@
 
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives"
 )]
 
 use std::sync::{Arc, Mutex};
@@ -100,8 +100,8 @@ async fn ask_as(
 async fn two_people_on_one_host_are_each_answered_by_their_own_model() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -195,8 +195,8 @@ async fn two_people_on_one_host_are_each_answered_by_their_own_model() {
 async fn no_agent_reads_or_changes_a_persons_key() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let provider = link(
@@ -309,8 +309,8 @@ async fn no_log_line_carries_a_key() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let provider = link(

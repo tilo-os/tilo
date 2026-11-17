@@ -201,7 +201,7 @@ async fn session() -> (
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.relay, &host_device.cert).await;
+    crate::support::place(&host.server, &host_device.cert).await;
     (root, host_device, state, host)
 }
 
@@ -235,7 +235,7 @@ async fn every_web_app_over_the_session() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -575,7 +575,7 @@ async fn every_web_app_over_the_session() {
     agent.close();
     browser.close();
     let retained = host
-        .relay
+        .server
         .workspace_documents()
         .retained(workspace())
         .await
@@ -587,7 +587,7 @@ async fn every_web_app_over_the_session() {
         &host_device.cert.device_public_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const CANVAS: &str = "so.tilo.canvas";
@@ -654,7 +654,7 @@ async fn planning_agent_labelled(
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay
+    host.server
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
@@ -870,7 +870,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// An agent reads an open record in the planning conversation: the first
@@ -948,7 +948,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Steps written out run as written: a look renders the artwork as content
@@ -1054,7 +1054,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A video still an agent asks for in a task is drawn by its host's render
@@ -1144,7 +1144,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
     assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Steps written as a scenario writes them: the document's body named as a
@@ -1185,7 +1185,7 @@ async fn written_steps_name_a_records_field_and_carry_content_into_it() {
     assert_eq!(task.steps.len(), 4, "{task:?}");
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// The id of a new workbook's first sheet, `Sheet1`.
@@ -1251,7 +1251,7 @@ async fn a_step_takes_the_value_a_formula_computed() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A step writes a number its parameter types as arithmetic in words
@@ -1307,7 +1307,7 @@ async fn a_step_takes_arithmetic_written_in_words() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A row's cells written by header are values nothing types: one that is
@@ -1373,7 +1373,7 @@ async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const MESSAGES: &str = "so.tilo.messages";
@@ -1423,7 +1423,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A value that is not there fails its step with the reference named, and
@@ -1485,7 +1485,7 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
     );
 
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// A model's `plan` turn: a `sheets.workbook#set-cells` of each
@@ -1539,7 +1539,7 @@ async fn task_with_model(
         serde_json::Value::Null
     };
     agent.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
     (info, requests, cells)
 }
 
@@ -1755,7 +1755,7 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
 
     first.close();
     second.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 const CHAT: &str = "so.tilo.chat";
@@ -1837,7 +1837,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     )
     .await;
     let (mut poster, poster_control) = planning_agent_labelled(
-        ("relay-9e", "Rae"),
+        ("server-9e", "Rae"),
         &root,
         (&host, &host_device),
         &[CHAT],
@@ -1974,7 +1974,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
 
     waiter.close();
     poster.close();
-    host.relay.shutdown().await;
+    host.server.shutdown().await;
 }
 
 /// Post `text` in the chat's `#chat` channel as `poster`, as a written
@@ -2008,10 +2008,10 @@ async fn pump_for(agents: &mut [&mut AgentMember], long: Duration) {
     }
 }
 
-/// Three agents in one chat, as a sign-in relay runs: Ana (planned by the
+/// Three agents in one chat, as a sign-in server runs: Ana (planned by the
 /// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
 /// agent who has not opened it yet.
-struct RelayWorkspace {
+struct ServerWorkspace {
     host: crate::support::TestHost,
     ana: (AgentMember, std::sync::Arc<AgentControl>),
     rae: (AgentMember, std::sync::Arc<AgentControl>),
@@ -2019,7 +2019,7 @@ struct RelayWorkspace {
     _state: tempfile::TempDir,
 }
 
-impl RelayWorkspace {
+impl ServerWorkspace {
     async fn start(url: &str) -> Self {
         Box::pin(Self::granting(url, &[CHAT])).await
     }
@@ -2055,7 +2055,7 @@ impl RelayWorkspace {
             "127.0.0.1:0".parse().unwrap(),
         )
         .await;
-        crate::support::place(&host.relay, &host_device.cert).await;
+        crate::support::place(&host.server, &host_device.cert).await;
         let direct = || {
             (
                 Box::new(tilo_agent_session::DirectPlanner) as Box<dyn tilo_agent_session::Planner>,
@@ -2237,7 +2237,7 @@ impl RelayWorkspace {
         self.ana.0.close();
         self.rae.0.close();
         self.ben.0.close();
-        self.host.relay.shutdown().await;
+        self.host.server.shutdown().await;
     }
 }
 
@@ -2266,7 +2266,7 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
             None,
         ),
     ]);
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1
@@ -2367,7 +2367,7 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
             None,
         ),
     ]);
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1
@@ -2490,7 +2490,7 @@ fn plan_call(id: &str, input: &serde_json::Value) -> serde_json::Value {
 const REMINDED: &str = "You planned nothing more, but obligations of the request are still open";
 
 /// What Ana's agent last said: a finished task's result.
-fn ana_said(workspace: &RelayWorkspace) -> String {
+fn ana_said(workspace: &ServerWorkspace) -> String {
     workspace
         .ana
         .1
@@ -2507,7 +2507,7 @@ fn ana_said(workspace: &RelayWorkspace) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1
@@ -2601,7 +2601,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_left_open_are_reminded_done_or_set_aside() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
 
@@ -2678,7 +2678,7 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plan_without_obligations_finishes_without_a_reminder() {
     let (url, sent, answer, _served) = answered_model_endpoint();
-    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
     let task = workspace
         .ana
         .1

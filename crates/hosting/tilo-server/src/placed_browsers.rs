@@ -313,7 +313,7 @@ fn follow(
     };
     // Who asks is the action service's device: the caller here is only what the trait
     // asks for, never sent.
-    let caller = Caller::local_app("tilo.relay");
+    let caller = Caller::local_app("tilo.server");
     let until = Instant::now().checked_add(OPEN_PATIENCE);
     // The same invocation asked again runs once: a machine that did not answer, or was busy
     // (after the wait it said), is asked again within the open's patience. Any other answer is
@@ -403,7 +403,7 @@ fn follow(
     }
 }
 
-/// What the relay's Browser asks of a workspace's VM, on the VM host the
+/// What the server's Browser asks of a workspace's VM, on the VM host the
 /// placer names.
 impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
     /// Hand `material` to the session in the workspace's VM, and answer its

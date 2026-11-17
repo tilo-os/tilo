@@ -103,7 +103,7 @@ wait_network() {
 }
 
 # A board has no battery-backed clock and boots at the epoch or the image's
-# build date. Relay TLS and the device certificate check both fail on that
+# build date. Server TLS and the device certificate check both fail on that
 # clock, so the session waits for chrony's first synchronisation.
 wait_clock() {
   local n=0 limit=${TILO_BOARD_CLOCK_WAIT_SECS:-180}

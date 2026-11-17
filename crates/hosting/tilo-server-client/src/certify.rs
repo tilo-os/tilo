@@ -1,4 +1,4 @@
-//! Client side of relay-mediated device certification
+//! Client side of server-mediated device certification
 //! ([`tilo_server_protocol::certify`]).
 //!
 //! [`certify`] is what a device without a certificate runs: it signs one

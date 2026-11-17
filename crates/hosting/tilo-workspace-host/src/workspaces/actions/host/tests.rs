@@ -1,11 +1,11 @@
 //! The host's own operations as `tilo.host` actions: offered to and run for
-//! the devices of the relay's own person only, decided as every entry
+//! the devices of the server's own person only, decided as every entry
 //! decides a host operation, and asked with the certificate the transport
 //! verified.
 
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
 use ed25519_dalek::SigningKey;
@@ -29,8 +29,8 @@ use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use tilo_server_protocol::WorkspaceId;
 
-/// Another device of the relay's own person: the one `governor` certifies
-/// the relay for.
+/// Another device of the server's own person: the one `governor` certifies
+/// the server for.
 fn owners_laptop() -> DeviceCert {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[5; 32]);
@@ -87,11 +87,11 @@ async fn invoke(
 }
 
 #[tokio::test]
-async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
+async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let laptop = owners_laptop();
@@ -188,16 +188,16 @@ async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
             "{listed:?}"
         );
     }
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
-async fn the_relays_person_creates_a_workspace_with_an_administrators_invitation() {
+async fn the_servers_person_creates_a_workspace_with_an_administrators_invitation() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
+    let server = test_host(dir.path(), &key, &owner).await;
     let host = HostWorkspaceActions::new();
-    host.attach(relay.workspaces().clone());
+    host.attach(server.workspaces().clone());
     let laptop = owners_laptop();
 
     // The first invitation can make the person it brings in an
@@ -228,15 +228,15 @@ async fn the_relays_person_creates_a_workspace_with_an_administrators_invitation
     )
     .unwrap();
     assert_eq!(verified.grant().role, Role::Editor);
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
-async fn the_relays_person_enters_a_workspace_and_lets_an_app_author_it_as_actions() {
+async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let laptop = owners_laptop();
@@ -263,15 +263,15 @@ async fn the_relays_person_enters_a_workspace_and_lets_an_app_author_it_as_actio
     let again: EnteredWorkspace =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
     assert!(!again.changed, "already admitted");
-    relay.shutdown().await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let workspaces = relay.workspaces();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let workspace = workspaces.create("Mine").await.unwrap();
@@ -325,13 +325,13 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     assert_eq!(unverified.unwrap_err(), ActionHostError::UnknownAction);
 
     // The app action server hands the certificate on: through it, the laptop lists.
-    let server = GovernedServer {
+    let governed = GovernedServer {
         governance: host.clone(),
         apps: None,
     };
     let list = RemoteActionMessage::Invoke(host_request(LIST_WORKSPACES, json!({})));
-    assert!(server.answers(&caller(&laptop), &list));
-    let answer = server
+    assert!(governed.answers(&caller(&laptop), &list));
+    let answer = governed
         .serve_host(&caller(&laptop), &laptop, list)
         .expect("an invocation is answered");
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {
@@ -342,5 +342,5 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         "{:?}",
         receipt.status
     );
-    relay.shutdown().await;
+    server.shutdown().await;
 }

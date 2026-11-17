@@ -1,7 +1,7 @@
 //! Signing a person in to a web service with a device they already have.
 //!
 //! A service that is not one of the person's devices (a hosting provider's
-//! sign-in page, say) learns who the person is the way a relay does at its
+//! sign-in page, say) learns who the person is the way a server does at its
 //! handshake: one of their devices signs the service's fresh challenge with
 //! its own key, and shows the certificate their identity root gave that key.
 //! The service checks the certificate under the root, that the device is not

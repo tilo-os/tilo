@@ -817,7 +817,7 @@ pub(super) fn sample() -> Agents {
                 "Model: No model chosen in Settings",
             ),
             agent(
-                "relay",
+                "server",
                 "Encrypted backup",
                 2,
                 false,

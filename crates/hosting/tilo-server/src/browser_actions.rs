@@ -1,6 +1,6 @@
 //! What hosted Browser runs free, and the card it asks for past that.
 //!
-//! The relay runs a workspace's Browser page actions on the host's pool, and
+//! The server runs a workspace's Browser page actions on the host's pool, and
 //! counts them per account and billing period in a log beside its state
 //! ([`BrowserMeter`]): [`BrowserMeter::admit`] before an action runs,
 //! [`BrowserMeter::record`] the moment one ran. The plans file
@@ -39,7 +39,7 @@ pub struct BrowserMeter {
 
 impl BrowserMeter {
     /// The meter that reads `plans` and keeps its count in `log`, a file
-    /// the relay puts in its state directory.
+    /// the server puts in its state directory.
     #[must_use]
     pub fn new(plans: PathBuf, log: PathBuf) -> Self {
         Self {
@@ -115,7 +115,7 @@ impl BrowserMeter {
     }
 }
 
-/// The log is what the relay places Browser with: a page action is
+/// The log is what the server places Browser with: a page action is
 /// admitted for the account of the workspace it is booked to, counted at the
 /// moment it ran.
 impl crate::hosted_browser::BrowserMeter for BrowserMeter {

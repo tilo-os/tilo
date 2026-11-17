@@ -1249,10 +1249,10 @@ export async function startEntryPage({mode}) {
     // read from the host's own certificate, so the link need not carry it.
     redeemTicket: async ({origin, workspace, ticket, tickets}) => {
       viaTicket = true;
-      const {connectRelayPeer} = await import('./relay.mjs');
+      const {connectServerPeer} = await import('./server.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
-      return connectRelayPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
+      return connectServerPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
@@ -1686,7 +1686,7 @@ function rememberedWorkspace(scope) {
 }
 
 /** The workspace the site's own entry names, as its admission address spells it
- * (`<relay>/peer/v1/directory/<workspace>/`): the site's home. */
+ * (`<server>/peer/v1/directory/<workspace>/`): the site's home. */
 function homeAdmissionWorkspace(entry) {
   const admission = entry?.home?.admission;
   const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
@@ -2111,7 +2111,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
-    // A peer that cannot set a name of its own (a guest the relay admitted)
+    // A peer that cannot set a name of its own (a guest the server admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
     identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,

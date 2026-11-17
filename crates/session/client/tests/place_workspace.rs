@@ -35,7 +35,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     page.join_placed(workspace, "Garden").unwrap();
     crate::support::in_workspace(&page, workspace_id).await;
     let summary = host
-        .relay
+        .server
         .workspaces()
         .unwrap()
         .summary(workspace)
@@ -53,7 +53,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     again.join_placed(workspace, "Another name").unwrap();
     crate::support::in_workspace(&again, workspace_id).await;
     assert_eq!(
-        host.relay
+        host.server
             .workspaces()
             .unwrap()
             .summary(workspace)

@@ -3,8 +3,8 @@ MESSAGES chat messages through the API server as any member's agent does.
 
     python3 seed-history.py API_URL KEY RECORDS_DIR MESSAGES
 
-RECORDS_DIR is the relay's state of the workspace (stack.sh's
-relay/lounge/relay), whose size is reported before and after: the host
+RECORDS_DIR is the server's state of the workspace (stack.sh's
+server/lounge/server), whose size is reported before and after: the host
 compacts it, so its size on disk is reported, not aimed at. Posts one at a
 time, and prints the first post's time and every fiftieth's, which say
 whether a post costs more as the chat grows. Prints `{"messages": N,
@@ -25,7 +25,7 @@ from tilo import AsyncTilo, Refused
 
 API_URL, KEY, RECORDS, MESSAGES = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 WORDS = ("tilo lounge workspace shell window share agent record history people call notes "
-         "sheets music photos relay entry browser terminal build release sync device").split()
+         "sheets music photos server entry browser terminal build release sync device").split()
 CHANNELS = ("c_general", "c_feedback")
 
 

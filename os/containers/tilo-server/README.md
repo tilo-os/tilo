@@ -35,11 +35,11 @@ for normal pairing.
 
 The named volumes are essential: they hold the stable Iroh
 endpoint secret, CRDT snapshots, pending offline queues, revocations, and
-metrics. Back it up together with the non-secret `relay.toml`; protect the
+metrics. Back it up together with the non-secret `server.toml`; protect the
 identity directory separately. Replacing either volume changes availability
 properties, so restore rather than recreate them after a failure.
 
-The health check reports ready only when the relay is live and the full file
+The health check reports ready only when the server is live and the full file
 replica has completed its current work.
 
 ## Trust and members
@@ -50,7 +50,7 @@ the owner identity and remains enforced by the filesystem replica. Inspect the
 running state with:
 
 ```sh
-podman compose exec tilo-server tilo-server-admin --config /etc/tilo/relay.toml status
+podman compose exec tilo-server tilo-server-admin --config /etc/tilo/server.toml status
 ```
 
 The aggregate replica status is the content-capacity health check:
@@ -60,9 +60,9 @@ separate from filesystem replication.
 
 ## Three roles
 
-This image is the **relay / home peer** — not the MCP server:
+This image is the **server / home peer** — not the MCP server:
 
-1. **Relay / headless store-and-forward** — this daemon (authenticated workspace host).
+1. **Server / headless store-and-forward** — this daemon (authenticated workspace host).
 2. **Home server / full always-on peer** — this Compose file: host-capable device cert, full file replica, LAN pair from Settings.
-3. **Agent on an existing OS** — an MCP client talking to the **local** runtime beside this relay: `tilo mcp` over the profile's own socket, or the host's own `/v1` API and MCP server (`docs/developers/api.md`). Nothing here is exposed to the network.
+3. **Agent on an existing OS** — an MCP client talking to the **local** runtime beside this server: `tilo mcp` over the profile's own socket, or the host's own `/v1` API and MCP server (`docs/developers/api.md`). Nothing here is exposed to the network.
 

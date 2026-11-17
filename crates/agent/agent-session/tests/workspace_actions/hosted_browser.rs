@@ -1,9 +1,9 @@
-//! Browser in a workspace the relay hosts: the workspace lists it like any
+//! Browser in a workspace the server hosts: the workspace lists it like any
 //! other app, an agent's key opens it through the workspace's own actions,
 //! and opening it places the environment whose session holds the window
 //! (`docs/hosted-browser.md`).
 //!
-//! The relay mounts nothing of Browser: its window runs in the workspace's
+//! The server mounts nothing of Browser: its window runs in the workspace's
 //! VM. What the open makes is the workspace's Browser record, which the
 //! session in the VM opens and draws.
 use super::*;
@@ -22,8 +22,8 @@ use tilo_session_client::remote::SessionActions;
 /// in the session holding it, as a window's is.
 const WINDOW: &str = "4711";
 
-/// Places environments in-process: each starts with the material the relay
-/// hands it, and answers the window the relay routes page actions to.
+/// Places environments in-process: each starts with the material the server
+/// hands it, and answers the window the server routes page actions to.
 #[derive(Clone, Default)]
 struct Environments(Arc<Mutex<Vec<Material>>>);
 
@@ -46,18 +46,22 @@ impl BrowserSessions for Environments {
 }
 
 /// The session the environment `material` started, holding the window: its
-/// device joins the workspace, and it answers what the relay hands it — a
+/// device joins the workspace, and it answers what the server hands it — a
 /// listing of the window with the page its window offers (none here).
-async fn window_session(relay: &tilo_server::daemon::Relay, person: [u8; 32], material: &Material) {
+async fn window_session(
+    server: &tilo_server::daemon::Server,
+    person: [u8; 32],
+    material: &Material,
+) {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
     use tilo_server::Envelope;
     let workspace_id = material.workspace_id;
-    let client = tilo_server::RelayClient::connect(
+    let client = tilo_server::ServerClient::connect(
         iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .bind()
             .await
             .unwrap(),
-        relay.node_addr(),
+        server.node_addr(),
         person,
         material.device.clone(),
         material.key().unwrap(),
@@ -153,9 +157,9 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    // The relay makes itself the person's stand-in from the root it keeps, as
+    // The server makes itself the person's stand-in from the root it keeps, as
     // a host that places browser sessions does at start.
-    tilo_server::hosted_browser::keep_stand_in(&state.path().join("relay"), &root)
+    tilo_server::hosted_browser::keep_stand_in(&state.path().join("server"), &root)
         .expect("the root signs the host's stand-in");
     let environments = Environments::default();
     let browsers = Arc::new(HostedBrowsers::new(
@@ -164,10 +168,10 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         "acct_ada".into(),
     ));
     let hosted = {
-        // A session in the workspace's VM reaches the relay at this address.
+        // A session in the workspace's VM reaches the server at this address.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
-            tilo_server::hosted_browser::RELAY_ENV,
+            tilo_server::hosted_browser::SERVER_ENV,
             format!(
                 "{}@127.0.0.1:7704",
                 hex::encode(host.cert.device_public_key)
@@ -230,7 +234,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         "the workspace has the window"
     );
 
-    window_session(&hosted.relay, root.verifying_key().to_bytes(), &started[0]).await;
+    window_session(&hosted.server, root.verifying_key().to_bytes(), &started[0]).await;
 
     // The window runs in the workspace's VM, and the workspace lists it as
     // running: the agent's listing finds it, not an app still to open.

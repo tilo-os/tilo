@@ -74,7 +74,7 @@ tilo_test_env::scenario! {
         let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let before = committed.durable().unwrap();
         // As the owner admits: the committed view stays readable while a staged
         // candidate (here two clones deep) takes the message.
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
         let (mut receiver, key, now) = two_documents();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now);
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
         let before = receiver.durable().unwrap();
         let mut forged = message.clone();
         if let NeighbourMsg::AppDocument { envelope, .. } = &mut forged {

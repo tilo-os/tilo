@@ -1,4 +1,4 @@
-//! The relay handshake's final frame, signed by a [`DeviceSigner`].
+//! The server handshake's final frame, signed by a [`DeviceSigner`].
 
 pub use collab_types::signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 

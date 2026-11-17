@@ -38,9 +38,9 @@ workspace's Linux programs and its Browser in one jailed Firecracker VM
   or `TILO_VM_GUEST_REF`; either way only an image the release key signed.
 - **Browser** (optional): `TILO_VM_SERVER_ENDPOINT` (`ADDR:PORT`) has the
   host serve each workspace's Browser in its VM: the browser session there
-  joins its workspace through the relay at that address, the relay's address
+  joins its workspace through the server at that address, the server's address
   as a VM reaches it and the only address besides the internet a VM may
-  reach. A relay on the host's own loopback (a local stack) is reached at
+  reach. A server on the host's own loopback (a local stack) is reached at
   `10.0.2.4`, which `pasta` maps there. A session ends after ten minutes
   without page activity, or two hours alive; the VM then sleeps like any.
 

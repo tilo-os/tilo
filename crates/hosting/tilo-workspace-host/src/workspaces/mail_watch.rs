@@ -719,8 +719,8 @@ mod tests {
     async fn an_inbox_is_watched_while_somebody_listens_for_its_person() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         keep(
@@ -792,8 +792,8 @@ mod tests {
     async fn what_arrives_is_kept_once_for_its_person_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         keep(
@@ -896,8 +896,8 @@ mod tests {
     async fn the_watches_follow_the_accounts_a_person_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = test_host(dir.path(), &key, &owner).await;
-        let workspaces = relay.workspaces();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         let root = workspaces.person_settings_root(&ADA);
