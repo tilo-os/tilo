@@ -173,7 +173,7 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup() {
     );
     assert!(answer(session.invoke(&person, connect())).is_ok());
     assert!(
-        openings.open(&handle, |_, _| Ok(())),
+        openings.open(&handle, |_, _| Ok(()), |_, _| None),
         "the desktop takes the ask on its next frame"
     );
     assert_eq!(

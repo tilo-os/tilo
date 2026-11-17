@@ -503,6 +503,29 @@ impl Shared {
             .map(|(tab, _)| *tab)
     }
 
+    /// The window that already shows `app`'s record `record` (by route, empty for the app's
+    /// own): where an open of it goes, in place of a second window on what one shows. The
+    /// window whose record this page bound is that window ([`Self::tab_on`]), the one an
+    /// open's action then runs in. Before a window's record is bound (its bytes still on
+    /// their way), any window of an app that keeps one record, the workspace's or the
+    /// person's own, is on that record: Settings and Mail show one thing however many windows
+    /// they have. An app whose windows each keep a document of their own has no window on a
+    /// record none of them named, so an open that names none opens a window.
+    pub fn window_on(&self, handle: &DesktopHandle, app: &str, record: &str) -> Option<TabId> {
+        if let Some(tab) = self.tab_on(app, record) {
+            return Some(tab);
+        }
+        let definition = application(app)?;
+        if !record.is_empty()
+            || !(definition.member_resource || definition.keeps_workspace_resource())
+        {
+            return None;
+        }
+        handle
+            .read(|tree| tilo_desktop_surface::navigation::window_of_app(tree, app))
+            .map(|ids| ids.tab)
+    }
+
     /// Where each window of the desktop stands ([`crate::window_states`]), by its tab in hex as
     /// the page's status names tabs.
     pub(crate) fn window_states(

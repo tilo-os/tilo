@@ -43,8 +43,10 @@ use tilo_lock::MutexRecover as _;
 
 use tilo_desktop_search::record_launch;
 
+use tilo_desktop_model::TabId;
+
 use crate::DesktopHandle;
-use crate::navigation::ChromeEffect;
+use crate::navigation::{ChromeEffect, LayoutEffect};
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
@@ -537,15 +539,21 @@ impl Openings {
     }
 
     /// Open every app the windows asked for since this was last taken,
-    /// through the desktop `handle`'s open verb, each one `may_open` admits
+    /// through the desktop `handle`'s verbs, each one `may_open` admits
     /// (told whether the open shows something that exists, a record or an
-    /// item of one); one asked on a record opens on it
-    /// ([`record_launch`]). Whether anything was asked, so the host lays out
-    /// again.
+    /// item of one). Opening means going there: the window `showing` says
+    /// already shows the record an open names (an app and its record's
+    /// route, empty for the app's own) comes forward and is what the open's
+    /// action runs in, so a link into an app never adds a second window on
+    /// what one already shows. Only an open no window shows, or one that
+    /// hands the app content, opens a window: on its record when it names
+    /// one ([`record_launch`]). Whether anything was asked, so the host lays
+    /// out again.
     pub fn open(
         &self,
         handle: &DesktopHandle,
         may_open: impl Fn(&str, bool) -> Result<(), ActionHostError>,
+        showing: impl Fn(&str, &str) -> Option<TabId>,
     ) -> bool {
         let chosen = std::mem::take(&mut *self.chosen.lock_recover());
         for id in &chosen {
@@ -574,6 +582,23 @@ impl Openings {
                         action,
                         arguments,
                     });
+                }
+                // Content handed to an app is a new thing to show; anything else goes to the
+                // window that already shows it. A window that left the shell since `showing`
+                // answered is no place to go, and the open opens one as if none had been there.
+                let shown = content
+                    .is_none()
+                    .then(|| showing(&app, record.as_deref().unwrap_or_default()))
+                    .flatten()
+                    .is_some_and(|tab| {
+                        handle
+                            .dispatch(LayoutEffect::Focus {
+                                tab: tab.to_string(),
+                            })
+                            .is_ok()
+                    });
+                if shown {
+                    return Ok(());
                 }
                 let app = match (record, content) {
                     (Some(record), _) => record_launch(&app, &record),
