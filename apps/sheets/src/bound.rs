@@ -14,13 +14,15 @@
 //! before bindings, reads by position.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
+use std::sync::Mutex;
 
+use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{self, Atom, Id};
 
 use crate::refs::{Moved, Ref, fold_sheet, rewrite_refs};
-use crate::workbook::{Layout, Workbook};
+use crate::workbook::{Fnv, Layout, Workbook};
 
 /// Between a formula's text and its binding in the stored value: the unit separator, which no
 /// keyboard types and [`Input::typed`] takes out of what is pasted.
@@ -42,6 +44,68 @@ const UNBOUND: &str = "?";
 pub struct Input {
     text: String,
     binding: Option<Box<str>>,
+    spelled: Spelled,
+}
+
+/// What a formula last read as, and the stamp of the lines it was read against. Spelling a
+/// formula anew is a pass over its text, and between two changes of rows, columns or sheets it
+/// reads the same, so what it read is kept. It is no part of the input: two inputs are the same
+/// whatever each last read as, and a copy starts with nothing kept.
+#[derive(Default)]
+struct Spelled(Mutex<Option<Box<Kept>>>);
+
+struct Kept {
+    stamp: u64,
+    /// `None` for a formula that read as it is typed.
+    spelling: Option<Box<str>>,
+}
+
+/// What [`Spelled`] holds for a stamp.
+enum Read {
+    /// Nothing: the formula has to be spelled.
+    Unknown,
+    /// As it is typed.
+    Typed,
+    Spelled(String),
+}
+
+impl Spelled {
+    fn read(&self, stamp: u64) -> Read {
+        match self.0.lock_recover().as_deref() {
+            Some(kept) if kept.stamp == stamp => kept
+                .spelling
+                .as_deref()
+                .map_or(Read::Typed, |spelling| Read::Spelled(spelling.to_owned())),
+            _ => Read::Unknown,
+        }
+    }
+
+    fn keep(&self, stamp: u64, spelling: Option<&str>) {
+        *self.0.lock_recover() = Some(Box::new(Kept {
+            stamp,
+            spelling: spelling.map(Into::into),
+        }));
+    }
+}
+
+impl Clone for Spelled {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Spelled {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Spelled {}
+
+impl std::fmt::Debug for Spelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Spelled")
+    }
 }
 
 impl Input {
@@ -54,6 +118,7 @@ impl Input {
         Self {
             text,
             binding: None,
+            spelled: Spelled::default(),
         }
     }
 
@@ -76,6 +141,7 @@ impl Input {
         Self {
             text: typed.text,
             binding: Some(joined(&sheets, &entries)),
+            spelled: Spelled::default(),
         }
     }
 
@@ -109,7 +175,21 @@ impl Input {
         if layout.is_plain() && binding.bytes().all(|byte| byte == b';') {
             return Cow::Borrowed(&self.text);
         }
-        respelled(&self.text, binding, layout, lines).map_or(Cow::Borrowed(&self.text), Cow::Owned)
+        // A formula of its own sheet alone reads the same until that sheet's lines change; one
+        // that reads others, until any sheet's lines or name do.
+        let stamp = if binding.contains('|') {
+            lines.stamp()
+        } else {
+            layout.stamp()
+        };
+        match self.spelled.read(stamp) {
+            Read::Typed => return Cow::Borrowed(&self.text),
+            Read::Spelled(spelling) => return Cow::Owned(spelling),
+            Read::Unknown => {}
+        }
+        let spelling = respelled(&self.text, binding, layout, lines);
+        self.spelled.keep(stamp, spelling.as_deref());
+        spelling.map_or(Cow::Borrowed(&self.text), Cow::Owned)
     }
 
     /// The input once row or column `at` of sheet `sheet` is deleted, when a range of it begins
@@ -199,6 +279,7 @@ impl Input {
         changed.then(|| Self {
             text: self.text.clone(),
             binding: Some(joined(&sheets, &kept)),
+            spelled: Spelled::default(),
         })
     }
 
@@ -256,11 +337,13 @@ impl Input {
             Some((text, binding)) if text.starts_with('=') => Self {
                 text: text.to_owned(),
                 binding: Some(binding.into()),
+                spelled: Spelled::default(),
             },
             Some(_) => Self::typed(stored),
             None => Self {
                 text: stored,
                 binding: None,
+                spelled: Spelled::default(),
             },
         }
     }
@@ -478,6 +561,7 @@ pub struct Lines<'a> {
     /// Each sheet's id and name, and the name as references match it.
     names: Vec<(&'a Id, &'a str, String)>,
     layouts: RefCell<Vec<(Id, Rc<Layout>)>>,
+    stamp: OnceCell<u64>,
 }
 
 impl<'a> Lines<'a> {
@@ -490,7 +574,22 @@ impl<'a> Lines<'a> {
                 .map(|(id, sheet)| (id, sheet.name.0.as_str(), fold_sheet(&sheet.name.0)))
                 .collect(),
             layouts: RefCell::new(Vec::new()),
+            stamp: OnceCell::new(),
         }
+    }
+
+    /// What every sheet is called and where its rows and columns are, as one number: a
+    /// formula reads the same in two workbooks of one stamp.
+    fn stamp(&self) -> u64 {
+        *self.stamp.get_or_init(|| {
+            let mut stamp = Fnv::new();
+            for (id, name, _) in &self.names {
+                stamp.text(id.as_str());
+                stamp.text(name);
+                stamp.number(self.layout(id).map_or(0, |layout| layout.stamp()));
+            }
+            stamp.finish()
+        })
     }
 
     /// [`Self::of`], with sheet `id` laid out as `layout`: the layout its caller already made,

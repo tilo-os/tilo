@@ -441,6 +441,40 @@ struct Made {
     /// Every line is the one the sheet derives for its place: nothing was inserted, and
     /// nothing deleted but from the end.
     plain: bool,
+    /// The rows and columns in their order, and what was cut, as one number
+    /// ([`Layout::stamp`]).
+    stamp: u64,
+}
+
+/// FNV-1a over what sheets and their lines are called. It is the same on every device and in
+/// every build, which a hasher of the standard library is not promised to be.
+pub(crate) struct Fnv(u64);
+
+impl Fnv {
+    pub(crate) fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn byte(&mut self, byte: u8) {
+        self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    /// `text`, and where it ends.
+    pub(crate) fn text(&mut self, text: &str) {
+        for byte in text.bytes().chain([0xff]) {
+            self.byte(byte);
+        }
+    }
+
+    pub(crate) fn number(&mut self, number: u64) {
+        for byte in number.to_le_bytes() {
+            self.byte(byte);
+        }
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 /// The id a sheet derives for the row (`r`) or column (`c`) it makes as its `number`th.
@@ -476,9 +510,11 @@ impl Layout {
 
     fn made(&self) -> Made {
         *self.made.get_or_init(|| {
-            let read = |line: &[Id], prefix: char, cut: Option<u32>| {
+            let mut stamp = Fnv::new();
+            let mut read = |line: &[Id], prefix: char, cut: Option<u32>| {
                 let (mut highest, mut ordered) = (cut, true);
                 for (at, id) in (0u32..).zip(line) {
+                    stamp.text(id.as_str());
                     match derived_number(id.as_str(), prefix) {
                         Some(number) => {
                             highest = Some(highest.map_or(number, |held| held.max(number)));
@@ -487,10 +523,9 @@ impl Layout {
                         None => ordered = false,
                     }
                 }
-                (
-                    highest.map_or(0, |highest| highest.saturating_add(1)),
-                    ordered,
-                )
+                let made = highest.map_or(0, |highest| highest.saturating_add(1));
+                stamp.number(u64::from(made));
+                (made, ordered)
             };
             let (rows, rows_ordered) = read(&self.rows, 'r', self.cut.0);
             let (columns, columns_ordered) = read(&self.columns, 'c', self.cut.1);
@@ -501,8 +536,15 @@ impl Layout {
                     && columns_ordered
                     && usize::try_from(rows).is_ok_and(|rows| rows == self.rows.len())
                     && usize::try_from(columns).is_ok_and(|columns| columns == self.columns.len()),
+                stamp: stamp.finish(),
             }
         })
+    }
+
+    /// The rows and columns in their order, with how far the sheet has numbered its own, as
+    /// one number: a binding finds the same lines in two layouts of one stamp.
+    pub fn stamp(&self) -> u64 {
+        self.made().stamp
     }
 
     /// Whether every row and column is the one the sheet derives for its place, so a line's
@@ -875,25 +917,20 @@ impl Workbook {
     /// row, a column or a sheet has moved since, instead of landing on other cells than its
     /// caller read.
     pub fn seen(&self) -> String {
-        // FNV-1a, which is the same on every device and in every build.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut part = |text: &str| {
-            for byte in text.bytes().chain([0xff]) {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
+        let mut stamp = Fnv::new();
         for (id, sheet) in self.sheets.iter() {
-            part(id.as_str());
-            part(&sheet.name.0);
+            stamp.text(id.as_str());
+            stamp.text(&sheet.name.0);
             for row in sheet.cells.rows() {
-                part(row.as_str());
+                stamp.text(row.as_str());
             }
-            part("");
+            stamp.text("");
             for column in sheet.cells.columns() {
-                part(column.as_str());
+                stamp.text(column.as_str());
             }
-            part("");
+            stamp.text("");
         }
+        let hash = stamp.finish();
         ui::format::machine!(
             "a stamp a caller hands back as it got it, not a number shown",
             format!("{hash:016x}")
