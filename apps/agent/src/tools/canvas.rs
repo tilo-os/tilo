@@ -228,8 +228,8 @@ pub fn canvas_section(
 /// The first sentence of `text`, on one line.
 fn first_sentence(text: &str) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match line.find(". ") {
-        Some(end) => line[..=end].to_owned(),
+    match line.find(". ").and_then(|end| line.get(..=end)) {
+        Some(first) => first.to_owned(),
         None => line,
     }
 }

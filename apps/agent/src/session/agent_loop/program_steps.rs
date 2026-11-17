@@ -58,9 +58,9 @@ impl ProgramWorld {
             .iter()
             .filter(|(alias, _)| {
                 source.match_indices(&format!("{alias}.")).any(|(at, _)| {
-                    !source[..at]
-                        .chars()
-                        .next_back()
+                    !source
+                        .get(..at)
+                        .and_then(|before| before.chars().next_back())
                         .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
                 })
             })

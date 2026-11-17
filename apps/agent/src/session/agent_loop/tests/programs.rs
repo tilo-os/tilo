@@ -717,9 +717,11 @@ fn a_change_without_its_reply_is_told_to_finish() {
         ],
     );
     f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap();
-    assert_eq!(bodies.len(), 2);
-    let read = said_last(&bodies[1]);
+    let read = {
+        let bodies = f.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        said_last(&bodies[1])
+    };
     assert!(read.contains("Nothing is left to run"), "{read}");
 }
 

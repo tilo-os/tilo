@@ -298,7 +298,13 @@ impl Session {
                 offer.descriptor.did.as_deref(),
                 &title,
             ),
-            None => crate::i18n::did(action, None, &title),
+            // A field the program assigned (`d.body = …`, which the API names `body =`).
+            None => match action.trim().strip_suffix('=').map(str::trim) {
+                Some(field) if !field.is_empty() => {
+                    crate::i18n::did(&crate::i18n::edited(field), None, &title)
+                }
+                _ => crate::i18n::did(action, None, &title),
+            },
         }
     }
 
