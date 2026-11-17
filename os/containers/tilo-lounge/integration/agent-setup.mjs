@@ -409,15 +409,15 @@ mark('the agent logged in and the tab is in the person\'s own workspace');
 const doing = 'Looking at the apps';
 // The agent's MCP server stays up as a restarted agent keeps it, while the
 // tab is looked at; its answers are kept for the report.
-const server = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
+const mcp = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
 let answers = '';
-server.stdout.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
-server.stderr.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
+mcp.stdout.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
+mcp.stderr.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
 for (const line of [
   {jsonrpc: '2.0', id: 1, method: 'initialize', params: {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check', version: '1'}}},
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
-]) server.stdin.write(`${JSON.stringify(line)}\n`);
+]) mcp.stdin.write(`${JSON.stringify(line)}\n`);
 const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).find(person => person.agent && /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
 // Its MCP server's own answers, on a failure: whether the tool call was
 // answered tells a slow presence from a call that never ran.
@@ -470,9 +470,9 @@ await call('tilo_do', {path: 'notes#new-note', args: {title: noteTitle}});
 // second agent's among them.
 const firstAnswer = new Promise(resolve => {
   let seen = '';
-  server.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
+  mcp.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
 });
-server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes/notes.pages'}}})}\n`);
+mcp.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes/notes.pages'}}})}\n`);
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
@@ -531,7 +531,7 @@ if (how !== 'presented') {
 }
 await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
   'Claude Code present in the workspace after a reload', stepLimit(2));
-server.stdin.end();
+mcp.stdin.end();
 const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');
 report.reloaded = after;

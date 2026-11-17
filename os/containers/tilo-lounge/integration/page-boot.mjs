@@ -23,8 +23,8 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, SHELL, machine} from './waits.mjs';
 
-const [site, relay, out] = process.argv.slice(2);
-if (!site || !relay || !out) {
+const [site, server, out] = process.argv.slice(2);
+if (!site || !server || !out) {
   console.error('usage: node page-boot.mjs SITE_URL SERVER_ORIGIN OUT_DIR');
   process.exit(2);
 }

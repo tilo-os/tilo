@@ -79,12 +79,12 @@ import {join} from 'node:path';
 import {inflateSync} from 'node:zlib';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, out, ...rest] = process.argv.slice(2);
+const [site, server, out, ...rest] = process.argv.slice(2);
 const option = name => {
   const at = rest.indexOf(name);
   return at < 0 ? null : rest[at + 1];
 };
-if (!site || !relay || !out) {
+if (!site || !server || !out) {
   console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
   process.exit(2);
 }

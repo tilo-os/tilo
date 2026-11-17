@@ -20,8 +20,8 @@ import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../
 import * as waits from './waits.mjs';
 import {clock} from './timing.mjs';
 
-const [site, relay, out, tiloBin, siteCa] = process.argv.slice(2);
-if (!site || !relay || !out) {
+const [site, server, out, tiloBin, siteCa] = process.argv.slice(2);
+if (!site || !server || !out) {
   console.error('usage: node tour.mjs SITE_URL SERVER_ORIGIN OUT_DIR');
   process.exit(2);
 }

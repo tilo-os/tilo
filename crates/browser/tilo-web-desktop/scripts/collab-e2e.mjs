@@ -240,8 +240,8 @@ const serverState = join(out, 'server-state');
 const server = detached('server', serverBin, ['dev', '--state', serverState, '--web', `127.0.0.1:${serverPort}`,
   '--allowed-origin', pagesOrigin, ...(withAgent ? ['--agents', '--agent-model', 'scripted'] : [])],
 {env: {TILO_SERVER_LOG: process.env.COLLAB_E2E_SERVER_LOG ?? 'tilo_server=info,warn'}});
-const hostLine = await until(async () => read(relay.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
-if (!hostLine) throw new Error(`the relay did not start: ${read(relay.stderr).slice(-600)}`);
+const hostLine = await until(async () => read(server.stdout).split('\n').find(l => l.startsWith('{')), 120000, 200);
+if (!hostLine) throw new Error(`the server did not start: ${read(server.stderr).slice(-600)}`);
 const host = JSON.parse(hostLine);
 summary.host = {origin: host.origin, userPublicKey: host.userPublicKey, agents: withAgent};
 log('host', host.origin, 'pages', pagesOrigin);
@@ -642,7 +642,7 @@ async function runApp(name) {
 
     // 9. Page B reloads: same device, still a member.
     await phase('reloaded page edits reach browser and native', async () => {
-      const certifications = () => (read(relay.stdout).match(/certifying a browser device=Browser-B\b/g) ?? []).length;
+      const certifications = () => (read(server.stdout).match(/certifying a browser device=Browser-B\b/g) ?? []).length;
       const before = certifications();
       const reloaded = Date.now();
       await ready(b, () => b.tab.reload());

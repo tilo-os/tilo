@@ -38,8 +38,8 @@ const option = name => {
 const folderName = option('--folder');
 const saveName = option('--save');
 const follow = option('--follow');
-const [site, relay, out, downloadsArg, ...fileArgs] = argv;
-if (!site || !relay || !out || !downloadsArg || !fileArgs.length) {
+const [site, server, out, downloadsArg, ...fileArgs] = argv;
+if (!site || !server || !out || !downloadsArg || !fileArgs.length) {
   console.error('usage: node carry-out.mjs SITE SERVER OUT_DIR DOWNLOADS FILE... [--folder NAME] [--save NAME] [--follow LINK]');
   process.exit(2);
 }
