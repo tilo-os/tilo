@@ -348,7 +348,9 @@ pub fn serve(machine: ServerMachine) -> std::io::Result<tokio::task::JoinHandle<
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
         _ => {}
     }
-    let listener = tokio::net::UnixListener::bind(&path)?;
+    let bound = tilo_files::native::socket::bind(&path)?;
+    bound.set_nonblocking(true)?;
+    let listener = tokio::net::UnixListener::from_std(bound)?;
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     Ok(tokio::spawn(async move {
         let mut renewal = tokio::time::interval(RENEW_EVERY);
@@ -402,7 +404,7 @@ async fn answer(machine: &ServerMachine, stream: tokio::net::UnixStream) -> Resu
 /// The daemon could not be reached or answered nothing readable.
 pub fn ask(state_root: &Path, request: &Request) -> Result<Answer, String> {
     use std::io::{BufRead as _, Write as _};
-    let mut stream = std::os::unix::net::UnixStream::connect(state_root.join(SOCKET))
+    let mut stream = tilo_files::native::socket::connect(&state_root.join(SOCKET))
         .map_err(|error| format!("the server daemon does not answer: {error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(300)))
