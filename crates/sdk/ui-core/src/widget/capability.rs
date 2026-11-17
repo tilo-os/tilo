@@ -87,14 +87,16 @@ pub fn capability_mut<T: ?Sized + 'static>(widget: &mut (impl Widget + ?Sized)) 
 ///
 /// A wrapper that provides some capabilities itself and passes every other
 /// request to the widget in one of its fields names that field:
-/// `provides!(dyn CommittedActions; inner = content);`
+/// `provides!(dyn CommittedActions; inner = content);`, and a
+/// [`Decorator`](super::Decorator) passes them to the widget it decorates:
+/// `provides!(dyn CommittedActions; decorated);`
 ///
 /// Capabilities may carry conditional compilation attributes, so a platform-only
 /// implementation need not be compiled or advertised on other targets:
 /// `provides!(#[cfg(not(target_family = "wasm"))] dyn NativeCapability);`
 #[macro_export]
 macro_rules! provides {
-    (@each [$($(#[$attribute:meta])* $capability:ty),+] { $($field:ident)? }) => {
+    (@each [$($(#[$attribute:meta])* $capability:ty),+] $rest:tt) => {
         fn provide<'a>(&'a self, request: &mut $crate::widget::capability::Request<'a, '_>) {
             $(
                 $(#[$attribute])*
@@ -103,7 +105,7 @@ macro_rules! provides {
                     return;
                 }
             )+
-            $(self.$field.provide(request);)?
+            $crate::provides!(@rest self request provide inner $rest);
         }
 
         fn provide_mut<'a>(
@@ -117,14 +119,24 @@ macro_rules! provides {
                     return;
                 }
             )+
-            $(self.$field.provide_mut(request);)?
+            $crate::provides!(@rest self request provide_mut inner_mut $rest);
         }
+    };
+    (@rest $self:ident $request:ident $provide:ident $inner:ident {}) => {};
+    (@rest $self:ident $request:ident $provide:ident $inner:ident { decorated }) => {
+        $self.$inner().$provide($request)
+    };
+    (@rest $self:ident $request:ident $provide:ident $inner:ident { $field:ident }) => {
+        $self.$field.$provide($request)
     };
     ($($(#[$attribute:meta])* $capability:ty),+ $(,)?) => {
         $crate::provides!(@each [$($(#[$attribute])* $capability),+] {});
     };
     ($($(#[$attribute:meta])* $capability:ty),+ ; inner = $field:ident) => {
         $crate::provides!(@each [$($(#[$attribute])* $capability),+] { $field });
+    };
+    ($($(#[$attribute:meta])* $capability:ty),+ ; decorated) => {
+        $crate::provides!(@each [$($(#[$attribute])* $capability),+] { decorated });
     };
 }
 

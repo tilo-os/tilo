@@ -252,24 +252,7 @@ impl Decorator for Publishing {
         self.content.as_mut()
     }
 
-    fn provide<'a>(&'a self, request: &mut ui_core::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn SurfacePublication>() {
-            request.provide::<dyn SurfacePublication>(self);
-            return;
-        }
-        self.content.provide(request);
-    }
-
-    fn provide_mut<'a>(
-        &'a mut self,
-        request: &mut ui_core::widget::capability::RequestMut<'a, '_>,
-    ) {
-        if request.wants::<dyn SurfacePublication>() {
-            request.provide::<dyn SurfacePublication>(self);
-            return;
-        }
-        self.content.provide_mut(request);
-    }
+    ui_core::provides!(dyn SurfacePublication; inner = content);
 
     // Whoever reaches the view's widget by its type (a test, a host that
     // embeds it) finds it through the part that publishes beside it.

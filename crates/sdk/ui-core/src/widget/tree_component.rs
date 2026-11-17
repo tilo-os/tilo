@@ -1620,23 +1620,9 @@ impl Decorator for DescribedTreeView {
         self.list.take_structure_change()
     }
 
-    /// The tree tells the window hosting it that the person opened a row of it, as a list of
-    /// places does: what a narrow window's drawer closes on.
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn NavigationSource>() {
-            request.provide::<dyn NavigationSource>(self);
-            return;
-        }
-        self.list.provide(request);
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn NavigationSource>() {
-            request.provide::<dyn NavigationSource>(self);
-            return;
-        }
-        self.list.provide_mut(request);
-    }
+    // The tree tells the window hosting it that the person opened a row of it, as a list of
+    // places does: what a narrow window's drawer closes on.
+    crate::provides!(dyn NavigationSource; inner = list);
 }
 
 impl NavigationSource for DescribedTreeView {

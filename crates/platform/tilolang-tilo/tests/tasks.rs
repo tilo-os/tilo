@@ -756,6 +756,24 @@ fn list_count(view: &ViewInstance) -> Option<i64> {
     out
 }
 
+/// A task a person checks off where it is the last of its place leaves the list with the list:
+/// a task added after it stands there alone, and the one checked off does not come back.
+#[test]
+fn a_task_added_after_the_place_emptied_stands_in_it_alone() {
+    let (mut ada, root) = workspace();
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Inbox");
+    let first = call(&ada, "new_task", create(&root, "Call the landlord"));
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), ["Call the landlord"]);
+    call(&ada, "check", vec![first]);
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), Vec::<String>::new());
+    call(&ada, "new_task", create(&root, "Water the plants"));
+    ada.commit();
+    assert_eq!(home_list_titles(&ada, &mut view), ["Water the plants"]);
+}
+
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
