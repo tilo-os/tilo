@@ -372,6 +372,16 @@ fn serve_documents(documents: tilo_documents::Documents) -> Option<tilo_document
 }
 
 async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
+    // A session that runs inside another desktop serves no agent on that desktop's system bus: the
+    // polkit, network-secrets and Bluetooth agents it would register there are that desktop's, and
+    // registering a second of each would fight its own.
+    if system && !tilo_paths::machine::owns_the_machine() {
+        tracing::info!(
+            bus = "system",
+            "this session reaches no machine: no agent registers on its system bus"
+        );
+        return None;
+    }
     let connected = match bus {
         Bus::None => return None,
         Bus::Default if system => zbus::Connection::system().await,

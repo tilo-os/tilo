@@ -196,9 +196,6 @@ macro_rules! decorator_trait {
 
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
-            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-                Decorator::html(self, cx)
-            }
             $($impl_items)*
             $(
                 $(#[$ref_attr])*
@@ -263,9 +260,6 @@ macro_rules! decorator_trait {
                     }
 
                     impl Widget for $d ty {
-                        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-                            Decorator::html(self, cx)
-                        }
                         $($impl_items)*
                         $(
                             $(#[$ref_attr])*
@@ -402,6 +396,10 @@ decorator_trait! {
 
         fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
             Decorator::for_each_layout_child(self, visitor)
+        }
+
+        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+            Decorator::html(self, cx);
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {

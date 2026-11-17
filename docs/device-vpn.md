@@ -206,9 +206,18 @@ is on, `NetworkManager`'s active VPNs and their `StateChanged` reasons
 (`tilo_nm::NmClient::watch_vpns`). `device_vpn::profile::Intent` decides
 what blocks; the servers of a profile are read from its settings (WireGuard
 peers' endpoints, a plugin's `remote`/`gateway`) and resolved when it starts
-connecting, while traffic still flows. A block the helper refused is asked
-for again with backoff, and `DeviceVpnStatus.profile_block` tells Settings
-what blocks and whether blocking failed.
+connecting, while traffic still flows. A block the helper could not be
+asked for, or failed to hold, is asked for again with backoff;
+`DeviceVpnStatus.profile_block` tells Settings what blocks and whether
+blocking failed. A refusal is final for the session: the helper serves the
+desktop of the person at the computer, and one it refuses will refuse again,
+so the controller says so once and never asks again.
+
+A session that runs inside another desktop owns no machine of it
+(`tilo_paths::machine`, `TILO_MACHINE=hosted`, which
+`dist/dev/nested-session.sh` sets): it follows no `NetworkManager` and asks
+no helper at all, so a nested or test session never changes the host's
+firewall.
 
 The intent is durable. Before it asks the helper, the controller keeps
 which profiles are set to connect, each with its servers' addresses, and

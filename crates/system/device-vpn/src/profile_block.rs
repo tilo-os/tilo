@@ -36,6 +36,21 @@ const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MOST: Duration = Duration::from_secs(60);
 
+/// How the helper answered the last ask, as far as the retry is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answered {
+    /// The helper took the request, or the block it keeps is the one asked
+    /// for: nothing more to ask.
+    Held,
+    /// The helper could not be asked, or failed: the block is still wanted,
+    /// so it is asked for again after a while.
+    Again,
+    /// The helper refused: the answer is final for this session. A person it
+    /// will not serve (a session that runs inside another desktop, whose
+    /// helper belongs to the host) will not serve it on a retry either, and
+    /// asking every few seconds only fills the log.
+    Refused,
+}
 /// What the follower runs against: the helper it asks, and where
 /// `NetworkManager`'s VPNs come from.
 #[derive(Clone, Debug)]
@@ -45,12 +60,35 @@ pub struct Sources {
 }
 
 impl Sources {
+    /// The machine's own helper and `NetworkManager` — for a session that owns
+    /// the machine. A session that runs inside another desktop has neither
+    /// ([`tilo_paths::machine`]), and [`Vpns::None`] keeps the kill switch off
+    /// for it.
     #[must_use]
     pub fn system() -> Self {
+        if !tilo_paths::machine::owns_the_machine() {
+            return Self::hosted();
+        }
         Self {
             helper: std::path::PathBuf::from(protocol::SOCKET_PATH),
             vpns: Vpns::System,
         }
+    }
+
+    /// No machine of this session's own: the machine's helper is never asked,
+    /// and no `NetworkManager` is followed.
+    #[must_use]
+    pub fn hosted() -> Self {
+        Self {
+            helper: std::path::PathBuf::new(),
+            vpns: Vpns::None,
+        }
+    }
+
+    /// Whether this session reaches the machine's helper at all.
+    #[must_use]
+    pub fn reaches_the_helper(&self) -> bool {
+        !matches!(self.vpns, Vpns::None)
     }
 }
 
@@ -61,6 +99,10 @@ pub enum Vpns {
     #[default]
     System,
     Fed(VpnWatch),
+    /// None: this session runs inside another desktop, whose `NetworkManager`
+    /// is not its to follow. Nothing blocks, and the machine's helper is never
+    /// asked.
+    None,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -193,6 +235,10 @@ async fn run(
     let (mut vpns, follow_system) = match sources.vpns {
         Vpns::System => (None, true),
         Vpns::Fed(watch) => (Some(watch), false),
+        // A session that runs inside another desktop has no machine of its
+        // own: it neither follows that desktop's `NetworkManager` nor asks its
+        // helper, whose routes belong to the person sitting at the machine.
+        Vpns::None => return,
     };
     let mut retry: Option<Duration> = None;
     loop {
@@ -202,14 +248,15 @@ async fn run(
         }
         let reading = vpns.as_ref().map(VpnWatch::current).unwrap_or_default();
         let before = follow.status.clone();
-        let held = follow.step(&current, &reading, &sources.helper, keep).await;
+        let answered = follow.step(&current, &reading, &sources.helper, keep).await;
         if follow.status != before {
             publish(follow.status.clone());
         }
-        retry = if held {
-            None
-        } else {
-            Some(retry.map_or(RETRY_FIRST, |delay| delay.saturating_mul(2).min(RETRY_MOST)))
+        retry = match answered {
+            Answered::Held | Answered::Refused => None,
+            Answered::Again => {
+                Some(retry.map_or(RETRY_FIRST, |delay| delay.saturating_mul(2).min(RETRY_MOST)))
+            }
         };
         tokio::select! {
             changed = choices.changed() => {
@@ -236,6 +283,10 @@ const fn activity(state: ActiveState) -> Option<Activity> {
 enum Applied {
     Unknown,
     Agreed(Option<ProfileBlock>),
+    /// The helper refused this session: it will not change the machine's
+    /// routes for a desktop it does not serve, and asking again will not
+    /// change its answer.
+    Refused,
 }
 
 struct Follow {
@@ -310,7 +361,7 @@ impl Follow {
         reading: &VpnReading,
         helper: &Path,
         keep: impl FnOnce(&ProfileIntent) -> bool,
-    ) -> bool {
+    ) -> Answered {
         let released = self.released(choices, reading);
         let switches: BTreeMap<String, Switch> = choices
             .switches
@@ -340,16 +391,20 @@ impl Follow {
         let block = blocking
             .as_ref()
             .map(|blocking| block_for(blocking, &self.servers));
-        let held = self.apply(block, helper).await;
+        let answered = self.apply(block, helper).await;
+        let held = matches!(answered, Answered::Held);
         let status = ProfileBlockStatus {
             blocking: match (&blocking, held) {
                 (Some(blocking), true) => blocking.profiles.clone(),
                 _ => Vec::new(),
             },
-            failed: blocking.is_some() && !held,
+            // A refusal is not a fault this session can fix: the machine's
+            // helper serves its own desktop alone, and this one says so once
+            // rather than reporting a failure it can never clear.
+            failed: blocking.is_some() && answered == Answered::Again,
         };
         self.status = status;
-        held
+        answered
     }
 
     async fn look_up_servers(
@@ -400,14 +455,21 @@ impl Follow {
         wanted
     }
 
-    async fn apply(&mut self, block: Option<ProfileBlock>, helper: &Path) -> bool {
+    async fn apply(&mut self, block: Option<ProfileBlock>, helper: &Path) -> Answered {
         if matches!(&self.applied, Applied::Agreed(agreed) if *agreed == block) {
-            return true;
+            return Answered::Held;
+        }
+        // A block the helper refused once is not asked for again: the refusal
+        // is the machine's helper saying this session is not the desktop it
+        // serves, and nothing this session does changes that answer
+        // ([`Answered::Refused`]).
+        if matches!(&self.applied, Applied::Refused) {
+            return Answered::Refused;
         }
         let installed = helper.exists();
         if block.is_none() && !installed {
             self.applied = Applied::Agreed(None);
-            return true;
+            return Answered::Held;
         }
         let request = match &block {
             Some(block) => Request::HoldProfileBlock {
@@ -422,22 +484,32 @@ impl Follow {
         match answer {
             Ok(Ok((Response::Done, _))) => {
                 self.applied = Applied::Agreed(block);
-                true
+                Answered::Held
+            }
+            // A refusal is final: this session asks once, says so once, and
+            // leaves the machine's helper to its own desktop.
+            Ok(Ok((Response::Refused { reason }, _))) => {
+                tracing::warn!(
+                    %reason,
+                    "the helper refused this session the VPN kill switch: the machine's helper serves its own desktop alone"
+                );
+                self.applied = Applied::Refused;
+                Answered::Refused
             }
             Ok(Ok((answer, _))) => {
                 tracing::warn!(
                     ?answer,
                     "the helper did not change the VPN kill switch's block"
                 );
-                false
+                Answered::Again
             }
             Ok(Err(error)) => {
                 tracing::warn!(%error, "could not ask the helper for the VPN kill switch's block");
-                false
+                Answered::Again
             }
             Err(error) => {
                 tracing::warn!(%error, "the VPN kill switch's request did not finish");
-                false
+                Answered::Again
             }
         }
     }
@@ -667,5 +739,72 @@ mod tests {
             assert_eq!(activity(ActiveState::Deactivated), None);
             assert_eq!(activity(ActiveState::Unknown), None);
         }
+    }
+
+    /// A helper that refuses is asked once, not every few seconds: the refusal
+    /// is the machine's helper saying this session is not the desktop it
+    /// serves, and nothing the session does changes that answer.
+    #[test]
+    fn a_refused_block_is_not_asked_for_again() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let socket = dir.path().join("helper.sock");
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&asked);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the helper");
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut line = String::new();
+                if std::io::BufRead::read_line(
+                    &mut std::io::BufReader::new(stream.try_clone().expect("a stream")),
+                    &mut line,
+                )
+                .is_err()
+                {
+                    continue;
+                }
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let refused = serde_json::to_vec(&Response::Refused {
+                    reason: "only the desktop of the person at this computer may change its routes"
+                        .into(),
+                })
+                .expect("an answer");
+                let _ = stream.write_all(&refused);
+                let _ = stream.write_all(b"\n");
+            }
+        });
+
+        let block = ProfileBlock {
+            servers: vec!["198.51.100.7".parse().expect("an address")],
+            allow_local: false,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let mut follow = Follow::new(ProfileIntent::default());
+        let answers: Vec<Answered> = runtime.block_on(async {
+            let mut answers = Vec::new();
+            for _ in 0..3 {
+                answers.push(follow.apply(Some(block.clone()), &socket).await);
+            }
+            answers
+        });
+        assert_eq!(
+            answers,
+            [Answered::Refused, Answered::Refused, Answered::Refused],
+            "the refusal is final for the session"
+        );
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the helper is asked once, not on every retry"
+        );
+        assert!(
+            !follow.status.failed,
+            "a refusal is not a fault this session can clear: {:?}",
+            follow.status
+        );
     }
 }

@@ -50,7 +50,7 @@ fn follow_boxed(
 async fn signals(
     services: &'static [&'static str],
 ) -> zbus::Result<impl futures_util::Stream<Item = zbus::Result<zbus::Message>>> {
-    let connection = zbus::Connection::system().await?;
+    let connection = crate::system_bus().await.map_err(zbus::Error::Failure)?;
     let mut streams = Vec::with_capacity(services.len().saturating_mul(2));
     for service in services {
         streams.push(

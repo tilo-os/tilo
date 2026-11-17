@@ -931,7 +931,7 @@ fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, S
     let task = runtime.spawn(async move {
         use futures_util::StreamExt as _;
         let signals = async {
-            let connection = zbus::Connection::system().await?;
+            let connection = crate::system_bus().await.map_err(zbus::Error::Failure)?;
             zbus::MessageStream::for_match_rule(
                 zbus::MatchRule::builder()
                     .msg_type(zbus::message::Type::Signal)

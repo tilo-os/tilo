@@ -52,7 +52,7 @@ impl RustApps {
             &self.chat.read(),
             &self.chat.message_rows(CHAT_CHANNEL),
             CHAT_CHANNEL,
-            chat::model::ME,
+            &tilo_resource::MemberId::person(chat::model::ME),
             &chat::views::Names::default(),
         )
     }
@@ -64,7 +64,7 @@ impl RustApps {
             &self.chat.read(),
             &self.chat.message_rows(CHAT_SHORT_CHANNEL),
             CHAT_SHORT_CHANNEL,
-            chat::model::ME,
+            &tilo_resource::MemberId::person(chat::model::ME),
             &chat::views::Names::default(),
         )
     }
@@ -269,6 +269,10 @@ mod tests {
         let author = channel
             .person(&first.author)
             .unwrap_or_else(|| panic!("the page names {} in {:?}", first.author, channel.people));
-        assert_ne!(author.name, first.author, "a person is named, not their id");
+        assert_ne!(
+            author.name,
+            first.author.id(),
+            "a person is named, not their id"
+        );
     }
 }
