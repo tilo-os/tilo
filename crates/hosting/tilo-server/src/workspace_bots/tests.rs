@@ -23,10 +23,22 @@ mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
+/// A person's event that waits on a feed or a page outside.
+mod outside;
 /// A person's event that waits on their mail.
 mod sources;
 /// A program's triggers at a time its person's calendars hold.
 mod times;
+
+/// `program`, carried out for `person`, with `assistant` taking what it
+/// hands over and answering what it asks.
+fn carried_out_for(
+    program: installed::BotRunner,
+    person: String,
+    assistant: &std::sync::Arc<Assistant>,
+) -> installed::BotRunner {
+    program.runs_for(person, assistant.clone())
+}
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];

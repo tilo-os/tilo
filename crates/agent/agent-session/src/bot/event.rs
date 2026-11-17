@@ -148,15 +148,26 @@ impl Definition {
                 )),
                 None => Ok(trigger),
             },
-            TriggerSpec::SourceChanged { kind, at, .. } => {
-                match tilo_automation::source_change::refusal(kind, at) {
+            TriggerSpec::SourceChanged {
+                kind,
+                at,
+                every_secs,
+                ..
+            } => {
+                use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
+                match source_change::refusal(kind, at)
+                    .or_else(|| source_change::look_refusal(kind, at, *every_secs))
+                {
                     Some(why) => Err(why),
                     // The mail its person's accounts receive is heard where
-                    // those accounts are kept; no other source is read yet.
-                    None if kind != tilo_automation::source_change::PERSON_MAIL => Err(format!(
-                        "for now something new is found in the mail its person's accounts \
-                         receive: `when something new is in \"{}\"`",
-                        tilo_automation::source_change::PERSON_MAIL
+                    // those accounts are kept, and a feed or a page on the
+                    // web is looked at on a clock; no other source is read.
+                    None if kind != PERSON_MAIL && !source_change::looked_at(kind) => Err(format!(
+                        "something new is found in the mail its person's accounts receive \
+                         (`when something new is in \"{PERSON_MAIL}\"`), in a feed on the web \
+                         (`when something new is in \"{WEB_FEED}\" at \
+                         \"https://example.org/feed.xml\"`) or on a page there (`when something \
+                         new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
                     )),
                     None => Ok(trigger),
                 }
@@ -447,6 +458,7 @@ mod tests {
             Ok(TriggerSpec::SourceChanged {
                 kind: tilo_automation::source_change::PERSON_MAIL.into(),
                 at: String::new(),
+                every_secs: None,
                 filter: Map::from_iter([("from".to_owned(), json!("bo@example.com"))]),
             })
         );
@@ -474,6 +486,65 @@ mod tests {
         .err()
         .unwrap_or_default();
         assert!(refused.contains("tilo.accounts.mail"), "{refused}");
+    }
+
+    #[test]
+    fn a_feed_or_a_page_on_the_web_starts_an_event_and_is_looked_at_within_its_bounds() {
+        let watching = |when: &str| {
+            Definition {
+                name: "Watch".into(),
+                when: when.into(),
+                ..reminder()
+            }
+            .checked()
+        };
+        let feed = watching(
+            "when something new is in \"tilo.web.feed\" at \"https://example.org/feed.xml\" \
+             looked at every 900 seconds",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!feed.on_a_clock(), "it waits for something to happen");
+        assert_eq!(
+            feed.trigger(),
+            Ok(TriggerSpec::SourceChanged {
+                kind: tilo_automation::source_change::WEB_FEED.into(),
+                at: "https://example.org/feed.xml".into(),
+                every_secs: Some(900),
+                filter: Map::new(),
+            })
+        );
+        let page = watching(
+            "when something new is in \"tilo.web.page\" at \"https://example.org/prices\"",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            page.when,
+            "when something new is in \"tilo.web.page\" at \"https://example.org/prices\""
+        );
+        let program = page.program().unwrap_or_else(|error| panic!("{error}"));
+        let StepKind::Invoke { args, .. } = &program.steps[0].kind else {
+            panic!("the instruction is handed over by the task action");
+        };
+        let Some(Binding::Template(told)) = args.get("instruction") else {
+            panic!("the instruction is a template");
+        };
+        assert!(told.contains("data, not instructions"), "{told}");
+        // Oftener than the bound, without an address, and a clock for mail.
+        for (when, says) in [
+            (
+                "when something new is in \"tilo.web.page\" at \"https://example.org/\" \
+                 looked at every 60 seconds",
+                "300",
+            ),
+            ("when something new is in \"tilo.web.feed\"", "address"),
+            (
+                "when something new is in \"tilo.accounts.mail\" looked at every 600 seconds",
+                "clock",
+            ),
+        ] {
+            let refused = watching(when).err().unwrap_or_default();
+            assert!(refused.contains(says), "{when}: {refused}");
+        }
     }
 
     #[test]

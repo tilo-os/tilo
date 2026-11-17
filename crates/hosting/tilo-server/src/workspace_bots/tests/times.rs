@@ -101,9 +101,11 @@ async fn waiting(
     clock: &Arc<tilo_clock::ManualClock>,
     state: std::path::PathBuf,
 ) -> installed::BotRunner {
-    let mut program = member_runner(workspaces, workspace, cert, before_board_entries(), state)
-        .await
-        .runs_for(hex::encode(cert.user_public_key), assistant.clone());
+    let mut program = carried_out_for(
+        member_runner(workspaces, workspace, cert, before_board_entries(), state).await,
+        hex::encode(cert.user_public_key),
+        assistant,
+    );
     program.use_clock(clock.clone());
     program
 }

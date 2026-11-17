@@ -624,6 +624,7 @@ tilo_test_env::scenario! {
             TriggerSpec::SourceChanged {
                 kind: crate::source_change::PERSON_MAIL.into(),
                 at: String::new(),
+                every_secs: None,
                 filter: Map::new(),
             },
         ]);

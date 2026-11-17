@@ -428,11 +428,22 @@ tilo_test_env::scenario! {
             TriggerSpec::SourceChanged {
                 kind: crate::source_change::PERSON_MAIL.into(),
                 at: String::new(),
+                every_secs: None,
                 filter: serde_json::Map::new(),
+            },
+            TriggerSpec::SourceChanged {
+                kind: crate::source_change::WEB_FEED.into(),
+                at: "https://example.org/feed.xml".into(),
+                every_secs: Some(3600),
+                filter: serde_json::Map::from_iter([(
+                    "author".to_owned(),
+                    Value::from("Ada"),
+                )]),
             },
             TriggerSpec::SourceChanged {
                 kind: crate::source_change::PERSON_MAIL.into(),
                 at: "ada@example.com".into(),
+                every_secs: None,
                 filter: serde_json::Map::from_iter([
                     ("from".to_owned(), Value::from("bo@example.com")),
                     ("hasAttachments".to_owned(), Value::Bool(true)),
@@ -490,6 +501,19 @@ tilo_test_env::scenario! {
             trigger::trigger_of(r#"when something new is in "tilo.accounts.mail" sometimes"#)
                 .is_err(),
             "nothing follows a source but which one and what narrows it"
+        );
+        assert!(
+            text.contains(
+                r#"when something new is in "tilo.web.feed" at "https://example.org/feed.xml" looked at every 3600 seconds where author is "Ada""#
+            ),
+            "a source that is looked at on a clock says how often: {text}"
+        );
+        assert!(
+            trigger::trigger_of(
+                r#"when something new is in "tilo.web.page" at "https://example.org/" looked at every hour"#
+            )
+            .is_err(),
+            "how often a source is looked at is a number of seconds"
         );
     }
 }
