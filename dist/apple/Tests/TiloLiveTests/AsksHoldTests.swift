@@ -18,6 +18,11 @@ final class AsksHoldTests: XCTestCase {
     private var sessions: [Session] = []
     private var changes: [ConversationChange] = []
     private var setups: [Setup] = []
+    private var cards: [SinceLeft?] = []
+    private var supervisions: [Supervision] = []
+    private var scheduled: [[Automation]] = []
+    /// How often the page said that something changed.
+    private var pageWords = 0
     private var listening: [Task<Void, Never>] = []
 
     private func start(_ mainChat: TiloSource.MainChat = .assistant, livesInOwn: Bool = false) async throws {
@@ -130,10 +135,12 @@ final class AsksHoldTests: XCTestCase {
                   ? {providers: [{id: 'anthropic', name: 'Anthropic', protocol: 'anthropic', endpoint: 'https://api.anthropic.com', configured: true,
                       models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}], defaultProvider: 'anthropic', assignments: []}
                   : {providers: [], defaultProvider: null, assignments: []});
-              case 'tilo.vault list': return done({items: []});
-              case 'tilo.learned list': return done({facts: []});
-              case 'tilo.telling read': return done({lines: [], facts: []});
-              case 'tilo.events list': return done({events: []});
+              // What her server keeps beside the conversation (`window.beside`): her logins, what
+              // it learned, what is important to her, and what comes at a time.
+              case 'tilo.vault list': return done({items: window.beside?.items ?? []});
+              case 'tilo.learned list': return done({facts: window.beside?.facts ?? []});
+              case 'tilo.telling read': return done({lines: window.beside?.lines ?? [], facts: []});
+              case 'tilo.events list': return done({events: window.beside?.events ?? []});
               case 'tilo.telling list': {
                 // An ask that waits is held until her server's log moves.
                 const newer = () => window.told.filter(one => one.seq > (argument?.after ?? 0));
@@ -143,7 +150,8 @@ final class AsksHoldTests: XCTestCase {
               case 'tilo.telling acknowledge':
                 window.acknowledged.push(argument.told + ' ' + argument.by);
                 return done(null);
-              case 'tilo.telling since-you-left': return done({cameIn: [], didAlone: [], waits: []});
+              // What she was told while she was away, where she was (`window.since`).
+              case 'tilo.telling since-you-left': return done(window.since ?? {cameIn: [], didAlone: [], waits: []});
               default: return noSuch();
             }
           });
@@ -254,10 +262,15 @@ final class AsksHoldTests: XCTestCase {
 
     /// Her reminder comes due: what her server tells the assistant then, the assistant's answer
     /// to that, and what her server tells her of it.
-    private static let reminderComes = """
+    private static let reminderComes = reminderMessages + "\n" + reminderTold
+
+    private static let reminderMessages = """
         post({id: 'm_ask_1', author: {agent: 'e-9'}, text: 'Remind me to stretch. (for the assistant)',
           cause: {kind: 'reminder', label: 'Stretch', key: 'k-1', person: {person: ADA}}});
         post({id: 'm_reply_1', author: {agent: 'assistant'}, text: 'Time to stretch.', parent: 'm_ask_1'});
+        """
+
+    private static let reminderTold = """
         tell({seq: 1, id: 'turn:ws-1:m_ask_1:0', atMs: 1794900000000, kind: 'reminder', title: 'Stretch', words: 'said',
           about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/m_ask_1'},
           mark: {important: false, why: {code: 'reminder'}}, reaches: true})
@@ -543,6 +556,97 @@ final class AsksHoldTests: XCTestCase {
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         let made = try await asked("chat create-agent")
         XCTAssertEqual(made, 0)
+    }
+
+    func testAListOfHerProvidersThatGoesUnansweredOnTheWayInIsAskedAgainAndTheProviderStepIsOffered() async throws {
+        try await start(Self.assistant)
+        try await enter("window.linked = false; window.plan = {'tilo.models list': ['lost']}")
+        try await signedIn()
+        try await until("the provider step is offered") { if case .needsProvider = self.setups.last { true } else { false } }
+    }
+
+    func testAListOfHerProvidersWithNothingInItIsNotTakenForAPersonWhoLinkedNone() async throws {
+        try await start(Self.assistant)
+        try await enter("window.plan = {'tilo.models list': ['empty']}")
+        try await signedIn()
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .needsProvider = $0 { true } else { false } }, "she was offered the provider step though she linked one")
+    }
+
+    func testAnUnansweredAskForWhatHerServerTellsHerIsMadeAgainByItselfWithNoWordOfThePage() async throws {
+        try await start(Self.assistant)
+        listening.append(Task { for await _ in self.source.engine.changes() { self.pageWords += 1 } })
+        try await enter(Self.reminderMessages)
+        try await signedIn()
+        // The page said its one word of a change as it got in, and her server holds the ask that follows its log.
+        try await until("the page said its word and her server holds an ask") {
+            let asks = (try? await self.asked("tilo.telling list")) ?? 0
+            return self.pageWords >= 1 && asks >= 2
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        // Her server's log moves for something that is no piece of her conversation, and the ask
+        // that follows is taken and lost.
+        try await inPage("""
+            window.plan = {'tilo.telling list': ['lost']};
+            tell({seq: 1, id: 'aside:1', atMs: 1794900000000, kind: 'news', title: '', words: 'Something else.',
+              mark: {important: false, why: {code: 'judged'}}, reaches: false})
+            """)
+        try await until("her server was asked again after the lost ask") { ((try? await self.asked("tilo.telling list")) ?? 0) >= 4 }
+        XCTAssertEqual(pageWords, 1, "the page said a word of a change meanwhile, which begins the following anew by itself")
+        // Her reminder comes due: her server tells her of it, and still the page says no word.
+        try await inPage(Self.reminderTold.replacingOccurrences(of: "seq: 1", with: "seq: 2"))
+        try await isReminder()
+    }
+
+    func testWhatCameWhileSheWasAwayIsAskedForAgainByItselfWhereTheAskWentUnanswered() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(300)
+        listening.append(Task { for await card in self.source.sinceLeft() { self.cards.append(card) } })
+        try await enter("""
+            window.since = {leftAtMs: 1794890000000, backAtMs: 1794900000000, didAlone: [], waits: [],
+              cameIn: [{seq: 1, id: 'told-1', atMs: 1794895000000, kind: 'news', title: '', words: 'Maya asks for the October numbers.',
+                mark: {important: true, why: {code: 'judged'}}, reaches: true}]};
+            window.plan = {'tilo.telling since-you-left': ['lost']}
+            """)
+        try await signedIn()
+        // Nothing moves her server's log and the page says no word: the ask is made again all the same.
+        try await until("she is told what came while she was away") { (self.cards.last ?? nil)?.cameIn.count == 1 }
+        let asks = try await asked("tilo.telling since-you-left")
+        XCTAssertEqual(asks, 2, "her server was asked once more, and no more than that")
+    }
+
+    func testTheListsBesideTheConversationThatGoUnansweredOnTheWayInAreAskedAgainByThemselves() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(200)
+        listening.append(Task { for await now in self.source.supervision() { self.supervisions.append(now) } })
+        listening.append(Task { for await now in self.source.automations() { self.scheduled.append(now) } })
+        try await enter("""
+            window.beside = {items: [{reference: 'vault.item:01', kind: 'login', belongsTo: ['https://mail.example'], addedAt: 1794900000}],
+              facts: [{id: 'f1', text: 'Prefers short replies'}], lines: [{id: 'l1', words: 'Anything from the people I work for'}],
+              events: [{id: 'e-1', name: 'Morning brief', sort: 'scheduled', when: 'every day at 07:30', on: true}]};
+            window.plan = {'tilo.vault list': ['lost'], 'tilo.learned list': ['lost'], 'tilo.telling read': ['lost'], 'tilo.events list': ['lost']}
+            """)
+        try await signedIn()
+        try await until("her logins, what it learned, what is important and what is scheduled are all held") {
+            self.supervisions.last?.logins.count == 1 && self.supervisions.last?.learned.map(\.text) == ["Prefers short replies"]
+                && self.supervisions.last?.importance == ["Anything from the people I work for"] && self.scheduled.last?.count == 1
+        }
+    }
+
+    func testAnAnswerWithNothingInItToAListBesideTheConversationIsNotTakenForAnEmptyListAndIsAskedAgain() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(200)
+        listening.append(Task { for await now in self.source.supervision() { self.supervisions.append(now) } })
+        listening.append(Task { for await now in self.source.automations() { self.scheduled.append(now) } })
+        try await enter("""
+            window.beside = {items: [{reference: 'vault.item:01', kind: 'login', belongsTo: ['https://mail.example'], addedAt: 1794900000}],
+              events: [{id: 'e-1', name: 'Morning brief', sort: 'scheduled', when: 'every day at 07:30', on: true}]};
+            window.plan = {'tilo.vault list': ['empty'], 'tilo.events list': ['empty']}
+            """)
+        try await signedIn()
+        try await until("her logins and what is scheduled are held") {
+            self.supervisions.last?.logins.count == 1 && self.scheduled.last?.count == 1
+        }
     }
 }
 #endif

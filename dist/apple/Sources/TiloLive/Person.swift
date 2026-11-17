@@ -194,7 +194,10 @@ extension TiloEngine {
 
     /// The providers the person linked and the model each kind of work runs on.
     public func modelProviders() async throws -> ModelProviders {
-        ModelProviders(try await ask(.models, "list", of: "models"))
+        let answer = try await ask(.models, "list", of: "models")
+        // An answer with no list in it says nothing of what the person linked: it is no answer.
+        guard answer["providers"]?.array != nil else { throw Problem.noAnswer }
+        return ModelProviders(answer)
     }
 
     /// Link a provider the host's catalogue knows (`anthropic`, `gemini`, `openai`, `openrouter`).
@@ -251,7 +254,9 @@ extension TiloEngine {
 
     /// What is safe to say of every item the vault keeps, oldest first.
     public func vaultItems() async throws -> [VaultItem] {
-        (try await ask(.vault, "list", of: "vault")["items"]?.array ?? []).compactMap(VaultItem.init)
+        // An answer with no list in it says nothing of what the vault keeps: it is no answer.
+        guard let items = try await ask(.vault, "list", of: "vault")["items"]?.array else { throw Problem.noAnswer }
+        return items.compactMap(VaultItem.init)
     }
 
     /// Keep what the person typed into a protected field in their vault on their host, and
