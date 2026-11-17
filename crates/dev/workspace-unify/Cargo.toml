@@ -934,7 +934,7 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
+"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "rand", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustix-openpty-0_2_0" = { package = "rustix-openpty", version = "^0.2.0", default-features = false, features = [] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
@@ -1292,11 +1292,6 @@ doc = false
 "tilo-quick-settings" = { path = "../../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-recurrence" = { path = "../../../crates/sdk/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
-"tilo-server" = { path = "../../../crates/hosting/tilo-server", default-features = false, features = ["agents", "test-support", "web"] }
-"tilo-server-client" = { path = "../../../crates/hosting/tilo-server-client", default-features = false, features = ["default", "dial"] }
-"tilo-server-protocol" = { path = "../../../crates/hosting/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../../crates/hosting/tilo-server-session", default-features = false, features = [] }
-"tilo-server-store" = { path = "../../../crates/hosting/tilo-server-store", default-features = false, features = ["test-support"] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
@@ -1314,6 +1309,11 @@ doc = false
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
+"tilo-server" = { path = "../../../crates/hosting/tilo-server", default-features = false, features = ["agents", "test-support", "web"] }
+"tilo-server-client" = { path = "../../../crates/hosting/tilo-server-client", default-features = false, features = ["default", "dial"] }
+"tilo-server-protocol" = { path = "../../../crates/hosting/tilo-server-protocol", default-features = false, features = [] }
+"tilo-server-session" = { path = "../../../crates/hosting/tilo-server-session", default-features = false, features = [] }
+"tilo-server-store" = { path = "../../../crates/hosting/tilo-server-store", default-features = false, features = ["test-support"] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
 "tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
@@ -2281,7 +2281,7 @@ doc = false
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
+"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "rand", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -2449,9 +2449,6 @@ doc = false
 "tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
-"tilo-server-client" = { path = "../../../crates/hosting/tilo-server-client", default-features = false, features = ["default", "dial"] }
-"tilo-server-protocol" = { path = "../../../crates/hosting/tilo-server-protocol", default-features = false, features = [] }
-"tilo-server-session" = { path = "../../../crates/hosting/tilo-server-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
@@ -2461,6 +2458,9 @@ doc = false
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
+"tilo-server-client" = { path = "../../../crates/hosting/tilo-server-client", default-features = false, features = ["default", "dial"] }
+"tilo-server-protocol" = { path = "../../../crates/hosting/tilo-server-protocol", default-features = false, features = [] }
+"tilo-server-session" = { path = "../../../crates/hosting/tilo-server-session", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }

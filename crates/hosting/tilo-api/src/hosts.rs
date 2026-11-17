@@ -4,7 +4,7 @@
 //! of its holders can read it, is the workspace's. Every host that answers is
 //! a candidate, and the API server picks among the ones that answer the grant
 //! as the workspace's own devices pick among themselves
-//! ([`tilo_peer_state::placement`]): the measured round trip, then the
+//! ([`neighbour_wire::placement`]): the measured round trip, then the
 //! host's own key, so equal candidates always resolve the same way. A host
 //! that does not answer is ranked as away.
 //!
@@ -22,11 +22,11 @@
 
 use crate::grant_key::GrantKey;
 use crate::server::{Connection, Server, ServerError};
+use neighbour_wire::placement::{self, Answer, Decline, Power, Rank, Work};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tilo_peer_state::placement::{self, Answer, Decline, Power, Rank, Work};
 
 /// How long one host may take to answer with a session.
 const ANSWERING: Duration = Duration::from_secs(12);

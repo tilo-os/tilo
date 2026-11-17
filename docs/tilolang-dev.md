@@ -148,7 +148,7 @@ tools/web/html-renderer/tilolang-web.sh apps/tl/tasks --search apps/tl
 ```
 
 builds the package and the tilolang runtime's web bundle on the build machine
-(`build-tilolang-web.sh` through `rcargo exec`), fetches them and serves them on
+(`build-tilolang-web.sh` through `$CARGO exec`), fetches them and serves them on
 this machine's loopback. It prints the page to open: the app on the WebGPU canvas
 and as HTML, side by side or one at a time, in light or dark. `--no-build`
 serves the last build again.

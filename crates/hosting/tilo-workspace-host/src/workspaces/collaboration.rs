@@ -6,9 +6,9 @@
 //! owns who may ask what of this server's workspaces, and the durability barrier
 //! before each answer.
 
+use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::WorkspaceGrant;
 use tilo_peer_state::join::{JoinBootstrap, Role};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_log::{Administered, Governed, Signer};

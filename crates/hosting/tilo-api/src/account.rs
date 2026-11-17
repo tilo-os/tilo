@@ -979,7 +979,7 @@ impl Server {
 
 /// A key as the workspace's own governance records it, in the shape
 /// `GET /v1/keys` answers every other.
-fn workspace_grant_row(grant: &tilo_peer_state::WorkspaceGrant) -> Value {
+fn workspace_grant_row(grant: &collab_types::workspace_grant::WorkspaceGrant) -> Value {
     json!({
         "grant": grant.id,
         "name": grant.name,

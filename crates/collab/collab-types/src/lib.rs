@@ -77,6 +77,7 @@ pub mod surface;
 pub mod units;
 pub mod validator;
 pub mod workspace_document;
+pub mod workspace_grant;
 pub mod workspace_id;
 
 /// The URI scheme that asks an app to open one of its own documents

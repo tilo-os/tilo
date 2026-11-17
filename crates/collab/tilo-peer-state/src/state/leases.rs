@@ -9,7 +9,7 @@
 //! Claims are per device, never one shared register, so two devices that claim
 //! at the same time both keep their row after a merge and nothing is lost.
 //! The holder is then decided the same way on every device: the claims are
-//! ranked the way [`placement`](crate::placement) ranks devices (power, load,
+//! ranked the way [`placement`](neighbour_wire::placement) ranks devices (power, load,
 //! measured round trip, then the device key), and the best of them holds. Two
 //! takers after a partition therefore converge on one winner; the loser
 //! withdraws its claim and stops the work instead of repeating it.
@@ -24,9 +24,9 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{Duration, ROOT, now_ns};
-use crate::placement::{self, Answer, Power, Rank};
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc, ScalarValue, Value};
+use neighbour_wire::placement::{self, Answer, Power, Rank};
 use serde::{Deserialize, Serialize};
 
 /// Key of the workspace's leases in its own document: a map from each lease's

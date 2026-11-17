@@ -15,12 +15,12 @@
 
 use crate::account::{Outcome, failed};
 use crate::server::Connection;
+use collab_types::workspace_grant::WorkspaceGrant;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_peer_state::WorkspaceGrant;
 
 /// Listing the workspace's grants.
 pub const LIST: &str = "workspace/keys";

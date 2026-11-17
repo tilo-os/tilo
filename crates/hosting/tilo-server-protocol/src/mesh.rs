@@ -15,7 +15,7 @@
 //! admitted against. Which device serves a workspace is the workspace's
 //! governance and the device's own [`crate::WorkSetting`]; the worker a
 //! compute job runs on is chosen among advertisements by
-//! [`crate::placement`].
+//! [`neighbour_wire::placement`].
 
 use std::collections::BTreeSet;
 

@@ -154,19 +154,21 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
   # What lay there untracked before anything was written stays the person's own.
   sdk_untracked=$(git ls-files --others --exclude-standard -- $sdk_paths)
   sdk_done=""
-  # With a remote builder (rcargo), the generator is built and run there from
-  # this tree's sources, as the builder already holds this worktree's build,
-  # and the files it writes come back into the tree: nothing to build or
-  # download here. Its own index, so it sees the whole tree.
-  if command -v rcargo >/dev/null 2>&1 && rcargo exec --help >/dev/null 2>&1; then
+  # With a cargo drop-in that runs a command on a build server ($CARGO), the
+  # generator is built and run there from this tree's sources, as the builder
+  # already holds this worktree's build, and the files it writes come back into
+  # the tree: nothing to build or download here. Its own index, so it sees the
+  # whole tree.
+  cargo_dropin=${CARGO:-cargo}
+  if "$cargo_dropin" exec --help >/dev/null 2>&1; then
     sdk_script="set -e"
     for spec in $sdk_langs; do
       sdk_script="$sdk_script; cargo run --locked -q -p tilo-cli -- sdk gen --lang ${spec%%:*} --out ${spec#*:}"
     done
-    note "sdk: an app's surface changed; writing the SDK's types on the builder (rcargo)"
+    note "sdk: an app's surface changed; writing the SDK's types on the builder ($cargo_dropin)"
     sdk_log=$(mktemp)
-    if (cd "$root" && GIT_INDEX_FILE="$full_index" rcargo exec sh -c "$sdk_script") >"$sdk_log" 2>&1; then
-      sdk_done=rcargo
+    if (cd "$root" && GIT_INDEX_FILE="$full_index" "$cargo_dropin" exec sh -c "$sdk_script") >"$sdk_log" 2>&1; then
+      sdk_done=drop-in
     else
       note "sdk: writing them on the builder failed:"
       tail -n 20 "$sdk_log" | sed 's/^/  /' >&2

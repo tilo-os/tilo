@@ -46,7 +46,6 @@ pub mod installation;
 /// Running an offloadable invocation on another device, through the offer
 /// round.
 pub mod offload;
-pub mod placement;
 mod postcard_sink;
 pub mod replica;
 /// A workspace's retained sealed history: the frames a store device keeps
@@ -71,10 +70,10 @@ pub use state::{
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
     ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument, SeedState,
-    StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_GRANTS_KEY,
-    WORKSPACE_HOSTS_KEY, WorkspaceGrant, committed_document_revision, decide_with_surfaces,
-    default_surfaces, peer_handle, seed_workspace, trigger_mark, unranked, workspace_grants_of,
-    workspace_host_actor, workspace_hosts_of, workspace_seed,
+    StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_HOSTS_KEY,
+    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
+    seed_workspace, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
+    workspace_hosts_of, workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

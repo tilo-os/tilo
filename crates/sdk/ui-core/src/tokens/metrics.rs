@@ -59,6 +59,9 @@ pub struct Metrics {
     /// at phone width. Resizing a window stops its edge here (`widget::edge_resize`), so
     /// every app's compact layout must fit it.
     pub window_min_width: f32,
+    /// The shortest a view grown in place works at: a window shared into a conversation
+    /// keeps its proportions and shrinks no further.
+    pub view_min_height: f32,
     pub list_min_width: f32,
     /// The narrowest a reading column (a message, an article) still works at: about 45
     /// characters of body text.
@@ -164,6 +167,7 @@ impl Metrics {
         content_min_width: 560.0,
         detail_min_width: 360.0,
         window_min_width: 320.0,
+        view_min_height: 280.0,
         list_min_width: 320.0,
         reading_min_width: 360.0,
         page_min_width: 360.0,
@@ -283,6 +287,7 @@ impl Metrics {
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
             window_min_width: self.window_min_width * factor,
+            view_min_height: self.view_min_height * factor,
             list_min_width: self.list_min_width * factor,
             reading_min_width: self.reading_min_width * factor,
             page_min_width: self.page_min_width * factor,

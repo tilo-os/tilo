@@ -487,7 +487,7 @@ impl ActionService {
 
     /// Ask each of `targets` whether it would run `route` in `workspace` on
     /// `work`, and rank what they answered
-    /// ([`pick`](crate::placement::pick)): the device to run it on, or —
+    /// ([`pick`](neighbour_wire::placement::pick)): the device to run it on, or —
     /// nobody willing, or moving the inputs there no faster than the run here
     /// — that it stays here.
     ///
@@ -507,7 +507,7 @@ impl ActionService {
         work: &Work,
         invocation: tilo_actions::InvocationId,
         within: Duration,
-    ) -> tilo_actions::remote::Pending<crate::placement::Choice> {
+    ) -> tilo_actions::remote::Pending<neighbour_wire::placement::Choice> {
         let (complete, answer) = tilo_actions::remote::pending();
         let workspace = workspace.to_owned();
         let route = route.clone();
@@ -545,7 +545,7 @@ impl ActionService {
                 };
                 answers.push(heard);
             }
-            complete.complete(crate::placement::pick(answers, &work));
+            complete.complete(neighbour_wire::placement::pick(answers, &work));
         });
         answer
     }

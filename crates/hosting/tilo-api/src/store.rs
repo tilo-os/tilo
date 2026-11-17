@@ -1048,7 +1048,7 @@ fn carried_key(token: &str) -> Option<(String, GrantKey)> {
 /// server is the same grant at another.
 #[must_use]
 pub fn grant_id_of(key: &GrantKey) -> String {
-    tilo_peer_state::WorkspaceGrant::id_of(&key.cert().device_public_key)
+    collab_types::workspace_grant::WorkspaceGrant::id_of(&key.cert().device_public_key)
 }
 
 /// A key as its token carries it.

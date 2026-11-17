@@ -4,7 +4,7 @@
 # payload beside it under tl/<app-id>/, which the page installs
 # (`installTilolangPackage`) before it mounts the app, and app.html and
 # tilolang.html to open it with. Runs where cargo builds (the builder, through
-# `rcargo exec`); the output lands in $CARGO_TARGET_DIR/htmlrenderer/tilolang.
+# `$CARGO exec`); the output lands in $CARGO_TARGET_DIR/htmlrenderer/tilolang.
 #
 # usage: build-tilolang-web.sh [APP_DIR] [--search DIR]...   (default: apps/tl/gallery --search apps/tl)
 set -euo pipefail

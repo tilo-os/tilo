@@ -531,7 +531,7 @@ impl Widget for PowerMenu {
                 trailing: None,
                 fill: Some(ui::composition::rgba8(colors.surfaces.overlay)),
                 edge: None,
-                radius: 0.0,
+                radius: f64::from(theme.tokens.radii.item),
                 pad: f64::from(theme.tokens.spacing.s3),
                 gap: 0.0,
                 spread: false,

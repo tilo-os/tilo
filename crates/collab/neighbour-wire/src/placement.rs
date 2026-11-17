@@ -19,7 +19,7 @@
 //! server. Measured rank order decides between the devices that pass, so the
 //! cheapest transfer is not a preference of its own.
 
-pub use neighbour_wire::offer::{Answer, Decline, Power, Rank, Work};
+pub use crate::offer::{Answer, Decline, Power, Rank, Work};
 use serde::Serialize;
 
 /// How fast a byte moves between two devices while nothing has measured

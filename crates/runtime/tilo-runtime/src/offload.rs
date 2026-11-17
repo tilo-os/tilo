@@ -28,6 +28,7 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, Work};
+use neighbour_wire::placement::Choice;
 use tilo_action_broker::document_content::{ContentState, RouteContent};
 use tilo_action_broker::route::CrdtRoute;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
@@ -36,7 +37,6 @@ use tilo_actions::{InvocationId, InvocationUpdate, Offload};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
-use tilo_peer_state::placement::Choice;
 use tilo_server_protocol::{Machine, Whose, WorkSetting};
 
 // A host that keeps the workspaces' content itself implements the media a

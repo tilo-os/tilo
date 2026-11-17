@@ -5,7 +5,7 @@
 //! offer round sends it to the device that wins the round: it asks the
 //! workspace's other devices what would run ([`Route`]) and what it reads
 //! ([`Work`]), and picks one among the willing ones that beat the run where
-//! it was asked ([`pick`](crate::placement::pick)).
+//! it was asked ([`pick`](neighbour_wire::placement::pick)).
 //!
 //! The devices asked are the ones the requesting device's own action service resolves
 //! in the workspace ([`ActionService::key_holders`](crate::actions::ActionService::key_holders)):
@@ -25,7 +25,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{InvokeRequest, Pending};
 
-use crate::placement::Choice;
+use neighbour_wire::placement::Choice;
 
 /// What running an offloadable invocation on another device came to.
 #[derive(Clone, Debug, PartialEq)]

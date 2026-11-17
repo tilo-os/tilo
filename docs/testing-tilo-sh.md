@@ -12,7 +12,7 @@ os/containers/tilo-sh/stack.sh up
 By default the whole stack runs **on the build server**, in this checkout's
 build container, with the ports a person and their tools use served from there
 on this machine's loopback under the same numbers
-(`rcargo exec --forward`, see [Where it runs](#where-it-runs)). The site opens
+(`$CARGO exec --forward`, see [Where it runs](#where-it-runs)). The site opens
 at the same `http://tilo.localhost:<base+20>`, the API server answers at the
 same `http://localhost:<base+10>`, and `tilo login`, the SDKs and an agent's
 MCP client reach it as they reach a stack here. Everything else — the
@@ -35,7 +35,7 @@ directory under the stack's state. `stack.sh help` lists every command.
 
 `TILO_SH_REMOTE=0` runs everything here instead, which is what the end-to-end
 check (`stack.sh check`), `up --images` and the VM host need. A checkout whose
-cargo drop-in cannot forward ports (`rcargo` from before `exec --forward`),
+cargo drop-in cannot forward ports (a drop-in from before `exec --forward`),
 a stack handed what a check built (`TILO_SH_PROGRAMS` and the like), and
 `TILO_SH_BUILD=t` all do the same, and `up` says why.
 

@@ -17,7 +17,7 @@
 //! The device asked decides whether it takes the work ([`Answer::verdict`]):
 //! it is the one that knows its person's work setting, its battery and what
 //! its machine has free. The requester weighs and ranks the willing answers
-//! (`tilo_peer_state::placement`), and the work travels in the question
+//! (`crate::placement`), and the work travels in the question
 //! ([`Work`]) and the answer so that moving a job's inputs is weighed
 //! against running it where it was asked.
 

@@ -1550,7 +1550,8 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         let id = call.args.required_text("grant")?.to_owned();
-        let mine = tilo_peer_state::WorkspaceGrant::id_of(&call.device.device_public_key);
+        let mine =
+            collab_types::workspace_grant::WorkspaceGrant::id_of(&call.device.device_public_key);
         let grants = self
             .grants_of(call.workspace, &call.device.user_public_key)
             .await

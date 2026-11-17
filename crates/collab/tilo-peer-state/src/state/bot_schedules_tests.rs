@@ -2,9 +2,9 @@
 //! answer one writes where it got to, and whichever key holder holds the
 //! schedule next carries on from there, catching a missed time up once.
 
-use crate::placement::{Power, Rank};
 use crate::state::test_desktops::{cert_of, desktops, sync};
 use crate::{CLOCK_SKEW_NS, trigger_mark};
+use neighbour_wire::placement::{Power, Rank};
 use std::time::Duration;
 use tilo_automation::{CatchUp, Schedule, TriggerSpec};
 

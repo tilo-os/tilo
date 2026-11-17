@@ -53,14 +53,13 @@ pub(crate) fn max_card_width(theme: &ui::theme::Theme) -> f64 {
 /// How much of the window's height a view to work in may take: the
 /// conversation it stands in, and the message field, stay in reach.
 const WORKING_SHARE_OF_WINDOW: f64 = 0.62;
-/// The least height worth working in.
-const MIN_WORKING_HEIGHT: f64 = 280.0;
 
 /// The height of a view to work in that is `width` wide, in a window
 /// `window` high: a window's proportions, within what the window leaves.
-pub(crate) fn working_height(width: f64, window: f64) -> f64 {
-    let most = (window * WORKING_SHARE_OF_WINDOW).max(MIN_WORKING_HEIGHT);
-    (width / ASPECT).clamp(MIN_WORKING_HEIGHT, most)
+pub(crate) fn working_height(theme: &ui::theme::Theme, width: f64, window: f64) -> f64 {
+    let least = f64::from(theme.tokens.metrics.view_min_height);
+    let most = (window * WORKING_SHARE_OF_WINDOW).max(least);
+    (width / ASPECT).clamp(least, most)
 }
 
 /// What Chat keeps of the windows shared into the workspace.
@@ -195,7 +194,7 @@ impl ChatApp {
         let view = (!ended).then(|| {
             let inner = w - 2.0 * f64::from(sp.s1);
             let height = if grown {
-                working_height(inner, self.rect.height())
+                working_height(theme, inner, self.rect.height())
             } else {
                 inner / ASPECT
             };

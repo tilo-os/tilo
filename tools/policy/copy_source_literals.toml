@@ -44,7 +44,12 @@ text = "See the app's window as a picture: answers with the image and the revisi
 reason = "What the screenshot tool answers an agent."
 
 [[allow]]
-file = "crates/sdk/tilo-app/src/framework/chain.rs"
+file = "crates/sdk/tilo-app/src/runner/outline.rs"
+text = "Read what the app's window shows as lines: every label, value and control in reading \\\n         order, each control's action and where it stands. With picture, also the view as a \\\n         picture. With an anchor, shows that item first."
+reason = "What the outline tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/chain/reading.rs"
 text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended, each row with its item's address, \\\n         its name and the fields asked for (`fields`), only the items `where` holds of; an \\\n         item's own content when the read is of that item."
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
 
@@ -189,11 +194,6 @@ reason = "A service's name, spelled the same in every language."
 file = "apps/file-explorer/src/files_app.rs"
 text = "Personal cloud"
 reason = "A label a capture scenario paints, which no one reads."
-
-[[allow]]
-file = "crates/sdk/tilo-app/src/framework/chain.rs"
-text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended, each row with its item's address, \\\n         its name and the fields asked for (`fields`), only the items `where` holds of; an \\\n         item's own content when the read is of that item."
-reason = "What the chain read tool answers an agent, never shown in a window."
 
 [[allow]]
 file = "apps/store/src/app.rs"

@@ -23,6 +23,7 @@ pub mod hdr_metadata;
 pub mod input;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
+pub mod placement;
 pub mod retention;
 pub mod unit_chain;
 

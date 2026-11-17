@@ -2034,7 +2034,7 @@ supervisor_pid() {
   [[ -n $pid ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null \
-    | grep -qxF -e "TILO_SH_STATE=$remote_state" -e "RCARGO_ENV_TILO_SH_STATE=$remote_state" \
+    | grep -qxF "TILO_SH_STATE=$remote_state" \
     && printf '%s' "$pid"
 }
 
@@ -2052,21 +2052,21 @@ forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$link_port"; }
 # The environment the stack on the build server runs with: the caller's
 # TILO_SH_* (they configure the stack), with this side's state and mode
 # replaced, and the container's own cargo, which needs no drop-in there. The
-# drop-in forwards variables as RCARGO_ENV_<name>, its only way into a build
-# container, so that is what each line is handed over as.
+# command the drop-in starts is handed them with `env`, so a drop-in need not
+# forward anything itself.
 remote_env() {
   local line
   while IFS= read -r line; do
     case ${line%%=*} in
       TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE) continue ;;
-      TILO_SH_*) printf 'RCARGO_ENV_%s\n' "$line" ;;
+      TILO_SH_*) printf '%s\n' "$line" ;;
     esac
   done < <(env | grep '^TILO_SH_' || true)
-  printf 'RCARGO_ENV_TILO_SH_STATE=%s\n' "$remote_state"
-  printf 'RCARGO_ENV_TILO_SH_PORT_BASE=%s\n' "$base"
-  printf 'RCARGO_ENV_TILO_SH_REMOTE=0\n'
-  printf 'RCARGO_ENV_TILO_SH_CARGO=%s\n' "${TILO_SH_REMOTE_CARGO:-cargo}"
-  printf 'RCARGO_ENV_TILO_SH_REMOTE_COMMIT=%s\n' "$commit"
+  printf 'TILO_SH_STATE=%s\n' "$remote_state"
+  printf 'TILO_SH_PORT_BASE=%s\n' "$base"
+  printf 'TILO_SH_REMOTE=0\n'
+  printf 'TILO_SH_CARGO=%s\n' "${TILO_SH_REMOTE_CARGO:-cargo}"
+  printf 'TILO_SH_REMOTE_COMMIT=%s\n' "$commit"
 }
 
 # remote_cmd ARGS…: this stack's own stack.sh command where the stack is, so
@@ -2074,7 +2074,7 @@ remote_env() {
 remote_cmd() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && env "${envs[@]}" "$cargo" exec -- bash "$here/stack.sh" "$@" )
+  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash "$here/stack.sh" "$@" )
 }
 
 # remote_shell COMMAND: a command on the build server, for what stack.sh has
@@ -2082,7 +2082,7 @@ remote_cmd() {
 remote_shell() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && env "${envs[@]}" "$cargo" exec -- bash -c "$1" )
+  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash -c "$1" )
 }
 
 # start_supervisor ARGS…: the stack on the build server as one long-running
@@ -2093,9 +2093,9 @@ start_supervisor() {
   local envs=() inner
   mapfile -t envs < <(remote_env)
   inner=$(printf 'bash %q ' "$here/stack.sh"; printf '%q ' "$@")
-  ( cd "$repo" && setsid env "${envs[@]}" "$cargo" exec \
+  ( cd "$repo" && setsid "$cargo" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
-      -- bash -c "$inner && exec sleep infinity" ) \
+      -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
   printf '%s\n' "$!" > "$state/supervisor.pid"
 }

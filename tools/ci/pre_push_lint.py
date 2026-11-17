@@ -87,11 +87,10 @@ CARGO_REMARKS = (
     "`bin` target `",
     "Blocking waiting for file lock on",
 )
-# Cargo's and rcargo's progress, one line per crate: a lint of the whole workspace prints
-# hundreds before its first diagnostic, and a failure report cut to its first lines showed
-# nothing else.
+# Cargo's progress, one line per crate: a lint of the whole workspace prints hundreds before
+# its first diagnostic, and a failure report cut to its first lines showed nothing else.
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
-                      r"|Locking|Updating|Adding|Documenting)\s|^\s*rcargo: (?:syncing|synced)")
+                      r"|Locking|Updating|Adding|Documenting)\s")
 REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
             "refs/remotes/origin/HEAD", "refs/heads/main")
 ZERO_OID = {"0"}

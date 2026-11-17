@@ -38,7 +38,7 @@ async fn asked(
     asker: &Endpoint,
     targets: Vec<EndpointAddr>,
     within: Duration,
-) -> tilo_peer_state::placement::Choice {
+) -> neighbour_wire::placement::Choice {
     asked_about(action_service, asker, targets, &work(), within).await
 }
 
@@ -49,7 +49,7 @@ async fn asked_about(
     targets: Vec<EndpointAddr>,
     work: &Work,
     within: Duration,
-) -> tilo_peer_state::placement::Choice {
+) -> neighbour_wire::placement::Choice {
     tokio::time::timeout(
         PATIENCE,
         action_service.offers(

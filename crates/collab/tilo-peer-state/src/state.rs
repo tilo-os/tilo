@@ -77,7 +77,7 @@ mod media_governance;
 mod native_publication;
 mod publication;
 mod workspace_grants;
-pub use workspace_grants::{WORKSPACE_GRANTS_KEY, WorkspaceGrant, workspace_grants_of};
+pub use workspace_grants::workspace_grants_of;
 mod workspace_hosts;
 pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
 mod personal;

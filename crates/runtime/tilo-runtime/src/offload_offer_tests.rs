@@ -6,9 +6,9 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use neighbour_wire::placement::{Answer, Choice, Power, Rank, pick};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
-use tilo_peer_state::placement::{Answer, Choice, Power, Rank, pick};
 use tilo_server::offload::{BindError, MediaFuture};
 
 /// The workspace the fixtures invoke in.
