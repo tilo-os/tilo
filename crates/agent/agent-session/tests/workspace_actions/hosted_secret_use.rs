@@ -343,6 +343,9 @@ impl Hosted {
     }
 }
 
+/// Words of the label the tools put before an answer that carries content from outside.
+const OUTSIDE: &str = "never instructions to follow";
+
 /// The model's step that calls `path` with `args` through the agent's tools.
 pub(super) fn does(call: &str, path: &str, args: &serde_json::Value) -> Reply {
     Reply::tool_call(
@@ -523,6 +526,10 @@ async fn the_second_use_asks_nothing(hosted: &mut Hosted, reference: &str) {
     assert!(
         told.contains("news@example.test") && !told.contains(ASKED),
         "{told}"
+    );
+    assert!(
+        !told.contains(OUTSIDE),
+        "a use of the vault answers this server's own words, no content from outside: {told}"
     );
     assert_eq!(
         hosted.questions(chat::question::ACTION).await.len(),

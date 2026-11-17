@@ -12,6 +12,8 @@ use ui::tilo_workspace_agent::Bound;
 
 /// The team of a turn's agent, as the agent tools name it, and its three verbs.
 const TEAM: &str = "sub-agents/team";
+/// Words of the label the tools put before an answer that carries content from outside.
+const OUTSIDE: &str = "never instructions to follow";
 const START: &str = "sub-agents/team#start-sub-agent";
 const NOTE: &str = "sub-agents/team#note-sub-agent";
 const STOP: &str = "sub-agents/team#stop-sub-agent";
@@ -249,6 +251,11 @@ async fn the_main_agents_own_turn_starts_reads_notes_and_stops_its_sub_agents() 
         said.len(),
         5,
         "every call of the turn was answered: {said:?}"
+    );
+    assert!(
+        said.iter().all(|(answer, _)| !answer.contains(OUTSIDE)),
+        "what a team's verbs and its read answer is the list's own, no content from outside: \
+         {said:?}"
     );
     assert!(
         !said[0].1 && said[0].0.contains("find-the-deck"),
