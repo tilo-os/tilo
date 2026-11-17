@@ -107,8 +107,8 @@ const DEVICE_KEYS = `new Promise(resolve => {
   const request = indexedDB.open('tilo-device', 1);
   request.onsuccess = () => {
     const db = request.result;
-    if (!db.objectStoreNames.contains('device key')) return resolve('[]');
-    const keys = db.transaction('device key').objectStore('device key').getAllKeys();
+    if (!db.objectStoreNames.contains('device-key')) return resolve('[]');
+    const keys = db.transaction('device-key').objectStore('device-key').getAllKeys();
     keys.onsuccess = () => resolve(JSON.stringify(keys.result.filter(key => String(key).startsWith('device-key:'))));
     keys.onerror = () => resolve('[]');
   };
@@ -263,7 +263,7 @@ const second = await browser.tab();
 await second.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
 await second.send('Page.addScriptToEvaluateOnNewDocument', {source: EARLY});
 await second.navigate(site);
-const secondArrived = await until(second, `document.documentElement.dataset.device key === 'waiting' ? 'waiting' : (${ARRIVED})`, stepLimit(6));
+const secondArrived = await until(second, `document.documentElement.dataset.deviceKey === 'waiting' ? 'waiting' : (${ARRIVED})`, stepLimit(6));
 tabs.waited = secondArrived === 'waiting';
 tabs.secondIn = secondArrived === 'done';
 console.log(`TIMING two-tabs second-arrived=${secondArrived ?? 'never'}`);

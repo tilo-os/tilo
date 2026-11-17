@@ -60,6 +60,14 @@ words = ["subject"]
 identifiers = ["SubjectAltName", "SubjectKeyIdentifier", "subject_alt_names", "SubjectPublicKeyInfo"]
 
 [[allow]]
+reason = "Names a browser holds from before the page's device key had its name: the object store its entries are in, and the lock prefix and the channel a page loaded before a site's update still uses."
+words = ["custody"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/device-key.mjs",
+    "crates/browser/tilo-browser-runtime/web/device-key.test.mjs",
+]
+
+[[allow]]
 reason = "A participant of a FROST signing or key generation round."
 words = ["participant"]
 paths = ["crates/collab/threshold-identity/*"]
