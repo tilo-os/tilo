@@ -1,5 +1,6 @@
 //! A compact, visual keyboard-shortcut editor. The displayed keycaps are the control: click
-//! them, or focus them and press Enter/Space, then type the replacement chord. Escape cancels.
+//! them, or focus them and press Enter/Space, then type the replacement chord. Escape cancels;
+//! Backspace or Delete puts back the default.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -430,6 +431,14 @@ impl Widget for ShortcutRecorder {
                 ) {
                     self.capturing = true;
                     *ctx.handled = true;
+                } else if matches!(
+                    event.logical_key,
+                    Key::Named(NamedKey::Backspace | NamedKey::Delete)
+                ) && self.value != self.default
+                {
+                    // What the reset button does, from the keyboard.
+                    self.write(ctx.state.doc(), ctx.path, self.default.clone());
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -620,5 +629,26 @@ mod tests {
                 ["⌘", "↓"]
             );
         }
+    }
+
+    #[test]
+    fn backspace_on_a_changed_shortcut_puts_back_the_default() {
+        let state = crate::LocalState::new("Ctrl+J".to_owned());
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            ShortcutRecorder::new("x", &state, "Ctrl+K"),
+            (400, 200),
+            crate::theme::Theme::light(),
+        );
+        let at = host.root::<ShortcutRecorder>().chord_rect().center();
+        host.click_at(at.x, at.y);
+        host.key("Escape");
+        assert_eq!(
+            state.get(),
+            "Ctrl+J",
+            "Escape leaves the shortcut as it was"
+        );
+        host.key("Backspace");
+        assert_eq!(state.get(), "Ctrl+K");
     }
 }

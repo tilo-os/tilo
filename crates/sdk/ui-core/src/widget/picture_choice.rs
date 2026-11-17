@@ -60,6 +60,11 @@ pub struct PictureChoice {
     /// The keyboard's tile.
     cursor: usize,
     hover: Option<usize>,
+    /// Where the chosen edge stands: it slides from the picture chosen before to the one
+    /// chosen now.
+    edge: crate::motion::MotionValue<Rect>,
+    /// The picture `edge` was last placed on.
+    edge_for: Option<usize>,
     focused: bool,
     enabled: bool,
     accessible_name: Option<String>,
@@ -93,6 +98,8 @@ impl PictureChoice {
             options,
             selected,
             hover: None,
+            edge: crate::motion::MotionValue::new(Rect::ZERO),
+            edge_for: None,
             focused: false,
             enabled: true,
             accessible_name: None,
@@ -255,11 +262,38 @@ impl PictureChoice {
         }
     }
 
+    /// Where the chosen edge stands this frame while it slides to the chosen picture: `None`
+    /// once it rests there (the chosen tile draws its own edge) or when none is chosen.
+    fn follow_edge(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
+        use crate::motion::{Direction, ListChange};
+        let now = crate::motion::frame_now();
+        let Some(chosen) = self.selected else {
+            self.edge_for = None;
+            return None;
+        };
+        let target = self.tile_rect(chosen);
+        let moved =
+            self.edge_for.is_some_and(|before| before != chosen) && self.edge.target().area() > 0.0;
+        if moved {
+            let timing =
+                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            self.edge.set(target, timing, now);
+            if let Some(until) = self.edge.settles_at() {
+                crate::motion::want_frames_until(until);
+            }
+        } else if self.edge.target() != target {
+            self.edge.snap(target);
+        }
+        self.edge_for = Some(chosen);
+        self.edge.is_moving(now).then(|| self.edge.get(now))
+    }
+
     fn paint_tile(
         &self,
         scene: &mut Scene,
         transform: Affine,
         index: usize,
+        sliding: bool,
         (text, theme): (&mut TextRenderer, &Theme),
     ) {
         let Some(option) = self.options.get(index) else {
@@ -281,9 +315,9 @@ impl PictureChoice {
         option.picture.paint(scene, transform, area, theme, text);
         scene.pop_layer();
         let chosen = self.selected == Some(index);
-        if chosen {
+        if chosen && !sliding {
             crate::surface::selected_edge(scene, transform, area, radius, theme);
-        } else {
+        } else if !chosen {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -464,8 +498,13 @@ impl Widget for PictureChoice {
                 &self.rect,
             );
         }
+        let sliding = self.follow_edge(theme.motion());
         for index in 0..self.options.len() {
-            self.paint_tile(scene, transform, index, (text, theme));
+            self.paint_tile(scene, transform, index, sliding.is_some(), (text, theme));
+        }
+        if let Some(at) = sliding {
+            let radius = f64::from(theme.tokens.radii.control);
+            crate::surface::selected_edge(scene, transform, at, radius, theme);
         }
         if !self.enabled {
             scene.pop_layer();
@@ -510,8 +549,12 @@ impl Widget for PictureChoice {
         }
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        self.edge.is_moving(crate::motion::frame_now())
+    }
+
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        crate::widget::redraw_or_children(self.dirty || self.needs_animation_frame(), self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;

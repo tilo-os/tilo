@@ -55,6 +55,21 @@ tilo_test_env::scenario! {
         );
     }
 
+    // The chosen edge slides from the picture chosen before to the one picked next.
+    phase the_chosen_edge_slides_to_the_picture_picked;
+    {
+        let mut picker = laid_out(PictureChoice::new(sizes(), Some(0)), 720.0);
+        let theme = Theme::light();
+        let mut text = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        picker.draw(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, &presence);
+        assert!(!picker.needs_animation_frame(), "the first look rests");
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        picker.set_selected(Some(2));
+        picker.draw(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, &presence);
+        assert!(picker.needs_animation_frame(), "the edge slides rather than jumps");
+    }
+
     // A pointer, the keys and an assistive action each choose a tile; an
     // unbound choice shows it at once and tells its owner.
     phase a_tile_is_chosen_by_pointer_keys_and_assistive_action;
