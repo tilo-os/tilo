@@ -429,8 +429,8 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     // The device's host said so itself, and why: a session that never reached
     // it, or an answer that never came, is no refusal of this key.
     assert_eq!(
-        refused.message,
-        tilo_relay_session::workspaces::NOT_YOUR_OWN,
+        tilo_relay_session::workspaces::Refusal::from_reason(&refused.message),
+        Some(tilo_relay_session::workspaces::Refusal::NotYourOwn),
         "{refused:?}"
     );
     assert!(

@@ -200,20 +200,32 @@ fn an_actions_invitation_decodes_to_what_was_issued() {
 }
 
 #[test]
-fn a_branch_not_made_names_the_part_that_did_not_come() {
-    use super::{branch_not_made, branch_not_made_part};
-    let refusal = branch_not_made(
-        "the record uuid:plan of so.tilo.notes",
-        "the disk refused it",
+fn a_workspace_refusal_is_read_back_typed() {
+    use super::Refusal;
+    for refusal in [
+        Refusal::NotYourOwn,
+        Refusal::BranchNotMade {
+            part: "the record uuid:plan of so.tilo.notes".into(),
+        },
+    ] {
+        assert_eq!(
+            Refusal::from_reason(&refusal.to_reason()),
+            Some(refusal.clone()),
+            "a caller decides on the case without reading the words"
+        );
+    }
+    // Words a host said without naming a case are no case of its own.
+    assert_eq!(Refusal::from_reason("the host refused"), None);
+    assert_eq!(
+        Refusal::from_reason(&format!(
+            "the host refused: {}",
+            Refusal::NotYourOwn.to_reason()
+        )),
+        None
     );
     assert_eq!(
-        branch_not_made_part(&refusal),
-        Some("the record uuid:plan of so.tilo.notes")
+        Refusal::from_reason(r#"{"not_your_own":null,"part":"said"}"#),
+        None,
+        "a case takes only the fields it names"
     );
-    // As a device hears it, after what the host said before it.
-    assert_eq!(
-        branch_not_made_part(&format!("the host refused: {refusal}")),
-        Some("the record uuid:plan of so.tilo.notes")
-    );
-    assert_eq!(branch_not_made_part(super::NOT_YOUR_OWN), None);
 }

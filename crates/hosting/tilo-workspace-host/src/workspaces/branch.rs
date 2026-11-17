@@ -124,9 +124,12 @@ mod copy {
             Self::of(format!("the record {record} of {app}"))
         }
 
-        /// The refusal the host answers with.
+        /// The refusal the host answers with; `why` stays with the host's log.
         pub(in crate::workspaces) fn refusal(&self) -> String {
-            tilo_relay_session::workspaces::branch_not_made(&self.part, &self.why)
+            tilo_relay_session::workspaces::Refusal::BranchNotMade {
+                part: self.part.clone(),
+            }
+            .to_reason()
         }
     }
 

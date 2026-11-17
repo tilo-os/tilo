@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_session::workspaces::WorkspaceLabels;
+use tilo_relay_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
 
@@ -72,6 +72,9 @@ pub enum RelayError {
     /// The relay is busy with this person's changes: nothing ran, and the
     /// same call works once `retry_after_ms` passed.
     RateLimited { retry_after_ms: u64 },
+    /// The relay refused one of its own workspace operations, saying which
+    /// case it was instead of leaving the caller to read it from words.
+    RefusedWorkspace(WorkspaceRefusal),
 }
 
 impl std::fmt::Display for RelayError {
@@ -90,6 +93,18 @@ impl std::fmt::Display for RelayError {
             Self::Unavailable(reason) => {
                 tracing::debug!(reason, "the relay was not reached");
                 f.write_str("Tilo couldn't reach your workspace; try again in a minute.")
+            }
+            Self::RefusedWorkspace(refusal) => {
+                tracing::info!(?refusal, "the relay refused a workspace operation");
+                match refusal {
+                    WorkspaceRefusal::NotYourOwn => f.write_str("no such workspace of yours"),
+                    WorkspaceRefusal::BranchNotMade { part } => {
+                        write!(
+                            f,
+                            "The branch wasn't made: {part} didn't come along. Nothing of it was kept."
+                        )
+                    }
+                }
             }
             Self::RateLimited { retry_after_ms } => {
                 let seconds = retry_after_ms.div_ceil(1000).max(1);
@@ -114,6 +129,11 @@ impl From<CertifyError> for RelayError {
 
 impl From<HostRefusal> for RelayError {
     fn from(refusal: HostRefusal) -> Self {
+        // A workspace operation of the relay's own answers a typed refusal;
+        // the host's other refusals are read as they were.
+        if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {
+            return Self::RefusedWorkspace(refused);
+        }
         CertifyError::from(refusal).into()
     }
 }
@@ -347,11 +367,7 @@ impl Relay {
             )
             .await
             .map_err(|refusal| match RelayError::from(refusal) {
-                RelayError::Refused(reason)
-                    if reason.contains(tilo_relay_session::workspaces::NOT_YOUR_OWN) =>
-                {
-                    RelayError::NotFound
-                }
+                RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
                 other => other,
             })?;
         let made: tilo_relay_session::workspaces::CreatedWorkspace = serde_json::from_value(output)
@@ -382,11 +398,7 @@ impl Relay {
             )
             .await
             .map_err(|refusal| match RelayError::from(refusal) {
-                RelayError::Refused(reason)
-                    if reason.contains(tilo_relay_session::workspaces::NOT_YOUR_OWN) =>
-                {
-                    RelayError::NotFound
-                }
+                RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,
                 other => other,
             })?;
         lock(&connection.entered).remove(workspace);
@@ -538,7 +550,7 @@ impl Connection {
         );
         entered.map_err(|refusal| match RelayError::from(refusal) {
             // Not theirs, or not one at all: the same answer, so a guess learns nothing.
-            RelayError::Refused(_) => RelayError::NotFound,
+            RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => RelayError::NotFound,
             other => other,
         })
     }

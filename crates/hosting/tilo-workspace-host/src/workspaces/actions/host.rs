@@ -26,7 +26,7 @@ use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace,
     DELETE_WORKSPACE, DETACH_HOST, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL,
-    LIST_REVOCATIONS, LIST_WORKSPACES, NOT_YOUR_OWN, PERSONAL_DEVICE_NAME, PersonalList,
+    LIST_REVOCATIONS, LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, Refusal,
     UNHOST_WORKSPACE, WorkspaceLabels, WorkspaceListing, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
@@ -561,7 +561,7 @@ impl Workspaces {
                 let theirs =
                     person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
                 if !theirs || !self.lists_to(device, workspace) {
-                    return Err(refused(&NOT_YOUR_OWN));
+                    return Err(refused(&Refusal::NotYourOwn.to_reason()));
                 }
                 self.delete(workspace)
                     .await
@@ -840,7 +840,7 @@ impl Workspaces {
                         .is_some_and(|scope| scope.reaches(workspace))
                 }))
         {
-            return Err(refused(&NOT_YOUR_OWN));
+            return Err(refused(&Refusal::NotYourOwn.to_reason()));
         }
         // What could be made twice at once waits for the first: a workspace
         // the ask names (a retried create answers the one the first made),
@@ -878,14 +878,14 @@ impl Workspaces {
             // never made. The host makes a person's own workspace under an id
             // of its own choosing, so an id it does not know is never theirs,
             // and it is never read as some other workspace they have.
-            return Err(refused(&NOT_YOUR_OWN));
+            return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else if name.is_none()
             && let Some(first) = mine.first()
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(first).await.map_err(|error| refused(&error))?
         } else if !makes {
-            return Err(refused(&NOT_YOUR_OWN));
+            return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else if !self.let_in(&person, now).await {
             // A new workspace is for a person the site let in. Anyone can
             // make a root, so a certificate alone is nobody's way past the
@@ -939,7 +939,7 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
-            _ => return Err(refused(&NOT_YOUR_OWN)),
+            _ => return Err(refused(&Refusal::NotYourOwn.to_reason())),
         };
         let summary = self
             .summary(workspace)

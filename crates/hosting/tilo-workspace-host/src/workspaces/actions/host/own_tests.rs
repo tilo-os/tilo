@@ -19,7 +19,7 @@ use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_relay_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACES_RESOURCE, NOT_YOUR_OWN,
+    HOST_WORKSPACES_RESOURCE, Refusal,
 };
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_minted_grant,
@@ -1252,7 +1252,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let (_, stranger) = guest_device();
     let refused = invoke(&host, &stranger, delete_request(&workspace)).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert!(record.exists(), "a refusal deletes nothing");
@@ -1308,7 +1308,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     )
     .await;
     assert!(
-        matches!(&again, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&again, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{again:?}"
     );
     assert!(
@@ -1583,7 +1583,7 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     let entered = own_as_key(
@@ -1802,7 +1802,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let unknown = uuid::Uuid::new_v4().to_string();
     let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert_eq!(
@@ -1822,7 +1822,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     )
     .await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     assert!(
@@ -1839,7 +1839,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
         .workspace;
     let refused = create_own(&host, &later, json!({"workspace": theirs})).await;
     assert!(
-        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if Refusal::from_reason(reason) == Some(Refusal::NotYourOwn)),
         "{refused:?}"
     );
     relay.shutdown().await;

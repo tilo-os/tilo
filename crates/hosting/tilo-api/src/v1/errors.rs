@@ -99,7 +99,9 @@ impl From<crate::relay::RelayError> for ApiError {
                 .next("GET /v1/workspaces names them"),
             // The host's own wording stays in the log; the caller reads
             // what it can do about the refusal.
-            RelayError::Refused(_) => Self::new("refused", error.to_string()),
+            RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => {
+                Self::new("refused", error.to_string())
+            }
             RelayError::Unavailable(_) => {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }

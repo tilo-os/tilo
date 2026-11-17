@@ -148,9 +148,9 @@ pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
 /// under the same one, the host answers the branch it made and copies
 /// nothing twice. All or nothing: a branch that could not take everything is
 /// deleted again and the refusal names what did not come
-/// ([`branch_not_made`]). Only a person's
+/// ([`Refusal::BranchNotMade`]). Only a person's
 /// device, or an agent's grant reaching all their workspaces, branches; a
-/// workspace that is not theirs is refused with [`NOT_YOUR_OWN`]. Answers a
+/// workspace that is not theirs is refused with [`Refusal::NotYourOwn`]. Answers a
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold the branch (redeemable `expires_in_seconds`, 600 when omitted).
 pub const BRANCH_OWN_WORKSPACE: &str = "workspace.branch-own";
@@ -163,7 +163,7 @@ pub const LIST_WORKSPACES: &str = "workspace.list";
 /// ([`tilo_relay_protocol::refusal::WORKSPACE_DELETED`]) and let in no more.
 /// Final: there is no undo. Only a person's device, or an agent's grant
 /// reaching all their workspaces, deletes; a workspace that is not theirs is
-/// refused with [`NOT_YOUR_OWN`]. Answers `{"deleted": workspace}`.
+/// refused with [`Refusal::NotYourOwn`]. Answers `{"deleted": workspace}`.
 pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// The workspace's governance verb (on its [`tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER`]
 /// resource) that turns running commands unattended on or off: `{"on": bool}`.
@@ -172,33 +172,52 @@ pub const DELETE_WORKSPACE: &str = "workspace.delete";
 /// reaching all their workspaces is still asked. Off by default. Turning it on
 /// asks the person on their approving devices, whoever calls it, and waits for
 /// their answer; turning it off asks nothing. It is the owner's alone: in a
-/// workspace that is not their own it is refused with [`NOT_YOUR_OWN`].
+/// workspace that is not their own it is refused with [`Refusal::NotYourOwn`].
 /// Answers `{"workspace": uuid, "unattended": bool}`.
 pub const RUN_UNATTENDED: &str = "commands.unattended";
-/// What the host refuses a person asking for, or deleting, a workspace that
-/// is not one of their own with.
-pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
-/// What the host refuses a branch ([`BRANCH_OWN_WORKSPACE`]) that could not
-/// take everything with: it was not made, and the refusal names the part of the
-/// source that did not come, then why ([`branch_not_made`]).
-pub const BRANCH_NOT_MADE: &str = "the branch was not made:";
-/// What follows the part of the source a branch could not take.
-const DID_NOT_COME: &str = " did not come";
-
-/// The refusal of a branch that could not take `part` of its source (`the files
-/// its records name`, `the record plan of so.tilo.notes`) because `why`.
-#[must_use]
-pub fn branch_not_made(part: &str, why: &str) -> String {
-    format!("{BRANCH_NOT_MADE} {part}{DID_NOT_COME} ({why})")
+/// Why the host refused one of its own workspace operations (asking for,
+/// branching or deleting a workspace, or turning a workspace's commands
+/// unattended on): what the refusal's words carry as JSON
+/// ([`Refusal::to_reason`]), so a caller decides on the case without reading
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum Refusal {
+    /// The workspace is not one of the caller's own.
+    NotYourOwn,
+    /// A branch ([`BRANCH_OWN_WORKSPACE`]) could not take everything of its
+    /// source: none was made, and `part` names what did not come (`the files
+    /// its records name`, `the record plan of so.tilo.notes`).
+    BranchNotMade { part: String },
 }
 
-/// The part of its source a branch could not take, when `reason` is the
-/// refusal of one ([`branch_not_made`]); `None` for any other refusal.
-#[must_use]
-pub fn branch_not_made_part(reason: &str) -> Option<&str> {
-    let (_, rest) = reason.split_once(BRANCH_NOT_MADE)?;
-    let (part, _) = rest.trim_start().split_once(DID_NOT_COME)?;
-    Some(part).filter(|part| !part.is_empty())
+impl Refusal {
+    /// The refusal as an action's refusal reason
+    /// ([`tilo_actions::remote::ActionHostError::Refused`]): its JSON, which
+    /// [`Self::from_reason`] reads back typed and which a caller that does
+    /// not read it still shows as plain data.
+    #[must_use]
+    pub fn to_reason(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.to_string())
+    }
+
+    /// The refusal an action's refusal reason carries, when it carries one
+    /// ([`Self::to_reason`]).
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        serde_json::from_str(reason).ok()
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotYourOwn => f.write_str("that workspace is not one of your own"),
+            Self::BranchNotMade { part } => {
+                write!(f, "the branch was not made: {part} did not come")
+            }
+        }
+    }
 }
 /// Admit the calling device to `workspace` as one of its owner's. Answers
 /// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,

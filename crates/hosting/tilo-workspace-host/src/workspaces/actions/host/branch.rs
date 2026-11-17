@@ -6,7 +6,7 @@ use serde_json::Value;
 use tilo_actions::remote::ActionHostError;
 use tilo_actions::{ActionParam, ParamType};
 use tilo_peer_state::join::Role;
-use tilo_relay_session::workspaces::{NOT_YOUR_OWN, WorkspaceLabels, check_labels};
+use tilo_relay_session::workspaces::{Refusal, WorkspaceLabels, check_labels};
 use tilo_user_identity::DeviceCert;
 
 use super::{Args, OWN_INVITATION_SECONDS, expiry, invalid, refused};
@@ -70,7 +70,9 @@ impl Workspaces {
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
-        let own = self.own().ok_or_else(|| refused(&NOT_YOUR_OWN))?;
+        let own = self
+            .own()
+            .ok_or_else(|| refused(&Refusal::NotYourOwn.to_reason()))?;
         // A branch is a workspace made: a grant for one workspace makes none,
         // as it makes no other workspace.
         let makes = device
@@ -80,7 +82,7 @@ impl Workspaces {
         // Only a workspace of the person's own, which they read whole, is
         // theirs to branch; anyone else's is not theirs, as for deleting it.
         if !makes || !own.is_of(&person, source) || !self.lists_to(device, source) {
-            return Err(refused(&NOT_YOUR_OWN));
+            return Err(refused(&Refusal::NotYourOwn.to_reason()));
         }
         // A retry waits for the try it repeats, and answers the branch it made.
         let making = own.making(branch.clone()).await;

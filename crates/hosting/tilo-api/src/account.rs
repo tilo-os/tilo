@@ -124,7 +124,7 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
         ),
         // The host's own reason stays in the log: the person reads what they
         // would do about it.
-        RelayError::Refused(_) => failed(
+        RelayError::Refused(_) | RelayError::RefusedWorkspace(_) => failed(
             "refused",
             error.to_string(),
             "ask the person whether their plan or workspace rules allow it, then try again",
@@ -146,12 +146,14 @@ pub(crate) const BRANCH_INCOMPLETE: &str = "branch_incomplete";
 /// The answer to a branch the host could not make whole: none was made, and
 /// the caller reads which part of the source did not come; why stays in the
 /// log, as for every refusal. `None` for any other refusal.
-fn not_branched(error: &RelayError) -> Option<Outcome> {
-    let RelayError::Refused(reason) = error else {
+pub(crate) fn not_branched(error: &RelayError) -> Option<Outcome> {
+    let RelayError::RefusedWorkspace(tilo_relay_session::workspaces::Refusal::BranchNotMade {
+        part,
+    }) = error
+    else {
         return None;
     };
-    let part = tilo_relay_session::workspaces::branch_not_made_part(reason)?;
-    tracing::info!(reason, "the relay made no branch");
+    tracing::info!(%part, "the relay made no branch");
     Some(failed(
         BRANCH_INCOMPLETE,
         format!("The branch wasn't made: {part} didn't come along. Nothing of it was kept."),

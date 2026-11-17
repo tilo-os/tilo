@@ -1161,6 +1161,43 @@ fn a_busy_relay_answers_rate_limited_with_its_wait() {
     assert_eq!(answered["isError"], true);
 }
 
+/// A workspace operation the relay refused is read by its case, never by its
+/// words: one that is not the person's own is not theirs, and a branch that
+/// could not take everything names the part that did not come.
+#[test]
+fn a_workspace_refusal_is_read_by_its_case() {
+    use tilo_relay_session::workspaces::Refusal;
+    let refused = |refusal: Refusal| {
+        let error = tilo_actions::remote::ActionHostError::Refused {
+            reason: refusal.to_reason(),
+        };
+        relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&error))
+    };
+    assert_eq!(
+        refused(Refusal::NotYourOwn),
+        relay::RelayError::RefusedWorkspace(Refusal::NotYourOwn)
+    );
+    let part = "the record plan of so.tilo.notes";
+    let not_made = refused(Refusal::BranchNotMade { part: part.into() });
+    assert_eq!(
+        not_made,
+        relay::RelayError::RefusedWorkspace(Refusal::BranchNotMade { part: part.into() })
+    );
+    let answered = account::answer(
+        true,
+        "account/workspaces#branch",
+        account::not_branched(&not_made).expect("a branch that was not made"),
+    );
+    let error = &answered["structuredContent"]["error"];
+    assert_eq!(error["code"], account::BRANCH_INCOMPLETE, "{answered}");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(part)),
+        "the caller reads which part did not come: {answered}"
+    );
+}
+
 /// Where the site keeps no invitation, the link carries the invitation's
 /// text after a route that names the relay, as the site's own workspace
 /// links do, so following it reaches the workspace's host.
