@@ -121,11 +121,10 @@ pub trait RuntimeServices: Sized {
         let host = self.action_host()?;
         let actor = self.actor().to_owned();
         Ok(std::sync::Arc::new(move || {
-            Ok(tilo_mcp::McpServer::new(
-                host.clone(),
-                workspace.clone(),
-                actor.clone(),
-            ))
+            Ok(
+                tilo_mcp::McpServer::new(host.clone(), workspace.clone(), actor.clone())
+                    .with_surface(tilo_mcp::Surface::Agent),
+            )
         }))
     }
 
