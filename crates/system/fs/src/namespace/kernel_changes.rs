@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use super::{Namespace, ROOT_ID};
 use automerge::legacy::Key;
-use automerge::{ChangeHash, Prop, ReadDoc, Value};
+use automerge::{AutoCommit, ChangeHash, ObjId, Prop, ReadDoc, Value};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct KernelChanges {
@@ -29,22 +29,45 @@ impl Namespace {
     /// mount has given an inode.
     pub fn kernel_changes_since(&mut self, heads: &[ChangeHash]) -> KernelChanges {
         let mut touched: BTreeSet<String> = BTreeSet::new();
-        let mut owners: HashMap<String, Option<Owner>> = HashMap::new();
-        for change in self.doc.get_changes(heads) {
-            for op in change.decode().operations {
-                let owner = owners
-                    .entry(op.obj.to_string())
-                    .or_insert_with_key(|object| self.owner_of(object));
-                match (owner, op.key) {
-                    (Some(Owner::Nodes), Key::Map(id)) => {
-                        touched.insert(id.to_string());
+        let mut before: HashMap<String, String> = HashMap::new();
+        for chunk in self.doc.chunk_numbers() {
+            let Some(nodes) = self.doc.chunk(chunk).map(|held| held.nodes.clone()) else {
+                continue;
+            };
+            let Some(doc) = self.doc.doc_mut(chunk) else {
+                continue;
+            };
+            let known: Vec<ChangeHash> = heads
+                .iter()
+                .copied()
+                .filter(|hash| doc.has_change(hash))
+                .collect();
+            let changes = doc.get_changes(&known);
+            let doc = &**doc;
+            let mut owners: HashMap<String, Option<Owner>> = HashMap::new();
+            let mut here: BTreeSet<String> = BTreeSet::new();
+            for change in changes {
+                for op in change.decode().operations {
+                    let owner = owners
+                        .entry(op.obj.to_string())
+                        .or_insert_with_key(|object| owner_of(doc, &nodes, object));
+                    match (owner, op.key) {
+                        (Some(Owner::Nodes), Key::Map(id)) => {
+                            here.insert(id.to_string());
+                        }
+                        (Some(Owner::Node(id)), _) => {
+                            here.insert(id.clone());
+                        }
+                        _ => {}
                     }
-                    (Some(Owner::Node(id)), _) => {
-                        touched.insert(id.clone());
-                    }
-                    _ => {}
                 }
             }
+            for id in &here {
+                if let Some(parent) = parent_at(doc, &nodes, id, &known) {
+                    before.insert(id.clone(), parent);
+                }
+            }
+            touched.extend(here);
         }
         let mut changes = KernelChanges::default();
         for id in &touched {
@@ -56,33 +79,13 @@ impl Namespace {
                 .placement
                 .get(id)
                 .map(|(parent, _)| parent.clone());
-            for parent in now.into_iter().chain(self.parent_at(id, heads)) {
+            for parent in now.into_iter().chain(before.get(id).cloned()) {
                 if let Some(&ino) = self.id_to_ino.get(&parent) {
                     changes.directories.insert(ino);
                 }
             }
         }
         changes
-    }
-
-    fn owner_of(&self, object: &str) -> Option<Owner> {
-        let object = self.doc.import_obj(object).ok()?;
-        if object == self.nodes {
-            return Some(Owner::Nodes);
-        }
-        let mut parents = self.doc.parents(&object).ok()?;
-        parents.find_map(|parent| match parent.prop {
-            Prop::Map(id) if parent.obj == self.nodes => Some(Owner::Node(id)),
-            _ => None,
-        })
-    }
-
-    fn parent_at(&self, id: &str, heads: &[ChangeHash]) -> Option<String> {
-        let (Value::Object(_), node) = self.doc.get_at(&self.nodes, id, heads).ok()?? else {
-            return None;
-        };
-        let (parent, _) = self.doc.get_at(&node, "parent", heads).ok()??;
-        parent.as_str().map(str::to_owned)
     }
 
     /// The path of `ino` below the mount, from its raw name bytes; empty for the
@@ -103,6 +106,27 @@ impl Namespace {
         }
         Some(names.into_iter().rev().collect())
     }
+}
+
+fn owner_of(doc: &AutoCommit, nodes: &ObjId, object: &str) -> Option<Owner> {
+    let object = doc.import_obj(object).ok()?;
+    if object == *nodes {
+        return Some(Owner::Nodes);
+    }
+    let mut parents = doc.parents(&object).ok()?;
+    parents.find_map(|parent| match parent.prop {
+        Prop::Map(id) if parent.obj == *nodes => Some(Owner::Node(id)),
+        _ => None,
+    })
+}
+
+/// The parent node `id` had at `heads` of its chunk's document.
+fn parent_at(doc: &AutoCommit, nodes: &ObjId, id: &str, heads: &[ChangeHash]) -> Option<String> {
+    let (Value::Object(_), node) = doc.get_at(nodes, id, heads).ok()?? else {
+        return None;
+    };
+    let (parent, _) = doc.get_at(&node, "parent", heads).ok()??;
+    parent.as_str().map(str::to_owned)
 }
 
 #[cfg(test)]

@@ -4,9 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use fs::namespace::Namespace;
 use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FilesTree, ROOT_ID, Tree};
+use fs_protocol::tree::{ROOT_ID, Tree, TreeChunks, chunk_document_id};
 use tilo_lock::MutexRecover as _;
-use tilo_resource::Resource as _;
 
 /// A tree document this device mounts, as the daemon serving the mount holds it.
 pub type Mounted = Arc<Mutex<Namespace>>;
@@ -17,7 +16,7 @@ pub fn namespace(author: &str) -> Mounted {
     Arc::new(Mutex::new(Namespace::new(author).expect("a tree document")))
 }
 
-/// Every path `namespace`'s tree holds as the record reads it — the projection
+/// Every path `namespace`'s tree holds as the records read it — the projection
 /// the Files app renders — sorted, each folder's contents by its folder's path.
 pub fn contents(namespace: &Mounted) -> Vec<String> {
     fn walk(tree: &Tree, parent: &str, prefix: &str, found: &mut Vec<String>) {
@@ -34,9 +33,20 @@ pub fn contents(namespace: &Mounted) -> Vec<String> {
             }
         }
     }
-    let bytes = namespace.lock_recover().save();
-    let document = automerge::AutoCommit::load(&bytes).expect("the tree's document loads");
-    let tree = FilesTree::read(&document).expect("the tree reads");
+    // The tree is the records that hold it: its own record, then each chunk.
+    let mut chunks = TreeChunks::default();
+    {
+        let mut namespace = namespace.lock_recover();
+        for chunk in namespace.records() {
+            let Some(bytes) = namespace.save_record(chunk) else {
+                continue;
+            };
+            chunks
+                .read_resource(&chunk_document_id(chunk), &bytes)
+                .expect("a record of the tree reads");
+        }
+    }
+    let tree = chunks.tree();
     let mut found = Vec::new();
     walk(&tree, ROOT_ID, "", &mut found);
     found.sort();

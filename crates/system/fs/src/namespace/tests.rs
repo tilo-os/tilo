@@ -123,13 +123,13 @@ tilo_test_env::scenario! {
             legacy
                 .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
                 .unwrap();
-            let ids: Vec<_> = legacy.doc.keys(&legacy.nodes).collect();
-            let _ = legacy.doc.delete(&ROOT, ROOT_DOCUMENT_ID_KEY);
+            let ids: Vec<_> = legacy.doc.sorted_node_ids();
+            let _ = legacy.doc.delete(&Obj::index(), ROOT_DOCUMENT_ID_KEY);
             for id in ids {
                 let node = legacy.node(&id).unwrap();
                 let _ = legacy.doc.delete(&node, DOCUMENT_ID_KEY);
             }
-            let legacy_bytes = legacy.doc.save();
+            let legacy_bytes = legacy.save();
 
             let mut first = Namespace::from_bytes("first", &legacy_bytes).unwrap();
             let mut second = Namespace::from_bytes("second", &legacy_bytes).unwrap();
@@ -410,7 +410,8 @@ tilo_test_env::scenario! {
             assert!(a.lookup(ROOT_INO, "d").is_none(), "d stays deleted");
             let new_id = a
                 .doc
-                .keys(&a.nodes)
+                .sorted_node_ids()
+                .into_iter()
                 .find(|i| a.name_of(i).as_deref() == Some(b"new.txt"));
             assert!(
                 new_id.is_some(),
@@ -508,7 +509,8 @@ tilo_test_env::scenario! {
             let winner = a.lookup(ROOT_INO, "same").unwrap().ino.0;
             let mut same: Vec<String> = a
                 .doc
-                .keys(&a.nodes)
+                .sorted_node_ids()
+                .into_iter()
                 .filter(|id| a.name_of(id).is_some_and(|name| name.as_bytes() == b"same"))
                 .collect();
             same.sort();
@@ -935,7 +937,7 @@ fn byte_names_survive_load_save_rename_and_replication_exactly() {
             .put(&node, "name", ScalarValue::Str("café.txt".into()))
             .unwrap();
 
-        let mut migrated = Namespace::from_bytes("migrated", &legacy.doc.save()).unwrap();
+        let mut migrated = Namespace::from_bytes("migrated", &legacy.save()).unwrap();
         assert!(migrated.lookup(ROOT_INO, "café.txt").is_some());
         assert!(migrated.rename(ROOT_INO, "café.txt", ROOT_INO, b"caf\xc3\xa9-final.txt", 2,));
 
@@ -1029,7 +1031,8 @@ tilo_test_env::scenario! {
             // A reader with only the tree record (a page's Files, an agent's
             // host) reads the same file from it.
             let id = ns.id_for_ino(ino).unwrap().to_owned();
-            let mut record = automerge::AutoCommit::load(&ns.save()).unwrap();
+            let chunk = ns.document_id_for(ino).unwrap().chunk();
+            let mut record = automerge::AutoCommit::load(&ns.save_record(chunk).unwrap()).unwrap();
             let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
             let node = tree.node(&id).unwrap();
             assert_eq!(
@@ -1159,15 +1162,9 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     assert_eq!(ns.tree.placement, rebuilt.tree.placement, "placement");
     assert_eq!(ns.tree.children, rebuilt.tree.children, "children");
     assert_eq!(ns.tree.records, rebuilt.tree.records, "record bindings");
-    assert_eq!(
-        ns.tree.document_of, rebuilt.tree.document_of,
-        "record owners"
-    );
+    assert_eq!(ns.tree.resource_of, rebuilt.tree.resource_of, "record owners");
     assert_eq!(ns.document_index, rebuilt.document_index, "rows");
-    assert_eq!(
-        ns.document_index_order, rebuilt.document_index_order,
-        "order"
-    );
+    assert_eq!(ns.document_index_order, rebuilt.document_index_order, "order");
     assert_eq!(
         ns.document_index_digest, rebuilt.document_index_digest,
         "digest"
@@ -1243,7 +1240,7 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
     let mut record = automerge::AutoCommit::new();
     let mut tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
     fs_protocol::tree::place(
-        &mut record,
+        (&mut record, 1),
         &mut tree,
         ROOT_ID,
         "notice.pdf",
@@ -1255,7 +1252,7 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
     )
     .unwrap();
     let _ = record.commit();
-    laptop.merge_remote_and_resolve(&record.save()).unwrap();
+    laptop.take_records(vec![(1, record.save())]).unwrap();
     assert_eq!(
         names(&mut laptop),
         ["contract.txt", "handbook.md", "notice.pdf"]
@@ -1285,5 +1282,117 @@ fn the_folder_reads_as_changed_with_its_newest_entry() {
     assert_eq!(
         ns.getattr(ROOT_INO).unwrap().mtime,
         UNIX_EPOCH + Duration::from_millis(newest)
+    );
+}
+
+/// A tree's files fill one chunk after another, and a write to one file is a write to the
+/// chunk that holds it: what another device takes in costs that chunk's change, whatever the
+/// tree holds.
+#[test]
+fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
+    let files = fs_protocol::tree::CHUNK_NODES * 2 + 10;
+    let mut laptop = Namespace::new("laptop").unwrap();
+    let mut first = None;
+    for n in 0..files {
+        let ino = laptop
+            .create_file(ROOT_INO, format!("f{n}.txt"), Some(&h(1)), 1, 1)
+            .unwrap();
+        first.get_or_insert(ino);
+    }
+    assert_eq!(
+        laptop.records(),
+        [0, 1, 2, 3],
+        "the files filled three chunks"
+    );
+
+    // Another device takes the tree in from its records, as they hold it.
+    let writes = laptop.document_writes(&BTreeMap::new());
+    assert_eq!(writes.len(), 4, "the tree's own record and each chunk");
+    let mut desktop = Namespace::new("desktop").unwrap();
+    desktop
+        .take_records(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
+        .unwrap();
+    assert!(
+        desktop
+            .lookup(ROOT_INO, format!("f{}.txt", files - 1))
+            .is_some()
+    );
+    assert_eq!(
+        desktop.indexed_document_count(),
+        laptop.indexed_document_count()
+    );
+    assert_eq!(
+        desktop.document_id_for(ROOT_INO),
+        laptop.document_id_for(ROOT_INO)
+    );
+
+    // Renaming the first file writes its chunk alone.
+    let known = laptop.record_heads();
+    let first = first.unwrap();
+    let chunk = laptop.document_id_for(first).unwrap().chunk();
+    assert!(laptop.rename(ROOT_INO, "f0.txt", ROOT_INO, "renamed.txt", 2));
+    let writes = laptop.document_writes(&known);
+    assert_eq!(
+        writes.iter().map(|w| w.chunk).collect::<Vec<_>>(),
+        [chunk],
+        "a rename is a change of the file's chunk"
+    );
+    assert!(
+        writes[0].changes.len() < 1024,
+        "and carries the rename, not the chunk: {} bytes",
+        writes[0].changes.len()
+    );
+    desktop
+        .take_records(vec![(chunk, writes[0].changes.clone())])
+        .unwrap();
+    assert!(desktop.lookup(ROOT_INO, "renamed.txt").is_some());
+    assert!(desktop.lookup(ROOT_INO, "f0.txt").is_none());
+
+    // What the desktop holds now is what the laptop does, record by record.
+    assert_eq!(desktop.record_heads(), laptop.record_heads());
+    // And a namespace kept on disk reads back the same.
+    let kept = Namespace::from_bytes("laptop", &laptop.save()).unwrap();
+    assert_eq!(kept.indexed_document_count(), laptop.indexed_document_count());
+}
+
+/// A record that changed more than one write carries (files written while it could not go out)
+/// goes out over several writes, each within the budget and building on the last, until the
+/// holder has every change.
+#[test]
+fn a_record_changed_past_one_write_goes_out_over_several() {
+    let mut laptop = Namespace::new("laptop").unwrap();
+    for n in 0..200_u32 {
+        laptop
+            .create_file(ROOT_INO, format!("file-{n}.rs"), Some(&h(1)), 4, 1)
+            .unwrap();
+        // Each file is its own change, as each push of the folder commits what it made.
+        laptop.record_heads();
+    }
+    let whole = laptop.record_write(1, &[], usize::MAX).unwrap();
+    let budget = whole.changes.len() / 5;
+    let mut record = Vec::new();
+    let mut sent = Vec::new();
+    let mut writes = 0;
+    while let Some(write) = laptop.record_write(1, &sent, budget) {
+        assert!(
+            !write.changes.is_empty(),
+            "a write carries something until the heads are reached"
+        );
+        assert!(
+            write.changes.len() <= budget,
+            "{} bytes over a budget of {budget}",
+            write.changes.len()
+        );
+        record.extend_from_slice(&write.changes);
+        sent = write.heads;
+        writes += 1;
+        assert!(writes < 50, "the writes reach the record's heads");
+    }
+    assert!(writes > 1, "the record went out in one write");
+    let mut record = automerge::AutoCommit::load(&record).unwrap();
+    assert_eq!(
+        record.get_heads(),
+        whole.heads,
+        "the writes carry every change"
     );
 }

@@ -165,6 +165,7 @@ impl UnlockHistory {
         (!doc.base_heads().is_empty()).then(|| DetachedRecordHistory {
             app: APP.to_owned(),
             checkout,
+            tree_chunks: Vec::new(),
             document: Some(doc.clone()),
         })
     }

@@ -9,18 +9,18 @@
 
 use std::collections::BTreeMap;
 
-use automerge::transaction::Transactable as _;
-use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue, Value};
+use automerge::{ObjType, ScalarValue, Value};
 use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
 use fs_protocol::{
-    ConflictResolution, ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId,
-    FileProvenance, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
+    ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileDocumentError,
+    FileDocumentId, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
     prefer_conflict_resolution,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::{Namespace, hash_from_hex, read_u64, str_at};
+use super::{Namespace, Obj, hash_from_hex, read_u64, str_at};
+use fs_protocol::TreeChunk;
 
 pub use fs_protocol::history::DocumentHistorySnapshot;
 pub(crate) use fs_protocol::history::{CONFLICTS_KEY, HISTORY_KEY, VERSIONS_KEY};
@@ -74,14 +74,14 @@ pub enum HistoryError {
     ResolutionTimestampMismatch,
 }
 
-fn object(value: Option<(Value<'_>, ObjId)>) -> Option<ObjId> {
+fn object(value: Option<(Value<'_>, Obj)>) -> Option<Obj> {
     match value {
         Some((Value::Object(ObjType::Map), id)) => Some(id),
         _ => None,
     }
 }
 
-fn scalar_bytes(value: Option<(Value<'_>, ObjId)>) -> Option<Vec<u8>> {
+fn scalar_bytes(value: Option<(Value<'_>, Obj)>) -> Option<Vec<u8>> {
     match value {
         Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
             ScalarValue::Bytes(bytes) => Some(bytes.clone()),
@@ -120,43 +120,58 @@ fn check_conflict(
 }
 
 impl Namespace {
-    pub(super) fn history_root(&self) -> Option<ObjId> {
-        object(self.doc.get(&automerge::ROOT, HISTORY_KEY).ok().flatten())
+    /// The document a record's history lives in: its node's chunk's.
+    fn history_doc(&self, document_id: FileDocumentId) -> Option<&automerge::AutoCommit> {
+        self.doc.doc(document_id.chunk()).map(|doc| &**doc)
     }
 
-    pub(crate) fn ensure_history_root(&mut self) -> Result<ObjId, HistoryError> {
-        if let Some(root) = self.history_root() {
-            return Ok(root);
+    /// The map of histories of chunk `chunk`, made (as every replica makes it) when its
+    /// document has none. The tree's own record keeps the restores' receipts.
+    pub(crate) fn ensure_history_root(&mut self, chunk: TreeChunk) -> Result<Obj, HistoryError> {
+        if chunk != 0 {
+            self.doc.chunk_or_new(chunk, true)?;
         }
-        Ok(self
+        let doc = self
             .doc
-            .put_object(&automerge::ROOT, HISTORY_KEY, ObjType::Map)?)
+            .doc_mut(chunk)
+            .ok_or(HistoryError::Document(automerge::AutomergeError::Fail))?;
+        let id = fs_protocol::tree::root_map(doc, HISTORY_KEY)?;
+        Ok(Obj { chunk, id })
     }
 
-    /// Every document map holding record histories: one until two devices that each
-    /// made their own document meet, and one per device after, since a merge keeps
-    /// both maps under the key. A reader takes the maps together, or it would see
-    /// the versions of one device and none of the other's.
-    fn history_roots(&self) -> Vec<ObjId> {
-        fs_protocol::history::roots(&*self.doc)
+    /// Every map holding record histories in chunk `chunk`: one until two devices that each
+    /// made their own document meet, and one per device after, since a merge keeps both maps
+    /// under the key. A reader takes the maps together, or it would see the versions of one
+    /// device and none of the other's.
+    fn history_roots(&self, chunk: TreeChunk) -> Vec<Obj> {
+        self.doc.doc(chunk).map_or_else(Vec::new, |doc| {
+            fs_protocol::history::roots(&**doc)
+                .into_iter()
+                .map(|id| Obj { chunk, id })
+                .collect()
+        })
     }
 
     pub(crate) fn document_versions(
         &self,
         document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
-        fs_protocol::history::document_versions(&*self.doc, document_id)
+        self.history_doc(document_id)
+            .map(|doc| fs_protocol::history::document_versions(doc, document_id))
+            .unwrap_or_default()
     }
 
     pub(crate) fn record_conflicts(
         &self,
         document_id: FileDocumentId,
     ) -> BTreeMap<Uuid, FileConflictV1> {
-        fs_protocol::history::record_conflicts(&*self.doc, document_id)
+        self.history_doc(document_id)
+            .map(|doc| fs_protocol::history::record_conflicts(doc, document_id))
+            .unwrap_or_default()
     }
 
     /// The maps under `key` of `parent`: two devices that both wrote it each made one.
-    fn sub_maps(&self, parent: &ObjId, key: &str) -> Vec<ObjId> {
+    fn sub_maps(&self, parent: &Obj, key: &str) -> Vec<Obj> {
         self.doc
             .get_all(parent, key)
             .unwrap_or_default()
@@ -168,8 +183,8 @@ impl Namespace {
             .collect()
     }
 
-    fn history_slot(&mut self, document_id: FileDocumentId) -> Result<ObjId, HistoryError> {
-        let root = self.ensure_history_root()?;
+    fn history_slot(&mut self, document_id: FileDocumentId) -> Result<Obj, HistoryError> {
+        let root = self.ensure_history_root(document_id.chunk())?;
         let key = document_id.0.to_string();
         if let Some(record) = object(self.doc.get(&root, &key)?) {
             return Ok(record);
@@ -177,7 +192,7 @@ impl Namespace {
         Ok(self.doc.put_object(&root, key, ObjType::Map)?)
     }
 
-    fn sub_map(&mut self, record: &ObjId, key: &str) -> Result<ObjId, HistoryError> {
+    fn sub_map(&mut self, record: &Obj, key: &str) -> Result<Obj, HistoryError> {
         if let Some(map) = object(self.doc.get(record, key)?) {
             return Ok(map);
         }
@@ -208,15 +223,24 @@ impl Namespace {
         Ok(())
     }
 
+    /// The newest version of `document_id`'s file, and the agent or program it is attributed
+    /// to: read from the chunk that keeps the file's versions. `None` for a file with none.
+    pub fn latest_version(
+        &self,
+        document_id: FileDocumentId,
+    ) -> Option<(FileVersionV1, Option<FileVersionAttributionV1>)> {
+        fs_protocol::history::latest(self.history_doc(document_id)?, document_id)
+    }
+
     pub fn document_history(&self, document_id: FileDocumentId) -> Option<DocumentHistorySnapshot> {
-        fs_protocol::history::document_history(&*self.doc, document_id)
+        fs_protocol::history::document_history(self.history_doc(document_id)?, document_id)
     }
 
     pub fn document_history_projection(
         &self,
         document_id: FileDocumentId,
     ) -> Option<HistoryProjectionV1> {
-        fs_protocol::history::document_history_projection(&*self.doc, document_id)
+        fs_protocol::history::document_history_projection(self.history_doc(document_id)?, document_id)
     }
 
     pub fn document_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
@@ -361,7 +385,9 @@ impl Namespace {
         &self,
         document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
-        fs_protocol::history::record_attributions(&*self.doc, document_id)
+        self.history_doc(document_id)
+            .map(|doc| fs_protocol::history::record_attributions(doc, document_id))
+            .unwrap_or_default()
     }
 
     pub fn version_attributions(
@@ -414,7 +440,7 @@ impl Namespace {
         &self,
         intent: Uuid,
     ) -> Option<(CheckedHistoryRequestV1, FileRestoreReceiptV1)> {
-        for root in self.history_roots() {
+        for root in self.history_roots(0) {
             for map in self.sub_maps(&root, RESTORES_KEY) {
                 let Some(bytes) =
                     scalar_bytes(self.doc.get(&map, intent.to_string()).ok().flatten())
@@ -443,7 +469,7 @@ impl Namespace {
             }
             return Err(HistoryError::ConflictIdCollision(intent));
         }
-        let root = self.ensure_history_root()?;
+        let root = self.ensure_history_root(0)?;
         if let Some(map) = object(self.doc.get(&root, RESTORES_KEY)?) {
             let bytes = serde_json::to_vec(&(request, receipt))
                 .map_err(|_| HistoryError::Document(automerge::AutomergeError::Fail))?;

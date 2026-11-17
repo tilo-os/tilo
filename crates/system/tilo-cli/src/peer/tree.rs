@@ -1,29 +1,38 @@
-//! A workspace's file tree on this computer: the Files app's record, held
-//! through the device's session as every device of the workspace holds it.
+//! A workspace's file tree on this computer: the Files app's records, held
+//! through the device's session as every device of the workspace holds them.
 //!
-//! A workspace's file truth is one record, the tree as an Automerge document
-//! ([`fs_protocol::tree`]), whose nodes name each file's content by hash; the
-//! bytes travel beside it as the record's content
-//! ([`super::content`]). Tilo OS publishes the tree from its filesystem daemon
-//! on the desktop session ([`tilo_fs::tree_document`]); here the session is this
-//! device's own session with the workspace's host, the one a browser tab
-//! keeps, and the tree goes over it the way a tab's records do: opened by its
-//! route, written with [`Outbox::write`], and read back from the session's
-//! replica each time a write [`Event::Landed`] on it.
+//! A workspace's file truth is its tree ([`fs_protocol::tree`]): the tree's
+//! own record and its chunks, each a record of its own, whose nodes name each
+//! file's content by hash; the bytes travel beside them as the records'
+//! content ([`super::content`]). Tilo OS publishes the tree from its
+//! filesystem daemon on the desktop session ([`tilo_fs::tree_document`]); here
+//! the session is this device's own session with the workspace's host, the
+//! one a browser tab keeps, and each record goes over it the way a tab's
+//! records do: opened by its route, written with [`Outbox::write`], and read
+//! back from the session's replica each time a write [`Event::Landed`] on it.
 //!
-//! The namespace this device mounts ([`tilo_fs::Namespace`]) and the record
-//! converge both ways: a change the record brings merges into the namespace
+//! The namespace this device mounts ([`tilo_fs::Namespace`]) and the records
+//! converge both ways: a change a record brings merges into the namespace
 //! (and what resolving it wrote goes back), and a change the namespace makes
-//! (a file copied into the mount) goes out as the next increment.
+//! (a file copied into the mount) goes out as the next change of the record
+//! that holds the file. A write costs what its chunk costs, whatever the tree
+//! holds: one change of one record, kept on disk as that record alone.
+//!
+//! Writes that come in a burst (a checkout writing thousands of files) go out
+//! together: the changes the namespace made within [`BATCH`] of the first one
+//! leave as one write per record they changed. Each file's version still
+//! names who wrote it; only how many writes carry them changes.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
+use fs_protocol::TreeChunk;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
@@ -35,19 +44,26 @@ pub(crate) use fs_protocol::tree::FILES_APP;
 /// How often the replica looks again when nothing woke it: the session's
 /// events wake it at once, this only bounds a missed wake.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
-/// How many bytes of changes one write of the tree carries at most: well under the most a
-/// document write may carry, so changes made while the tree could not go out (a repository
-/// checked out into the folder) go out over several writes instead of one no host takes.
-const WRITE_BUDGET: usize = collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 2;
 /// How often the namespace is kept on disk while it changes, at most.
 const KEEP_EVERY: Duration = Duration::from_secs(2);
 /// How often the files and bytes the tree names are counted again while it changes, at most.
 const COUNT_EVERY: Duration = Duration::from_secs(1);
+/// How long the changes after a first unsent one wait to go out with it: a
+/// burst of writes becomes one write per record, and a single write waits no
+/// longer than a person notices.
+const BATCH: Duration = Duration::from_millis(200);
+
+/// How many bytes of changes one write of a record carries at most: well under the most a
+/// document write may carry, so changes made while a record could not go out go out over
+/// several writes, each building on the last, instead of one no host takes.
+const WRITE_BUDGET: usize = collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 2;
 /// How many times its own cost a step that walks or saves the whole tree waits before it runs
 /// again: it then takes at most a twentieth of the replica's time. Run on every change, a count
 /// of every node made writing a repository's twenty thousand files quadratic, and held the tree
 /// (which every write into the folder waits for) for most of the time.
 const PACE: u32 = 20;
+/// Where the namespace's records are kept between runs, one file per record.
+const KEPT: &str = "tree";
 
 /// When a step whose cost grows with the tree may run again.
 #[derive(Debug)]
@@ -76,12 +92,12 @@ impl Paced {
     }
 }
 
-/// The route of `workspace`'s tree.
-pub(crate) fn route(workspace: WorkspaceId) -> DocumentRoute {
+/// The route of record `chunk` of `workspace`'s tree: the tree's own record for 0.
+pub(crate) fn route(workspace: WorkspaceId, chunk: TreeChunk) -> DocumentRoute {
     DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
-        record: collab_types::person_document_id(fs_protocol::tree::TREE_KIND),
+        record: fs_protocol::tree::chunk_document_id(chunk),
     }
 }
 
@@ -122,6 +138,29 @@ impl Drop for TreeReplica {
     }
 }
 
+/// The records kept in `dir`, each as the number of its chunk and its document.
+fn kept_documents(dir: &Path) -> std::io::Result<Vec<(TreeChunk, Vec<u8>)>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut records = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(chunk) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".automerge"))
+            .and_then(|number| number.parse::<TreeChunk>().ok())
+        else {
+            continue;
+        };
+        records.push((chunk, std::fs::read(&path)?));
+    }
+    Ok(records)
+}
+
 impl TreeReplica {
     /// Hold `workspace`'s tree over `link`, kept in `state` between runs, as
     /// the device whose key is `device`; its file bytes come and go through
@@ -136,16 +175,15 @@ impl TreeReplica {
         device: [u8; 32],
         content: Arc<SessionContent>,
     ) -> std::io::Result<Self> {
-        std::fs::create_dir_all(state)?;
-        let kept = state.join("tree.automerge");
+        let kept = state.join(KEPT);
+        std::fs::create_dir_all(&kept)?;
         let author = hex::encode(device);
-        let namespace = match std::fs::read(&kept) {
-            Ok(bytes) => Namespace::from_bytes(author, &bytes)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Namespace::new(author).map_err(std::io::Error::other)?
-            }
-            Err(error) => return Err(error),
+        let records = kept_documents(&kept)?;
+        let namespace = if records.is_empty() {
+            Namespace::new(author).map_err(std::io::Error::other)?
+        } else {
+            Namespace::from_records(author, records)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
         };
         let namespace = Arc::new(Mutex::new(namespace));
         let standing = Arc::new(Mutex::new(Standing::default()));
@@ -156,20 +194,18 @@ impl TreeReplica {
             wake: Arc::clone(&wake),
             link,
             workspace,
-            route: route(workspace),
             namespace: Arc::clone(&namespace),
-            merged: None,
-            sent: Vec::new(),
-            founded: false,
+            records: BTreeMap::new(),
+            unread: BTreeSet::new(),
+            unreadable: BTreeSet::new(),
+            waiting: BTreeSet::new(),
+            dirty_since: None,
             kept,
-            kept_heads: Vec::new(),
+            kept_heads: BTreeMap::new(),
             keeping: Paced::new(KEEP_EVERY),
             pulling: Paced::new(LOOK_AGAIN),
-            pushing: Paced::new(LOOK_AGAIN),
-            unsent: None,
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
-            unread: None,
             standing: Arc::clone(&standing),
             content,
         };
@@ -196,36 +232,49 @@ impl TreeReplica {
     }
 }
 
-/// The task that keeps one namespace and its record converged.
+/// What this device knows of one record of the tree at the workspace.
+#[derive(Debug, Default)]
+struct Held {
+    /// The record's heads this namespace merged last; `None` before the first merge.
+    merged: Option<Vec<[u8; 32]>>,
+    /// The namespace's heads of this record the session has: handed to it by
+    /// this device, or merged from it. Every change after them is the next write.
+    sent: Vec<automerge::ChangeHash>,
+    /// The record exists at the workspace (merged from it, or founded here), so
+    /// a write of it is a change.
+    founded: bool,
+    /// How many frames the host said it holds of the record when this session opened it;
+    /// `None` until it answered. None at all: the workspace has no such record yet.
+    answered: Option<DocumentAnswer>,
+}
+
+/// The task that keeps one namespace and its records converged.
 struct Sync {
     paused: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
     link: Link,
     workspace: WorkspaceId,
-    route: DocumentRoute,
     namespace: Arc<Mutex<Namespace>>,
-    /// The record's heads this namespace merged last; `None` before the first merge.
-    merged: Option<Vec<[u8; 32]>>,
-    /// The namespace's heads handed to the session last: every change after
-    /// them is the next increment. Empty until the tree went out or came in.
-    sent: Vec<automerge::ChangeHash>,
-    /// Whether the record exists at the workspace (a whole tree went out or
-    /// came in), so the next write is an increment.
-    founded: bool,
+    /// Every record of the tree this device opened, by chunk: the tree's own (0) first.
+    records: BTreeMap<TreeChunk, Held>,
+    /// The records a write landed on since they were read: what the next pull reads, rather
+    /// than every record of the tree.
+    unread: BTreeSet<TreeChunk>,
+    /// The records whose read failed, said once each.
+    unreadable: BTreeSet<TreeChunk>,
+    /// The records whose changes waited to go out, said once each.
+    waiting: BTreeSet<TreeChunk>,
+    /// When the oldest change not yet handed to the session was made: what
+    /// the next write waits [`BATCH`] after.
+    dirty_since: Option<Instant>,
+    /// The directory each record is kept in, one file per record.
     kept: PathBuf,
-    kept_heads: Vec<automerge::ChangeHash>,
+    kept_heads: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     keeping: Paced,
     counting: Paced,
     pulling: Paced,
-    /// When a write the session turned down may be tried again: building one walks every change
-    /// since the last write that went out, so a write that keeps failing is not rebuilt each pass.
-    pushing: Paced,
-    /// Why the last write of the tree failed, said once until one goes out or fails otherwise.
-    unsent: Option<String>,
     /// The heads the files and bytes in `standing` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
-    /// Why the last read of the record failed, said once until it reads or fails otherwise.
-    unread: Option<String>,
     standing: Arc<Mutex<Standing>>,
     content: Arc<SessionContent>,
 }
@@ -249,135 +298,200 @@ impl Sync {
         });
         let mut changes = self.namespace.lock_recover().subscribe_changes();
         let mut keep = tokio::time::interval(KEEP_EVERY);
-        self.open();
+        let held = self.namespace.lock_recover().records();
+        for chunk in held {
+            self.open(chunk);
+        }
+        // What the session brought: on the first pass, and after it woke this task.
+        let mut session_moved = true;
+        let mut sweep = Paced::new(LOOK_AGAIN);
         loop {
             for event in events.drain() {
                 self.take(event);
             }
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                self.pull_paced().await;
+                if sweep.due(Instant::now()) {
+                    // Now and then every record, for a landing whose word was missed.
+                    self.unread.extend(self.records.keys().copied());
+                    sweep.ran(Instant::now(), Instant::now());
+                }
+                if session_moved || !self.unread.is_empty() {
+                    self.pull_all().await;
+                }
                 self.push();
                 self.content.reask(&self.link);
             }
             self.say_where_it_stands();
+            // A change of this namespace's own goes out once its batch is due; the session's
+            // news, and a look now and then, read what the records hold.
+            let wait = self.dirty_since.map_or(LOOK_AGAIN, |since| {
+                BATCH
+                    .saturating_sub(since.elapsed())
+                    .max(Duration::from_millis(5))
+            });
+            session_moved = false;
             tokio::select! {
-                () = wake.notified() => {}
+                () = wake.notified() => session_moved = true,
                 moved = changes.changed() => if moved.is_err() { return },
                 _ = keep.tick() => if self.keeping.due(Instant::now()) {
                     let started = Instant::now();
                     self.keep().await;
                     self.keeping.ran(started, Instant::now());
                 },
-                () = tokio::time::sleep(LOOK_AGAIN) => {}
+                () = tokio::time::sleep(wait) => session_moved = self.dirty_since.is_none(),
             }
         }
     }
 
-    /// Ask the host for the tree, and to take part in its channel.
-    fn open(&self) {
+    /// Ask the host for record `chunk` of the tree, and to take part in its channel.
+    fn open(&mut self, chunk: TreeChunk) {
+        self.records.entry(chunk).or_default();
+        self.unread.insert(chunk);
+        let route = route(self.workspace, chunk);
         let _ = self
             .link
-            .send(Cmd::OpenDocumentAt(self.workspace, self.route.clone()));
-        let _ = self.link.send(Cmd::OpenRoute(self.route.clone()));
+            .send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
+        let _ = self.link.send(Cmd::OpenRoute(route.clone()));
         // And on the workspace's plane, whose host answers what it holds.
         let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
-            &self.route.app_id,
-            &self.route.record,
+            &route.app_id,
+            &route.record,
         );
     }
 
-    fn take(&self, event: Event) {
+    fn take(&mut self, event: Event) {
         match event {
-            Event::HostReady { ws, .. } if ws == self.workspace => self.open(),
-            Event::Refused { route, refusal, .. } if route == self.route => {
-                tracing::warn!(%refusal, workspace = %self.workspace, "the workspace refused a change to its files");
+            Event::HostReady { ws, .. } if ws == self.workspace => {
+                let opened: Vec<TreeChunk> = self.records.keys().copied().collect();
+                for chunk in opened {
+                    self.open(chunk);
+                }
+            }
+            Event::Refused { route, refusal, .. }
+                if route.cluster_id == self.workspace.to_string()
+                    && route.app_id == FILES_APP
+                    && fs_protocol::tree::chunk_of_record(&route.record).is_some() =>
+            {
+                tracing::warn!(%refusal, workspace = %self.workspace, record = %route.record, "the workspace refused a change to its files");
+            }
+            Event::Landed { route, .. }
+                if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
+            {
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                    self.unread.insert(chunk);
+                }
             }
             Event::DocumentContent { ws, frame, .. } if ws == self.workspace => {
                 self.content.piece(&frame);
             }
             // The host sent all it holds of the tree, none when the workspace has none yet:
             // this device's first change founds it.
+            // The host's answer to this session's open of a record of the tree: whether the
+            // workspace holds any of it decides whether this device founds it.
             Event::DocumentOpened {
-                route: Some(route), ..
-            } if route == self.route => {
-                self.standing.lock_recover().opened = true;
+                route: Some(route),
+                answer,
+                ..
+            } if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP => {
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                    self.records.entry(chunk).or_default().answered = Some(answer);
+                    // A host that sent some of the tree holds one, which this device reads
+                    // before it writes: a tree it founded beside that one would go out whole.
+                    if chunk == 0 && holds_none(Some(answer)) {
+                        self.standing.lock_recover().opened = true;
+                    }
+                }
             }
             _ => {}
         }
     }
 
-    /// [`Self::pull`], paced while the session holds writes of this device's that its replica
-    /// has not taken in: a read then overlays them on the whole record, so it costs the whole
-    /// tree each time, and all it can bring is another device's change, which waits a moment.
-    async fn pull_paced(&mut self) {
-        let holding = self
-            .link
+    /// Whether the session holds writes of this device's to record `chunk` that its replica
+    /// has not taken in: a read then lays them over the whole record, and all it can bring is
+    /// another device's change, which waits a moment.
+    fn holding(&self, chunk: TreeChunk) -> bool {
+        self.link
             .engine()
             .held_writes()
             .lock()
-            .contains_key(&self.route);
-        if !holding {
-            self.pull().await;
-            return;
-        }
-        let now = Instant::now();
-        if self.pulling.due(now) {
-            self.pull().await;
-            self.pulling.ran(now, Instant::now());
-        }
+            .contains_key(&route(self.workspace, chunk))
     }
 
-    /// Merge what the record holds that this namespace has not merged yet. The merge runs
-    /// away from the runtime's workers: a tree's first merge walks every node it brings, and a
-    /// worker inside it stops answering agents, mounts and stops for as long as it takes.
-    async fn pull(&mut self) {
-        let engine = self.link.engine();
+    /// Merge what each opened record holds that this namespace has not merged yet, and open
+    /// the chunks the tree's own record lists that this device has not opened.
+    async fn pull_all(&mut self) {
+        let link = self.link.clone();
+        let engine = link.engine();
         let workspace = self.workspace.to_string();
-        let reading = engine.record_update(
-            &workspace,
-            &self.route.app_id,
-            &self.route.record,
-            self.merged.as_deref(),
-        );
-        let (mutation, heads) = match reading {
-            Ok(ResourceReading::Captured { heads, bytes, .. }) => {
-                (DocumentMutation::Snapshot(bytes), heads)
+        let now = Instant::now();
+        let paced = self.pulling.due(now);
+        let mut readings = Vec::new();
+        let chunks = std::mem::take(&mut self.unread);
+        for chunk in chunks {
+            if self.holding(chunk) && !paced {
+                // Read it with the next paced pass.
+                self.unread.insert(chunk);
+                continue;
             }
-            Ok(ResourceReading::Changes { heads, bytes, .. }) => {
-                (DocumentMutation::Incremental(bytes), heads)
-            }
-            Ok(ResourceReading::Unchanged(_)) => {
-                self.unread = None;
-                return;
-            }
-            Err(error) => {
-                if self.unread.as_ref() != Some(&error) {
-                    tracing::warn!(%error, workspace = %self.workspace, "the workspace's tree does not read here");
-                    self.unread = Some(error);
+            let route = route(self.workspace, chunk);
+            let merged = self
+                .records
+                .get(&chunk)
+                .and_then(|held| held.merged.clone());
+            let reading =
+                engine.record_update(&workspace, &route.app_id, &route.record, merged.as_deref());
+            match reading {
+                Ok(
+                    ResourceReading::Captured { heads, bytes, .. }
+                    | ResourceReading::Changes { heads, bytes, .. },
+                ) => readings.push((chunk, heads, bytes)),
+                Ok(ResourceReading::Unchanged(_)) => {}
+                Ok(ResourceReading::Pending) | Err(_) => {
+                    if let Err(error) = &reading
+                        && self.unreadable.insert(chunk)
+                    {
+                        // Said once per record: the read is tried again on every pass.
+                        tracing::warn!(%error, chunk, workspace = %self.workspace, "a record of the workspace's tree cannot be read here");
+                    }
+                    // Nothing here yet: once the host answered with none, the workspace has
+                    // no such record, and this device's first change founds it.
+                    if chunk == 0
+                        && holds_none(engine.resource_answer(
+                            &workspace,
+                            &route.app_id,
+                            &route.record,
+                        ))
+                    {
+                        self.standing.lock_recover().opened = true;
+                    }
                 }
-                self.note_answered(&workspace);
-                return;
             }
-            Ok(ResourceReading::Pending) => {
-                self.note_answered(&workspace);
-                return;
-            }
-        };
+        }
+        if paced {
+            self.pulling.ran(now, Instant::now());
+        }
+        if readings.is_empty() {
+            return;
+        }
+        let records: Vec<(TreeChunk, Vec<u8>)> = readings
+            .iter()
+            .map(|(chunk, _, bytes)| (*chunk, bytes.clone()))
+            .collect();
+        // The merge runs away from the runtime's workers: a tree's first merge walks every
+        // node it brings, and a worker inside it stops answering agents, mounts and stops for
+        // as long as it takes.
         let namespace = Arc::clone(&self.namespace);
-        let resolution = match tokio::task::spawn_blocking(move || {
+        let merged = tokio::task::spawn_blocking(move || {
             let mut namespace = namespace.lock_recover();
-            match &mutation {
-                DocumentMutation::Snapshot(bytes) => {
-                    namespace.adopt_or_merge_remote_and_resolve(bytes)
-                }
-                DocumentMutation::Incremental(bytes) => namespace.apply_remote_and_resolve(bytes),
-            }
-            .map_err(|error| error.to_string())
+            namespace
+                .take_records(records)
+                .map(|()| namespace.listed_records())
+                .map_err(|error| error.to_string())
         })
-        .await
-        {
-            Ok(Ok(resolution)) => resolution,
+        .await;
+        let listed = match merged {
+            Ok(Ok(listed)) => listed,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "the workspace's tree does not merge here");
                 return;
@@ -387,100 +501,150 @@ impl Sync {
                 return;
             }
         };
-        self.unread = None;
-        let shared = record_heads(&heads);
-        self.merged = Some(heads);
-        self.founded = true;
-        self.standing.lock_recover().opened = true;
-        if !resolution.is_empty() {
-            let _ = self.link.write(
-                self.route.clone(),
-                &DocumentMutation::Incremental(resolution),
-            );
+        for (chunk, heads, _) in readings {
+            if chunk == 0 {
+                self.standing.lock_recover().opened = true;
+            }
+            let held = self.records.entry(chunk).or_default();
+            // What the record holds is not this device's to send again; what only this
+            // namespace holds is. A namespace makes changes of its own before it ever merged the
+            // record (the tree it starts as, a file copied in while the host had not answered):
+            // counted as sent, those changes never reach the host, which then leaves out every
+            // later write of this device as building on changes it never got.
+            for merged in &heads {
+                let hash = automerge::ChangeHash(*merged);
+                if !held.sent.contains(&hash) {
+                    held.sent.push(hash);
+                }
+            }
+            held.merged = Some(heads);
+            held.founded = true;
         }
-        // What the record holds is not this device's to send again; what only
-        // this namespace holds is. A namespace makes changes of its own before
-        // it ever merged the record (the tree it starts as, a file copied in
-        // while the host had not answered), and a record whose document holds
-        // no tree yet is not merged into it at all: counted as sent, those
-        // changes never reach the host, which then leaves out every later
-        // write of this device as building on changes it never got.
-        if self.sent.is_empty() {
-            self.sent = shared;
-        }
-    }
-
-    /// Nothing of the tree reads here yet: once the host answered with none, the workspace has
-    /// no tree, and this device's first change founds it. A host that sent some of it holds a
-    /// tree, which this device then waits to read: a tree it founded beside that one would go
-    /// out whole, and the workspace refuses it for good.
-    fn note_answered(&self, workspace: &str) {
-        let answer =
-            self.link
-                .engine()
-                .resource_answer(workspace, &self.route.app_id, &self.route.record);
-        if holds_none(answer) {
-            self.standing.lock_recover().opened = true;
+        for chunk in listed {
+            if !self.records.contains_key(&chunk) {
+                self.open(chunk);
+            }
         }
     }
 
-    /// Hand the session what the namespace changed since it last did.
+    /// Hand the session what the namespace changed since it last did, once the batch the
+    /// first of those changes started is due: one write per record that changed.
     fn push(&mut self) {
-        let standing_opened = self.standing.lock_recover().opened;
-        if !standing_opened {
-            // The host has not said what it holds: a tree written now could
-            // found a second one beside it.
+        if !self.standing.lock_recover().opened {
+            // The host has not said what it holds: a tree written now could found a second
+            // one beside it.
             return;
         }
-        let started = Instant::now();
-        if !self.pushing.due(started) {
+        let heads = self.namespace.lock_recover().record_heads();
+        let dirty: Vec<TreeChunk> = heads
+            .iter()
+            .filter(|(chunk, heads)| self.records.get(chunk).map(|held| &held.sent) != Some(*heads))
+            .map(|(chunk, _)| *chunk)
+            .collect();
+        if dirty.is_empty() {
+            self.dirty_since = None;
             return;
         }
-        let outgoing = outgoing(&mut self.namespace.lock_recover(), &self.sent, self.founded);
-        let (mutation, covered) = match outgoing {
-            Outgoing::Nothing => return,
-            Outgoing::Covered(heads) => {
-                self.sent = heads;
-                return;
+        let since = *self.dirty_since.get_or_insert_with(Instant::now);
+        if since.elapsed() < BATCH {
+            return;
+        }
+        let link = self.link.clone();
+        let engine = link.engine();
+        let workspace = self.workspace.to_string();
+        let mut waiting = false;
+        for chunk in dirty {
+            if !self.records.contains_key(&chunk) {
+                self.open(chunk);
             }
-            Outgoing::Write(mutation, heads) => (mutation, heads),
-        };
-        if let Err(error) = self.link.write(self.route.clone(), &mutation) {
-            if self.unsent.as_ref() != Some(&error) {
-                tracing::warn!(%error, workspace = %self.workspace, "the workspace's tree did not go out; it is tried again");
-                self.unsent = Some(error);
+            let route = route(self.workspace, chunk);
+            let founded = self.records.get(&chunk).is_some_and(|held| held.founded);
+            if !founded {
+                // A record this device starts: the host says first whether the workspace has
+                // it. One it has is merged before this device's changes of it go out; one it
+                // has not is founded here, with the empty start every device makes alike.
+                // Its changes are saved only once they can go out: saving walks the record.
+                // The session's own answer to its open, as a reader of the record hears it: a
+                // record the host holds frames of is merged before this device's changes of it
+                // go out, one it holds none of is founded here.
+                let answered = self.records.get(&chunk).and_then(|held| held.answered);
+                if !holds_none(answered)
+                    || engine.holds_resource(&workspace, &route.app_id, &route.record)
+                {
+                    // Said once per record: a write that waits here for long is one the
+                    // folder says it is still sending.
+                    if self.waiting.insert(chunk) {
+                        tracing::info!(chunk, ?answered, workspace = %self.workspace, "a record of the workspace's tree waits before this device's changes of it go out");
+                    }
+                    waiting = true;
+                    continue;
+                }
+                let genesis = automerge::AutoCommit::new().save();
+                if self
+                    .link
+                    .write(route.clone(), &DocumentMutation::Snapshot(genesis))
+                    .is_err()
+                {
+                    waiting = true;
+                    continue;
+                }
+                if let Some(held) = self.records.get_mut(&chunk) {
+                    held.founded = true;
+                }
             }
-            self.pushing.ran(started, Instant::now());
-            return;
+            let sent = self
+                .records
+                .get(&chunk)
+                .map(|held| held.sent.clone())
+                .unwrap_or_default();
+            let Some(write) =
+                self.namespace
+                    .lock_recover()
+                    .record_write(chunk, &sent, WRITE_BUDGET)
+            else {
+                continue;
+            };
+            if !write.changes.is_empty()
+                && self
+                    .link
+                    .write(route, &DocumentMutation::Incremental(write.changes))
+                    .is_err()
+            {
+                waiting = true;
+                continue;
+            }
+            // What the write carries, not what the namespace holds now: the mount keeps
+            // changing it while the write goes out, and a change made meanwhile counted as
+            // sent would never reach the host, which then leaves out every later write of
+            // this device.
+            if let Some(held) = self.records.get_mut(&chunk) {
+                held.sent = write.heads;
+            }
         }
-        self.unsent = None;
-        self.founded = true;
-        // What the write carries, not what the namespace holds now: the
-        // mount keeps changing it while the write goes out, and a change
-        // made meanwhile counted as sent would never reach the host, which
-        // then leaves out every later write of this device.
-        self.sent = covered;
+        self.dirty_since = waiting.then_some(since);
     }
 
     fn say_where_it_stands(&mut self) {
-        let heads = self.namespace.lock_recover().heads();
+        let (heads, records) = {
+            let mut namespace = self.namespace.lock_recover();
+            (namespace.heads(), namespace.record_heads())
+        };
         let counted =
             if self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now()) {
                 let started = Instant::now();
                 let counted = self.count();
                 self.counting.ran(started, Instant::now());
-                self.counted_heads = Some(heads.clone());
+                self.counted_heads = Some(heads);
                 Some(counted)
             } else {
                 None
             };
-        let sent = self.sent == heads;
-        let durable = !self
-            .link
-            .engine()
-            .held_writes()
-            .lock()
-            .contains_key(&self.route)
+        let sent = records.iter().all(|(chunk, heads)| {
+            self.records
+                .get(chunk)
+                .is_some_and(|held| held.sent == *heads)
+        });
+        let durable = !self.records.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
         let mut standing = self.standing.lock_recover();
         if let Some((files, bytes)) = counted {
@@ -494,111 +658,72 @@ impl Sync {
 
     /// The files the tree names and their bytes: a walk of every node.
     fn count(&self) -> (usize, u64) {
-        {
-            let namespace = self.namespace.lock_recover();
-            let mut files = 0_usize;
-            let mut bytes = 0_u64;
-            for id in namespace.live_node_ids() {
-                // A text document (a `.md`, an `.odt`) is a file whose content
-                // the tree holds itself, by no hash: a file all the same.
-                if let Some(entry) = namespace.entry_for_node(&id)
-                    && entry.kind == tilo_fs::namespace::NodeKind::File
-                {
-                    files = files.saturating_add(1);
-                    bytes = bytes.saturating_add(entry.size);
-                }
+        let namespace = self.namespace.lock_recover();
+        let mut files = 0_usize;
+        let mut bytes = 0_u64;
+        for id in namespace.live_node_ids() {
+            // A text document (a `.md`, an `.odt`) is a file whose content
+            // the tree holds itself, by no hash: a file all the same.
+            if let Some(entry) = namespace.entry_for_node(&id)
+                && entry.kind == tilo_fs::namespace::NodeKind::File
+            {
+                files = files.saturating_add(1);
+                bytes = bytes.saturating_add(entry.size);
             }
-            (files, bytes)
         }
+        (files, bytes)
     }
 
-    /// Keep the namespace on disk, so a restart starts where this one was. Saving walks the
-    /// whole tree, so it runs away from the runtime's workers like a merge does.
+    /// Keep the records that changed on disk, each in a file of its own, so a restart starts
+    /// where this one was: what a write costs on disk is its record, not the tree. Saving a
+    /// record walks it, so it runs away from the runtime's workers like a merge does.
     async fn keep(&mut self) {
         let namespace = Arc::clone(&self.namespace);
         let kept = self.kept.clone();
         let kept_heads = self.kept_heads.clone();
-        let written = tokio::task::spawn_blocking(move || {
-            let (heads, bytes) = {
-                let mut namespace = namespace.lock_recover();
-                let heads = namespace.heads();
-                if heads == kept_heads {
-                    return Ok(None);
-                }
-                (heads, namespace.save())
-            };
-            tilo_files::native::atomic::write_with_mode(&kept, &bytes, 0o600)?;
-            Ok::<_, std::io::Error>(Some(heads))
-        })
-        .await;
-        match written {
-            Ok(Ok(Some(heads))) => self.kept_heads = heads,
-            Ok(Ok(None)) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
+        match tokio::task::spawn_blocking(move || keep_records(&namespace, &kept, &kept_heads))
+            .await
+        {
+            Ok(written) => self.kept_heads.extend(written),
             Err(error) => tracing::warn!(%error, "keeping the workspace's tree could not run"),
         }
     }
 
     /// [`Self::keep`], on this thread: where the sync stops there is no runtime to run it on.
     fn keep_now(&mut self) {
-        let (heads, bytes) = {
-            let mut namespace = self.namespace.lock_recover();
-            let heads = namespace.heads();
-            if heads == self.kept_heads {
-                return;
+        let written = keep_records(&self.namespace, &self.kept, &self.kept_heads);
+        self.kept_heads.extend(written);
+    }
+}
+
+/// Write each record of `namespace` whose heads are not those `kept_heads` has for it to its own
+/// file under `kept`; answers the records written, with the heads they were written at.
+fn keep_records(
+    namespace: &Mutex<Namespace>,
+    kept: &std::path::Path,
+    kept_heads: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
+) -> Vec<(TreeChunk, Vec<automerge::ChangeHash>)> {
+    let mut saved = Vec::new();
+    {
+        let mut namespace = namespace.lock_recover();
+        for (chunk, heads) in namespace.record_heads() {
+            if kept_heads.get(&chunk) == Some(&heads) {
+                continue;
             }
-            (heads, namespace.save())
-        };
-        match tilo_files::native::atomic::write_with_mode(&self.kept, &bytes, 0o600) {
-            Ok(()) => self.kept_heads = heads,
+            if let Some(bytes) = namespace.save_record(chunk) {
+                saved.push((chunk, heads, bytes));
+            }
+        }
+    }
+    let mut written = Vec::new();
+    for (chunk, heads, bytes) in saved {
+        let path = kept.join(format!("{chunk}.automerge"));
+        match tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600) {
+            Ok(()) => written.push((chunk, heads)),
             Err(error) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
         }
     }
-}
-
-/// Whether the host's `answer` about the tree (`None` while it owes one) says the workspace has
-/// none of it.
-fn holds_none(answer: Option<tilo_relay_protocol::DocumentAnswer>) -> bool {
-    answer == Some(tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 })
-}
-
-/// What a namespace has to send after `sent`.
-enum Outgoing {
-    /// Nothing, or nothing it may send yet.
-    Nothing,
-    /// Nothing new: everything up to these heads is out.
-    Covered(Vec<automerge::ChangeHash>),
-    /// This write, which carries the namespace up to these heads.
-    Write(DocumentMutation, Vec<automerge::ChangeHash>),
-}
-
-/// What `namespace` has to send after `sent`, read under one lock with the heads it reaches.
-/// Until the record is `founded`, the whole tree goes out once it holds one.
-fn outgoing(namespace: &mut Namespace, sent: &[automerge::ChangeHash], founded: bool) -> Outgoing {
-    let heads = namespace.heads();
-    if heads == sent {
-        return Outgoing::Nothing;
-    }
-    if founded {
-        let (bytes, reached) = namespace.changes_since_within(sent, WRITE_BUDGET);
-        if bytes.is_empty() {
-            return Outgoing::Covered(heads);
-        }
-        return Outgoing::Write(DocumentMutation::Incremental(bytes), reached);
-    }
-    if !namespace.holds_tree() {
-        return Outgoing::Nothing;
-    }
-    Outgoing::Write(DocumentMutation::Snapshot(namespace.save()), heads)
-}
-
-/// The record's heads as the namespace's change hashes: the same changes,
-/// since the namespace and the record are one Automerge document.
-fn record_heads(heads: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
-    heads
-        .iter()
-        .map(|head| automerge::ChangeHash(*head))
-        .collect()
+    written
 }
 
 impl Drop for Sync {
@@ -607,14 +732,31 @@ impl Drop for Sync {
     }
 }
 
+/// Whether the host's `answer` about a record of the tree (the frames it sent of it, `None`
+/// while it owes one) says the workspace has none of it.
+fn holds_none(answer: Option<DocumentAnswer>) -> bool {
+    answer == Some(DocumentAnswer::Sent { frames: 0 })
+}
+
 #[cfg(test)]
 mod tests {
+    use tilo_relay_protocol::DocumentAnswer;
+
+    #[test]
+    fn a_tree_the_host_sent_but_that_does_not_read_here_is_not_founded_again() {
+        // The host owes its answer still: nothing is known.
+        assert!(!super::holds_none(None));
+        // It sent frames of the tree: the workspace holds one, though it may not read here
+        // yet (a write still on its way), and a tree founded now would go out whole beside it.
+        assert!(!super::holds_none(Some(DocumentAnswer::Sent { frames: 3 })));
+        // It sent none: the workspace has no tree, and this device's first change founds it.
+        assert!(super::holds_none(Some(DocumentAnswer::Sent { frames: 0 })));
+        // It is another person's own: nothing of it is this device's to found.
+        assert!(!super::holds_none(Some(DocumentAnswer::NotYours)));
+    }
+
     use super::*;
 
-    /// A namespace that changed before it merged the record (its own start, a
-    /// file copied in while the host had not answered) sends those changes
-    /// with its next write: the record then holds every file, with nothing a
-    /// write of this device builds on missing.
     #[test]
     fn a_step_that_walks_the_tree_waits_twenty_times_its_cost_and_at_least_its_floor() {
         let mut paced = super::Paced::new(Duration::from_secs(1));
@@ -630,36 +772,26 @@ mod tests {
         assert!(paced.due(start + Duration::from_millis(4200)));
     }
 
+    /// A namespace that changed before it merged the records (its own start, a file copied in
+    /// while the host had not answered) sends those changes with its next writes: each record
+    /// then holds every change of it, with nothing a write of this device builds on missing.
     #[test]
-    fn a_tree_the_host_sent_but_that_does_not_read_here_is_not_founded_again() {
-        // The host owes its answer still: nothing is known.
-        assert!(!super::holds_none(None));
-        // It sent frames of the tree: the workspace holds one, though it may not read here
-        // yet (a write still on its way), and a tree founded now would go out whole beside it.
-        assert!(!super::holds_none(Some(
-            tilo_relay_protocol::DocumentAnswer::Sent { frames: 3 }
-        )));
-        // It sent none: the workspace has no tree, and this device's first change founds it.
-        assert!(super::holds_none(Some(
-            tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 }
-        )));
-    }
-
-    #[test]
-    fn what_a_namespace_made_before_the_record_arrived_goes_out() {
-        // The record as a page that opened Files founded it: no tree yet.
-        let mut founding = automerge::AutoCommit::new();
-        let _ = founding.commit();
-        let founded = founding.save();
-        let heads: Vec<[u8; 32]> = founding.get_heads().iter().map(|head| head.0).collect();
-
-        let mut namespace = Namespace::new("laptop").unwrap();
-        namespace
-            .adopt_or_merge_remote_and_resolve(&founded)
+    fn what_a_namespace_made_before_the_records_arrived_goes_out() {
+        // The workspace's tree as another device wrote it: its own record and one chunk.
+        let mut desktop = Namespace::new("desktop").unwrap();
+        desktop
+            .create_file(tilo_fs::namespace::ROOT_INO, "handbook.md.txt", None, 1, 1)
             .unwrap();
-        let sent = record_heads(&heads);
+        let founded: BTreeMap<TreeChunk, (Vec<u8>, Vec<automerge::ChangeHash>)> = desktop
+            .record_heads()
+            .into_iter()
+            .map(|(chunk, heads)| (chunk, (desktop.save_record(chunk).unwrap(), heads)))
+            .collect();
+
+        // This device copied a file in before the records arrived, then merged them.
+        let mut laptop = Namespace::new("laptop").unwrap();
         let hash = iroh_blobs::Hash::new(b"net 30");
-        namespace
+        laptop
             .create_file(
                 tilo_fs::namespace::ROOT_INO,
                 "contract.txt",
@@ -668,115 +800,58 @@ mod tests {
                 1,
             )
             .unwrap();
+        laptop
+            .take_records(
+                founded
+                    .iter()
+                    .map(|(chunk, (bytes, _))| (*chunk, bytes.clone()))
+                    .collect(),
+            )
+            .unwrap();
+        let known: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> = founded
+            .iter()
+            .map(|(chunk, (_, heads))| (*chunk, heads.clone()))
+            .collect();
 
-        // What the host keeps: the record as founded, then this device's write.
-        let mut record =
-            automerge::AutoCommit::load(&[founded, namespace.changes_since(&sent)].concat())
-                .unwrap();
-        assert!(
-            record.get_missing_deps(&[]).is_empty(),
-            "every change the record took builds on changes it holds"
-        );
-        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
-        assert!(
-            tree.nodes
-                .values()
-                .any(|node| node.name.as_bytes() == b"contract.txt" && node.hash.is_some()),
-            "{tree:?}"
-        );
+        // What the host keeps: each record as founded, then this device's writes of it.
+        let mut host = Namespace::from_records(
+            "host",
+            founded
+                .into_iter()
+                .map(|(chunk, (bytes, _))| (chunk, bytes)),
+        )
+        .unwrap();
+        let writes = laptop.document_writes(&known);
+        assert!(!writes.is_empty());
+        host.take_records(writes.into_iter().map(|w| (w.chunk, w.changes)).collect())
+            .unwrap();
+        for name in ["contract.txt", "handbook.md.txt"] {
+            assert!(
+                host.lookup(tilo_fs::namespace::ROOT_INO, name).is_some(),
+                "{name} reached the host"
+            );
+        }
+        assert_eq!(host.record_heads(), laptop.record_heads());
     }
+
     #[test]
-    fn changes_larger_than_one_write_go_out_over_several() {
-        let mut founding = automerge::AutoCommit::new();
-        let _ = founding.commit();
-        let founded = founding.save();
-        let heads: Vec<[u8; 32]> = founding.get_heads().iter().map(|head| head.0).collect();
+    fn each_record_is_kept_in_a_file_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
         let mut namespace = Namespace::new("laptop").unwrap();
         namespace
-            .adopt_or_merge_remote_and_resolve(&founded)
+            .create_file(tilo_fs::namespace::ROOT_INO, "a.txt", None, 1, 1)
             .unwrap();
-        let mut sent = record_heads(&heads);
-        // A checkout while the tree could not go out: many files, many changes.
-        for n in 0..200_u32 {
-            let hash = iroh_blobs::Hash::new(n.to_le_bytes());
-            namespace
-                .create_file(
-                    tilo_fs::namespace::ROOT_INO,
-                    format!("file-{n}.rs"),
-                    Some(&hash),
-                    4,
-                    1,
-                )
-                .unwrap();
-            let _ = namespace.heads();
+        for chunk in namespace.records() {
+            std::fs::write(
+                dir.path().join(format!("{chunk}.automerge")),
+                namespace.save_record(chunk).unwrap(),
+            )
+            .unwrap();
         }
-        let whole = namespace.changes_since(&sent).len();
-        let budget = whole / 5;
-        let mut record = founded;
-        let mut writes = 0;
-        while namespace.heads() != sent {
-            let (bytes, reached) = namespace.changes_since_within(&sent, budget);
-            assert!(
-                !bytes.is_empty(),
-                "a write carries something until the heads are reached"
-            );
-            assert!(
-                bytes.len() <= budget,
-                "{} bytes over a budget of {budget}",
-                bytes.len()
-            );
-            record.extend_from_slice(&bytes);
-            sent = reached;
-            writes += 1;
-            assert!(writes < 50, "the writes reach the namespace's heads");
-        }
-        assert!(writes > 1, "the backlog went out in one write");
-        let mut record = automerge::AutoCommit::load(&record).unwrap();
-        assert!(
-            record.get_missing_deps(&[]).is_empty(),
-            "each write builds on the last"
-        );
-        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
-        let files = tree
-            .nodes
-            .values()
-            .filter(|node| node.name.starts_with(b"file-"))
-            .count();
-        assert_eq!(files, 200, "every file reached the record");
-    }
-
-    #[test]
-    fn a_change_made_while_a_write_goes_out_goes_out_next() {
-        let mut namespace = Namespace::new("laptop").unwrap();
-        let file = |namespace: &mut Namespace, name: &str| {
-            let hash = iroh_blobs::Hash::new(name.as_bytes());
-            namespace
-                .create_file(tilo_fs::namespace::ROOT_INO, name, Some(&hash), 4, 1)
-                .unwrap();
-        };
-        file(&mut namespace, "contract.txt");
-        let Outgoing::Write(DocumentMutation::Snapshot(first), covered) =
-            outgoing(&mut namespace, &[], false)
-        else {
-            panic!("the first tree goes out whole");
-        };
-        // The mount writes another file before the write's answer is back.
-        file(&mut namespace, "handbook.md");
-        let Outgoing::Write(DocumentMutation::Incremental(next), _) =
-            outgoing(&mut namespace, &covered, true)
-        else {
-            panic!("the file written meanwhile is still to send");
-        };
-
-        // What the host keeps: both writes, every change built on one it holds.
-        let mut record = automerge::AutoCommit::load(&[first, next].concat()).unwrap();
-        assert!(record.get_missing_deps(&[]).is_empty());
-        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
-        for name in [&b"contract.txt"[..], b"handbook.md"] {
-            assert!(
-                tree.nodes.values().any(|node| node.name.as_bytes() == name),
-                "{tree:?}"
-            );
-        }
+        std::fs::write(dir.path().join("stray"), b"x").unwrap();
+        let read = Namespace::from_records("laptop", kept_documents(dir.path()).unwrap()).unwrap();
+        let mut read = read;
+        assert!(read.lookup(tilo_fs::namespace::ROOT_INO, "a.txt").is_some());
+        assert_eq!(read.record_heads(), namespace.record_heads());
     }
 }

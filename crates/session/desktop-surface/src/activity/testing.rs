@@ -568,6 +568,7 @@ pub(crate) fn detached_records(
             Some(super::DetachedRecordHistory {
                 app: RECORD_APP.to_owned(),
                 checkout,
+                tree_chunks: Vec::new(),
                 document,
             })
         })

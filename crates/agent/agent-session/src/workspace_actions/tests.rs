@@ -435,6 +435,13 @@ fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
         !super::opens_as_its_own(files, &tree),
         "the tree of the workspace's folder is read where it is kept, never mounted as Files'"
     );
+    for chunk in [1, 2] {
+        let record = fs_protocol::tree::chunk_document_id(chunk);
+        assert!(
+            !super::opens_as_its_own(files, &record),
+            "chunk {chunk} of the tree is the folder too, read record by record where it is kept"
+        );
+    }
 }
 
 #[test]

@@ -98,6 +98,10 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+# A synced folder's tree written through a session, as a computer's folder writes it.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+iroh-blobs.workspace = true
+fs-protocol = { path = "../../system/fs-protocol" }
 pollster.workspace = true
 # A workspace whose governance admits a newcomer after a record reached it.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }

@@ -14,12 +14,13 @@ use iroh_blobs::Hash;
 
 use crate::namespace::{Namespace, ROOT_INO, hash_from_hex};
 
-/// A file put into the tree: the change that puts it there, and where in the
+/// A file put into the tree: the changes that put it there, and where in the
 /// tree it now is.
 pub struct Placed {
-    /// The change to the tree's record, as the namespace saves one: no heads
-    /// to merge it against, the record it belongs to already the reader's.
-    pub change: Vec<u8>,
+    /// What each record of the tree changed: the chunk the file is in, the
+    /// chunks of any folder made on the way, and the tree's own record when a
+    /// new chunk was started.
+    pub writes: Vec<crate::namespace::ResourceWrite>,
     /// Where the file is, as a path from the workspace's folder
     /// (`docs/2026/plan.md`).
     pub path: String,
@@ -64,6 +65,7 @@ impl Namespace {
             return Err(refused(format!("{name:?} is no file's name")));
         }
         let hash = hash_of(hash).ok_or_else(|| refused("the content's hash is not one"))?;
+        let before = self.record_heads();
         let mut parent = ROOT_INO;
         for folder in to.split('/').filter(|folder| !folder.is_empty()) {
             if !plain(folder) {
@@ -97,13 +99,13 @@ impl Namespace {
                 false
             }
         };
-        let change = self.save_incremental();
+        let writes = self.document_writes(&before);
         let path = match to.trim_matches('/') {
             "" => name.to_owned(),
             folder => format!("{folder}/{name}"),
         };
         Ok(Placed {
-            change,
+            writes,
             path,
             replaced,
         })
@@ -120,12 +122,17 @@ mod tests {
         hex::encode([fill; 32])
     }
 
-    /// A namespace read back from what `change` saved over `base`.
-    fn applied(base: &[u8], change: &[u8], author: &str) -> Namespace {
+    /// A namespace read back from what `writes` changed over `base`.
+    fn applied(base: &[u8], writes: &[crate::namespace::ResourceWrite], author: &str) -> Namespace {
         let mut namespace = Namespace::from_bytes(author, base).unwrap();
-        if !change.is_empty() {
-            namespace.apply_incremental(change).unwrap();
-        }
+        namespace
+            .take_records(
+                writes
+                    .iter()
+                    .map(|write| (write.chunk, write.changes.clone()))
+                    .collect(),
+            )
+            .unwrap();
         namespace
     }
 
@@ -148,12 +155,13 @@ mod tests {
     #[test]
     fn a_put_file_is_a_node_of_the_tree_its_members_read() {
         let mut namespace = Namespace::new("host").unwrap();
+        let base = namespace.save();
         let put = namespace
             .put_file("", "report.txt", &hash(1), 12, 7)
             .unwrap();
         assert_eq!(put.path, "report.txt");
         assert!(!put.replaced);
-        let mut read = applied(&namespace.save(), &put.change, "member");
+        let mut read = applied(&base, &put.writes, "member");
         let (_, content, size) = at(&mut read, &["report.txt"]).expect("the file is in the tree");
         assert_eq!(content, hash_of(&hash(1)).unwrap());
         assert_eq!(size, 12);

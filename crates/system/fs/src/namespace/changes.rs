@@ -52,6 +52,14 @@ impl ChangeTrackedDoc {
         }
     }
 
+    /// A document announcing on `with`'s channel: one more record of the same namespace.
+    pub(super) fn sharing(doc: AutoCommit, with: &Self) -> Self {
+        Self {
+            doc,
+            changes: Arc::clone(&with.changes),
+        }
+    }
+
     /// Tell subscribers the namespace may have changed: for state beside
     /// the document that subscribers also persist (sync progress).
     pub(super) fn announce(&self) {
@@ -83,7 +91,7 @@ impl ChangeTrackedDoc {
     /// change names the framework's direct edit of a record, which no app
     /// action produced, as every change a device signs must
     /// ([`collab_types::check_claimed`]).
-    fn commit_named(&mut self) {
+    pub(super) fn commit_named(&mut self) {
         self.doc.commit_with(
             CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
         );

@@ -35,7 +35,7 @@ pub use files::{
     AttributedWriter, CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution,
     ConflictStatus, ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
     FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V4,
-    FILE_MUTATION_TRANSACTION_VERSION, FILE_MUTATION_TRANSACTION_VERSION_V4, FileActor,
+    FILE_MUTATION_TRANSACTION_VERSION, FILE_MUTATION_TRANSACTION_VERSION_V4, FIRST_TREE_CHUNK, FileActor,
     FileAttributionV1, FileBindingV1, FileConflictV1, FileDocumentError, FileDocumentId,
     FileMetadataV1, FileMutationOperation, FileMutationTransaction, FileMutationTransactionError,
     FileMutationTransactionManifest, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,
@@ -44,7 +44,7 @@ pub use files::{
     MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES, MAX_HISTORY_PREVIEW_BYTES,
     MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_FILES, MERGE_PREFLIGHT_VERSION,
     MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
-    TransactionFile, TransactionFileRole, prefer_conflict_resolution,
+    TransactionFile, TransactionFileRole, TreeChunk, prefer_conflict_resolution,
 };
 pub use projection::{
     AVAILABILITY_CONTROL_XATTR, AVAILABILITY_XATTR, AvailabilityPolicy, AvailabilityProjectionV1,
@@ -53,4 +53,4 @@ pub use projection::{
     ProjectedReplicaEvidence, ProjectedTransfer, ProjectionError, Residency, SYNC_XATTR, SyncState,
     THUMB_XATTR, TransferPhase, TransferProgress,
 };
-pub use tree::{FilesTree, Tree, TreeEntry};
+pub use tree::{FilesTree, Tree, TreeChunks, TreeEntry};

@@ -65,14 +65,35 @@ pub fn person_document_id(kind: &str) -> String {
     format!("derived:{kind}@{PERSON_RESOURCE_BASE}")
 }
 
-/// The kind a person record's id names; `None` for any other record.
+/// The kind a person record's id names; `None` for any other record. A chunk of one
+/// (`derived:chunk.<n>@<record>`, `n` from 1) is part of the record it splits, and names
+/// the same kind.
 #[must_use]
 pub fn person_resource_type(record: &str) -> Option<&str> {
+    let record = chunk_base(record);
     record
         .strip_prefix("derived:")?
         .strip_suffix(PERSON_RESOURCE_BASE)?
         .strip_suffix('@')
         .filter(|kind| !kind.is_empty() && !kind.contains('@'))
+}
+
+/// The record `record` is a chunk of, for a chunk record id
+/// (`derived:chunk.<n>@<record>`, `n` from 1); `record` itself otherwise.
+fn chunk_base(record: &str) -> &str {
+    let Some(derived) = record.strip_prefix("derived:") else {
+        return record;
+    };
+    let Some((role, base)) = derived.split_once('@') else {
+        return record;
+    };
+    let Some(number) = role.strip_prefix("chunk.") else {
+        return record;
+    };
+    let canonical = !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && !number.starts_with('0');
+    if canonical { base } else { record }
 }
 
 #[cfg(test)]
@@ -96,6 +117,31 @@ mod tests {
                 "derived:notes@tab:000000000000005c",
             ] {
                 assert_eq!(person_resource_type(other), None, "{other}");
+            }
+        }
+
+        phase a_chunk_of_a_persons_record_belongs_to_the_record_it_splits;
+        // A record the platform splits into chunks keeps them as records of their own
+        // (`derived:chunk.<n>@<record>`, `n` from 1): the record's own is chunk 0 and
+        // names the record's kind, and so does each chunk of it.
+        {
+            let tree = person_document_id("files.tree");
+            for chunk in [1, 2, 77] {
+                let record = format!("derived:chunk.{chunk}@{tree}");
+                assert_eq!(
+                    person_resource_type(&record),
+                    Some("files.tree"),
+                    "{record} names its record's kind"
+                );
+            }
+            assert_eq!(person_resource_type(&tree), Some("files.tree"), "chunk 0 is the record");
+            for other in [
+                format!("derived:chunk.01@{tree}"),
+                format!("derived:chunk.@{tree}"),
+                "derived:chunk.1@derived:chunk.2@derived:files.tree@tab:0000000000000000".to_owned(),
+                "derived:chunk.1@nonsense".to_owned(),
+            ] {
+                assert_eq!(person_resource_type(&other), None, "{other}");
             }
         }
 

@@ -10,15 +10,28 @@
 //! as if it had been copied in there. No app's record is made: what opens the
 //! file afterwards is the person's choice, from the file itself.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use automerge::AutoCommit;
 use collab_types::DocumentMutation;
+use fs_protocol::files::TreeChunk;
+use fs_protocol::tree;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_document::{FILES_APP, record as tree_record};
+use tilo_fs::tree_document::{FILES_APP, record as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 
-use super::{Needs, Outcome, Worker, commit_failed, invoke_arguments};
+use super::{Outcome, Worker, commit_failed, invoke_arguments};
+
+/// The records of a workspace's tree as the host holds them: each with the
+/// number of its chunk, the tree's own record first, and the chunks the host
+/// holds at all, each with the heads it stands at.
+type HeldTree = (Vec<(TreeChunk, Vec<u8>)>, HeldChunks);
+
+/// The chunks of a workspace's tree the host holds, each with the heads it stands at.
+pub(super) type HeldChunks = BTreeMap<TreeChunk, Vec<[u8; 32]>>;
 
 /// What a `files` open names of the file it puts into the workspace.
 pub(super) struct Putting {
@@ -104,17 +117,130 @@ impl Putting {
 }
 
 impl Worker {
-    /// The record of `workspace`'s files.
-    fn tree_route(workspace: &str) -> DocumentRoute {
+    /// The record of `workspace`'s files: the tree's own (chunk 0), which names
+    /// the chunks that hold its nodes.
+    pub(super) fn tree_route(workspace: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: FILES_APP.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: tree_record(),
+            record: tree_document(),
         }
     }
 
+    /// The record of chunk `chunk` of `workspace`'s files.
+    pub(super) fn tree_chunk_route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
+        DocumentRoute {
+            record: tree::chunk_document_id(chunk),
+            ..Self::tree_route(workspace)
+        }
+    }
+
+    /// The tree of `workspace`, as the records this host holds of it read, with
+    /// which records those are; `None` for a tree nobody wrote yet, which the
+    /// put founds.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn tree_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+    ) -> Result<(Namespace, Option<BTreeSet<TreeChunk>>), Outcome> {
+        let (tree, held) = self.tree_with_heads(workspace_id, workspace)?;
+        Ok((tree, held.map(|held| held.into_keys().collect())))
+    }
+
+    /// [`Self::tree_in_workspace`], with the heads each held record stands at.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn tree_with_heads(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+    ) -> Result<(Namespace, Option<HeldChunks>), Outcome> {
+        let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
+        let Some((records, held)) = self.tree_records(workspace_id, workspace)? else {
+            let tree = Namespace::new(&author)
+                .map_err(|error| refused(format!("a tree could not be founded: {error}")))?;
+            return Ok((tree, None));
+        };
+        let tree = Namespace::from_records(&author, records)
+            .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
+        Ok((tree, Some(held)))
+    }
+
+    /// The records of `workspace`'s tree that this host holds, the tree's own
+    /// first, with which of them it holds; `None` for a tree nobody wrote yet. A
+    /// chunk the tree's own record lists that the host holds none of is read as
+    /// an empty one: the write founds it, and what other members write there
+    /// merges with it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn tree_records(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+    ) -> Result<Option<HeldTree>, Outcome> {
+        let Some((index, heads)) =
+            self.saved_here(workspace_id, &Self::tree_route(workspace), true)?
+        else {
+            return Ok(None);
+        };
+        let doc = AutoCommit::load(&index)
+            .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
+        let mut records = vec![(0, index)];
+        let mut held = BTreeMap::from([(0, heads)]);
+        for chunk in tree::listed_chunks(&doc) {
+            match self.saved_here(
+                workspace_id,
+                &Self::tree_chunk_route(workspace, chunk),
+                false,
+            )? {
+                Some((bytes, heads)) => {
+                    held.insert(chunk, heads);
+                    records.push((chunk, bytes));
+                }
+                None => records.push((chunk, AutoCommit::new().save())),
+            }
+        }
+        Ok(Some((records, held)))
+    }
+
+    /// Commit `writes` to `workspace`'s tree, one record each: a record not in `held` (none
+    /// for a tree nobody wrote yet) is founded first with the empty genesis every writer makes
+    /// alike, then takes what was written there, as a record founded on the session is.
+    pub(super) fn commit_tree_writes(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+        held: Option<&BTreeSet<TreeChunk>>,
+        writes: Vec<tilo_fs::namespace::ResourceWrite>,
+    ) -> Result<(), String> {
+        for write in writes {
+            if write.changes.is_empty() {
+                continue;
+            }
+            let route = Self::tree_chunk_route(workspace, write.chunk);
+            if !held.is_some_and(|held| held.contains(&write.chunk)) {
+                let genesis = DocumentMutation::Snapshot(AutoCommit::new().save());
+                self.commit(workspace_id, &route, &genesis)?;
+            }
+            self.commit(
+                workspace_id,
+                &route,
+                &DocumentMutation::Incremental(write.changes),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Answer a Files open naming a file: put it into `named`'s tree at the
-    /// folder and under the name it asks for, founding the tree's record when
+    /// folder and under the name it asks for, founding the tree's records when
     /// the workspace holds none, and answer where it now is.
     ///
     /// # Errors
@@ -166,41 +292,20 @@ impl Worker {
         // A file of the tree is named by its content manifest, as a mounted
         // computer names one, so every member reads it the same way.
         let manifest = manifest_of(&store, &putting.hash).map_err(refused)?;
-        let record = tree_record();
-        let route = Self::tree_route(named);
         // The tree of a governed workspace is sealed: its keys are what
         // reading it and writing to it need.
-        let held = self
-            .refresh(
-                workspace_id,
-                Needs::Act {
-                    app_id: FILES_APP,
-                    record: &record,
-                },
-            )
-            .map_err(Outcome::Rejected)?;
-        let existing = match held.document(&route) {
-            Ok((bytes, _)) => Some(bytes),
-            Err(_) if !self.held_or_owed(workspace_id, &route)? => None,
-            Err(why) => return Err(refused(why)),
-        };
-        let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
-        let mut tree = match &existing {
-            Some(bytes) => Namespace::from_bytes(&author, bytes)
-                .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?,
-            None => Namespace::new(&author)
-                .map_err(|error| refused(format!("a tree could not be founded: {error}")))?,
-        };
+        let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
         let mtime = tilo_clock::unix_now_ns() / 1_000_000;
         let put = tree
             .put_file(&putting.dir, &putting.name, &manifest, size, mtime)
             .map_err(refused)?;
-        let mutation = if existing.is_some() {
-            DocumentMutation::Incremental(put.change)
-        } else {
-            DocumentMutation::Snapshot(tree.save())
+        let writes = match &held {
+            Some(_) => put.writes,
+            // A tree founded now: every record of it from nothing, the root id
+            // the tree's own record carries included.
+            None => tree.document_writes(&std::collections::BTreeMap::new()),
         };
-        self.commit(workspace_id, &route, &mutation)
+        self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
         Ok((
             ActionOutput {

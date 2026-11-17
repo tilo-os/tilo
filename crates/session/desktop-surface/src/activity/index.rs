@@ -70,8 +70,25 @@ pub struct DetachedRecordHistory {
     pub app: String,
     pub checkout: DocumentCheckout,
     pub document: Option<AutoCommit>,
+    /// A workspace tree's chunk records, each read on its own beside the tree's own record in
+    /// `document`; empty for every other record.
+    pub tree_chunks: Vec<(fs_protocol::files::TreeChunk, AutoCommit)>,
 }
 impl DetachedRecordHistory {
+    /// A record read as one document: every record but a workspace's tree.
+    pub fn new(
+        app: impl Into<String>,
+        checkout: DocumentCheckout,
+        document: Option<AutoCommit>,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            checkout,
+            document,
+            tree_chunks: Vec::new(),
+        }
+    }
+
     pub fn origin(&self) -> HistoryOrigin {
         HistoryOrigin::AppRecord {
             app: self.app.clone(),
@@ -305,9 +322,18 @@ impl Default for WorkspaceHistoryIndex {
 /// coalesced as Files' own history coalesces them, attributed to the person
 /// whose device signed the version and the agent that wrote for them when one
 /// did.
-fn folder_rows(doc: &AutoCommit, authors: &AuthorDirectory, limit: usize) -> Vec<HistoryEntry> {
-    ui::history_source::folder::entries(doc, authors)
-        .into_iter()
+fn folder_rows(
+    doc: &AutoCommit,
+    chunks: &[(fs_protocol::files::TreeChunk, AutoCommit)],
+    authors: &AuthorDirectory,
+    limit: usize,
+) -> Vec<HistoryEntry> {
+    let rows = if chunks.is_empty() {
+        ui::history_source::folder::entries_in(doc, authors)
+    } else {
+        ui::history_source::folder::entries_in_chunks(doc, chunks, authors)
+    };
+    rows.into_iter()
         .rev()
         .take(limit)
         .collect::<Vec<_>>()
@@ -452,7 +478,7 @@ impl WorkspaceHistoryIndex {
             // nothing of them. Their changes are the versions it holds, one
             // row per file and session, as Files' own history lists them.
             let folder = if record.checkout.kind.as_str() == fs_protocol::tree::TREE_KIND {
-                folder_rows(doc, &self.authors, limit)
+                folder_rows(doc, &record.tree_chunks, &self.authors, limit)
             } else {
                 Vec::new()
             };
@@ -697,7 +723,7 @@ mod folder_rows_tests {
             let mut doc = AutoCommit::new();
             let mut tree = fs_protocol::tree::Tree::default();
             let placed = fs_protocol::tree::place(
-                &mut doc,
+                (&mut doc, 1),
                 &mut tree,
                 fs_protocol::tree::ROOT_ID,
                 "terms.txt",
@@ -727,7 +753,7 @@ mod folder_rows_tests {
                 )),
             );
 
-            let rows = folder_rows(&doc, &authors(), 100);
+            let rows = folder_rows(&doc, &[], &authors(), 100);
             assert_eq!(rows.len(), 1, "one row for the one session's run");
             assert_eq!(rows[0].summary, "Edited terms.txt");
             let parts = ui::author_parts(&rows[0].author);
@@ -747,7 +773,7 @@ mod folder_rows_tests {
             let mut tree = fs_protocol::tree::Tree::default();
             for name in ["terms.txt", "logo.png"] {
                 let placed = fs_protocol::tree::place(
-                    &mut doc,
+                    (&mut doc, 1),
                     &mut tree,
                     fs_protocol::tree::ROOT_ID,
                     name,
@@ -766,7 +792,7 @@ mod folder_rows_tests {
                     None,
                 );
             }
-            let rows = folder_rows(&doc, &authors(), 100);
+            let rows = folder_rows(&doc, &[], &authors(), 100);
             assert_eq!(rows.len(), 2);
             assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
             assert!(rows.iter().any(|row| row.summary == "Edited terms.txt"));

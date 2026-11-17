@@ -2,11 +2,10 @@
 //! a closed mark means every operation of the epoch arrived, an open one that it
 //! may have only some.
 
-use automerge::transaction::Transactable;
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
-use super::Namespace;
+use super::{Namespace, Obj};
 
 const CHANGESET_PREFIX: &str = "changeset/";
 
@@ -30,17 +29,18 @@ impl Namespace {
         };
         let key = format!("{CHANGESET_PREFIX}{}", hex::encode(device));
         self.doc
-            .put(&ROOT, key.as_str(), ScalarValue::Bytes(bytes))
+            .put(&Obj::index(), key.as_str(), ScalarValue::Bytes(bytes))
             .is_ok()
     }
 
     pub fn changeset_marks(&self) -> Vec<([u8; 32], ChangesetMark)> {
         self.doc
-            .keys(&ROOT)
+            .keys(&Obj::index())
+            .into_iter()
             .filter_map(|key| {
                 let device = key.strip_prefix(CHANGESET_PREFIX)?;
                 let device: [u8; 32] = hex::decode(device).ok()?.try_into().ok()?;
-                match self.doc.get(&ROOT, key.as_str()) {
+                match self.doc.get(&Obj::index(), key.as_str()) {
                     Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                         ScalarValue::Bytes(bytes) => {
                             Some((device, postcard::from_bytes(bytes).ok()?))

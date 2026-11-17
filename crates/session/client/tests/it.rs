@@ -54,6 +54,8 @@ mod entry;
 mod fetch_proxy;
 #[path = "first_landing.rs"]
 mod first_landing;
+#[path = "folder_scale.rs"]
+mod folder_scale;
 #[path = "forgotten_device.rs"]
 mod forgotten_device;
 #[path = "fresh_person.rs"]

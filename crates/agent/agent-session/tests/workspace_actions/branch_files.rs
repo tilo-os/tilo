@@ -12,18 +12,39 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use serde_json::json;
 use std::sync::Arc;
-use tilo_fs::tree_document::record as tree_record;
+use tilo_fs::tree_document::record as tree_document;
 
-/// The tree of `workspace`'s Files as its host keeps it; empty while it keeps none.
+/// The tree of `workspace`'s Files as its host keeps it, its own record and every chunk it
+/// lists; empty while it keeps none.
 async fn tree_of(on_relay: &OnRelay, workspace: &str) -> Tree {
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
-    workspaces
-        .resource_document(workspace, FILES_APP, &tree_record())
+    let Some(index) = workspaces
+        .resource_document(workspace, FILES_APP, &tree_document())
         .await
         .ok()
         .flatten()
-        .and_then(|record| Tree::of_document(&record).ok())
-        .unwrap_or_default()
+        .and_then(|record| automerge::AutoCommit::load(&record).ok())
+    else {
+        return Tree::default();
+    };
+    let mut tree = fs_protocol::TreeChunks::default();
+    tree.read_index(&index);
+    for chunk in fs_protocol::tree::listed_chunks(&index) {
+        let doc = workspaces
+            .resource_document(
+                workspace,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk),
+            )
+            .await
+            .ok()
+            .flatten()
+            .and_then(|record| automerge::AutoCommit::load(&record).ok());
+        if let Some(doc) = doc {
+            tree.read_chunk(chunk, &doc);
+        }
+    }
+    tree.tree()
 }
 
 /// The file at `dir/name` in `tree`; `None` when it is not there.

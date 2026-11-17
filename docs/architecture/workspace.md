@@ -784,7 +784,8 @@ there before it moves into parts:
 | Tasks | (before) every issue with its body, thread, links and attachment references | issues | 6.7 ms to apply and a 711 ms load at 2,500 issues (311 KB saved, 2.6 MB with history), every holder |
 | Tasks | (now) projects and areas; issues in parts of at most 500 issues or 512 KiB of text | parts | one part's cost: the same bytes and record size at 10× the issues |
 | Notes | every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole record per change |
-| Files (folder) | every file and folder node of the workspace | files | 28 MB at 19,513 files; split per record in its own change |
+| Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole record per change |
+| Files (folder) | (now) the tree's own record, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
 | Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
 | Feeds | every article with its full text | articles | grows until its feed is removed |
 | Messages | every conversation with every message | messages | grows without bound |
@@ -800,6 +801,21 @@ Binary content (attachments, images, file contents) is already a
 content-addressed blob that the record only names (`Bytes` above 1 KiB, the
 folder's iroh-blobs hashes), except Music's playlist covers and Contacts'
 portraits, which are inline data.
+
+A workspace's folder is split another way: its tree outgrows a record by its
+files, not by a history that only grows at one end, and a file anywhere in it
+is written again. So the tree is chunks (`fs_protocol::tree`). The tree's own record holds the
+root's identity and lists the chunks; each chunk is a record of its own
+(`derived:chunk.<n>@` the tree's record) holding up to about a thousand nodes
+with their versions, attributes and leases. A node lives in the chunk its
+record id names, chosen when it is made (the newest chunk while it has room),
+and never moves, so renaming, moving, editing or deleting a file is a change
+of that one chunk. Writing a file then costs what its chunk costs, whatever
+the folder holds: one change sent, one chunk's journal appended, one chunk
+compacted and sealed when its history fills, and one chunk read again by a
+page or a host that follows the folder. A computer's folder sends what a burst
+of writes changed as one write per chunk; who wrote each file is in its
+version, not in how the writes were grouped.
 
 ## What a unit and a workspace's keys cost
 

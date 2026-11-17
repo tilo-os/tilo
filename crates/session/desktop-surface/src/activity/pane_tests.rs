@@ -617,10 +617,8 @@ mod tests {
                 .unwrap();
             record.commit();
             let checkout = ui::DocumentCheckout::new(DocumentId::for_tab(1), ui::ResourceType::new("test"));
-            let input = |app: &str, document| crate::activity::DetachedRecordHistory {
-                app: app.into(),
-                checkout: checkout.clone(),
-                document,
+            let input = |app: &str, document| {
+                crate::activity::DetachedRecordHistory::new(app, checkout.clone(), document)
             };
             let mut pane = native_pane();
             pane.refresh(&mut tree);
@@ -650,12 +648,7 @@ mod tests {
         pane
     }
 
-    fn agent_task_fixture() -> (
-        WorkspaceTree,
-        ResourceStore,
-        WorkspaceActivityPane,
-        DocumentId,
-    ) {
+    fn agent_task_fixture() -> (WorkspaceTree, ResourceStore, WorkspaceActivityPane, DocumentId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let records = ResourceStore::in_memory();
@@ -796,11 +789,11 @@ mod tests {
         records: &ResourceStore,
         record: &DocumentId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
-        vec![crate::activity::DetachedRecordHistory {
-            app: "org.tilo.Writer".to_string(),
-            checkout: ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document")),
-            document: records.read(record, Clone::clone),
-        }]
+        vec![crate::activity::DetachedRecordHistory::new(
+            "org.tilo.Writer",
+            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document")),
+            records.read(record, Clone::clone),
+        )]
     }
 
     fn detached_row(pane: &WorkspaceActivityPane, change: HistoryEntryId) -> usize {
@@ -884,10 +877,12 @@ mod tests {
         };
         write(&mut record, 2_000);
         // The host reads the record from its store on every refresh: a document of its own.
-        let read = |record: &mut automerge::AutoCommit| crate::activity::DetachedRecordHistory {
-            app: "so.tilo.notes".into(),
-            checkout: ui::DocumentCheckout::package_primary(ui::ResourceType::new("so.tilo.notes")),
-            document: Some(automerge::AutoCommit::load(&record.save()).unwrap()),
+        let read = |record: &mut automerge::AutoCommit| {
+            crate::activity::DetachedRecordHistory::new(
+                "so.tilo.notes",
+                ui::DocumentCheckout::package_primary(ui::ResourceType::new("so.tilo.notes")),
+                Some(automerge::AutoCommit::load(&record.save()).unwrap()),
+            )
         };
         let mut pane = native_pane();
         pane.refresh(&mut tree);

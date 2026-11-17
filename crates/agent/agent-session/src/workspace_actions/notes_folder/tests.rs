@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 use super::*;
-use automerge::transaction::Transactable as _;
-use automerge::{ObjType, ReadDoc as _};
 use fs_protocol::{
     ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
     FileVersionAttributionV1, FileVersionId, FileVersionV1,
@@ -26,12 +24,7 @@ fn notes_of(app: &TestApp<notes::NotesShell>) -> Vec<Note> {
 }
 
 /// A pass over every note and every note file, as the host's first pass over a workspace.
-fn reconcile_all(
-    tree: &mut Namespace,
-    history: &AutoCommit,
-    notes: &[Note],
-    mtime: u64,
-) -> Vec<NoteEdit> {
+fn reconcile_all(tree: &mut Namespace, notes: &[Note], mtime: u64) -> Vec<NoteEdit> {
     let mut files = files_of(tree);
     let mut dirty: BTreeMap<String, Option<Note>> =
         files.keys().map(|page| (page.clone(), None)).collect();
@@ -40,7 +33,7 @@ fn reconcile_all(
             .iter()
             .map(|note| (note.id.clone(), Some(note.clone()))),
     );
-    reconcile(tree, Some(history), &mut files, &dirty, mtime)
+    reconcile(tree, &mut files, &dirty, mtime)
 }
 
 fn page_of(app: &TestApp<notes::NotesShell>, title: &str) -> String {
@@ -59,12 +52,7 @@ fn file(tree: &mut Namespace, path: &str) -> Option<String> {
 
 /// A version of node `path`'s file written by Claude Code for the person at their device,
 /// as the folder records one when a file is written or deleted there.
-fn written_by_agent(
-    tree: &mut Namespace,
-    doc: &mut AutoCommit,
-    path: &str,
-    provenance: FileProvenance,
-) {
+fn written_by_agent(tree: &mut Namespace, path: &str, provenance: FileProvenance) {
     let ino = tree.resolve_path_ino(path).or_else(|| {
         // A deleted file is no longer at its path: its node is in the trash.
         let id = tree.directly_trashed().into_iter().next()?;
@@ -87,22 +75,7 @@ fn written_by_agent(
         metadata_hash: ContentHash([2; 32]),
         provenance,
     };
-    let history = match doc.get(automerge::ROOT, "history").unwrap() {
-        Some((automerge::Value::Object(ObjType::Map), id)) => id,
-        _ => doc
-            .put_object(automerge::ROOT, "history", ObjType::Map)
-            .unwrap(),
-    };
-    let node = doc
-        .put_object(&history, record.0.to_string(), ObjType::Map)
-        .unwrap();
-    let versions = doc.put_object(&node, "versions", ObjType::Map).unwrap();
-    doc.put(
-        &versions,
-        version.id.0.to_string(),
-        collab_types::canonical_bytes(&version).unwrap(),
-    )
-    .unwrap();
+    tree.append_version(version.clone()).unwrap();
     let attributed = FileVersionAttributionV1 {
         version_id: version.id,
         attribution: FileAttributionV1 {
@@ -111,14 +84,7 @@ fn written_by_agent(
             color: [10, 20, 30],
         },
     };
-    let map = doc.put_object(&node, "attributions", ObjType::Map).unwrap();
-    doc.put(
-        &map,
-        version.id.0.to_string(),
-        collab_types::canonical_bytes(&attributed).unwrap(),
-    )
-    .unwrap();
-    doc.commit();
+    tree.attribute_version(record, &attributed).unwrap();
 }
 
 /// Apply `edits` as Notes' own actions, and record what each agreed on, as the host does.
@@ -143,15 +109,14 @@ fn a_note_is_a_file_in_the_folder_and_the_hosts_own_write_is_no_change() {
     .unwrap();
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
-    let doc = AutoCommit::new();
-    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
+    let edits = reconcile_all(&mut tree, &notes_of(&app), 1);
     assert!(edits.is_empty(), "nothing asked of the notes");
     assert_eq!(
         file(&mut tree, "Notes/Terms.md").as_deref().map(str::trim),
         Some("Payment due net 30.")
     );
     tree.save();
-    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 2);
+    let edits = reconcile_all(&mut tree, &notes_of(&app), 2);
     assert!(edits.is_empty());
     assert!(
         tree.save_incremental().is_empty(),
@@ -169,8 +134,7 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
     .unwrap();
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
-    let mut doc = AutoCommit::new();
-    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &notes_of(&app), 1);
     // An agent writes the file through the mounted folder.
     let ino = tree.resolve_path_ino("Notes/Terms.md").unwrap();
     assert!(tree.import_document(
@@ -179,8 +143,8 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
         3,
         &tilo_content::ContentStore::memory(),
     ));
-    written_by_agent(&mut tree, &mut doc, "Notes/Terms.md", FileProvenance::Edit);
-    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 4);
+    written_by_agent(&mut tree, "Notes/Terms.md", FileProvenance::Edit);
+    let edits = reconcile_all(&mut tree, &notes_of(&app), 4);
     assert_eq!(edits.len(), 1);
     let edit = &edits[0];
     assert_eq!(edit.action, "write-note");
@@ -196,7 +160,7 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
     assert!(body.contains("net 45"), "{body}");
     assert!(body.contains("signed by both"), "{body}");
     tree.save();
-    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 5).is_empty());
+    assert!(reconcile_all(&mut tree, &notes_of(&app), 5).is_empty());
     assert!(
         tree.save_incremental().is_empty(),
         "the note written from the file comes back to the file as no change"
@@ -213,8 +177,7 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     .unwrap();
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
-    let doc = AutoCommit::new();
-    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
     app.call(
         "append-to-note",
@@ -224,7 +187,7 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     app.call("rename", json!({ "page": page, "title": "Payment terms" }))
         .unwrap();
     app.settle();
-    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 2).is_empty());
+    assert!(reconcile_all(&mut tree, &notes_of(&app), 2).is_empty());
     let written = file(&mut tree, "Notes/Payment terms.md").expect("renamed with its note");
     assert!(written.contains("Late fees apply."), "{written}");
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
@@ -240,22 +203,21 @@ fn a_deleted_file_deletes_its_note_and_undo_brings_both_back() {
     .unwrap();
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
-    let mut doc = AutoCommit::new();
-    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &notes_of(&app), 1);
     let ino = tree.resolve_path_ino("Notes/Terms.md").unwrap();
-    written_by_agent(&mut tree, &mut doc, "Notes/Terms.md", FileProvenance::Edit);
+    written_by_agent(&mut tree, "Notes/Terms.md", FileProvenance::Edit);
     assert!(tree.remove(ino));
-    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 2);
+    let edits = reconcile_all(&mut tree, &notes_of(&app), 2);
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].action, "delete");
     apply(&mut app, &mut tree, edits);
     assert!(notes_of(&app).is_empty(), "the note is deleted");
-    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 3).is_empty());
+    assert!(reconcile_all(&mut tree, &notes_of(&app), 3).is_empty());
 
     assert!(app.undo(), "Notes undoes the delete");
     app.settle();
     assert_eq!(notes_of(&app).len(), 1);
-    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 4).is_empty());
+    assert!(reconcile_all(&mut tree, &notes_of(&app), 4).is_empty());
     assert_eq!(
         file(&mut tree, "Notes/Terms.md").as_deref().map(str::trim),
         Some("Payment due net 30."),
@@ -273,12 +235,11 @@ fn a_note_deleted_in_notes_takes_its_file_to_the_trash() {
     .unwrap();
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
-    let doc = AutoCommit::new();
-    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
     app.call("delete", json!({ "page": page })).unwrap();
     app.settle();
-    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 2).is_empty());
+    assert!(reconcile_all(&mut tree, &notes_of(&app), 2).is_empty());
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
 }
 

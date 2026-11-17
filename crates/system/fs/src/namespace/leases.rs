@@ -17,12 +17,11 @@
 //! it installed and the tenancy it was written in, published in the same
 //! namespace change as the content itself.
 
-use automerge::transaction::Transactable;
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use fs_protocol::FileDocumentId;
+use automerge::{ScalarValue, Value};
+use fs_protocol::{FileDocumentId, TreeChunk};
 use serde::{Deserialize, Serialize};
 
-use super::Namespace;
+use super::{Namespace, Obj};
 
 const LEASE_PREFIX: &str = "lease/";
 const TENANCY_PREFIX: &str = "tenancy/";
@@ -104,9 +103,9 @@ struct FenceRecord {
 }
 
 /// Every concurrent value of a root-level scalar, decoded.
-fn all_values<T: for<'de> Deserialize<'de>>(ns: &Namespace, key: &str) -> Vec<T> {
+fn all_values<T: for<'de> Deserialize<'de>>(ns: &Namespace, chunk: TreeChunk, key: &str) -> Vec<T> {
     ns.doc
-        .get_all(&ROOT, key)
+        .get_all(&Obj::root(chunk), key)
         .map(|values| {
             values
                 .into_iter()
@@ -122,11 +121,18 @@ fn all_values<T: for<'de> Deserialize<'de>>(ns: &Namespace, key: &str) -> Vec<T>
         .unwrap_or_default()
 }
 
-fn put_value<T: Serialize>(ns: &mut Namespace, key: &str, value: &T) -> bool {
+/// Put `value` at `key` of chunk `chunk`'s root: a record's lease lives in its node's chunk,
+/// the workspace's authority in the tree's own record.
+fn put_value<T: Serialize>(ns: &mut Namespace, chunk: TreeChunk, key: &str, value: &T) -> bool {
     let Ok(bytes) = postcard::to_allocvec(value) else {
         return false;
     };
-    ns.doc.put(&ROOT, key, ScalarValue::Bytes(bytes)).is_ok()
+    if chunk != 0 && ns.doc.chunk_or_new(chunk, true).is_err() {
+        return false;
+    }
+    ns.doc
+        .put(&Obj::root(chunk), key, ScalarValue::Bytes(bytes))
+        .is_ok()
 }
 
 impl Namespace {
@@ -134,7 +140,7 @@ impl Namespace {
     /// values resolve to the highest epoch, then the greatest holder.
     pub fn write_lease(&self, record: FileDocumentId) -> Option<WriteLease> {
         let key = format!("{LEASE_PREFIX}{}", record.0);
-        all_values::<WriteLease>(self, &key)
+        all_values::<WriteLease>(self, record.chunk(), &key)
             .into_iter()
             .max_by_key(|l| (l.epoch, l.granted, l.holder, l.expires_ms))
     }
@@ -145,18 +151,23 @@ impl Namespace {
         let new_tenancy = self.lease_holder(record, lease.epoch) != Some(lease.holder);
         if new_tenancy {
             let tenancy = format!("{TENANCY_PREFIX}{}/{}", record.0, lease.epoch);
-            if !put_value(self, &tenancy, &(lease.granted, lease.holder)) {
+            if !put_value(
+                self,
+                record.chunk(),
+                &tenancy,
+                &(lease.granted, lease.holder),
+            ) {
                 return false;
             }
         }
         let key = format!("{LEASE_PREFIX}{}", record.0);
-        put_value(self, &key, lease)
+        put_value(self, record.chunk(), &key, lease)
     }
 
     /// Who held `record`'s lease in `epoch`, resolved like the lease.
     pub fn lease_holder(&self, record: FileDocumentId, epoch: u64) -> Option<[u8; 32]> {
         let key = format!("{TENANCY_PREFIX}{}/{epoch}", record.0);
-        let recorded = all_values::<(bool, [u8; 32])>(self, &key)
+        let recorded = all_values::<(bool, [u8; 32])>(self, record.chunk(), &key)
             .into_iter()
             .max()
             .map(|(_, holder)| holder);
@@ -180,6 +191,7 @@ impl Namespace {
         let key = format!("{FENCE_PREFIX}{}", record.0);
         put_value(
             self,
+            record.chunk(),
             &key,
             &FenceRecord {
                 content,
@@ -198,7 +210,7 @@ impl Namespace {
         byte_len: u64,
     ) -> Option<VersionFence> {
         let key = format!("{FENCE_PREFIX}{}", record.0);
-        all_values::<FenceRecord>(self, &key)
+        all_values::<FenceRecord>(self, record.chunk(), &key)
             .into_iter()
             .filter(|f| f.content == content && f.byte_len == byte_len)
             .map(|f| f.fence)
@@ -207,13 +219,13 @@ impl Namespace {
 
     /// The workspace's lease authority. Two claims resolve to the greater key.
     pub fn lease_authority(&self) -> Option<[u8; 32]> {
-        all_values::<[u8; 32]>(self, AUTHORITY_KEY)
+        all_values::<[u8; 32]>(self, 0, AUTHORITY_KEY)
             .into_iter()
             .max()
     }
 
     pub fn put_lease_authority(&mut self, device: [u8; 32]) -> bool {
-        put_value(self, AUTHORITY_KEY, &device)
+        put_value(self, 0, AUTHORITY_KEY, &device)
     }
 
     /// Asks the lease authority for `record`'s lease on behalf of `device`.
@@ -224,23 +236,29 @@ impl Namespace {
         request: LeaseRequest,
     ) -> bool {
         let key = format!("{REQUEST_PREFIX}{}/{}", record.0, hex::encode(device));
-        put_value(self, &key, &request)
+        put_value(self, record.chunk(), &key, &request)
     }
 
     pub fn remove_lease_request(&mut self, record: FileDocumentId, device: [u8; 32]) {
         let key = format!("{REQUEST_PREFIX}{}/{}", record.0, hex::encode(device));
-        let _ = self.doc.delete(&ROOT, key.as_str());
+        let _ = self.doc.delete(&Obj::root(record.chunk()), key.as_str());
     }
 
     pub fn lease_requests(&self) -> Vec<(FileDocumentId, [u8; 32], LeaseRequest)> {
         self.doc
-            .keys(&ROOT)
-            .filter_map(|key| {
+            .records()
+            .flat_map(|chunk| {
+                self.doc
+                    .keys(&Obj::root(chunk))
+                    .into_iter()
+                    .map(move |key| (chunk, key))
+            })
+            .filter_map(|(chunk, key)| {
                 let rest = key.strip_prefix(REQUEST_PREFIX)?;
                 let (record, device) = rest.split_once('/')?;
                 let record = FileDocumentId(uuid::Uuid::parse_str(record).ok()?);
                 let device: [u8; 32] = hex::decode(device).ok()?.try_into().ok()?;
-                let request = all_values::<LeaseRequest>(self, &key)
+                let request = all_values::<LeaseRequest>(self, chunk, &key)
                     .into_iter()
                     .max_by_key(|r| r.nonce)?;
                 Some((record, device, request))
@@ -250,7 +268,8 @@ impl Namespace {
 
     pub fn write_leases(&self) -> Vec<(FileDocumentId, WriteLease)> {
         self.doc
-            .keys(&ROOT)
+            .records()
+            .flat_map(|chunk| self.doc.keys(&Obj::root(chunk)))
             .filter_map(|key| {
                 let id = key.strip_prefix(LEASE_PREFIX)?;
                 let record = FileDocumentId(uuid::Uuid::parse_str(id).ok()?);

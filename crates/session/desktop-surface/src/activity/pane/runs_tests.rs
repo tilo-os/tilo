@@ -202,6 +202,7 @@ impl Fixture {
             vec![DetachedRecordHistory {
                 app: TERMINAL_APP.to_owned(),
                 checkout: self.checkout.clone(),
+                tree_chunks: Vec::new(),
                 document: Some(self.doc.clone()),
             }],
         );
@@ -536,6 +537,7 @@ tilo_test_env::scenario! {
             vec![DetachedRecordHistory {
                 app: NOTES.to_owned(),
                 checkout: ui::DocumentCheckout::package_primary(ui::ResourceType::new(NOTES_KIND)),
+                tree_chunks: Vec::new(),
                 document: Some(doc),
             }],
         );
@@ -675,6 +677,7 @@ impl Connection {
             .map(|(app, checkout, doc)| DetachedRecordHistory {
                 app: app.clone(),
                 checkout: checkout.clone(),
+                tree_chunks: Vec::new(),
                 document: (!self
                     .closed
                     .iter()

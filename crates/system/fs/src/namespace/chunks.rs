@@ -1,0 +1,384 @@
+//! The namespace's documents: the tree's own record and its chunks.
+//!
+//! A workspace's tree is kept as several records ([`fs_protocol::tree::CHUNK_NODES`]): the
+//! tree's own record, chunk 0, holds the root's identity, the chunks it has and each device's
+//! changeset marks; every other chunk holds the nodes made in it, with their histories,
+//! attributes and leases. A node lives in the chunk its record id names and never moves, so
+//! every change of a node is a change of one chunk, and a holder of the tree stores, seals and
+//! sends what that chunk changed. A namespace holds every chunk of its tree.
+//!
+//! [`Chunks`] routes a read or a write to the document of the chunk it names: an object of the
+//! tree is an [`Obj`], a chunk and an object of that chunk's document.
+
+use std::collections::{BTreeMap, HashMap};
+
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, Prop, ROOT, ReadDoc as _, Value};
+use fs_protocol::TreeChunk;
+
+use super::changes::ChangeTrackedDoc;
+
+/// An object of the tree: which chunk's document, and the object there. Chunk 0 is the
+/// tree's own record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Obj {
+    pub chunk: TreeChunk,
+    pub id: ObjId,
+}
+
+impl Obj {
+    /// The root of chunk `chunk`'s document.
+    pub(crate) const fn root(chunk: TreeChunk) -> Self {
+        Self { chunk, id: ROOT }
+    }
+
+    /// The root of the tree's own record.
+    pub(crate) const fn index() -> Self {
+        Self::root(0)
+    }
+}
+
+impl std::fmt::Display for Obj {
+    /// The object's id within its document: what an operation's id reads as.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.id.fmt(f)
+    }
+}
+
+/// One chunk's document and its map of nodes.
+#[derive(Clone)]
+pub(super) struct Chunk {
+    pub(super) doc: ChangeTrackedDoc,
+    pub(super) nodes: ObjId,
+}
+
+/// The tree's own record and its chunks, each a document of its own.
+#[derive(Clone)]
+pub(crate) struct Chunks {
+    index: ChangeTrackedDoc,
+    held: BTreeMap<TreeChunk, Chunk>,
+    /// The chunk each node lives in, as the chunks hold them.
+    located: HashMap<String, TreeChunk>,
+}
+
+/// Make `doc` a chunk of the tree: its map of nodes and of histories, each the one change every
+/// replica makes alike, so two devices that start the same chunk start the same record.
+fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
+    fs_protocol::tree::root_map(doc, super::history::HISTORY_KEY)?;
+    fs_protocol::tree::tree_nodes(doc)
+}
+
+impl Chunks {
+    pub(super) fn new(index: AutoCommit) -> Self {
+        Self {
+            index: ChangeTrackedDoc::new(index),
+            held: BTreeMap::new(),
+            located: HashMap::new(),
+        }
+    }
+
+    /// The document of chunk `chunk`: the tree's own record for 0.
+    pub(super) fn doc(&self, chunk: TreeChunk) -> Option<&ChangeTrackedDoc> {
+        if chunk == 0 {
+            return Some(&self.index);
+        }
+        self.held.get(&chunk).map(|chunk| &chunk.doc)
+    }
+
+    /// [`Self::doc`], to change.
+    pub(super) fn doc_mut(&mut self, chunk: TreeChunk) -> Option<&mut ChangeTrackedDoc> {
+        if chunk == 0 {
+            return Some(&mut self.index);
+        }
+        self.held.get_mut(&chunk).map(|chunk| &mut chunk.doc)
+    }
+
+    pub(super) fn index(&self) -> &ChangeTrackedDoc {
+        &self.index
+    }
+
+    pub(super) fn index_mut(&mut self) -> &mut ChangeTrackedDoc {
+        &mut self.index
+    }
+
+    /// The chunks that hold nodes, in order.
+    pub(super) fn chunk_numbers(&self) -> Vec<TreeChunk> {
+        self.held.keys().copied().collect()
+    }
+
+    /// Every record of the tree: the tree's own, then each chunk.
+    pub(super) fn records(&self) -> impl Iterator<Item = TreeChunk> + '_ {
+        std::iter::once(0).chain(self.held.keys().copied())
+    }
+
+    pub(super) fn chunk(&self, chunk: TreeChunk) -> Option<&Chunk> {
+        self.held.get(&chunk)
+    }
+
+    /// The chunk `chunk`, made when this namespace holds none of it yet; listed in the tree's
+    /// own record when `list`, as a chunk this device puts nodes in is.
+    pub(super) fn chunk_or_new(
+        &mut self,
+        chunk: TreeChunk,
+        list: bool,
+    ) -> Result<&mut Chunk, AutomergeError> {
+        if chunk == 0 {
+            return Err(AutomergeError::InvalidObjId(
+                "the tree's own record holds no nodes".into(),
+            ));
+        }
+        if !self.held.contains_key(&chunk) {
+            let mut doc = AutoCommit::new().with_actor(self.index.get_actor().clone());
+            let nodes = chunk_maps(&mut doc)?;
+            self.held.insert(
+                chunk,
+                Chunk {
+                    doc: ChangeTrackedDoc::sharing(doc, &self.index),
+                    nodes,
+                },
+            );
+        }
+        if list && !fs_protocol::tree::listed_chunks(&*self.index).contains(&chunk) {
+            // Listing a chunk makes the tree's own record's map, a merge of one change every
+            // device derives alike: the map is made by a merge, which settles this replica's
+            // pending edits first, so they are named as the mount's before that happens.
+            self.index.commit_named();
+            fs_protocol::tree::list_chunk(&mut self.index, chunk)?;
+        }
+        self.held
+            .get_mut(&chunk)
+            .ok_or_else(|| AutomergeError::InvalidObjId("chunk".into()))
+    }
+
+    /// Take `doc` in as chunk `chunk`'s document whole, in place of what this namespace held of
+    /// it: the nodes it holds are located there.
+    pub(super) fn adopt_chunk(
+        &mut self,
+        chunk: TreeChunk,
+        mut doc: AutoCommit,
+    ) -> Result<(), AutomergeError> {
+        doc.set_actor(self.index.get_actor().clone());
+        if chunk == 0 {
+            self.index.replace_document(doc);
+            return Ok(());
+        }
+        let nodes = chunk_maps(&mut doc)?;
+        if let Some(old) = self.held.remove(&chunk) {
+            for id in old.doc.keys(&old.nodes) {
+                self.located.remove(&id);
+            }
+        }
+        for id in doc.keys(&nodes) {
+            self.located.insert(id, chunk);
+        }
+        self.held.insert(
+            chunk,
+            Chunk {
+                doc: ChangeTrackedDoc::sharing(doc, &self.index),
+                nodes,
+            },
+        );
+        Ok(())
+    }
+
+    /// Where the node `id` lives now, as the chunk `chunk` reads: what a change to that chunk
+    /// moves.
+    pub(super) fn locate(&mut self, chunk: TreeChunk, id: &str) {
+        let held = self
+            .held
+            .get(&chunk)
+            .is_some_and(|held| map_object(&held.doc, &held.nodes, id).is_some());
+        if held {
+            self.located.insert(id.to_owned(), chunk);
+        } else if self.located.get(id) == Some(&chunk) {
+            self.located.remove(id);
+        }
+    }
+
+    /// Locate every node every chunk holds: what opening a namespace does.
+    pub(super) fn locate_all(&mut self) {
+        self.located.clear();
+        for (&chunk, held) in &self.held {
+            for id in held.doc.keys(&held.nodes) {
+                self.located.insert(id, chunk);
+            }
+        }
+    }
+
+    /// The node `id`'s object.
+    pub(super) fn node(&self, id: &str) -> Option<Obj> {
+        let chunk = *self.located.get(id)?;
+        let held = self.held.get(&chunk)?;
+        map_object(&held.doc, &held.nodes, id).map(|id| Obj { chunk, id })
+    }
+
+    /// Make the node `id` in chunk `chunk`, an empty map.
+    pub(super) fn put_node(&mut self, chunk: TreeChunk, id: &str) -> Result<Obj, AutomergeError> {
+        let held = self.chunk_or_new(chunk, true)?;
+        let nodes = held.nodes.clone();
+        let made = held.doc.put_object(&nodes, id, ObjType::Map)?;
+        self.located.insert(id.to_owned(), chunk);
+        Ok(Obj { chunk, id: made })
+    }
+
+    /// Every node id, in order.
+    pub(super) fn sorted_node_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.located.keys().cloned().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Every node id, in no order.
+    pub(super) fn node_ids(&self) -> impl Iterator<Item = &String> + '_ {
+        self.located.keys()
+    }
+
+    /// How many nodes chunk `chunk` holds.
+    pub(super) fn nodes_in(&self, chunk: TreeChunk) -> usize {
+        self.held
+            .get(&chunk)
+            .map_or(0, |held| held.doc.length(&held.nodes))
+    }
+
+    /// Up to `limit` node ids in key order after `after`, over every chunk.
+    pub(super) fn node_ids_after(&self, after: Option<&str>, limit: usize) -> Vec<String> {
+        let start = after.map_or(std::ops::Bound::Unbounded, |id| {
+            std::ops::Bound::Excluded(id.to_string())
+        });
+        let mut ids: Vec<String> = self
+            .held
+            .values()
+            .flat_map(|held| {
+                held.doc
+                    .map_range(&held.nodes, (start.clone(), std::ops::Bound::Unbounded))
+                    .take(limit)
+                    .map(|item| item.key.into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        ids.sort_unstable();
+        ids.truncate(limit);
+        ids
+    }
+
+    pub(super) fn get(
+        &self,
+        obj: &Obj,
+        prop: impl Into<Prop>,
+    ) -> Result<Option<(Value<'_>, Obj)>, AutomergeError> {
+        let doc = self.doc_of(obj)?;
+        Ok(doc.get(&obj.id, prop)?.map(|(value, id)| {
+            (
+                value,
+                Obj {
+                    chunk: obj.chunk,
+                    id,
+                },
+            )
+        }))
+    }
+
+    pub(super) fn get_all(
+        &self,
+        obj: &Obj,
+        prop: impl Into<Prop>,
+    ) -> Result<Vec<(Value<'_>, Obj)>, AutomergeError> {
+        let doc = self.doc_of(obj)?;
+        Ok(doc
+            .get_all(&obj.id, prop)?
+            .into_iter()
+            .map(|(value, id)| {
+                (
+                    value,
+                    Obj {
+                        chunk: obj.chunk,
+                        id,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    pub(super) fn keys(&self, obj: &Obj) -> Vec<String> {
+        self.doc(obj.chunk)
+            .map(|doc| doc.keys(&obj.id).collect())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn put(
+        &mut self,
+        obj: &Obj,
+        prop: impl Into<Prop>,
+        value: impl Into<automerge::ScalarValue>,
+    ) -> Result<(), AutomergeError> {
+        self.doc_of_mut(obj)?.put(&obj.id, prop, value)
+    }
+
+    pub(super) fn put_object(
+        &mut self,
+        obj: &Obj,
+        prop: impl Into<Prop>,
+        kind: ObjType,
+    ) -> Result<Obj, AutomergeError> {
+        let id = self.doc_of_mut(obj)?.put_object(&obj.id, prop, kind)?;
+        Ok(Obj {
+            chunk: obj.chunk,
+            id,
+        })
+    }
+
+    pub(super) fn delete(
+        &mut self,
+        obj: &Obj,
+        prop: impl Into<Prop>,
+    ) -> Result<(), AutomergeError> {
+        self.doc_of_mut(obj)?.delete(&obj.id, prop)
+    }
+
+    /// Drop chunk `chunk`'s pending edits.
+    pub(super) fn rollback(&mut self, chunk: TreeChunk) {
+        if let Some(doc) = self.doc_mut(chunk) {
+            let _ = doc.rollback();
+        }
+    }
+
+    fn doc_of(&self, obj: &Obj) -> Result<&ChangeTrackedDoc, AutomergeError> {
+        self.doc(obj.chunk)
+            .ok_or_else(|| AutomergeError::InvalidObjId(format!("chunk {}", obj.chunk)))
+    }
+
+    fn doc_of_mut(&mut self, obj: &Obj) -> Result<&mut ChangeTrackedDoc, AutomergeError> {
+        self.doc_mut(obj.chunk)
+            .ok_or_else(|| AutomergeError::InvalidObjId(format!("chunk {}", obj.chunk)))
+    }
+
+    /// Each record's heads, the tree's own first.
+    pub(super) fn heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
+        let mut heads = BTreeMap::from([(0, self.index.get_heads())]);
+        for (&chunk, held) in &mut self.held {
+            heads.insert(chunk, held.doc.get_heads());
+        }
+        heads
+    }
+
+    /// Every record, mutably: the tree's own first.
+    pub(super) fn each_mut(&mut self) -> impl Iterator<Item = (TreeChunk, &mut ChangeTrackedDoc)> {
+        std::iter::once((0, &mut self.index)).chain(
+            self.held
+                .iter_mut()
+                .map(|(&chunk, held)| (chunk, &mut held.doc)),
+        )
+    }
+
+    pub(super) fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.index.subscribe()
+    }
+}
+
+/// The map object at `key` of `parent` in `doc`.
+fn map_object(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
+    }
+}

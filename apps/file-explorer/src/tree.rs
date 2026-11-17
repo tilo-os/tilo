@@ -11,13 +11,13 @@
 //! bytes say opens it, as a window on a computer does.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
+use fs_protocol::files::{FIRST_TREE_CHUNK, FileNodeKind, TreeChunk};
+use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
-use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceResource};
+use ui::framework::{Dispatcher, Live, People, RecordOpener, ResourceApp, ViewCx, WorkspaceResource};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::remote::ApplicationLaunch;
@@ -108,8 +108,115 @@ struct Asked {
 /// What the rows were built from, so they are built again only when it moved.
 struct Shown {
     folder: String,
-    tree: Option<Rc<Tree>>,
+    /// The tree's revision when the rows were built: it moves when a chunk's nodes do.
+    revision: u64,
     names: u64,
+}
+
+/// The workspace's tree as the page holds it: the record that names its root and lists its
+/// chunks, and each chunk opened as the tree lists it, so a change of one chunk is the only
+/// one read again.
+struct Held {
+    /// The tree's own record (chunk 0): the root's identity and the chunks it lists.
+    index: WorkspaceResource<fs_protocol::tree::FilesTree>,
+    /// Opens a chunk's record as the tree lists it.
+    chunks_open: RecordOpener<fs_protocol::tree::FilesTree>,
+    /// Each chunk, by number, with the revision its nodes were last read at.
+    chunks: BTreeMap<TreeChunk, HeldChunk>,
+    /// The whole tree, kept as each chunk's nodes move.
+    tree: Tree,
+    /// Moves when the nodes the page shows do.
+    revision: u64,
+}
+
+/// One chunk of the tree, read as its record changes.
+struct HeldChunk {
+    record: WorkspaceResource<fs_protocol::tree::FilesTree>,
+    /// The revision the nodes were last read at; `None` before the first read.
+    revision: Option<u64>,
+    nodes: BTreeMap<String, TreeEntry>,
+}
+
+impl Held {
+    fn new(
+        index: WorkspaceResource<fs_protocol::tree::FilesTree>,
+        chunks_open: RecordOpener<fs_protocol::tree::FilesTree>,
+    ) -> Self {
+        Self {
+            index,
+            chunks_open,
+            chunks: BTreeMap::new(),
+            tree: Tree::default(),
+            revision: 0,
+        }
+    }
+
+    /// The whole tree, every chunk read so far.
+    fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    /// The chunk `chunk`, when the page holds it.
+    fn chunk(&self, chunk: TreeChunk) -> Option<&HeldChunk> {
+        self.chunks.get(&chunk)
+    }
+
+    /// Read the chunks the tree lists that are not read yet, and the nodes of each one that
+    /// moved, in place of what it held before. Whether the page's nodes moved.
+    fn follow(&mut self) -> bool {
+        let mut moved = false;
+        // A chunk is opened as the tree's own record lists it; one still on its way here is
+        // tried again on the next wake.
+        let mut index = TreeChunks::default();
+        if self.index.read(|doc| index.read_index(doc)).is_some() {
+            let root = index.tree().root_document_id;
+            if self.tree.root_document_id != root {
+                self.tree.root_document_id = root;
+                moved = true;
+            }
+            for chunk in index.listed() {
+                if self.chunks.contains_key(&chunk) {
+                    continue;
+                }
+                if let Some(record) = self.chunks_open.open(&chunk_document_id(chunk)) {
+                    self.chunks.insert(
+                        chunk,
+                        HeldChunk {
+                            record,
+                            revision: None,
+                            nodes: BTreeMap::new(),
+                        },
+                    );
+                }
+            }
+        }
+        // Each chunk's nodes are read only when its record moved: the rest of the tree is
+        // left as it was, so a change costs its chunk.
+        let mut tree = std::mem::take(&mut self.tree);
+        for held in self.chunks.values_mut() {
+            let state = held.record.get();
+            let revision = held.record.revision();
+            if held.revision == Some(revision) {
+                continue;
+            }
+            held.revision = Some(revision);
+            for id in held.nodes.keys() {
+                tree.nodes.remove(id);
+            }
+            held.nodes = state.nodes.clone();
+            tree.nodes.extend(
+                held.nodes
+                    .iter()
+                    .map(|(id, node)| (id.clone(), node.clone())),
+            );
+            moved = true;
+        }
+        self.tree = tree;
+        if moved {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        moved
+    }
 }
 
 /// The app that opens the file `name`, whose first bytes are `head`: the
@@ -123,8 +230,8 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 /// The window: the folder it shows and the entries in it.
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
-    /// The workspace's tree, as the page holds it.
-    tree: Option<WorkspaceResource<fs_protocol::tree::FilesTree>>,
+    /// The workspace's tree, as the page holds it: its own record and the chunks it lists.
+    tree: Option<Held>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -162,11 +269,14 @@ impl TreeBrowser {
         let people = cx.people();
         // The workspace's tree is the record every member holds, under the
         // Files app's own name for it — the one the page's search reads
-        // when it finds a file by what it says.
-        let tree = cx.shared_resource::<fs_protocol::tree::FilesTree>(
-            FILES_APP,
-            &fs_protocol::tree::document_id(),
-        );
+        // when it finds a file by what it says. Its chunks are opened as
+        // the record lists them: one record each, read as each one changes.
+        let tree = cx
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::document_id(),
+            )
+            .map(|index| Held::new(index, cx.record_opener(FILES_APP)));
         let mut browser = Self {
             live: cx.live().clone(),
             tree,
@@ -202,25 +312,24 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
-        let tree = self.tree.as_ref().map(WorkspaceResource::get);
-        let folder = self.folder(tree.as_deref());
+        // A chunk of the tree that moved is the only one read again.
+        if let Some(tree) = self.tree.as_mut() {
+            tree.follow();
+        }
+        let folder = self.folder(self.tree.as_ref().map(Held::tree));
         let names = self.people.revision().get();
+        let revision = self.tree.as_ref().map_or(0, |tree| tree.revision);
         let moved = self.shown.as_ref().is_none_or(|shown| {
-            shown.folder != folder
-                || shown.names != names
-                || !match (&shown.tree, &tree) {
-                    (Some(before), Some(now)) => Rc::ptr_eq(before, now),
-                    (None, None) => true,
-                    _ => false,
-                }
+            shown.folder != folder || shown.names != names || shown.revision != revision
         });
         if !moved {
             return false;
         }
-        self.body = self.rows(tree.as_deref(), &folder);
+        let tree = self.tree.as_ref().map(Held::tree);
+        self.body = self.rows(tree, &folder);
         self.shown = Some(Shown {
             folder,
-            tree,
+            revision,
             names,
         });
         self.structure_dirty = true;
@@ -377,17 +486,19 @@ impl TreeBrowser {
     /// when one did. `None` for a node the tree holds no version of.
     fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
         let document_id = node.document_id?;
-        let tree = self.tree.as_ref()?;
-        let (version, attribution) =
-            tree.read(|doc| fs_protocol::history::latest(doc, document_id))??;
+        // A file's versions are in the document of the chunk its record id names.
+        let chunk = self.tree.as_ref()?.chunk(document_id.chunk())?;
+        let (version, attribution) = chunk
+            .record
+            .read(|doc| fs_protocol::history::latest(doc, document_id))??;
         let registry = self.people.registry();
         let folder = node
             .parent
             .as_deref()
             .filter(|parent| *parent != ROOT_ID)
             .map(|parent| {
-                let held = self.tree.as_ref().map(WorkspaceResource::get);
-                let path = match held.as_deref() {
+                let held = self.tree.as_ref().map(Held::tree);
+                let path = match held {
                     Some(tree) => Self::path_of(tree, parent),
                     None => String::new(),
                 };
@@ -409,16 +520,21 @@ impl TreeBrowser {
     /// own, so choosing it writes the file from the tree and opens that, as a
     /// computer's folder reads it.
     fn document_row(&self, row: ListRow, id: &str, node: &TreeEntry, name: String) -> ListRow {
-        let (Some(tree), Some(keep)) = (self.tree.clone(), self.keep.clone()) else {
+        let (Some(held), Some(keep)) = (self.tree.as_ref(), self.keep.clone()) else {
             return row;
         };
         if node.codec.is_none() {
             return row;
         }
+        // The document is written from the chunk of the tree that holds the node.
+        let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
+        let Some(record) = held.chunk(chunk).map(|chunk| chunk.record.clone()) else {
+            return row;
+        };
         let asked = Rc::clone(&self.asked);
         let id = id.to_owned();
         row.on_view(move || {
-            let file = tree
+            let file = record
                 .read(|doc| fs_protocol::tree::document_file(doc, &id, &ui::content::NoContent))
                 .flatten();
             if let Some(hash) = file.as_deref().and_then(|file| keep(file)) {
@@ -516,14 +632,13 @@ impl TreeBrowser {
     /// opened in the app its bytes say opens it once they are here. Whether there is
     /// such a node to open.
     fn open_node(&self, id: &str) -> bool {
-        let Some(tree) = self.tree.clone() else {
+        let Some(held) = self.tree.as_ref() else {
             return false;
         };
-        let held = tree.get();
-        let Some(node) = held.node(id).filter(|_| !held.trashed(id)).cloned() else {
+        let tree = held.tree();
+        let Some(node) = tree.node(id).filter(|_| !tree.trashed(id)).cloned() else {
             return false;
         };
-        drop(held);
         let name = Self::name_of(&node);
         if node.kind == FileNodeKind::Directory {
             self.dispatch
@@ -537,8 +652,15 @@ impl TreeBrowser {
             }
             hash
         } else {
-            let file = tree
-                .read(|doc| fs_protocol::tree::document_file(doc, id, &ui::content::NoContent))
+            // A text document is written from the chunk of the tree that holds the node.
+            let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
+            let file = held
+                .chunk(chunk)
+                .and_then(|chunk| {
+                    chunk.record.read(|doc| {
+                        fs_protocol::tree::document_file(doc, id, &ui::content::NoContent)
+                    })
+                })
                 .flatten();
             let Some(hash) = file
                 .as_deref()
@@ -856,22 +978,12 @@ mod window_tests {
         doc.commit();
     }
 
-    #[test]
-    fn the_page_window_lists_the_trees_files_and_history_their_changes() {
-        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
-            .expect("the window opens");
-        let tree = app
-            .shared_resource::<fs_protocol::tree::FilesTree>(
-                FILES_APP,
-                &fs_protocol::tree::document_id(),
-            )
-            .expect("the window holds the workspace's tree");
-        // The tree as a device that mounts the folder writes it: the record's own document,
-        // changed elsewhere and arriving here.
-        let mut doc: AutoCommit = tree.read(Clone::clone).expect("the record reads");
+    /// A device's writes into chunk 1's document `doc`: `terms.txt` at the root and
+    /// `legal/nda.txt`, each with a version of its own.
+    fn write_terms_and_legal(doc: &mut AutoCommit) {
         let mut held = Tree::default();
         let placed = fs_protocol::tree::place(
-            &mut doc,
+            (&mut *doc, 1),
             &mut held,
             ROOT_ID,
             "terms.txt",
@@ -883,9 +995,9 @@ mod window_tests {
         )
         .unwrap();
         let document_id = held.node(&placed.id).unwrap().document_id.unwrap();
-        write_version(&mut doc, document_id, 1);
+        write_version(doc, document_id, 1);
         let folder = fs_protocol::tree::place(
-            &mut doc,
+            (&mut *doc, 1),
             &mut held,
             ROOT_ID,
             "legal",
@@ -894,7 +1006,7 @@ mod window_tests {
         )
         .unwrap();
         fs_protocol::tree::place(
-            &mut doc,
+            (&mut *doc, 1),
             &mut held,
             &folder.id,
             "nda.txt",
@@ -906,9 +1018,40 @@ mod window_tests {
         )
         .unwrap();
         let folder_record = held.node(&folder.id).unwrap().document_id.unwrap();
-        write_version(&mut doc, folder_record, 2);
-        tree.record()
+        write_version(doc, folder_record, 2);
+    }
+
+    #[test]
+    fn the_page_window_lists_the_trees_files_and_history_their_changes() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        let index = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::document_id(),
+            )
+            .expect("the window holds the workspace's tree");
+        let chunk = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(1),
+            )
+            .expect("the window opens the tree's chunk");
+        // The tree as a device that mounts the folder writes it: a node in the chunk that
+        // holds it, and its versions in that chunk's document, changed elsewhere and arriving
+        // here.
+        let mut doc: AutoCommit = chunk.read(Clone::clone).expect("the chunk reads");
+        write_terms_and_legal(&mut doc);
+        chunk
+            .record()
             .merge_peer_document(doc.save())
+            .expect("the chunk arrives");
+        // The tree's own record lists the chunk it wrote the file into.
+        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the record reads");
+        fs_protocol::tree::list_chunk(&mut index_doc, 1).unwrap();
+        index
+            .record()
+            .merge_peer_document(index_doc.save())
             .expect("the tree arrives");
         app.flush().unwrap();
         let texts = app.texts();
@@ -957,6 +1100,108 @@ mod window_tests {
         assert!(
             texts.iter().any(|text| text == "nda.txt"),
             "the window shows the folder's files: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_tree_in_two_chunks_lists_and_a_change_to_one_chunk_shows() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        let index = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::document_id(),
+            )
+            .expect("the window holds the workspace's tree");
+        let first = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(1),
+            )
+            .expect("the window opens the first chunk");
+        let second = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(2),
+            )
+            .expect("the window opens the second chunk");
+        let mut held = Tree::default();
+        let author = hex::encode([9_u8; 32]);
+        // A folder in the first chunk, and a file in it in the second: the window's rows
+        // walk one tree whatever chunk a node is in.
+        let mut first_doc: AutoCommit = first.read(Clone::clone).expect("the first chunk reads");
+        let docs = fs_protocol::tree::place(
+            (&mut first_doc, 1),
+            &mut held,
+            ROOT_ID,
+            "docs",
+            Placing::Folder,
+            (1_000, &author),
+        )
+        .unwrap();
+        first
+            .record()
+            .merge_peer_document(first_doc.save())
+            .expect("the first chunk arrives");
+        let mut second_doc: AutoCommit = second.read(Clone::clone).expect("the second chunk reads");
+        fs_protocol::tree::place(
+            (&mut second_doc, 2),
+            &mut held,
+            &docs.id,
+            "plan.md",
+            Placing::File {
+                hash: &"a".repeat(64),
+                size: 12,
+            },
+            (2_000, &author),
+        )
+        .unwrap();
+        second
+            .record()
+            .merge_peer_document(second_doc.save())
+            .expect("the second chunk arrives");
+        let mut index_doc: AutoCommit = index.read(Clone::clone).expect("the record reads");
+        fs_protocol::tree::list_chunk(&mut index_doc, 1).unwrap();
+        fs_protocol::tree::list_chunk(&mut index_doc, 2).unwrap();
+        index
+            .record()
+            .merge_peer_document(index_doc.save())
+            .expect("the tree arrives");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "docs"),
+            "the window lists the folder of the first chunk: {texts:?}"
+        );
+        // A change of the second chunk alone shows, and the first chunk's folder stays.
+        let mut again: AutoCommit = second
+            .read(Clone::clone)
+            .expect("the second chunk reads again");
+        fs_protocol::tree::place(
+            (&mut again, 2),
+            &mut held,
+            ROOT_ID,
+            "notes.txt",
+            Placing::File {
+                hash: &"b".repeat(64),
+                size: 3,
+            },
+            (3_000, &author),
+        )
+        .unwrap();
+        second
+            .record()
+            .merge_peer_document(again.save())
+            .expect("the change arrives");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "notes.txt"),
+            "a change of the second chunk shows: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text == "docs"),
+            "the folder in the untouched chunk is still listed: {texts:?}"
         );
     }
 }

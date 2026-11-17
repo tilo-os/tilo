@@ -433,7 +433,7 @@ pub use ui_core::resource::{chain_of_resource_id, chain_resource_id};
 pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use window_bar::{Binding, Choice, WindowBar};
-pub use workspace::WorkspaceResource;
+pub use workspace::{RecordOpener, WorkspaceResource};
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

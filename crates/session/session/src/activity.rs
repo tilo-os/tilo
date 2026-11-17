@@ -583,6 +583,7 @@ impl Activity {
                 // kind says whose steps in it this entry's are.
                 checkout: DocumentCheckout::package_primary(ResourceType::new(record.kind)),
                 app: record.app,
+                tree_chunks: Vec::new(),
                 document: Some(record.document),
             })
             .collect()
@@ -800,6 +801,7 @@ fn read_workspace_records(
             read.push(DetachedRecordHistory {
                 app: package.clone(),
                 checkout: DocumentCheckout::package_primary(ResourceType::new(package.as_str())),
+                tree_chunks: Vec::new(),
                 document: Some(document),
             });
         }
@@ -815,6 +817,7 @@ fn read_workspace_records(
             read.push(DetachedRecordHistory {
                 app: package.clone(),
                 checkout,
+                tree_chunks: Vec::new(),
                 document,
             });
         }
@@ -833,16 +836,38 @@ fn read_workspace_records(
         )
     {
         noted(document.get_actor());
+        let tree_chunks = tree_chunks(store, workspace, &document);
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
-            checkout: DocumentCheckout::new(
-                document_id,
-                ResourceType::new(fs_protocol::tree::TREE_KIND),
-            ),
+            checkout: DocumentCheckout::new(document_id, ResourceType::new(fs_protocol::tree::TREE_KIND)),
+            tree_chunks,
             document: Some(document),
         });
     }
     read
+}
+
+/// The chunk records the tree's own record `tree` lists, each read on its own: the folder's rows
+/// are read from them beside it. A chunk this device holds nothing of is left out, and its files'
+/// versions come with it on a later read.
+fn tree_chunks(
+    store: &dyn DurableStore,
+    workspace: &str,
+    tree: &automerge::AutoCommit,
+) -> Vec<(fs_protocol::files::TreeChunk, automerge::AutoCommit)> {
+    fs_protocol::tree::listed_chunks(tree)
+        .into_iter()
+        .filter_map(|chunk| {
+            let record = fs_protocol::tree::chunk_document_id(chunk);
+            crate::platform::records::document(
+                store,
+                fs_protocol::tree::FILES_APP,
+                workspace,
+                &record,
+            )
+            .map(|doc| (chunk, doc))
+        })
+        .collect()
 }
 
 /// What the model asks of the session, over the one state this activity keeps.

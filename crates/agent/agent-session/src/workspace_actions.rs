@@ -80,9 +80,7 @@ mod tree_put;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
-pub use link::{
-    FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink,
-};
+pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -96,7 +94,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
+use crate::member::actions::{Outcome, api_outcome, resource_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::WorkspaceDocuments;
 use catch_up::{catch_up, hold_parts};
@@ -852,7 +850,7 @@ pub(super) fn named(route: &DocumentRoute) -> String {
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
 /// A record saved, and the heads it was saved at, sorted.
-type Saved = (Vec<u8>, Vec<[u8; 32]>);
+pub(super) type Saved = (Vec<u8>, Vec<[u8; 32]>);
 
 /// What a replica merges of a record, and the heads the record stands at
 /// once it has.
@@ -1081,9 +1079,19 @@ impl Workspace {
 
     /// The records of the workspace that `needs` reads and that hold
     /// undecided documents: they open once what the documents wait for
-    /// arrives.
+    /// arrives. A workspace's folder is read record by record, so a request
+    /// reading the tree waits for the chunks its own record names too.
     fn sealed(&self, workspace_id: WorkspaceId, needs: Needs<'_>) -> Vec<DocumentRoute> {
-        sealed_for(&self.undecided, workspace_id, needs, &self.gave_up)
+        let mut sealed: BTreeSet<DocumentRoute> =
+            sealed_for(&self.undecided, workspace_id, needs, &self.gave_up)
+                .into_iter()
+                .collect();
+        for route in self.routes(workspace_id, needs) {
+            if self.undecided.contains(&route) && !self.gave_up.records.contains(&route) {
+                sealed.insert(route);
+            }
+        }
+        sealed.into_iter().collect()
     }
 
     /// Take the keys of what `needs` reads in the joined workspace from the
@@ -1361,11 +1369,7 @@ impl Shared {
 }
 
 impl Worker {
-    fn new(
-        link: &dyn WorkspaceDocumentsLink,
-        catalogue: AppCatalogue,
-        shared: Arc<Shared>,
-    ) -> Self {
+    fn new(link: &dyn WorkspaceDocumentsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
         let host_device = link.host_device();
         let _ = shared.host_device.set(host_device.clone());
         Self {
@@ -1555,7 +1559,10 @@ impl Worker {
         };
         workspace.pump(workspace_id);
         // A record the workspace did not replay is asked for here, and the
-        // host's answer is the change that wakes this thread to look again.
+        // host's answer is the change that wakes this thread to look again. A
+        // workspace's folder is read record by record: asking for the tree's
+        // own record asks for the chunks it names too
+        // ([`opened::Workspace::routes`]).
         if workspace.ask(workspace_id, needs) {
             return false;
         }
@@ -2912,15 +2919,19 @@ fn log_outcome(
 
 /// Whether `record` is one of `app`'s own records, which its replica opens. An app that keeps one
 /// record per workspace opens that one, and what it keeps as records of its own beside it (a
-/// chain's parts, its chunks); a person's record of some kind, kept beside the app's for that
-/// person (Files' tree of the workspace's folder), is read where it is kept, never mounted as the
-/// app's, which refuses it as not the app's workspace record.
+/// chain's parts); a person's record of some kind, kept beside the app's for that person (Files'
+/// tree of the workspace's folder, and the chunks that tree is kept in), is read where it is kept,
+/// never mounted as the app's, which refuses it as not the app's workspace record.
 fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
     // The empty route is the app's own record where it keeps one per workspace, and its index of
     // the workspace's named records where it keeps none: the index is read where it is kept,
     // never mounted as the app's record.
     if record.is_empty() {
         return app.keeps_workspace_resource();
+    }
+    // A tree's own record and its chunks are one folder, read record by record where it is kept.
+    if fs_protocol::tree::chunk_of_record(record).is_some() {
+        return false;
     }
     !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
 }

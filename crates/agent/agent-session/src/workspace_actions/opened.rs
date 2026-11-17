@@ -52,6 +52,28 @@ fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRou
     routes
 }
 
+/// The chunks of the tree `route` names, as its own record `index` lists them:
+/// the records a member reads a workspace's folder with, beside the tree's own
+/// record. None for a record that is no tree's own.
+fn tree_chunks(index: Option<&[u8]>, route: &DocumentRoute) -> Vec<DocumentRoute> {
+    if fs_protocol::tree::chunk_of_record(&route.record) != Some(0) {
+        return Vec::new();
+    }
+    let Some(index) = index else {
+        return Vec::new();
+    };
+    let Ok(doc) = automerge::AutoCommit::load(index) else {
+        return Vec::new();
+    };
+    fs_protocol::tree::listed_chunks(&doc)
+        .into_iter()
+        .map(|chunk| DocumentRoute {
+            record: fs_protocol::tree::chunk_document_id(chunk),
+            ..route.clone()
+        })
+        .collect()
+}
+
 impl Workspace {
     /// Whether this member's replica holds `route`: readable, or sealed and waiting for the
     /// keys it opens with.
@@ -66,6 +88,34 @@ impl Workspace {
             })
     }
 
+    /// The routes reading (or acting on) `needs` reaches: the record it names
+    /// ([`asked_routes`]) and, for a workspace's tree's own record, the chunks
+    /// that record names. A workspace's folder is read record by record, so a
+    /// request reading it reads every one of those records.
+    pub(super) fn routes(&self, workspace_id: WorkspaceId, needs: Needs<'_>) -> Vec<DocumentRoute> {
+        let (Needs::Read { app_id, record } | Needs::Act { app_id, record }) = needs else {
+            return Vec::new();
+        };
+        let Some(cluster_id) = self.cluster_id(workspace_id) else {
+            return Vec::new();
+        };
+        let mut routes = asked_routes(&cluster_id, app_id, record);
+        if fs_protocol::tree::chunk_of_record(record) == Some(0)
+            && let Some(tree) = routes.first()
+        {
+            // The tree's own record names its chunks: read from the replica,
+            // which holds it once the request waited for it.
+            let index = self
+                .peer
+                .engine()
+                .record(&cluster_id, app_id, record)
+                .ok()
+                .flatten();
+            routes.extend(tree_chunks(index.as_deref(), tree));
+        }
+        routes
+    }
+
     /// Ask the workspace's host for the records `needs` reads that this
     /// member holds none of, and say whether an answer is still owed: the
     /// host's answer is the session's change that wakes the request to look
@@ -76,22 +126,48 @@ impl Workspace {
     /// and is absent only once the host answered it holds none of it
     /// ([`tilo_session_client::Event::DocumentOpened`] with no frames).
     pub(super) fn ask(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
-        if !self.when_opened {
-            return false;
+        if self.when_opened {
+            return self.ask_for(workspace_id, needs);
         }
-        let (Needs::Read { app_id, record } | Needs::Act { app_id, record }) = needs else {
-            return false;
-        };
-        let Some(cluster_id) = self.cluster_id(workspace_id) else {
-            return false;
-        };
+        // A replay sent what the workspace held when this member joined. A chunk its tree
+        // lists that is not here was made since (a branch's, refounded as it was made), and
+        // reaches this member only asked: read as absent, a write would found it again.
+        let chunks = self
+            .routes(workspace_id, needs)
+            .into_iter()
+            .filter(|route| {
+                fs_protocol::tree::chunk_of_record(&route.record).is_some_and(|chunk| chunk > 0)
+            })
+            .collect();
+        self.ask_routes(workspace_id, chunks)
+    }
+
+    /// [`Self::ask`] whether or not the workspace replayed everything it held when this member
+    /// joined: a record made after that is sent to a member only once it asked for it.
+    pub(super) fn ask_for(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
+        let routes = self.routes(workspace_id, needs);
+        self.ask_routes(workspace_id, routes)
+    }
+
+    /// Ask for each of `routes` this member holds none of and has not asked for, and say
+    /// whether an answer is still owed for any of them.
+    fn ask_routes(&mut self, workspace_id: WorkspaceId, routes: Vec<DocumentRoute>) -> bool {
         let mut owing = false;
-        for route in asked_routes(&cluster_id, app_id, record) {
+        for route in routes {
             if !self.holds(&route)
                 && !self.answered.contains(&route)
                 && !self.asked.contains(&route)
             {
-                match self.peer.send(Cmd::OpenRoute(route.clone())) {
+                // A record the host sends only to a device that opened it (a chunk of a
+                // tree) is opened as one; any other is asked for by its route.
+                let ask = if tilo_actions::document_sync::document_sync(&route.record)
+                    == tilo_actions::document_sync::DocumentSync::Eager
+                {
+                    Cmd::OpenRoute(route.clone())
+                } else {
+                    Cmd::OpenDocumentAt(workspace_id, route.clone())
+                };
+                match self.peer.send(ask) {
                     Ok(()) => {
                         tracing::debug!(
                             app = %route.app_id,
@@ -211,6 +287,56 @@ impl Worker {
         }
         Ok(false)
     }
+
+    /// The record at `route`, saved, when this host holds it; `None` for one
+    /// the workspace holds none of. A record the workspace may still send is
+    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act`
+    /// waiting for its keys every time as a write to it needs them.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn record_here(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        act: bool,
+    ) -> Result<Option<Vec<u8>>, Outcome> {
+        Ok(self
+            .saved_here(workspace_id, route, act)?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// [`Self::record_here`], with the heads the record stands at: what a follower of the
+    /// record asks the changes after, next time.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn saved_here(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        act: bool,
+    ) -> Result<Option<super::Saved>, Outcome> {
+        let app_id = route.app_id.as_str();
+        let record = route.record.as_str();
+        let needs = if act {
+            Needs::Act { app_id, record }
+        } else {
+            Needs::Read { app_id, record }
+        };
+        let held = self
+            .refresh(workspace_id, needs)
+            .map_err(Outcome::Rejected)?;
+        match held.document(route) {
+            Ok(saved) => Ok(Some(saved)),
+            Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
+            Err(why) => Err(Outcome::Rejected(ActionHostError::Unavailable {
+                reason: why,
+            })),
+        }
+    }
 }
 
 /// Whether `request` opens a file in Files: what puts it into the workspace's
@@ -230,7 +356,7 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::asked_routes;
+    use super::{asked_routes, tree_chunks};
     use crate::workspace_actions::{GaveUp, Needs, sealed_for};
     use std::collections::BTreeSet;
     use tilo_peer_state::document_frame::DocumentRoute;
@@ -260,6 +386,35 @@ mod tests {
             asked_routes(WORKSPACE, "so.tilo.notes", "note"),
             [route("so.tilo.notes", "note")],
             "a record is sent when it is opened, and nothing else is asked for"
+        );
+    }
+
+    #[test]
+    fn a_trees_own_record_names_the_chunks_read_with_it() {
+        let tree = route(
+            fs_protocol::tree::FILES_APP,
+            &fs_protocol::tree::document_id(),
+        );
+        assert!(
+            tree_chunks(None, &tree).is_empty(),
+            "nothing to read before the tree's own record is here"
+        );
+        let mut index = automerge::AutoCommit::new();
+        for chunk in [1, 2] {
+            fs_protocol::tree::list_chunk(&mut index, chunk).unwrap();
+        }
+        let index = index.save();
+        assert_eq!(
+            tree_chunks(Some(&index), &tree),
+            [1, 2].map(|chunk| route(
+                fs_protocol::tree::FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk)
+            )),
+            "the chunks the tree's own record lists are read with it"
+        );
+        assert!(
+            tree_chunks(Some(&index), &route("so.tilo.chat", "")).is_empty(),
+            "another app's record names no chunks"
         );
     }
 

@@ -7,11 +7,10 @@
 //! Inode numbers are a local `NodeId` to `u64` index; a rename keeps the node id, so
 //! the inode stays stable.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
     FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
@@ -19,8 +18,6 @@ use fs_protocol::{
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
-use tilo_automerge::ApplyIncoming;
-use tilo_automerge::read::{map_at, str_at};
 use uuid::Uuid;
 
 pub const ROOT_INO: u64 = 1;
@@ -28,7 +25,7 @@ pub use fs_protocol::tree::ROOT_ID;
 // The document's layout is `fs_protocol::tree`'s: the record that carries the tree reads
 // the same document the mount writes.
 use fs_protocol::tree::{
-    CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY,
+    CONTENT_REVISION_KEY, NODES_KEY, PLACEMENT_NAME_KEY, DOCUMENT_ID_KEY, ROOT_DOCUMENT_ID_KEY,
     TRASH_ID, document_node_id,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
@@ -40,7 +37,11 @@ const STRUCTURAL_CONFLICT_MARKER: &[u8] = b".sync-conflict-";
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 mod changes;
 mod changesets;
+mod chunks;
 mod documents;
+mod records;
+pub use records::ResourceWrite;
+use records::bundle;
 pub mod history;
 #[cfg(test)]
 mod index_walk_tests;
@@ -48,8 +49,10 @@ mod kernel_changes;
 mod leases;
 mod posix;
 mod projection;
-use changes::ChangeTrackedDoc;
+mod document_index;
 pub use changesets::ChangesetMark;
+use chunks::Chunks;
+pub(crate) use chunks::Obj;
 pub use kernel_changes::KernelChanges;
 pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
@@ -224,12 +227,12 @@ struct TreeIndex {
     /// The nodes carrying each stable record id, live or trashed; a node's record id is
     /// written once, when the node is created or migrated.
     records: HashMap<FileDocumentId, BTreeSet<String>>,
-    document_of: HashMap<String, FileDocumentId>,
+    resource_of: HashMap<String, FileDocumentId>,
 }
 
 impl TreeIndex {
     fn bind_document(&mut self, id: &str, document_id: FileDocumentId) {
-        if self.document_of.get(id) == Some(&document_id) {
+        if self.resource_of.get(id) == Some(&document_id) {
             return;
         }
         self.unbind_document(id);
@@ -237,11 +240,11 @@ impl TreeIndex {
             .entry(document_id)
             .or_default()
             .insert(id.to_string());
-        self.document_of.insert(id.to_string(), document_id);
+        self.resource_of.insert(id.to_string(), document_id);
     }
 
     fn unbind_document(&mut self, id: &str) {
-        let Some(document_id) = self.document_of.remove(id) else {
+        let Some(document_id) = self.resource_of.remove(id) else {
             return;
         };
         if let Some(ids) = self.records.get_mut(&document_id) {
@@ -363,8 +366,7 @@ impl DocumentIndexDigest {
 pub struct Namespace {
     /// The document; its every change is announced to [`Self::subscribe_changes`]
     /// ([`changes`]).
-    doc: ChangeTrackedDoc,
-    nodes: ObjId,
+    doc: Chunks,
     ino_to_id: HashMap<u64, String>,
     id_to_ino: HashMap<String, u64>,
     next_ino: u64,
@@ -473,7 +475,35 @@ fn structural_conflict_name(name: &[u8], document_id: FileDocumentId) -> FileNam
     out.into()
 }
 
-fn read_name(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<FileNameV1> {
+fn str_at(doc: &Chunks, obj: &Obj, key: &str) -> Option<String> {
+    match doc.get(obj, key) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Str(value) => Some(value.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// [`str_at`] of a document's root.
+fn str_at_doc(doc: &AutoCommit, key: &str) -> Option<String> {
+    match doc.get(&ROOT, key) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Str(value) => Some(value.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn map_at(doc: &Chunks, obj: &Obj, key: &str) -> Option<Obj> {
+    match doc.get(obj, key) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
+    }
+}
+
+fn read_name(doc: &Chunks, obj: &Obj, key: &str) -> Option<FileNameV1> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Bytes(bytes) => Some(FileNameV1(bytes.clone())),
@@ -484,7 +514,7 @@ fn read_name(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<FileNameV1> {
         _ => None,
     }
 }
-fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
+fn read_u64(doc: &Chunks, obj: &Obj, key: &str) -> u64 {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Uint(n) => *n,
@@ -496,19 +526,11 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 }
 
 impl Namespace {
-    /// A namespace over `doc` whose `nodes` map is already in place, with only the root
-    /// bound and every derived index empty.
-    fn over(
-        mut doc: AutoCommit,
-        nodes: ObjId,
-        author: String,
-        next_id: u64,
-    ) -> Result<Self, automerge::AutomergeError> {
-        // The history's map is one every replica makes alike, as the nodes' is.
-        fs_protocol::tree::root_map(&mut doc, history::HISTORY_KEY)?;
+    /// A namespace over `doc`, its documents already in place, with only the root bound and
+    /// every derived index empty.
+    fn over(doc: Chunks, author: String, next_id: u64) -> Self {
         let mut ns = Self {
-            doc: ChangeTrackedDoc::new(doc),
-            nodes,
+            doc,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
@@ -537,194 +559,26 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        Ok(ns)
+        ns
     }
 
     pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
-        let mut doc = AutoCommit::new();
-        let nodes = fs_protocol::tree::tree_nodes(&mut doc)?;
-        let mut ns = Self::over(doc, nodes, author.into(), 0)?;
+        let mut ns = Self::over(Chunks::new(AutoCommit::new()), author.into(), 0);
         let root_document_id = FileDocumentId::new();
-        let _ = ns
-            .doc
-            .put(&ROOT, ROOT_DOCUMENT_ID_KEY, root_document_id.0.to_string());
-        ns.rebuild_document_index();
-        Ok(ns)
-    }
-
-    pub fn from_bytes(
-        author: impl Into<String>,
-        data: &[u8],
-    ) -> Result<Self, automerge::AutomergeError> {
-        let mut doc = AutoCommit::load(data)?;
-        let nodes = match doc.get(&ROOT, "nodes") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => fs_protocol::tree::tree_nodes(&mut doc)?,
-        };
-        let author = author.into();
-        // Resume the id counter past ids we authored before, so a restart can't reuse a node id.
-        let prefix = format!("{author}/");
-        let mut max_local = 0u64;
-        for id in doc.keys(&nodes) {
-            if let Some(n) = id.strip_prefix(&prefix)
-                && let Ok(v) = n.parse::<u64>()
-            {
-                max_local = max_local.max(v.saturating_add(1));
-            }
-        }
-        let mut ns = Self::over(doc, nodes, author, max_local)?;
-        ns.ensure_document_ids();
+        ns.doc.put(
+            &Obj::index(),
+            ROOT_DOCUMENT_ID_KEY,
+            root_document_id.0.to_string(),
+        )?;
+        // Name the founding change as the mount's now: a merge made later settles a pending
+        // change without its name, and a device signs only the changes that name what made them.
+        ns.doc.index_mut().commit_named();
         ns.rebuild_document_index();
         Ok(ns)
     }
 
     pub fn author(&self) -> &str {
         &self.author
-    }
-
-    pub fn save(&mut self) -> Vec<u8> {
-        if !self.document_ids_complete {
-            self.ensure_document_ids();
-        }
-        self.doc.save()
-    }
-    /// Finish a mutation: every node it made has its stable record id before anything
-    /// reads the document (`save`, `changes_since`).
-    ///
-    /// INVARIANT: pair every mutation with its `note_change` inside the same `Namespace`
-    /// lock scope, so the ids of a change are there before another change's `save` folds
-    /// them.
-    pub fn note_change(&mut self) {
-        if !self.document_ids_complete {
-            self.ensure_document_ids();
-        }
-    }
-
-    /// Changes since the last `save_incremental`/load/merge, advancing the shared
-    /// automerge watermark.
-    ///
-    /// INVARIANT: pair every mutation with its `save_incremental` inside the same
-    /// `Namespace` lock scope: the watermark is one shared cursor, so a mutation saved
-    /// outside that scope can have its delta swallowed by a concurrent remote apply.
-    pub fn save_incremental(&mut self) -> Vec<u8> {
-        self.note_change();
-        self.doc.save_incremental()
-    }
-
-    pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
-        let before = self.doc.get_heads();
-        self.doc.arm_patches();
-        if let Err(error) = self.doc.load_incoming(data) {
-            self.doc.disarm_patches();
-            return Err(error);
-        }
-        self.note_merge(&before);
-        self.index_after_apply();
-        Ok(())
-    }
-
-    pub fn prime_baseline(&mut self) {
-        let _ = self.doc.save_incremental();
-    }
-
-    pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
-        let before = self.doc.get_heads();
-        self.doc.arm_patches();
-        if let Err(error) = self.doc.merge_incoming(&mut other.doc) {
-            self.doc.disarm_patches();
-            return Err(error);
-        }
-        self.note_merge(&before);
-        self.index_after_apply();
-        Ok(())
-    }
-
-    /// Apply a remote delta: advance the watermark, resolve, and return the resolution
-    /// delta to broadcast (empty if none).
-    pub fn apply_remote_and_resolve(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Vec<u8>, automerge::AutomergeError> {
-        let before = self.doc.get_heads();
-        self.doc.arm_patches();
-        if let Err(error) = self.doc.load_incoming(data) {
-            self.doc.disarm_patches();
-            return Err(error);
-        }
-        self.note_merge(&before);
-        let _ = self.doc.save_incremental();
-        self.index_after_apply();
-        self.resolve_pending();
-        Ok(self.doc.save_incremental())
-    }
-
-    pub fn merge_remote_and_resolve(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Vec<u8>, automerge::AutomergeError> {
-        let mut other = AutoCommit::load(data)?;
-        let before = self.doc.get_heads();
-        self.doc.arm_patches();
-        if let Err(error) = self.doc.merge_incoming(&mut other) {
-            self.doc.disarm_patches();
-            return Err(error);
-        }
-        self.note_merge(&before);
-        let _ = self.doc.save_incremental();
-        self.index_after_apply();
-        self.resolve_pending();
-        Ok(self.doc.save_incremental())
-    }
-
-    /// Take in a tree record's whole document, as a mount joins the tree its workspace
-    /// keeps.
-    ///
-    /// A namespace that holds no node of its own is no replica of the record: it takes the
-    /// record's document as its own, under the record's root identity, rather than merging
-    /// into a second empty tree. One that holds nodes already is a replica, and the record
-    /// merges into it.
-    pub fn adopt_or_merge_remote_and_resolve(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Vec<u8>, automerge::AutomergeError> {
-        if self.holds_tree() {
-            return self.merge_remote_and_resolve(data);
-        }
-        let mut adopted = AutoCommit::load(data)?;
-        let Some((Value::Object(ObjType::Map), nodes)) = adopted.get(&ROOT, NODES_KEY)? else {
-            return Ok(Vec::new());
-        };
-        // The device keeps writing as itself: the document's actor is this mount's, whatever
-        // the devices before it wrote as.
-        adopted.set_actor(self.doc.get_actor().clone());
-        self.doc.replace_document(adopted);
-        self.nodes = nodes;
-        self.ino_to_id.clear();
-        self.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
-        self.id_to_ino.clear();
-        self.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        self.next_ino = ROOT_INO + 1;
-        self.document_ids_complete = false;
-        self.merge_generation = next_merge_generation();
-        self.cycle_scan_pending = true;
-        self.placed_since_resolve.clear();
-        self.ensure_document_ids();
-        self.rebuild_document_index();
-        Ok(Vec::new())
-    }
-
-    /// Whether this namespace holds a tree of its own, rather than only the empty map a
-    /// fresh document starts with.
-    #[must_use]
-    pub fn holds_tree(&self) -> bool {
-        self.doc.keys(&self.nodes).next().is_some()
-    }
-
-    /// Moves [`Self::merge_generation`] on when a merge since `before` brought changes.
-    fn note_merge(&mut self, before: &[automerge::ChangeHash]) {
-        if self.doc.get_heads() != before {
-            self.merge_generation = next_merge_generation();
-        }
     }
 
     /// Changes whenever changes another replica made were merged in, and only then: equal
@@ -741,471 +595,15 @@ impl Namespace {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn node(&self, id: &str) -> Option<ObjId> {
+    fn node(&self, id: &str) -> Option<Obj> {
         self.node_lookups
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        map_at(&self.doc, &self.nodes, id)
+        self.doc.node(id)
     }
 
     #[must_use]
     pub fn node_lookup_count(&self) -> u64 {
         self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Reconstruct the index once while loading or after an opaque remote merge. Serving a
-    /// record-index page never calls this: page work is a slice of `document_index`. Every
-    /// mutation this replica makes on its own refreshes only the nodes it changed
-    /// ([`Self::index_refresh_node`]).
-    fn rebuild_document_index(&mut self) {
-        let NodeWalk {
-            tree,
-            rows: raw,
-            occurrences,
-        } = self.read_nodes_once();
-        self.tree = tree;
-        let mut children = HashMap::<String, BTreeSet<String>>::new();
-        for (id, item) in &raw {
-            children
-                .entry(item.parent_id.clone())
-                .or_default()
-                .insert(id.clone());
-        }
-        let mut document_index = BTreeMap::new();
-        let mut queue = VecDeque::from([(ROOT_ID.to_string(), String::from("/"))]);
-        let mut visited = HashSet::from([ROOT_ID.to_string()]);
-        while let Some((parent, parent_path)) = queue.pop_front() {
-            for id in children.get(&parent).into_iter().flatten() {
-                if !visited.insert(id.clone()) {
-                    continue;
-                }
-                let Some(item) = raw.get(id) else { continue };
-                let path = if parent_path == "/" {
-                    format!("/{}", escape_path_name(item.name.as_bytes()))
-                } else {
-                    format!("{parent_path}/{}", escape_path_name(item.name.as_bytes()))
-                };
-                // Traverse all structurally reachable nodes, even a legacy duplicate-ID node;
-                // only the unique stable record is eligible for the public index.
-                queue.push_back((id.clone(), path.clone()));
-                let Some(document_id) = item.document_id else {
-                    continue;
-                };
-                if occurrences.get(&document_id) != Some(&1) {
-                    continue;
-                }
-                document_index.insert(
-                    document_id,
-                    IndexedDocument {
-                        document_id,
-                        node_id: id.clone(),
-                        parent_id: item.parent_id.clone(),
-                        path,
-                        is_dir: item.is_dir,
-                    },
-                );
-            }
-        }
-        self.document_index_digest = DocumentIndexDigest::default();
-        for record in document_index.values() {
-            self.document_index_digest.add(record);
-        }
-        self.document_index = document_index;
-        self.document_index_order = self.document_index.keys().copied().collect();
-        self.document_index_ambiguous = occurrences
-            .into_iter()
-            .filter_map(|(document_id, count)| (count > 1).then_some(document_id))
-            .collect();
-        self.update_document_index_revision();
-        self.cycle_scan_pending = self.find_cycle(None).is_some();
-        #[cfg(test)]
-        {
-            self.document_index_rebuilds = self.document_index_rebuilds.saturating_add(1);
-        }
-    }
-
-    /// The structural index of every node, read from the document once per node. Opening a
-    /// namespace and every received peer delta rebuild through here, so this is the
-    /// per-node cost of both, and `Self::node_lookup_count` is the work the performance
-    /// gate bounds.
-    fn read_nodes_once(&self) -> NodeWalk {
-        let parse_document_id = |value: String| Uuid::parse_str(&value).ok().map(FileDocumentId);
-        let mut rows = HashMap::new();
-        let mut occurrences = HashMap::<FileDocumentId, usize>::new();
-        let mut tree = TreeIndex::default();
-        for id in self.doc.keys(&self.nodes) {
-            let Some(node) = self.node(&id) else {
-                continue;
-            };
-            let node_document_id =
-                str_at(&self.doc, &node, DOCUMENT_ID_KEY).and_then(parse_document_id);
-            // `document_id_for_id` answers the reserved root id from the document root and every
-            // other node from its own object; the structural index bound the node's own key.
-            let document_id = if id == ROOT_ID {
-                str_at(&self.doc, &ROOT, ROOT_DOCUMENT_ID_KEY).and_then(parse_document_id)
-            } else {
-                node_document_id
-            };
-            let parent = str_at(&self.doc, &node, "parent");
-            let name = read_name(&self.doc, &node, "name").unwrap_or_default();
-            let is_dir = NodeKind::from_str(&str_at(&self.doc, &node, "kind").unwrap_or_default())
-                == NodeKind::Dir;
-            if let Some(node_document_id) = node_document_id {
-                tree.bind_document(&id, node_document_id);
-            }
-            if let Some(document_id) = document_id {
-                let count = occurrences
-                    .get(&document_id)
-                    .copied()
-                    .unwrap_or_default()
-                    .saturating_add(1);
-                occurrences.insert(document_id, count);
-            }
-            if let Some(parent) = &parent {
-                tree.place(&id, parent.clone(), name.clone());
-            }
-            rows.insert(
-                id,
-                NodeRow {
-                    document_id,
-                    parent_id: parent.unwrap_or_default(),
-                    name,
-                    is_dir,
-                },
-            );
-        }
-        NodeWalk {
-            tree,
-            rows,
-            occurrences,
-        }
-    }
-
-    /// Fold what an apply brought into the structural index and the catalogue: the nodes the
-    /// patches touched, and the subtrees a placement change moved, so receiving one of a
-    /// peer's edits costs that edit rather than the workspace. Only opening a document reads
-    /// every node ([`Self::rebuild_document_index`]).
-    ///
-    /// Takes the patches the caller armed before the apply
-    /// ([`ChangeTrackedDoc::arm_patches`]) and disarms.
-    fn index_after_apply(&mut self) {
-        let patches = self.doc.take_patches();
-        if self.root_document_id().is_none() {
-            // A document root without a record identity is a legacy snapshot migrating through
-            // a peer: its node ids are derived for the whole document, which is the load path.
-            self.ensure_document_ids();
-            self.rebuild_document_index();
-            self.doc.disarm_patches();
-            return;
-        }
-        let touched = self.patched_nodes(&patches);
-        drop(patches);
-        for id in &touched {
-            self.ensure_document_id(id);
-        }
-        self.doc.disarm_patches();
-        self.index_nodes(&touched);
-    }
-
-    fn patched_nodes(&self, patches: &[automerge::Patch]) -> HashSet<String> {
-        let mut ids = HashSet::new();
-        for patch in patches {
-            let key = if patch.obj == self.nodes {
-                match &patch.action {
-                    automerge::PatchAction::PutMap { key, .. }
-                    | automerge::PatchAction::DeleteMap { key } => Some(key),
-                    _ => None,
-                }
-            } else {
-                patch.path.iter().find_map(|(parent, prop)| match prop {
-                    automerge::Prop::Map(key) if *parent == self.nodes => Some(key),
-                    _ => None,
-                })
-            };
-            if let Some(key) = key {
-                ids.insert(key.clone());
-            }
-        }
-        ids
-    }
-
-    fn index_nodes(&mut self, touched: &HashSet<String>) {
-        let mut records = HashSet::new();
-        let mut moved = Vec::new();
-        if touched.contains(ROOT_ID) {
-            // The reserved id answers to the document root's record, so its row and the root's
-            // ambiguity move with it.
-            records.extend(self.root_document_id());
-        }
-        for id in touched {
-            records.extend(self.tree.document_of.get(id).copied());
-            if self.node(id).is_none() {
-                self.tree.remove(id);
-                self.tree.unbind_document(id);
-                continue;
-            }
-            let placement = self.tree.placement.get(id).cloned();
-            match self.parent_of(id) {
-                Some(parent) => self
-                    .tree
-                    .place(id, parent, self.name_of(id).unwrap_or_default()),
-                None => self.tree.remove(id),
-            }
-            if placement.as_ref() != self.tree.placement.get(id) {
-                moved.push(id.clone());
-            }
-            match self.node_document_id(id) {
-                Some(record) => self.tree.bind_document(id, record),
-                None => self.tree.unbind_document(id),
-            }
-            records.extend(self.tree.document_of.get(id).copied());
-        }
-        for record in &records {
-            if let Some(row) = self.document_index.get(record).cloned()
-                && self.tree.document_of.get(&row.node_id) != Some(record)
-            {
-                self.index_drop_row(&row);
-            }
-            if self.document_occurrences(*record) == 1 {
-                self.document_index_ambiguous.remove(record);
-            } else {
-                self.document_index_ambiguous.insert(*record);
-            }
-            self.index_refresh_bound_nodes(*record);
-            self.update_document_index_revision();
-        }
-        for id in &moved {
-            self.index_refresh_subtree(id);
-        }
-        self.placed_since_resolve.extend(moved);
-    }
-
-    /// Bring the rows of every node bound to `record` in line with the document: a record that
-    /// changed hands leaves its old node to the new one, and a duplicate is withheld from both.
-    fn index_refresh_bound_nodes(&mut self, record: FileDocumentId) {
-        let bound = self.tree.records.get(&record).cloned().unwrap_or_default();
-        for id in &bound {
-            self.index_refresh_node(id);
-        }
-    }
-
-    fn document_occurrences(&self, document_id: FileDocumentId) -> usize {
-        let bound = self
-            .tree
-            .nodes_of(document_id)
-            .filter(|id| id.as_str() != ROOT_ID)
-            .count();
-        let root_key_node =
-            self.root_document_id() == Some(document_id) && self.node(ROOT_ID).is_some();
-        bound.saturating_add(usize::from(root_key_node))
-    }
-
-    fn root_document_id(&self) -> Option<FileDocumentId> {
-        str_at(&self.doc, &ROOT, ROOT_DOCUMENT_ID_KEY)
-            .and_then(|value| Uuid::parse_str(&value).ok())
-            .map(FileDocumentId)
-    }
-
-    /// The record id stored on a node's own map, which is its identity everywhere but the
-    /// document root ([`Self::document_id_for_id`]).
-    fn node_document_id(&self, id: &str) -> Option<FileDocumentId> {
-        str_at(&self.doc, &self.node(id)?, DOCUMENT_ID_KEY)
-            .and_then(|value| Uuid::parse_str(&value).ok())
-            .map(FileDocumentId)
-    }
-
-    fn ensure_document_id(&mut self, id: &str) {
-        let Some(node) = self.node(id) else { return };
-        if str_at(&self.doc, &node, DOCUMENT_ID_KEY)
-            .and_then(|value| Uuid::parse_str(&value).ok())
-            .is_some()
-        {
-            return;
-        }
-        let document_id = self.deterministic_document_id(id);
-        let _ = self
-            .doc
-            .put(&node, DOCUMENT_ID_KEY, document_id.0.to_string());
-        self.tree.bind_document(id, document_id);
-    }
-
-    /// Snapshot one bounded canonical page, ordered by stable record UUID, cloning at most
-    /// `limit` entries.
-    pub fn indexed_document_page(&self, offset: usize, limit: usize) -> Vec<IndexedDocument> {
-        #[cfg(test)]
-        self.document_index_page_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let end = offset
-            .saturating_add(limit)
-            .min(self.document_index_order.len());
-        self.document_index_order
-            .get(offset..end)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|document_id| self.document_index.get(document_id))
-            .cloned()
-            .collect()
-    }
-
-    #[must_use]
-    pub fn indexed_document_count(&self) -> usize {
-        self.document_index_order.len()
-    }
-
-    #[must_use]
-    pub fn indexed_document(&self, document_id: FileDocumentId) -> Option<IndexedDocument> {
-        self.document_index.get(&document_id).cloned()
-    }
-
-    /// Opaque generation captured when the index changed. Reading it is O(1): serving a
-    /// manifest or page must never enumerate Automerge heads to validate a cursor.
-    #[must_use]
-    pub fn indexed_document_revision(&self) -> &str {
-        &self.document_index_revision
-    }
-
-    /// O(1): derived from the row count and the incrementally maintained row digest, so a
-    /// create does not rehash the whole catalogue.
-    fn update_document_index_revision(&mut self) {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.fs.namespace-record-index.v2\0");
-        hasher.update(&(self.document_index_order.len() as u64).to_be_bytes());
-        for limb in self.document_index_digest.0 {
-            hasher.update(&limb.to_le_bytes());
-        }
-        self.document_index_revision = hasher.finalize().to_hex().to_string();
-    }
-
-    /// Bring one node's catalogue row in line with the document: a create, a rename, a move and
-    /// a trash all end here, so each costs the one node instead of a walk over the namespace.
-    fn index_refresh_node(&mut self, id: &str) {
-        if id == ROOT_ID {
-            return;
-        }
-        let Some(document_id) = self.document_id_for_id(id) else {
-            return;
-        };
-        let existing = self.document_index.get(&document_id).cloned();
-        if let Some(row) = existing.as_ref().filter(|row| row.node_id != id) {
-            // A duplicate durable identity is withheld until a full reconciliation can represent
-            // the ambiguity fail-closed.
-            let row = row.clone();
-            self.index_drop_row(&row);
-            self.document_index_ambiguous.insert(document_id);
-            self.update_document_index_revision();
-            return;
-        }
-        let desired = if self.document_index_ambiguous.contains(&document_id) {
-            None
-        } else {
-            self.path_for_id(id).map(|path| IndexedDocument {
-                document_id,
-                node_id: id.to_string(),
-                parent_id: self.parent_of(id).unwrap_or_default(),
-                path,
-                is_dir: self.kind_of(id) == NodeKind::Dir,
-            })
-        };
-        if existing == desired {
-            return;
-        }
-        if let Some(row) = existing {
-            self.index_drop_row(&row);
-        }
-        if let Some(row) = desired {
-            self.index_admit_row(row);
-        }
-        self.update_document_index_revision();
-    }
-
-    /// Re-path `root` and every node below it after a placement change, so a moved subtree
-    /// costs its own size and nothing else in the catalogue is touched.
-    fn index_refresh_subtree(&mut self, root: &str) {
-        let mut visited = HashSet::from([root.to_string()]);
-        let mut queue = VecDeque::from([root.to_string()]);
-        while let Some(id) = queue.pop_front() {
-            queue.extend(
-                self.tree
-                    .children
-                    .get(&id)
-                    .into_iter()
-                    .flat_map(BTreeMap::values)
-                    .flat_map(BTreeSet::iter)
-                    .filter(|child| visited.insert((*child).clone()))
-                    .cloned(),
-            );
-            self.index_refresh_node(&id);
-        }
-    }
-
-    fn index_drop_row(&mut self, row: &IndexedDocument) {
-        self.document_index.remove(&row.document_id);
-        self.document_index_digest.remove(row);
-        if let Ok(position) = self.document_index_order.binary_search(&row.document_id) {
-            self.document_index_order.remove(position);
-        }
-    }
-
-    fn index_admit_row(&mut self, row: IndexedDocument) {
-        self.document_index_digest.add(&row);
-        let position = self
-            .document_index_order
-            .binary_search(&row.document_id)
-            .unwrap_or_else(|position| position);
-        self.document_index_order.insert(position, row.document_id);
-        self.document_index.insert(row.document_id, row);
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn document_index_rebuild_count(&self) -> u64 {
-        self.document_index_rebuilds
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn document_index_page_read_count(&self) -> u64 {
-        self.document_index_page_reads
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn node_entry_read_count(&self) -> u64 {
-        self.node_entry_reads
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn deterministic_document_id(&self, id: &str) -> FileDocumentId {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(RECORD_ID_MIGRATION_DOMAIN);
-        // The nodes-map object id is minted once with the namespace and stays stable across
-        // save/load and replica merges; including it keeps legacy ids such as `alice/0` from
-        // colliding across workspaces.
-        hasher.update(self.nodes.to_string().as_bytes());
-        hasher.update(&[0]);
-        hasher.update(id.as_bytes());
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        // Mark deterministic migrations as RFC 4122, version-5-shaped UUIDs.
-        bytes[6] = (bytes[6] & 0x0f) | 0x50;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        FileDocumentId(Uuid::from_bytes(bytes))
-    }
-
-    /// Populate snapshots written before record-scoped replication; peers migrating the same
-    /// legacy namespace independently derive the same ids.
-    fn ensure_document_ids(&mut self) {
-        if self.root_document_id().is_none() {
-            let document_id = self.deterministic_document_id(ROOT_ID);
-            let _ = self
-                .doc
-                .put(&ROOT, ROOT_DOCUMENT_ID_KEY, document_id.0.to_string());
-        }
-        let ids: Vec<_> = self.doc.keys(&self.nodes).collect();
-        for id in ids {
-            self.ensure_document_id(&id);
-        }
-        self.document_ids_complete = true;
     }
 
     fn parent_of(&self, id: &str) -> Option<String> {
@@ -1220,7 +618,8 @@ impl Namespace {
         }
         let mut matches = self
             .doc
-            .keys(&self.nodes)
+            .sorted_node_ids()
+            .into_iter()
             .filter(|id| self.document_id_for_id(id) == Some(document_id));
         let only = matches.next()?;
         matches.next().is_none().then_some(only)
@@ -1309,7 +708,7 @@ impl Namespace {
 
     /// [`Self::node_meta`] of the node object `obj` for `id`. A node with no record id has no
     /// entry, exactly as [`Self::entry`] requires.
-    fn node_meta_at(&self, id: &str, obj: &ObjId) -> Option<NodeMeta> {
+    fn node_meta_at(&self, id: &str, obj: &Obj) -> Option<NodeMeta> {
         let document_id = if id == ROOT_ID {
             self.document_id_for_id(id)?
         } else {
@@ -1385,7 +784,7 @@ impl Namespace {
     /// Stable collaborative record id for a namespace node id.
     pub fn document_id_for_id(&self, id: &str) -> Option<FileDocumentId> {
         let value = if id == ROOT_ID {
-            str_at(&self.doc, &ROOT, ROOT_DOCUMENT_ID_KEY)?
+            str_at(&self.doc, &Obj::index(), ROOT_DOCUMENT_ID_KEY)?
         } else {
             str_at(&self.doc, &self.node(id)?, DOCUMENT_ID_KEY)?
         };
@@ -1589,7 +988,7 @@ impl Namespace {
         }
         self.doc
             .put(
-                &ROOT,
+                &Obj::index(),
                 ROOT_DOCUMENT_ID_KEY,
                 binding.document_id.0.to_string(),
             )
@@ -2148,11 +1547,7 @@ impl Namespace {
         self.raw_content_revision_for_id(id)
     }
 
-    fn content_revision_of(
-        &self,
-        obj: &ObjId,
-        document_id: FileDocumentId,
-    ) -> Option<ContentRevisionV1> {
+    fn content_revision_of(&self, obj: &Obj, document_id: FileDocumentId) -> Option<ContentRevisionV1> {
         let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
             Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
             _ => return None,
@@ -2288,7 +1683,7 @@ impl Namespace {
         }
         let mut live_count = 0usize;
         let mut roots = Vec::new();
-        for id in self.doc.keys(&self.nodes) {
+        for id in self.doc.sorted_node_ids() {
             if !self.reaches_root(&id) {
                 continue;
             }
@@ -2547,8 +1942,16 @@ impl Namespace {
             hash,
             size,
             mtime,
-            FileDocumentId::new(),
+            self.document_id_for_new(),
         )
+    }
+
+    /// A record id for a node made now: in the newest chunk while it has room, else in the
+    /// next ([`fs_protocol::tree::chunk_for_new`]).
+    fn document_id_for_new(&self) -> FileDocumentId {
+        let newest = self.doc.chunk_numbers().last().copied();
+        let nodes = newest.map_or(0, |chunk| self.doc.nodes_in(chunk));
+        FileDocumentId::in_chunk(fs_protocol::tree::chunk_for_new(newest, nodes))
     }
 
     fn create_node_as(
@@ -2576,7 +1979,7 @@ impl Namespace {
         } else {
             derived
         };
-        let obj = self.doc.put_object(&self.nodes, &id, ObjType::Map).ok()?;
+        let obj = self.doc.put_node(document_id.chunk(), &id).ok()?;
         let _ = self.doc.put(&obj, "parent", parent_id);
         let _ = self.doc.put(&obj, "prev_parent", parent_id);
         let _ = self.doc.put(&obj, "name", name.to_vec());
@@ -2702,26 +2105,12 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
+    /// The heads of every record of the tree, together: equal heads mean an equal tree.
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
-        self.doc.get_heads()
-    }
-
-    /// The document the tree is kept in, to read what it records beside its nodes (a file's
-    /// versions, who wrote them).
-    #[must_use]
-    pub fn document(&self) -> &AutoCommit {
-        &self.doc
-    }
-
-    /// The nodes whose fields (or file content) changed between heads `before` and `after`:
-    /// what a follower of the tree reads again, rather than every node, once changes arrive.
-    pub fn nodes_changed_between(
-        &mut self,
-        before: &[automerge::ChangeHash],
-        after: &[automerge::ChangeHash],
-    ) -> HashSet<String> {
-        let patches = self.doc.diff(before, after);
-        self.patched_nodes(&patches)
+        let mut heads: Vec<automerge::ChangeHash> =
+            self.record_heads().into_values().flatten().collect();
+        heads.sort_unstable();
+        heads
     }
 
     /// A receiver that sees, after this call, every change to the document. It says that something
@@ -2735,7 +2124,7 @@ impl Namespace {
     /// reconciler compares it instead of walking every node to discover that nothing happened.
     pub fn change_token(&mut self) -> NamespaceChangeToken {
         NamespaceChangeToken {
-            heads: self.doc.get_heads(),
+            heads: self.heads(),
         }
     }
 
@@ -2751,8 +2140,18 @@ impl Namespace {
         let Some(node) = self.ino_to_id.get(&ino).and_then(|id| self.node(id)) else {
             return true;
         };
-        self.doc
-            .diff_obj(&node, before, after, true)
+        let Some(doc) = self.doc.doc_mut(node.chunk) else {
+            return true;
+        };
+        let mut of_doc = |heads: &[automerge::ChangeHash]| -> Vec<automerge::ChangeHash> {
+            heads
+                .iter()
+                .copied()
+                .filter(|hash| doc.has_change(hash))
+                .collect()
+        };
+        let (before, after) = (of_doc(before), of_doc(after));
+        doc.diff_obj(&node.id, &before, &after, true)
             .map_or(true, |patches| !patches.is_empty())
     }
 
@@ -2761,44 +2160,20 @@ impl Namespace {
     /// does not know (the asker's own changes) are ignored, so an asker that
     /// shares no history receives everything.
     pub fn changes_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<u8> {
-        let known: Vec<automerge::ChangeHash> = heads
-            .iter()
-            .copied()
-            .filter(|hash| self.doc.has_change(hash))
+        self.note_change();
+        let records = self
+            .doc
+            .each_mut()
+            .map(|(chunk, doc)| {
+                let known: Vec<automerge::ChangeHash> = heads
+                    .iter()
+                    .copied()
+                    .filter(|hash| doc.has_change(hash))
+                    .collect();
+                (chunk, doc.save_after(&known))
+            })
             .collect();
-        self.doc.save_after(&known)
-    }
-
-    /// [`Self::changes_since`], at most about `budget` bytes of it: the changes after `heads` in
-    /// causal order, as many as fit (one at least), and the heads the document stands at with
-    /// them. A sender that can hand on only so much at once goes out in several writes, each
-    /// building on the last, rather than in one no host takes.
-    pub fn changes_since_within(
-        &mut self,
-        heads: &[automerge::ChangeHash],
-        budget: usize,
-    ) -> (Vec<u8>, Vec<automerge::ChangeHash>) {
-        let known: Vec<automerge::ChangeHash> = heads
-            .iter()
-            .copied()
-            .filter(|hash| self.doc.has_change(hash))
-            .collect();
-        let changes = self.doc.get_changes(&known);
-        let mut bytes = Vec::new();
-        let mut reached: std::collections::BTreeSet<automerge::ChangeHash> =
-            known.iter().copied().collect();
-        for change in &changes {
-            let raw = change.raw_bytes();
-            if !bytes.is_empty() && bytes.len().saturating_add(raw.len()) > budget {
-                break;
-            }
-            bytes.extend_from_slice(raw);
-            for dep in change.deps() {
-                reached.remove(dep);
-            }
-            reached.insert(change.hash());
-        }
-        (bytes, reached.into_iter().collect())
+        bundle(records)
     }
 
     fn with_doc_mut<R>(
@@ -2808,10 +2183,11 @@ impl Namespace {
     ) -> Option<R> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let root = self.document_root(&id)?;
-        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
-        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
+        let doc = &mut **self.doc.doc_mut(root.chunk)?;
+        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
+        let mut ids = tilo_doc::model::seeded_id_gen(doc, &containers);
         let mut dmut = tilo_doc::DocMut {
-            doc: &mut self.doc,
+            doc,
             c: &containers,
             ids: &mut ids,
         };
@@ -2842,17 +2218,19 @@ impl Namespace {
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
-        tilo_doc::model::block_text(&self.doc, &containers, block_id)
+        let doc = &**self.doc.doc(root.chunk)?;
+        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
+        tilo_doc::model::block_text(doc, &containers, block_id)
     }
 
     pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        let doc = &**self.doc.doc(root.chunk)?;
+        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
         Some(
             tilo_doc::DocRef {
-                doc: &self.doc,
+                doc,
                 c: &containers,
             }
             .materialize(),
@@ -3041,7 +2419,8 @@ impl Namespace {
 
     pub fn directly_trashed(&self) -> Vec<String> {
         self.doc
-            .keys(&self.nodes)
+            .sorted_node_ids()
+            .into_iter()
             .filter(|id| self.is_directly_trashed(id))
             .collect()
     }
@@ -3054,14 +2433,7 @@ impl Namespace {
     /// `None`). Seeking to `after` is a search, not a walk, so a caller can visit every node in
     /// bounded steps and release the namespace lock between them.
     pub fn node_ids_after(&self, after: Option<&str>, limit: usize) -> Vec<String> {
-        let start = after.map_or(std::ops::Bound::Unbounded, |id| {
-            std::ops::Bound::Excluded(id.to_string())
-        });
-        self.doc
-            .map_range(&self.nodes, (start, std::ops::Bound::Unbounded))
-            .take(limit)
-            .map(|item| item.key.into_owned())
-            .collect()
+        self.doc.node_ids_after(after, limit)
     }
 
     pub fn deleted_hash(&self, id: &str) -> Option<Hash> {
@@ -3253,7 +2625,8 @@ impl Namespace {
 
     pub fn live_node_ids(&self) -> Vec<String> {
         self.doc
-            .keys(&self.nodes)
+            .sorted_node_ids()
+            .into_iter()
             .filter(|id| self.reaches_root(id))
             .collect()
     }

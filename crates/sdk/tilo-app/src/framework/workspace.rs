@@ -31,6 +31,42 @@ pub struct WorkspaceResource<P: Resource> {
     shared: Rc<Shared<P>>,
 }
 
+/// Opens the record `id` of `P` that one owner keeps, later, from a widget that outlives the
+/// view that built it: a page's Files window opens each chunk of the workspace's tree as the
+/// tree lists it ([`ResourceEnv::record_opener`](super::ResourceEnv::record_opener)).
+pub struct RecordOpener<P: Resource> {
+    storage: Rc<super::settings::ViewStorage>,
+    owner: &'static str,
+    resource: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: Resource> Clone for RecordOpener<P> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: Rc::clone(&self.storage),
+            owner: self.owner,
+            resource: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: Resource> RecordOpener<P> {
+    pub(crate) fn new(storage: Rc<super::settings::ViewStorage>, owner: &'static str) -> Self {
+        Self {
+            storage,
+            owner,
+            resource: std::marker::PhantomData,
+        }
+    }
+
+    /// The record `id` of `P` that the owner keeps, opened on first use; `None` where the host
+    /// keeps no records in a workspace (a view of a past version), for an id that names no
+    /// record, or while the workspace has not delivered it.
+    pub fn open(&self, id: &str) -> Option<WorkspaceResource<P>> {
+        self.storage.shared_resource::<P>(self.owner, id)
+    }
+}
+
 impl<P: Resource> Clone for WorkspaceResource<P> {
     fn clone(&self) -> Self {
         Self {

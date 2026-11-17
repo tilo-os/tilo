@@ -1,14 +1,104 @@
-//! `files.tree` — a workspace's files as the record that carries them.
+//! `files.tree` — a workspace's files as the records that carry them: the tree's own
+//! record and its chunks ([`CHUNK_NODES`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use automerge::{ObjId, ObjType, ROOT, ReadDoc as _};
+use automerge::{ObjId, ObjType, ROOT, ReadDoc};
 use tilo_automerge::read::ReadTyped as _;
 use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedResource, Touch};
 
-use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
+use crate::files::{FIRST_TREE_CHUNK, FileNameV1, FileNodeKind, FileDocumentId, TreeChunk};
 
 pub const TREE_KIND: &str = "files.tree";
+
+/// Nodes a chunk of the tree holds before new nodes start the next one.
+///
+/// A workspace's tree is kept in chunks, each a record of its own
+/// ([`chunk_document_id`]), so that writing a file costs what its chunk costs and not what the
+/// folder holds: a write is one change of one chunk, and a holder that keeps a record compacts,
+/// seals, stores and sends one chunk. A node lives in the chunk its record id names
+/// ([`FileDocumentId::chunk`]), chosen when it is made: the newest chunk while it has room, so
+/// the files of one checkout fill one chunk after another, and an edit, rename or delete of a
+/// file is a change of the chunk it was made in. A node never moves to another chunk.
+///
+/// A thousand nodes with a few versions each is about a megabyte of record: small enough that
+/// compacting or sending a chunk whole costs milliseconds, and few enough records that a
+/// folder of fifty thousand files is fifty of them.
+pub const CHUNK_NODES: usize = 1024;
+
+/// The map of the tree's own record naming each chunk that holds nodes, by its number in
+/// decimal: what a device that holds the tree's record opens next.
+pub const CHUNKS_KEY: &str = "chunks";
+
+/// The record chunk `chunk` of the tree is, as every device derives it: the tree's own
+/// record for chunk 0, which holds the root's identity and the list of chunks; for every
+/// other, the record `derived:chunk.<n>@<tree record>`, as the platform names the chunks of
+/// any record.
+#[must_use]
+pub fn chunk_document_id(chunk: TreeChunk) -> String {
+    if chunk == 0 {
+        return document_id();
+    }
+    format!("derived:chunk.{chunk}@{}", document_id())
+}
+
+/// The chunk of the tree `record` is, or `None` for a record that is none of them.
+#[must_use]
+pub fn chunk_of_record(record: &str) -> Option<TreeChunk> {
+    let tree = document_id();
+    if record == tree {
+        return Some(0);
+    }
+    let number = record
+        .strip_prefix("derived:chunk.")?
+        .strip_suffix(tree.as_str())?
+        .strip_suffix('@')?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) || number.starts_with('0') {
+        return None;
+    }
+    number.parse().ok()
+}
+
+/// The chunks the tree's own record `doc` lists, in order.
+#[must_use]
+pub fn listed_chunks<D: ReadDoc>(doc: &D) -> Vec<TreeChunk> {
+    let Some(chunks) = doc.obj_at(&ROOT, CHUNKS_KEY, ObjType::Map) else {
+        return Vec::new();
+    };
+    let mut listed: Vec<TreeChunk> = doc
+        .keys(&chunks)
+        .filter_map(|key| key.parse().ok())
+        .filter(|chunk| *chunk >= FIRST_TREE_CHUNK)
+        .collect();
+    listed.sort_unstable();
+    listed
+}
+
+/// List `chunk` in the tree's own record `doc`; whether it was not listed yet.
+///
+/// # Errors
+/// The document refused the change.
+pub fn list_chunk(doc: &mut Doc, chunk: TreeChunk) -> Result<bool, automerge::AutomergeError> {
+    use automerge::transaction::Transactable as _;
+    let chunks = root_map(doc, CHUNKS_KEY)?;
+    let key = chunk.to_string();
+    if doc.get(&chunks, key.as_str())?.is_some() {
+        return Ok(false);
+    }
+    doc.put(&chunks, key, true)?;
+    Ok(true)
+}
+
+/// The chunk a new node goes to, given the newest chunk (`None` when there is none yet) and
+/// how many nodes it holds: the newest while it has room, else the one after it.
+#[must_use]
+pub const fn chunk_for_new(newest: Option<TreeChunk>, nodes: usize) -> TreeChunk {
+    match newest {
+        None => FIRST_TREE_CHUNK,
+        Some(newest) if nodes >= CHUNK_NODES => newest.saturating_add(1),
+        Some(newest) => newest,
+    }
+}
 
 /// The record a workspace's tree travels as, under the Files app: every device
 /// derives it from the kind alone.
@@ -139,6 +229,134 @@ impl Tree {
     pub fn of_document(record: &[u8]) -> Result<Self, ModelError> {
         let document = automerge::AutoCommit::load(record)?;
         FilesTree::read(&document)
+    }
+
+    /// The tree the tree's own record `index` and the chunks `chunks` hold, each as its saved
+    /// bytes ([`TreeChunks`]).
+    ///
+    /// # Errors
+    ///
+    /// A record is not a saved document, or the nodes it holds are malformed.
+    pub fn of_records<'a>(
+        index: Option<&[u8]>,
+        chunks: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Self, ModelError> {
+        let mut tree = match index {
+            Some(index) => Self::of_document(index)?,
+            None => Self::default(),
+        };
+        for chunk in chunks {
+            let held = Self::of_document(chunk)?;
+            tree.nodes.extend(held.nodes);
+        }
+        Ok(tree)
+    }
+
+    /// The chunk a node made in this tree now goes to ([`chunk_for_new`]).
+    #[must_use]
+    pub fn chunk_for_new(&self) -> TreeChunk {
+        let mut counts = BTreeMap::<TreeChunk, usize>::new();
+        for node in self.nodes.values() {
+            let chunk = node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk());
+            let count = counts.entry(chunk).or_default();
+            *count = count.saturating_add(1);
+        }
+        let newest = counts.last_key_value();
+        chunk_for_new(
+            newest.map(|(chunk, _)| *chunk),
+            newest.map_or(0, |(_, n)| *n),
+        )
+    }
+}
+
+/// A workspace's tree as the records that hold it: its own record (the index) and its
+/// chunks, each read as it changes, so a change of one chunk costs that chunk.
+#[derive(Clone, Debug, Default)]
+pub struct TreeChunks {
+    root_document_id: Option<FileDocumentId>,
+    listed: BTreeSet<TreeChunk>,
+    chunks: BTreeMap<TreeChunk, BTreeMap<String, TreeEntry>>,
+}
+
+impl TreeChunks {
+    /// Take in the tree's own record as it reads now.
+    pub fn read_index<D: ReadDoc>(&mut self, doc: &D) {
+        self.root_document_id = resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY).or(self.root_document_id);
+        self.listed.extend(listed_chunks(doc));
+    }
+
+    /// Take in chunk `chunk` as its record reads now, in place of what it read before.
+    pub fn read_chunk<D: ReadDoc>(&mut self, chunk: TreeChunk, doc: &D) {
+        let mut nodes = BTreeMap::new();
+        if let Some(map) = doc.obj_at(&ROOT, NODES_KEY, ObjType::Map) {
+            for id in doc.keys(&map) {
+                if let Some(node) = doc.obj_at(&map, &id, ObjType::Map) {
+                    nodes.insert(id, entry_of(doc, &node));
+                }
+            }
+        }
+        self.listed.insert(chunk);
+        self.chunks.insert(chunk, nodes);
+    }
+
+    /// Take in the record `record` of the tree, saved as `bytes`: its own record or a chunk.
+    /// `false` for a record that is neither.
+    ///
+    /// # Errors
+    /// `bytes` is not a saved document.
+    pub fn read_resource(&mut self, record: &str, bytes: &[u8]) -> Result<bool, ModelError> {
+        let Some(chunk) = chunk_of_record(record) else {
+            return Ok(false);
+        };
+        let doc = automerge::AutoCommit::load(bytes)?;
+        if chunk == 0 {
+            self.read_index(&doc);
+        } else {
+            self.read_chunk(chunk, &doc);
+        }
+        Ok(true)
+    }
+
+    /// The chunks the index lists or that were read, in order: every record a holder of the
+    /// tree opens.
+    #[must_use]
+    pub fn listed(&self) -> Vec<TreeChunk> {
+        self.listed.iter().copied().collect()
+    }
+
+    /// Whether chunk `chunk` was read.
+    #[must_use]
+    pub fn holds(&self, chunk: TreeChunk) -> bool {
+        self.chunks.contains_key(&chunk)
+    }
+
+    /// The nodes chunk `chunk` holds, as it read last.
+    #[must_use]
+    pub fn chunk(&self, chunk: TreeChunk) -> Option<&BTreeMap<String, TreeEntry>> {
+        self.chunks.get(&chunk)
+    }
+
+    /// The whole tree, every chunk read so far.
+    #[must_use]
+    pub fn tree(&self) -> Tree {
+        Tree {
+            root_document_id: self.root_document_id,
+            nodes: self
+                .chunks
+                .values()
+                .flat_map(|nodes| nodes.iter().map(|(id, node)| (id.clone(), node.clone())))
+                .collect(),
+        }
+    }
+
+    /// The chunk a node made in this tree now goes to ([`chunk_for_new`]).
+    #[must_use]
+    pub fn chunk_for_new(&self) -> TreeChunk {
+        let newest = self.listed.iter().next_back().copied();
+        let nodes = newest
+            .and_then(|chunk| self.chunks.get(&chunk))
+            .map_or(0, BTreeMap::len);
+        chunk_for_new(newest, nodes)
     }
 }
 
@@ -279,19 +497,19 @@ fn nodes_at(doc: &Doc, nodes: &ObjId, id: &str) -> Option<ObjId> {
 }
 
 /// A name is bytes; a namespace written before names were bytes holds text.
-fn name_of(doc: &Doc, node: &ObjId, key: &str) -> Option<FileNameV1> {
+fn name_of<D: ReadDoc>(doc: &D, node: &ObjId, key: &str) -> Option<FileNameV1> {
     doc.bytes_at(node, key)
         .map(FileNameV1)
         .or_else(|| doc.str_at(node, key).map(FileNameV1::from))
 }
 
-fn resource_of(doc: &Doc, obj: &ObjId, key: &str) -> Option<FileDocumentId> {
+fn resource_of<D: ReadDoc>(doc: &D, obj: &ObjId, key: &str) -> Option<FileDocumentId> {
     doc.str_at(obj, key)
         .and_then(|value| uuid::Uuid::parse_str(&value).ok())
         .map(FileDocumentId)
 }
 
-fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
+fn entry_of<D: ReadDoc>(doc: &D, node: &ObjId) -> TreeEntry {
     TreeEntry {
         parent: doc.str_at(node, PARENT_KEY),
         name: name_of(doc, node, NAME_KEY).unwrap_or_default(),
@@ -450,18 +668,19 @@ pub fn folder_named(tree: &Tree, parent: &str, name: &str) -> Option<String> {
         .map(|(id, _)| id.to_owned())
 }
 
-/// Put `placing` named `name` into the folder `parent` of the tree `doc`
-/// holds, written as the filesystem writes a node it creates, so a mounted
-/// copy of the tree shows it as a file or folder of its own; `tree` is what
-/// `doc` holds and takes the node too, so the next placement sees it. A name
-/// the folder already has is kept beside it ([`free_name`]).
+/// Put `placing` named `name` into the folder `parent` of the tree, written
+/// as the filesystem writes a node it creates, so a mounted copy of the tree
+/// shows it as a file or folder of its own. `doc` is the record of the chunk
+/// `chunk` the node goes to ([`Tree::chunk_for_new`]); `tree` is the whole
+/// tree and takes the node too, so the next placement sees it. A name the
+/// folder already has is kept beside it ([`free_name`]).
 ///
 /// # Errors
 ///
 /// A name no file can have (empty, `.`, `..`, or with a `/`), a parent the
 /// tree does not hold, or a document that refused the write.
 pub fn place(
-    doc: &mut Doc,
+    (doc, chunk): (&mut Doc, TreeChunk),
     tree: &mut Tree,
     parent: &str,
     name: &str,
@@ -477,7 +696,7 @@ pub fn place(
     }
     let name = free_name(tree, parent, name);
     let nodes = tree_nodes(doc)?;
-    let document_id = FileDocumentId::new();
+    let document_id = FileDocumentId::in_chunk(chunk);
     let id = document_node_id(document_id);
     let node = doc.put_object(&nodes, &id, ObjType::Map)?;
     doc.put(&node, PARENT_KEY, parent)?;
@@ -622,7 +841,7 @@ mod placing_tests {
         let mut doc = Doc::new();
         let mut tree = Tree::default();
         let docs = place(
-            &mut doc,
+            (&mut doc, 1),
             &mut tree,
             ROOT_ID,
             "docs",
@@ -635,10 +854,42 @@ mod placing_tests {
             hash: &hash,
             size: 12,
         };
-        let plan = place(&mut doc, &mut tree, &docs.id, "plan.md", file, (6, "page")).unwrap();
-        let again = place(&mut doc, &mut tree, &docs.id, "plan.md", file, (7, "page")).unwrap();
-        let hidden = place(&mut doc, &mut tree, &docs.id, ".env", file, (7, "page")).unwrap();
-        let hidden_again = place(&mut doc, &mut tree, &docs.id, ".env", file, (7, "page")).unwrap();
+        let plan = place(
+            (&mut doc, 1),
+            &mut tree,
+            &docs.id,
+            "plan.md",
+            file,
+            (6, "page"),
+        )
+        .unwrap();
+        let again = place(
+            (&mut doc, 1),
+            &mut tree,
+            &docs.id,
+            "plan.md",
+            file,
+            (7, "page"),
+        )
+        .unwrap();
+        let hidden = place(
+            (&mut doc, 1),
+            &mut tree,
+            &docs.id,
+            ".env",
+            file,
+            (7, "page"),
+        )
+        .unwrap();
+        let hidden_again = place(
+            (&mut doc, 1),
+            &mut tree,
+            &docs.id,
+            ".env",
+            file,
+            (7, "page"),
+        )
+        .unwrap();
         assert_eq!(again.name, "plan (2).md");
         assert_eq!(hidden_again.name, ".env (2)");
         assert_eq!(read(&doc), tree, "what was written is what the tree holds");
@@ -661,7 +912,7 @@ mod placing_tests {
         for name in ["", ".", "..", "a/b"] {
             assert!(
                 place(
-                    &mut doc,
+                    (&mut doc, 1),
                     &mut tree,
                     ROOT_ID,
                     name,
@@ -673,7 +924,7 @@ mod placing_tests {
         }
         assert!(
             place(
-                &mut doc,
+                (&mut doc, 1),
                 &mut tree,
                 "record:gone",
                 "a",
@@ -690,7 +941,7 @@ mod placing_tests {
         let mut mount = Doc::new();
         let mut mount_tree = Tree::default();
         place(
-            &mut mount,
+            (&mut mount, 1),
             &mut mount_tree,
             ROOT_ID,
             "kept.txt",
@@ -704,7 +955,7 @@ mod placing_tests {
         let mut page = mount.fork();
         let mut page_tree = read(&page);
         place(
-            &mut page,
+            (&mut page, 1),
             &mut page_tree,
             ROOT_ID,
             "kept.txt",
@@ -722,5 +973,90 @@ mod placing_tests {
             .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
             .collect();
         assert_eq!(names, ["kept (2).txt", "kept.txt"]);
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_is_named_by_its_record_and_a_node_by_its_document_id() {
+        assert_eq!(chunk_document_id(0), document_id());
+        for chunk in [1, 2, 77, u32::MAX] {
+            let record = chunk_document_id(chunk);
+            assert_eq!(chunk_of_record(&record), Some(chunk), "{record}");
+            assert_eq!(FileDocumentId::in_chunk(chunk).chunk(), chunk);
+        }
+        assert_eq!(chunk_of_record(&document_id()), Some(0));
+        assert_eq!(chunk_of_record("derived:chunk.01@x"), None);
+        assert_eq!(
+            chunk_of_record(&format!("derived:chunk.01@{}", document_id())),
+            None
+        );
+        assert_eq!(chunk_of_record("note-1"), None);
+        // An id made without a chunk is in the first.
+        assert_eq!(FileDocumentId::new().chunk(), FIRST_TREE_CHUNK);
+        assert_ne!(FileDocumentId::in_chunk(3), FileDocumentId::in_chunk(3));
+    }
+
+    #[test]
+    fn new_nodes_fill_the_newest_chunk_then_start_the_next() {
+        assert_eq!(chunk_for_new(None, 0), 1);
+        assert_eq!(chunk_for_new(Some(1), CHUNK_NODES - 1), 1);
+        assert_eq!(chunk_for_new(Some(1), CHUNK_NODES), 2);
+    }
+
+    #[test]
+    fn a_tree_reads_whole_from_its_index_and_chunks() {
+        let mut index = Doc::new();
+        let mut first = Doc::new();
+        let mut second = Doc::new();
+        let mut tree = Tree::default();
+        let docs = place(
+            (&mut first, 1),
+            &mut tree,
+            ROOT_ID,
+            "docs",
+            Placing::Folder,
+            (1, "a"),
+        )
+        .unwrap();
+        let file = Placing::File {
+            hash: "00",
+            size: 1,
+        };
+        place(
+            (&mut second, 2),
+            &mut tree,
+            &docs.id,
+            "plan.md",
+            file,
+            (2, "a"),
+        )
+        .unwrap();
+        list_chunk(&mut index, 1).unwrap();
+        assert!(list_chunk(&mut index, 2).unwrap());
+        assert!(!list_chunk(&mut index, 2).unwrap());
+        assert_eq!(listed_chunks(&index), [1, 2]);
+
+        let read = Tree::of_records(
+            Some(&index.save()),
+            [first.save().as_slice(), second.save().as_slice()],
+        )
+        .unwrap();
+        assert_eq!(read, tree);
+
+        let mut chunks = TreeChunks::default();
+        chunks.read_resource(&document_id(), &index.save()).unwrap();
+        assert_eq!(chunks.listed(), [1, 2]);
+        chunks
+            .read_resource(&chunk_document_id(1), &first.save())
+            .unwrap();
+        chunks
+            .read_resource(&chunk_document_id(2), &second.save())
+            .unwrap();
+        assert_eq!(chunks.tree(), tree);
+        assert_eq!(chunks.chunk_for_new(), 2);
     }
 }

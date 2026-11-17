@@ -114,7 +114,39 @@ impl FileDocumentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// A new record id for a node of a workspace's tree that lives in its chunk `chunk`
+    /// ([`crate::tree::chunk_document_id`]): the chunk is part of the id, so every device that
+    /// writes the node, or rebuilds it from its record, writes it into the same chunk.
+    #[must_use]
+    pub fn in_chunk(chunk: TreeChunk) -> Self {
+        let mut bytes = *Uuid::new_v4().as_bytes();
+        let (number, _) = bytes.split_at_mut(4);
+        number.copy_from_slice(&chunk.to_be_bytes());
+        // A version-8 UUID: its leading bits are this format's own.
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
+    }
+
+    /// The chunk of the tree a node with this record id lives in. An id no chunk was chosen
+    /// for (one made with [`Self::new`], or derived) is in the first chunk.
+    #[must_use]
+    pub fn chunk(&self) -> TreeChunk {
+        if self.0.get_version_num() != 8 {
+            return FIRST_TREE_CHUNK;
+        }
+        let [a, b, c, d, ..] = *self.0.as_bytes();
+        u32::from_be_bytes([a, b, c, d]).max(FIRST_TREE_CHUNK)
+    }
 }
+
+/// The number of a chunk of a workspace's tree: the tree's own record is chunk 0 and holds
+/// no node; every node lives in a chunk from [`FIRST_TREE_CHUNK`] on.
+pub type TreeChunk = u32;
+
+/// The first chunk that holds nodes.
+pub const FIRST_TREE_CHUNK: TreeChunk = 1;
 
 impl Default for FileDocumentId {
     fn default() -> Self {
@@ -1656,12 +1688,10 @@ mod tests {
             let other = FileDocumentId::new();
             let scope = collab_types::Scope::FsResource(record.0.to_string());
             assert!(
-                scope
-                    .matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
+                scope.matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
             );
             assert!(
-                !scope
-                    .matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
+                !scope.matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
             );
             assert!(
                 !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))

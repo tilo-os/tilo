@@ -9,8 +9,10 @@
 //! lists ([`fs_content::whole`]), or, for a text document, from the tree itself
 //! ([`fs_protocol::tree::document_file`]).
 
-use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree};
+use std::collections::BTreeMap;
+
+use fs_protocol::files::{FileNodeKind, TreeChunk};
+use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks};
 use tilo_actions::remote::Found;
 use tilo_relay_protocol::WorkspaceId;
 
@@ -42,31 +44,20 @@ impl Worker {
         if needle.is_empty() || most == 0 {
             return Vec::new();
         }
-        let Some(bytes) = self.workspaces.get(&workspace_id).and_then(|workspace| {
-            workspace
-                .peer
-                .engine()
-                .record(
-                    cluster_id,
-                    FILES_APP,
-                    &collab_types::person_document_id(TREE_KIND),
-                )
-                .ok()
-                .flatten()
-        }) else {
+        let Some(workspace) = self.workspaces.get(&workspace_id) else {
             return Vec::new();
         };
-        let Ok(doc) = automerge::AutoCommit::load(&bytes) else {
+        let engine = workspace.peer.engine();
+        let Some(records) = tree_records(engine, cluster_id) else {
             return Vec::new();
         };
-        let Ok(tree) = <fs_protocol::tree::FilesTree as ui::tilo_resource::Resource>::read(&doc)
-        else {
-            return Vec::new();
-        };
+        let (tree, documents) = records.split();
         let store = self.workspace_content(workspace_id);
         let files = files_of(&tree, |id, node| {
             if node.codec.is_some() {
-                let file = fs_protocol::tree::document_file(&doc, id, &tilo_content::NoContent)?;
+                let chunk = node.document_id.map_or(1, |record| record.chunk());
+                let doc = documents.get(&chunk)?;
+                let file = fs_protocol::tree::document_file(doc, id, &tilo_content::NoContent)?;
                 return String::from_utf8(file).ok();
             }
             let store = store.as_ref()?;
@@ -81,6 +72,61 @@ impl Worker {
         });
         ranked(files, &needle, most)
     }
+}
+
+/// The records of a workspace's tree as the replica holds them: the tree's own
+/// record and each chunk it lists, saved.
+struct TreeRecords {
+    index: automerge::AutoCommit,
+    chunks: BTreeMap<TreeChunk, automerge::AutoCommit>,
+}
+
+impl TreeRecords {
+    /// Take the tree's own record `index` and the chunks it lists, read by
+    /// `read`.
+    fn read(index: &[u8], read: impl Fn(TreeChunk) -> Option<Vec<u8>>) -> Option<Self> {
+        let index: automerge::AutoCommit = automerge::AutoCommit::load(index).ok()?;
+        let chunks = fs_protocol::tree::listed_chunks(&index)
+            .into_iter()
+            .filter_map(|chunk| Some((chunk, automerge::AutoCommit::load(&read(chunk)?).ok()?)))
+            .collect();
+        Some(Self { index, chunks })
+    }
+
+    /// The tree every record read holds, with the documents by chunk.
+    fn split(self) -> (Tree, BTreeMap<TreeChunk, automerge::AutoCommit>) {
+        let mut tree = TreeChunks::default();
+        tree.read_index(&self.index);
+        for (chunk, doc) in &self.chunks {
+            tree.read_chunk(*chunk, doc);
+        }
+        (tree.tree(), self.chunks)
+    }
+}
+
+/// The records of the tree of `cluster_id`, as the replica `engine` holds them.
+fn tree_records(
+    engine: &tilo_session_client::engine::Engine,
+    cluster_id: &str,
+) -> Option<TreeRecords> {
+    let index = engine
+        .record(
+            cluster_id,
+            FILES_APP,
+            &collab_types::person_document_id(TREE_KIND),
+        )
+        .ok()
+        .flatten()?;
+    TreeRecords::read(&index, |chunk| {
+        engine
+            .record(
+                cluster_id,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk),
+            )
+            .ok()
+            .flatten()
+    })
 }
 
 /// Each live file of `tree` with its path, and its words as `words` reads them.
@@ -128,6 +174,8 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ROOT};
 
     fn file(path: &str, words: Option<&str>) -> File {
         File {
@@ -170,5 +218,65 @@ mod tests {
             (found.kind.as_str(), found.app.as_deref()),
             (FILE_KIND, Some(FILES_APP))
         );
+    }
+    /// The records of a workspace's folder, as a member reads them: the tree's own
+    /// record names the chunks, and each chunk is read for the files it holds.
+    #[test]
+    fn a_folder_reads_from_the_chunks_its_own_record_lists() {
+        let names = |tree: &Tree| -> Vec<String> {
+            tree.children(fs_protocol::tree::ROOT_ID)
+                .into_iter()
+                .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
+                .collect()
+        };
+        let records = TreeRecords::read(&index_of(&[1, 2]), |chunk| {
+            Some(chunk_of(&format!("f{chunk}.txt")))
+        })
+        .expect("the tree's own record reads");
+        let (tree, documents) = records.split();
+        assert_eq!(names(&tree), ["f1.txt", "f2.txt"]);
+        assert_eq!(
+            documents.len(),
+            2,
+            "each chunk is kept, for the words of a text document in it"
+        );
+
+        // A chunk this member holds none of is no part of the folder: what it finds
+        // is what it can read.
+        let records = TreeRecords::read(&index_of(&[1, 2]), |chunk| {
+            (chunk == 1).then(|| chunk_of("here.txt"))
+        })
+        .expect("the tree's own record reads");
+        let (tree, _) = records.split();
+        assert_eq!(names(&tree), ["here.txt"]);
+    }
+
+    /// A chunk record holding the file `name` under the workspace's root.
+    fn chunk_of(name: &str) -> Vec<u8> {
+        let mut doc = automerge::AutoCommit::new();
+        let nodes = doc
+            .put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map)
+            .unwrap();
+        // A node's id is its record's, which no other chunk holds.
+        let node = doc
+            .put_object(&nodes, format!("device/{name}"), ObjType::Map)
+            .unwrap();
+        for (key, value) in [
+            (fs_protocol::tree::PARENT_KEY, fs_protocol::tree::ROOT_ID),
+            (fs_protocol::tree::NAME_KEY, name),
+            (fs_protocol::tree::KIND_KEY, "file"),
+        ] {
+            doc.put(&node, key, value).unwrap();
+        }
+        doc.save()
+    }
+
+    /// The tree's own record, listing the chunks `chunks`.
+    fn index_of(chunks: &[u32]) -> Vec<u8> {
+        let mut doc = automerge::AutoCommit::new();
+        for chunk in chunks {
+            fs_protocol::tree::list_chunk(&mut doc, *chunk).unwrap();
+        }
+        doc.save()
     }
 }

@@ -8,15 +8,19 @@
 //! app opens; on a window, by that app, as its own Import takes a file. The page shows how far the
 //! copy is at the drop's place, and says at the end what was added where.
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use fs_protocol::tree::{FILES_APP, Tree};
+use fs_protocol::files::TreeChunk;
+use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, chunk_document_id};
 use ui::kurbo::{Point, Rect};
+use ui::resource::StoredResource;
+use ui::resource::workspace::WorkspaceRecords;
 use wasm_bindgen::prelude::*;
 
 use super::Desktop;
 use super::uploads::Picked;
-use crate::dropped_files::{self, Kept, SHELL_FOLDER};
+use crate::dropped_files::{self, Kept, SHELL_FOLDER, TreeWrite};
 use crate::drops_code::{DropTarget, DropsApi, hands_files};
 use crate::page_files::WorkspaceFiles;
 
@@ -28,23 +32,102 @@ const SHELL_INSET: f64 = 8.0;
 const READ_PIECE: u64 = 4 * 1024 * 1024;
 
 /// The workspace's tree, waiting while it is on its way from the workspace's hosts (they send it,
-/// or say they have none and it is founded here).
-async fn tree_here(files: &WorkspaceFiles) -> Result<ui::resource::StoredResource, String> {
+/// or say they have none and it is founded here): its own record, every chunk it lists, and the
+/// whole tree they hold.
+async fn tree_here(
+    files: &WorkspaceFiles,
+) -> Result<(StoredResource, BTreeMap<TreeChunk, Rc<StoredResource>>, Tree), String> {
     for _ in 0..TREE_WAITS {
-        match files.tree_record() {
-            Err(
-                ui::resource::ResourceOpenError::Arriving
-                | ui::resource::ResourceOpenError::Opening,
-            ) => {
+        if let Some(opened) = files.tree_for_writing() {
+            return Ok(opened);
+        }
+        super::frame_loop::sleep_ms(TREE_WAIT_MS).await;
+    }
+    Err("The workspace's files did not arrive from its host; try again in a moment".into())
+}
+
+/// The record of chunk `chunk`, waiting while the workspace's hosts answer whether they hold it:
+/// a chunk no device has yet is founded here, as the tree's own record is.
+async fn chunk_here(
+    records: &WorkspaceRecords,
+    chunk: TreeChunk,
+) -> Result<Rc<StoredResource>, String> {
+    for _ in 0..TREE_WAITS {
+        match records.open_resource_at(
+            FILES_APP,
+            &chunk_document_id(chunk),
+            TREE_KIND,
+            &|_doc: &mut ui::automerge::AutoCommit| Ok(()),
+        ) {
+            Err(ui::resource::ResourceOpenError::Arriving | ui::resource::ResourceOpenError::Opening) => {
                 super::frame_loop::sleep_ms(TREE_WAIT_MS).await;
             }
             opened => {
-                return opened
-                    .map_err(|error| format!("The workspace's files are not open here: {error}"));
+                return opened.map(Rc::new).map_err(|error| {
+                    format!("Chunk {chunk} of the workspace's files is not open here: {error}")
+                });
             }
         }
     }
     Err("The workspace's files did not arrive from its host; try again in a moment".into())
+}
+
+/// Where a drop writes the workspace's tree: each chunk's record, opened as the drop needs it,
+/// and the tree's own record that lists the chunks it wrote into.
+struct Records<'a> {
+    workspace: &'a WorkspaceRecords,
+    index: &'a StoredResource,
+    chunks: &'a mut BTreeMap<TreeChunk, Rc<StoredResource>>,
+}
+
+impl TreeWrite for Records<'_> {
+    fn put(
+        &mut self,
+        chunk: TreeChunk,
+        tree: &mut Tree,
+        parent: &str,
+        name: &str,
+        placing: fs_protocol::tree::Placing<'_>,
+        when: (u64, &str),
+    ) -> Result<fs_protocol::tree::Placed, String> {
+        let record = if let Some(record) = self.chunks.get(&chunk) {
+            Rc::clone(record)
+        } else {
+            let opened = self
+                .workspace
+                .open_resource_at(
+                    FILES_APP,
+                    &chunk_document_id(chunk),
+                    TREE_KIND,
+                    &|_doc: &mut ui::automerge::AutoCommit| Ok(()),
+                )
+                .map_err(|error| format!("chunk {chunk} is not open here: {error}"))?;
+            let record = Rc::new(opened);
+            self.chunks.insert(chunk, Rc::clone(&record));
+            record
+        };
+        record.edit(false, |doc| {
+            fs_protocol::tree::place((doc, chunk), tree, parent, name, placing, when)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn list(&mut self, chunk: TreeChunk) -> Result<(), String> {
+        let listed = self
+            .index
+            .read(fs_protocol::tree::listed_chunks)
+            .unwrap_or_default();
+        if listed.contains(&chunk) {
+            return Ok(());
+        }
+        self.index
+            .edit(false, |doc| {
+                fs_protocol::tree::list_chunk(doc, chunk)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .map(drop)
+    }
 }
 
 /// How long a drop waits for the workspace's tree to arrive, in steps.
@@ -195,8 +278,7 @@ impl Desktop {
     pub(super) fn files_label(&self, tab: u64) -> String {
         let named = self.files_folder(tab).and_then(|folder| {
             let page = self.files.as_ref()?;
-            let tree = page.tree_record().ok()?.read(|doc| doc.clone().save())?;
-            let tree = Tree::of_document(&tree).ok()?;
+            let tree = page.tree_now()?;
             let node = tree.node(&folder)?;
             Some(String::from_utf8_lossy(node.name.as_bytes()).into_owned())
         });
@@ -305,8 +387,9 @@ struct CopiedFile {
 }
 
 /// Keep each of `files` in the page's content as its manifest and chunks, then put them all into
-/// the folder `into` of the tree (its root for `None`, or when the folder is gone) in one change:
-/// what the drop added, every device sees at once.
+/// the folder `into` of the tree (its root for `None`, or when the folder is gone): each node into
+/// the chunk it goes to, written as one change of that chunk's record, and the chunks written into
+/// listed in the tree's own record.
 async fn copy(
     page: &WorkspaceFiles,
     files: &[Picked],
@@ -337,34 +420,52 @@ async fn copy(
             size: file.size(),
         });
     }
-    let record = tree_here(page).await?;
+    // The tree's own record and every chunk it lists: a node goes into the newest chunk while
+    // it has room and the next one after, so the records a drop touches are opened first.
+    let (index, mut chunks, mut tree) = tree_here(page).await?;
+    let records = page.records();
+    let missing: Vec<TreeChunk> = dropped_files::chunks_for(&tree, &kept)
+        .into_iter()
+        .filter(|chunk| !chunks.contains_key(chunk))
+        .collect();
+    for chunk in missing {
+        let record = chunk_here(records, chunk).await?;
+        chunks.insert(chunk, record);
+    }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "the clock reads whole, non-negative milliseconds"
     )]
     let mtime = js_sys::Date::now().max(0.0) as u64;
-    let author = page.records().author().key();
-    let (placed, folder_name) = record.edit(false, |doc| {
-        let mut tree = Tree::of_document(&doc.save()).map_err(|error| error.to_string())?;
-        let folder = into
-            .and_then(|folder| {
-                tree.node(folder)
-                    .filter(|_| !tree.trashed(folder))
-                    .map(|node| (folder, node))
-            })
-            .map(|(folder, node)| {
-                (
-                    folder.to_owned(),
-                    String::from_utf8_lossy(node.name.as_bytes()).into_owned(),
-                )
-            });
-        let at = folder
-            .as_ref()
-            .map_or(SHELL_FOLDER, |(folder, _)| folder.as_str());
-        dropped_files::place(doc, &mut tree, at, &kept, (mtime, &author))
-            .map(|placed| (placed, folder.map(|(_, name)| name)))
-    })?;
+    let author = records.author().key();
+    let folder = into
+        .and_then(|folder| {
+            tree.node(folder)
+                .filter(|_| !tree.trashed(folder))
+                .map(|node| (folder, node))
+        })
+        .map(|(folder, node)| {
+            (
+                folder.to_owned(),
+                String::from_utf8_lossy(node.name.as_bytes()).into_owned(),
+            )
+        });
+    let at = folder
+        .as_ref()
+        .map_or(SHELL_FOLDER, |(folder, _)| folder.as_str());
+    let placed = dropped_files::place(
+        &mut Records {
+            workspace: records,
+            index: &index,
+            chunks: &mut chunks,
+        },
+        &mut tree,
+        at,
+        &kept,
+        (mtime, &author),
+    )?;
+    let folder_name = folder.map(|(_, name)| name);
     let folder = kept.iter().any(|file| file.path.contains('/'));
     Ok(Copied {
         files: placed

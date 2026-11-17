@@ -2,7 +2,7 @@
 //! workspace holds, and the words of each file whose content is here.
 //!
 //! A computer's search walks its disk. A page has none: a workspace's files
-//! are its Files record, which this reads in the page's own store for the
+//! are its Files records, which this reads in the page's own store for the
 //! workspace ([`WorkspaceResources`]) and hands to the palette's source
 //! ([`tilo_desktop_search::providers::tree`]), asking the workspace for the
 //! content of each file it names. What arrives is read for its words — a text
@@ -12,14 +12,22 @@
 //! to say ([`fs_protocol::tree::live_files`]), as it is for every host that
 //! reads one.
 //!
+//! A tree is kept in chunks, each a record of its own: the tree's own record
+//! names its root and lists the chunks, and each chunk holds the nodes whose
+//! record ids name it. This opens a chunk as the tree lists it and reads each
+//! record only when it moved, so a change of one chunk costs that chunk.
+//!
 //! Reading is lazy and cheap: the page calls [`WorkspaceFiles::refresh`] as it
-//! draws, which walks the tree again only when the record moved and reads only
+//! draws, which walks the tree again only when a record moved and reads only
 //! content that arrived since.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree};
+use fs_protocol::files::{FIRST_TREE_CHUNK, TreeChunk};
+use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks, chunk_document_id, listed_chunks};
 use tilo_desktop_search::Held;
 use tilo_desktop_search::providers::tree::{TreeFile, TreeFiles};
 use ui::automerge::{AutoCommit, ChangeHash};
@@ -30,12 +38,24 @@ use ui::resource::workspace::WorkspaceResources;
 /// its name, and the page keeps a workspace's files in its own memory.
 const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Each chunk of the tree, as the page opened it: the record by its number.
+type Chunks = BTreeMap<TreeChunk, Rc<StoredResource>>;
+
+/// The heads of the tree's own record and of each of its chunks, in chunk order.
+type Heads = Vec<(TreeChunk, Vec<ChangeHash>)>;
+
 /// What the source last read, and what reading it again would take in.
 struct Read {
-    /// The heads of the tree when its files were last walked.
-    heads: Vec<ChangeHash>,
+    /// The heads of each record the tree is when its files were last walked:
+    /// the tree's own record (chunk 0), and each chunk's.
+    heads: Heads,
     /// The content whose words were read, or were too large to read.
-    read: Vec<String>,
+    words: Vec<String>,
+    /// Each chunk's record, opened as the tree lists it and kept, so the page
+    /// follows it change by change rather than opening it again.
+    chunks: Chunks,
+    /// The hash and size of each file the tree holds, as last walked.
+    files: Vec<(String, u64)>,
 }
 
 /// A workspace's tree, read for the palette.
@@ -61,7 +81,9 @@ impl WorkspaceFiles {
             content,
             read: RefCell::new(Read {
                 heads: Vec::new(),
-                read: Vec::new(),
+                words: Vec::new(),
+                chunks: BTreeMap::new(),
+                files: Vec::new(),
             }),
         }
     }
@@ -89,7 +111,7 @@ impl WorkspaceFiles {
 
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
     /// sent it or said they hold none ([`ui::resource::ResourceOpenError::Arriving`]).
-    pub(crate) fn tree_record(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
+    pub(crate) fn tree_document(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
         self.records.open_resource_at(
             FILES_APP,
             &collab_types::person_document_id(TREE_KIND),
@@ -98,48 +120,100 @@ impl WorkspaceFiles {
         )
     }
 
-    /// The workspace's tree, as the record holds it now.
-    fn tree(&self) -> Option<(StoredResource, Tree)> {
-        let record = self.tree_record().ok()?;
-        let tree = record.read(|doc| {
-            <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(doc).ok()
-        })??;
-        Some((record, tree))
+    /// The tree's own record and the record of each chunk it lists, with each record's heads:
+    /// every chunk is opened as the tree lists it, and a chunk still on its way here is asked
+    /// for again on a later frame.
+    fn opened(&self, read: &mut Read) -> Option<(StoredResource, Chunks, Heads)> {
+        let index = self.tree_document().ok()?;
+        let listed = index.read(listed_chunks)?;
+        let mut chunks = BTreeMap::new();
+        let mut heads = vec![(0, index.heads())];
+        for chunk in listed {
+            let record = if let Some(record) = read.chunks.get(&chunk) {
+                Rc::clone(record)
+            } else {
+                let opened = self
+                    .records
+                    .open_resource_at(
+                        FILES_APP,
+                        &chunk_document_id(chunk),
+                        TREE_KIND,
+                        &|_doc: &mut AutoCommit| Ok(()),
+                    )
+                    .ok()?;
+                let record = Rc::new(opened);
+                read.chunks.insert(chunk, Rc::clone(&record));
+                record
+            };
+            heads.push((chunk, record.heads()));
+            chunks.insert(chunk, record);
+        }
+        Some((index, chunks, heads))
     }
 
-    /// Walk the tree again when it moved, and read the words of each file
+    /// The whole tree as its records hold it.
+    fn tree_held(index: &StoredResource, chunks: &Chunks) -> Option<Tree> {
+        let mut tree = TreeChunks::default();
+        index.read(|doc| tree.read_index(doc))?;
+        for (chunk, record) in chunks {
+            record.read(|doc| tree.read_chunk(*chunk, doc));
+        }
+        Some(tree.tree())
+    }
+
+    /// The workspace's tree as its records hold it now, with the record of each chunk that
+    /// holds nodes: for a caller that writes into it, as a drop does.
+    pub(crate) fn tree_for_writing(&self) -> Option<(StoredResource, Chunks, Tree)> {
+        let mut read = self.read.try_borrow_mut().ok()?;
+        let (index, chunks, _) = self.opened(&mut read)?;
+        let tree = Self::tree_held(&index, &chunks)?;
+        Some((index, chunks, tree))
+    }
+
+    /// The workspace's tree as its records hold it now.
+    pub(crate) fn tree_now(&self) -> Option<Tree> {
+        let mut read = self.read.try_borrow_mut().ok()?;
+        let (index, chunks, _) = self.opened(&mut read)?;
+        Self::tree_held(&index, &chunks)
+    }
+
+    /// Walk the tree again when a record moved, and read the words of each file
     /// whose content arrived since.
     pub(crate) fn refresh(&self) {
-        let Some((record, mut tree)) = self.tree() else {
+        let Ok(mut read) = self.read.try_borrow_mut() else {
             return;
         };
-        let heads = record.heads();
-        let mut read = self.read.borrow_mut();
+        let Some((index, chunks, heads)) = self.opened(&mut read) else {
+            return;
+        };
         if read.heads != heads {
-            let kept = self.keep_documents(&record, &mut tree);
+            let Some(mut tree) = Self::tree_held(&index, &chunks) else {
+                return;
+            };
+            let kept = self.keep_documents(&chunks, &mut tree);
             // Walks again next frame while the code that writes them is on its
             // way; a fetch that failed leaves the files found by name alone.
             if kept || !DOCUMENT_FILES.fetching() {
                 read.heads = heads;
             }
+            read.files = fs_protocol::tree::live_files(&tree)
+                .into_iter()
+                .filter(|file| file.node.kind == fs_protocol::files::FileNodeKind::File)
+                .filter_map(|file| file.node.hash.clone().map(|hash| (hash, file.node.size)))
+                .collect();
             self.source.set_files(files_of(&tree));
         }
-        for file in fs_protocol::tree::live_files(&tree) {
-            if file.node.kind != fs_protocol::files::FileNodeKind::File {
+        let files = read.files.clone();
+        for (hash, size) in files {
+            if read.words.contains(&hash) {
                 continue;
             }
-            let Some(hash) = file.node.hash.as_ref() else {
-                continue;
-            };
-            if read.read.contains(hash) {
-                continue;
-            }
-            if file.node.size > MAX_READ_BYTES {
-                read.read.push(hash.clone());
+            if size > MAX_READ_BYTES {
+                read.words.push(hash);
                 continue;
             }
             let content = &self.content;
-            let Some(bytes) = content.read(hash).and_then(|bytes| {
+            let Some(bytes) = content.read(&hash).and_then(|bytes| {
                 fs_content::whole(bytes, MAX_READ_BYTES, |chunk| {
                     content.read(&hex::encode(chunk))
                 })
@@ -150,9 +224,9 @@ impl WorkspaceFiles {
             };
             match words_of(&bytes) {
                 Words::Read(text) => {
-                    read.read.push(hash.clone());
+                    read.words.push(hash.clone());
                     if let Some(text) = text {
-                        self.source.note_text(hash, text);
+                        self.source.note_text(&hash, text);
                     }
                 }
                 // Read again once the code that reads it is here.
@@ -165,21 +239,31 @@ impl WorkspaceFiles {
 impl WorkspaceFiles {
     /// Name each text document of `tree` (a `.md`, an `.odt`, whose content
     /// the tree holds as a document of its own) by its file's hash: the file is
-    /// written from the record into the page's content, so a search reads its
-    /// words and opens it as it does any other file. Whether every one was
-    /// written: `false` while the code that writes them is still to come.
-    fn keep_documents(&self, record: &StoredResource, tree: &mut Tree) -> bool {
-        let documents: Vec<String> = tree
+    /// written from the chunk's record into the page's content, so a search
+    /// reads its words and opens it as it does any other file. Whether every
+    /// one was written: `false` while the code that writes them is still to
+    /// come.
+    fn keep_documents(&self, chunks: &Chunks, tree: &mut Tree) -> bool {
+        let documents: Vec<(String, TreeChunk)> = tree
             .nodes
             .iter()
             .filter(|(_, node)| node.hash.is_none() && node.codec.is_some())
-            .map(|(id, _)| id.clone())
+            .map(|(id, node)| {
+                (
+                    id.clone(),
+                    node.document_id.map_or(FIRST_TREE_CHUNK, |id| id.chunk()),
+                )
+            })
             .collect();
-        for id in documents {
+        for (id, chunk) in documents {
             let Some(files) = DOCUMENT_FILES.get() else {
                 return false;
             };
-            let Some(hash) = (files.write)(record, &id, &self.content) else {
+            // A document is written from the record of the chunk that holds its node.
+            let Some(record) = chunks.get(&chunk) else {
+                continue;
+            };
+            let Some(hash) = (files.write)(record.as_ref(), &id, &self.content) else {
                 continue;
             };
             if let Some(node) = tree.nodes.get_mut(&id) {

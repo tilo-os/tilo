@@ -315,6 +315,12 @@ impl ViewStorage {
         self.records.as_ref().map(|records| &records.store)
     }
 
+    /// The records every app of the window's workspace opens, when the host keeps them: what
+    /// History reads the workspace's tree and its chunks from after the window launched.
+    pub(crate) fn workspace_state(&self) -> Option<Rc<super::workspace::WorkspaceState>> {
+        self.workspace.clone()
+    }
+
     /// This device's id, in a live window.
     pub(crate) fn device(&self) -> Option<&str> {
         self.device.as_deref()

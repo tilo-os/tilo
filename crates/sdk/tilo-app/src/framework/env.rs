@@ -540,15 +540,20 @@ impl<R: Resource> ResourceEnv<R> {
         self.storage.shared_resource::<P>(owner, id)
     }
 
+    /// Opens the record `id` of `P` that `owner` keeps, later, from a widget that outlives this
+    /// view: a page's Files window opens each chunk of the workspace's tree as the tree lists it
+    /// ([`RecordOpener::open`](super::RecordOpener::open)).
+    pub fn record_opener<P: Resource>(&self, owner: &'static str) -> super::RecordOpener<P> {
+        super::RecordOpener::new(Rc::clone(&self.storage), owner)
+    }
+
     /// The person's record `P` that one app keeps for all of theirs — their
     /// accounts, which Settings keeps: the same record on every device, held
     /// here too and converging with the keeper's. Changed only by its owner
     /// and editors ([`SharedResource`](tilo_resource::SharedResource),
     /// [`PersonResource::editable`](super::PersonResource::editable)); its owner
     /// opens it here too.
-    pub fn shared_person<P: tilo_resource::SharedResource>(
-        &self,
-    ) -> Option<super::PersonResource<P>> {
+    pub fn shared_person<P: tilo_resource::SharedResource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.shared_person::<P>()
     }
 

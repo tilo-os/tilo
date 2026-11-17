@@ -12,8 +12,6 @@
 
 #![allow(clippy::arithmetic_side_effects, reason = "test fixtures")]
 
-use automerge::ObjType;
-use automerge::transaction::Transactable;
 use fs_protocol::FileDocumentId;
 use iroh_blobs::Hash;
 
@@ -47,7 +45,7 @@ tilo_test_env::scenario! {
     {
         let saved = saved_tree(64);
         let mut reopened = Namespace::from_bytes("a", &saved).unwrap();
-        let nodes = reopened.doc.keys(&reopened.nodes).count() as u64;
+        let nodes = reopened.doc.node_ids().count() as u64;
         assert_eq!(nodes, 65, "the fixture holds the directory and its files");
         assert_eq!(reopened.indexed_document_count() as u64, nodes);
 
@@ -100,7 +98,7 @@ tilo_test_env::scenario! {
         ];
         for (row, saved, paths) in rows {
             let mut reopened = Namespace::from_bytes("a", &saved).unwrap();
-            let nodes = reopened.doc.keys(&reopened.nodes).count();
+            let nodes = reopened.doc.node_ids().count();
             assert_eq!(nodes, paths.len(), "{row}: nodes in the document");
             let before = reopened.node_lookup_count();
             reopened.rebuild_document_index();
@@ -242,13 +240,13 @@ tilo_test_env::scenario! {
         let rows = ns.indexed_document_count();
         let revision = ns.indexed_document_revision().to_owned();
 
-        let own_document = FileDocumentId::new();
-        let node = ns.doc.put_object(&ns.nodes, ROOT_ID, ObjType::Map).unwrap();
+        let own_resource = FileDocumentId::new();
+        let node = ns.doc.put_node(own_resource.chunk(), ROOT_ID).unwrap();
         ns.doc.put(&node, "parent", ROOT_ID).unwrap();
         ns.doc.put(&node, "name", b"loop".to_vec()).unwrap();
         ns.doc.put(&node, "kind", "file").unwrap();
         ns.doc
-            .put(&node, "document_id", own_document.0.to_string())
+            .put(&node, "document_id", own_resource.0.to_string())
             .unwrap();
 
         ns.rebuild_document_index();
@@ -265,9 +263,9 @@ tilo_test_env::scenario! {
         );
         assert_eq!(ns.document_id_for(ROOT_INO), Some(root_document));
         assert!(!ns.document_index_ambiguous.contains(&root_document));
-        assert!(ns.tree.nodes_of(own_document).any(|id| id == ROOT_ID));
+        assert!(ns.tree.nodes_of(own_resource).any(|id| id == ROOT_ID));
         assert!(!ns.tree.nodes_of(root_document).any(|id| id == ROOT_ID));
-        assert!(ns.indexed_document(own_document).is_none());
+        assert!(ns.indexed_document(own_resource).is_none());
     }
 }
 
@@ -405,7 +403,7 @@ fn wide_tree() -> Namespace {
 #[test]
 fn a_change_costs_the_change_not_the_tree() {
     let mut ns = wide_tree();
-    let nodes = ns.doc.keys(&ns.nodes).count() as u64;
+    let nodes = ns.doc.node_ids().count() as u64;
     assert_eq!(nodes, 100_100, "the fixture is the whole tree");
     assert_eq!(ns.indexed_document_count() as u64, nodes);
 

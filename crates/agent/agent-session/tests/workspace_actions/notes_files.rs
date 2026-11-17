@@ -7,7 +7,7 @@ use super::api_on_relay::{api_on_relay, approved_key, headers, json_of};
 use super::*;
 use fs_protocol::tree::FILES_APP;
 use serde_json::{Value, json};
-use tilo_fs::tree_document::record as tree_record;
+use tilo_fs::tree_document::record as tree_document;
 
 /// `POST path` with `body` under the key `token`, answered `200`.
 async fn post(api: &Arc<tilo_api::Server>, token: &str, path: &str, body: &Value) -> Value {
@@ -31,20 +31,31 @@ async fn post(api: &Arc<tilo_api::Server>, token: &str, path: &str, body: &Value
     answer
 }
 
-/// The workspace's folder as its host keeps it.
+/// The workspace's folder as its host keeps it: the tree's own record and each chunk it
+/// lists.
 async fn folder(
     on_relay: &super::api_on_relay::OnRelay,
     workspace: &str,
 ) -> Option<tilo_fs::Namespace> {
-    let record = on_relay
-        .hosted
-        .relay
-        .workspaces()
-        .unwrap()
-        .resource_document(workspace, FILES_APP, &tree_record())
+    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let index = workspaces
+        .resource_document(workspace, FILES_APP, &tree_document())
         .await
         .unwrap()?;
-    tilo_fs::Namespace::from_bytes("reader", &record).ok()
+    let listed = fs_protocol::tree::listed_chunks(&automerge::AutoCommit::load(&index).ok()?);
+    let mut records = vec![(0, index)];
+    for chunk in listed {
+        let record = workspaces
+            .resource_document(
+                workspace,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk),
+            )
+            .await
+            .unwrap()?;
+        records.push((chunk, record));
+    }
+    tilo_fs::Namespace::from_records("reader", records).ok()
 }
 
 /// What the file at `path` of `tree` reads, when it is there.

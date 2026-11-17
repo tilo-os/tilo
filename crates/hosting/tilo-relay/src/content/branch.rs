@@ -80,14 +80,17 @@ impl crate::workspaces::BranchContent for StoresBranches {
     }
 }
 
-/// The Files tree among `records`, read; `None` when the branch took none, or
-/// it does not read.
-fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::Tree> {
-    let tree = fs_protocol::tree::document_id();
-    records
-        .iter()
-        .find(|((app, record), _)| app == fs_protocol::tree::FILES_APP && *record == tree)
-        .and_then(|(_, document)| fs_protocol::tree::Tree::of_document(document).ok())
+/// The Files tree among `records`, read: its own record and each chunk of it the branch took.
+/// `None` when the branch took none of it.
+fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::TreeChunks> {
+    let mut tree = fs_protocol::tree::TreeChunks::default();
+    let mut read = false;
+    for ((app, record), document) in records {
+        if app == fs_protocol::tree::FILES_APP {
+            read |= tree.read_resource(record, document).unwrap_or(false);
+        }
+    }
+    read.then_some(tree)
 }
 
 /// How many pieces of the files the tree among `records` names now `store`
@@ -119,5 +122,5 @@ fn not_whole_yet(
 /// How many entries the Files tree among `records` holds: `None` when the
 /// branch took no tree, or it does not read.
 fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
-    tree_of(records).map(|tree| tree.nodes.len())
+    tree_of(records).map(|tree| tree.tree().nodes.len())
 }

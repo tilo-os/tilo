@@ -1,9 +1,8 @@
 //! Document files: a file whose content lives as a CRDT rich-text document, read and written
 //! in the format its name declares, instead of opaque bytes.
 
-use super::{Hash, Namespace, NodeKind};
-use automerge::{ObjId, ObjType, transaction::Transactable};
-use tilo_automerge::read::{map_at, str_at};
+use super::{Hash, Namespace, NodeKind, Obj, map_at, str_at};
+use automerge::ObjType;
 
 /// A document node's field naming, by content id, the bytes last written to its file
 /// ([`Namespace::document_written`]).
@@ -27,7 +26,7 @@ impl Namespace {
         self.set_field(&id, "codec", codec);
         let node = self.node(&id)?;
         let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
-        tilo_doc::model::init(&mut self.doc, &root);
+        tilo_doc::model::init(&mut **self.doc.doc_mut(root.chunk)?, &root.id);
         Some(self.ino_for_id(&id))
     }
 
@@ -36,7 +35,7 @@ impl Namespace {
         str_at(&self.doc, &self.node(id)?, "codec")
     }
 
-    pub(super) fn document_root(&self, id: &str) -> Option<ObjId> {
+    pub(super) fn document_root(&self, id: &str) -> Option<Obj> {
         map_at(&self.doc, &self.node(id)?, "doc")
     }
 
@@ -140,11 +139,12 @@ impl Namespace {
         let codec = str_at(&self.doc, &self.node(id)?, "codec")?;
         let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
         let root = self.document_root(id)?;
-        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        let doc = &**self.doc.doc(root.chunk)?;
+        let containers = tilo_doc::model::open(doc, &root.id).ok()?;
         provider
             .export(
                 tilo_doc::DocRef {
-                    doc: &self.doc,
+                    doc,
                     c: &containers,
                 },
                 content,
@@ -198,10 +198,13 @@ impl Namespace {
         }
         // The write is one transaction: either it lands as the file says, or it is rolled back and
         // the document reads as it did.
-        if tilo_doc::reconcile_under(&mut self.doc, &root, &wanted).is_err()
-            || !tilo_doc::reads_as(&self.doc, &root, &wanted)
+        let Some(doc) = self.doc.doc_mut(root.chunk) else {
+            return false;
+        };
+        if tilo_doc::reconcile_under(doc, &root.id, &wanted).is_err()
+            || !tilo_doc::reads_as(doc, &root.id, &wanted)
         {
-            self.doc.rollback();
+            self.doc.rollback(root.chunk);
             return false;
         }
         self.set_field(&id, "mtime", mtime);

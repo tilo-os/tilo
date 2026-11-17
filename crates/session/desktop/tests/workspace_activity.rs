@@ -180,16 +180,19 @@ tilo_test_env::scenario! {
             DetachedRecordHistory {
                 app: "app-a".into(),
                 checkout: checkout.clone(),
+                tree_chunks: Vec::new(),
                 document: Some(record.clone()),
             },
             DetachedRecordHistory {
                 app: "app-b".into(),
                 checkout: checkout.clone(),
+                tree_chunks: Vec::new(),
                 document: Some(record),
             },
             DetachedRecordHistory {
                 app: "missing".into(),
                 checkout,
+                tree_chunks: Vec::new(),
                 document: None,
             },
         ];
@@ -296,6 +299,7 @@ tilo_test_env::scenario! {
             vec![DetachedRecordHistory {
                 app: "so.tilo.chat".into(),
                 checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("chat")),
+                tree_chunks: Vec::new(),
                 document: Some(record),
             }],
         );
@@ -343,6 +347,7 @@ tilo_test_env::scenario! {
         let input = DetachedRecordHistory {
             app: "app".into(),
             checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test")),
+            tree_chunks: Vec::new(),
             document: Some(record),
         };
         let mut pane = WorkspaceActivityPane::new();
@@ -352,6 +357,7 @@ tilo_test_env::scenario! {
         pane.refresh_detached_records(
             &mut tree,
             vec![DetachedRecordHistory {
+                tree_chunks: Vec::new(),
                 document: None,
                 ..input
             }],

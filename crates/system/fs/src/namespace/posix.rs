@@ -2,8 +2,7 @@
 //! is a symbolic link. Owner and group never replicate, and a record without
 //! attributes is a 0644 file or a 0755 directory.
 
-use automerge::transaction::Transactable;
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ScalarValue, Value};
 use fs_protocol::FileDocumentId;
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +48,10 @@ impl PosixAttrs {
 impl Namespace {
     pub fn posix_attrs(&self, record: FileDocumentId) -> Option<PosixAttrs> {
         let key = format!("{POSIX_PREFIX}{}", record.0);
-        match self.doc.get(&ROOT, key.as_str()) {
+        match self
+            .doc
+            .get(&super::Obj::root(record.chunk()), key.as_str())
+        {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                 ScalarValue::Bytes(bytes) => postcard::from_bytes(bytes).ok(),
                 _ => None,
@@ -64,8 +66,15 @@ impl Namespace {
             return false;
         };
         let key = format!("{POSIX_PREFIX}{}", record.0);
+        if self.doc.chunk_or_new(record.chunk(), true).is_err() {
+            return false;
+        }
         self.doc
-            .put(&ROOT, key.as_str(), ScalarValue::Bytes(bytes))
+            .put(
+                &super::Obj::root(record.chunk()),
+                key.as_str(),
+                ScalarValue::Bytes(bytes),
+            )
             .is_ok()
     }
 }

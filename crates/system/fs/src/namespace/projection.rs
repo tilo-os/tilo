@@ -2,8 +2,6 @@
 //! file in the folder. The node names the record and what both last read as; the record
 //! stays the source of truth.
 
-use automerge::ReadDoc as _;
-
 use super::{Namespace, ROOT_ID, str_at};
 
 /// The record a node's file is the projection of (`<app>:<item>`): its content is that
@@ -36,11 +34,12 @@ impl Namespace {
     /// Every node, live or in the trash, whose file projects a record.
     pub fn projected_nodes(&self) -> Vec<String> {
         self.doc
-            .keys(&self.nodes)
+            .node_ids()
             .filter(|id| {
                 self.node(id)
                     .is_some_and(|node| str_at(&self.doc, &node, PROJECTS).is_some())
             })
+            .cloned()
             .collect()
     }
 
