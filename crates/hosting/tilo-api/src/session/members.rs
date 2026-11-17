@@ -101,7 +101,7 @@ impl Session {
         let target = RemoteActionTarget::workspace_governance(workspace, verb);
         self.connection
             .device
-            .ask_host(id, target, arguments, "tilo api")
+            .ask_host(id, target, arguments)
             .await
             .map_err(|error| {
                 if error.code == HostRefusal::RATE_LIMITED {

@@ -297,7 +297,6 @@ impl Relay {
                 tilo_session_client::session::HOST_ITSELF,
                 host_account::target(host_account::ACCOUNT),
                 Map::new(),
-                "tilo api",
             )
             .await
             .map_err(RelayError::from)
@@ -330,10 +329,7 @@ impl Relay {
         if !labels.is_empty() {
             arguments.insert("labels".into(), json!(labels));
         }
-        let (listing, _invitation) = connection
-            .device
-            .own_workspace(arguments, "tilo api")
-            .await?;
+        let (listing, _invitation) = connection.device.own_workspace(arguments).await?;
         Ok(connection.workspace(&listing))
     }
 
@@ -371,7 +367,6 @@ impl Relay {
             .host_action(
                 tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE,
                 arguments,
-                "tilo api",
             )
             .await
             .map_err(|refusal| match RelayError::from(refusal) {
@@ -399,11 +394,7 @@ impl Relay {
         arguments.insert("workspace".into(), json!(workspace));
         connection
             .device
-            .host_action(
-                tilo_relay_session::workspaces::DELETE_WORKSPACE,
-                arguments,
-                "tilo api",
-            )
+            .host_action(tilo_relay_session::workspaces::DELETE_WORKSPACE, arguments)
             .await
             .map_err(|refusal| match RelayError::from(refusal) {
                 RelayError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => RelayError::NotFound,

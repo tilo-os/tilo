@@ -295,7 +295,7 @@ impl Device {
         }
         let mut named = Map::new();
         named.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
-        let asked = match self.own_workspace(named, &self.label).await {
+        let asked = match self.own_workspace(named).await {
             Ok((listing, invitation)) if listing.workspace == workspace => {
                 self.redeem(&invitation, shown_as).await?;
                 None
@@ -345,11 +345,8 @@ impl Device {
     pub async fn own_workspace(
         &self,
         arguments: Map<String, Value>,
-        caller: &str,
     ) -> Result<(WorkspaceListing, Vec<u8>), HostRefusal> {
-        let output = self
-            .host_action(CREATE_OWN_WORKSPACE, arguments, caller)
-            .await?;
+        let output = self.host_action(CREATE_OWN_WORKSPACE, arguments).await?;
         let malformed = |why: String| {
             HostRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
@@ -388,7 +385,7 @@ impl Device {
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert("language".to_owned(), Value::String(language.to_owned()));
-        let (listing, invitation) = self.own_workspace(arguments, &self.label).await?;
+        let (listing, invitation) = self.own_workspace(arguments).await?;
         if !entered(&listing.workspace) {
             self.redeem(&invitation, shown_as)
                 .await
@@ -421,9 +418,7 @@ impl Device {
                     .map_err(|error| HostRefusal::malformed(error.to_string()))?,
             );
         }
-        let listed = self
-            .host_action(LIST_PERSONAL, arguments, &self.label)
-            .await?;
+        let listed = self.host_action(LIST_PERSONAL, arguments).await?;
         serde_json::from_value(listed).map_err(|error| {
             HostRefusal::malformed(format!("The host answered no workspace list: {error}"))
         })
@@ -441,9 +436,7 @@ impl Device {
             serde_json::to_value(list)
                 .map_err(|error| HostRefusal::malformed(error.to_string()))?,
         );
-        self.host_action(KEEP_PERSONAL, arguments, &self.label)
-            .await
-            .map(drop)
+        self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
     /// The host's own operation `action` with `arguments`, asked on the session itself: no
@@ -455,18 +448,17 @@ impl Device {
         &self,
         action: &str,
         arguments: Map<String, Value>,
-        caller: &str,
     ) -> Result<Value, HostRefusal> {
         let target = RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
         };
-        self.ask_host(HOST_ITSELF, target, arguments, caller).await
+        self.ask_host(HOST_ITSELF, target, arguments).await
     }
 
     /// What the host itself answers to `target` with `arguments`, asked in
     /// `workspace_id` ([`HOST_ITSELF`] for none): one of its own operations, or the person's
-    /// account on it.
+    /// account on it, asked as the person whose device this is.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
@@ -475,10 +467,11 @@ impl Device {
         workspace_id: WorkspaceId,
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
-        caller: &str,
     ) -> Result<Value, HostRefusal> {
         let actions = self.actions(workspace_id);
-        let caller = Caller::local_person(caller);
+        let caller = Caller::local_person(tilo_actions::policy::PersonId::from_root(
+            self.cert.user_public_key,
+        ));
         let receipt = actions
             .invoke(
                 &caller,

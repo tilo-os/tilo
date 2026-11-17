@@ -97,13 +97,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // An id the host never made is refused, not taken as the workspace to make: the host chooses
     // the id of a person's own workspace.
     let unknown = device
-        .own_workspace(
-            Map::from_iter([(
-                "workspace".into(),
-                json!("5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b"),
-            )]),
-            "Firefox on Linux",
-        )
+        .own_workspace(Map::from_iter([(
+            "workspace".into(),
+            json!("5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b"),
+        )]))
         .await
         .unwrap_err();
     assert_eq!(unknown.code, "refused", "{unknown:?}");
@@ -162,6 +159,27 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .iter()
             .any(|listed| listed.workspace == lounge.workspace),
         "the Lounge is one of the person's too: {listed:?}"
+    );
+    // A device asks the host as the person it is a device of, whatever it calls itself: the API
+    // server names its device after the key it serves (`tilo api: Mover`), which is no person.
+    let api = Device::of(
+        tab.clone(),
+        tab_cert.clone(),
+        host_device.cert.clone(),
+        "tilo api: Mover",
+    );
+    let listed_by_api = api
+        .personal_list(
+            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
+        .await
+        .expect("a device named with a colon lists its person's workspaces");
+    assert!(
+        listed_by_api
+            .workspaces
+            .iter()
+            .any(|listed| listed.workspace == own.workspace)
     );
 
     // A page opening that workspace through its own entry, as the workspace switcher does for one
@@ -256,10 +274,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let elsewhere = workspaces.create("Not Bob's").await.unwrap();
     let mut not_his = Map::new();
     not_his.insert("workspace".into(), json!(elsewhere.workspace));
-    let refused = device
-        .own_workspace(not_his, "Firefox on Linux")
-        .await
-        .unwrap_err();
+    let refused = device.own_workspace(not_his).await.unwrap_err();
     assert_eq!(refused.code, "refused", "{refused:?}");
     assert!(!refused.message.is_empty());
     assert_ne!(refused.code, HostRefusal::UNANSWERED);
@@ -297,7 +312,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     // It makes no workspace, and enters no other.
     let made = script
-        .own_workspace(Map::from_iter([("name".into(), json!("More"))]), "A script")
+        .own_workspace(Map::from_iter([("name".into(), json!("More"))]))
         .await
         .unwrap_err();
     assert_eq!(made.code, "refused", "{made:?}");
