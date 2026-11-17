@@ -374,3 +374,11 @@ associated with its site: that takes an App ID with the Associated Domains capab
 nothing here makes. What is checked instead: that a build names its sites exactly when its
 profile grants it, what the system answers a page in a build that names none, and the page's
 sentence for it.
+
+`TiloLive` is checked by its own tests, which run the engine against a page that speaks as
+Tilo's does: where the page stands, a change, reads, actions and their refusals, a second
+mount, and the frames of a page nobody sees. Against a real site `TiloLiveProbe` has paired
+from a link and got in. That it then prints Chat's messages as they arrive, sends, and shows a
+live document whose typed keys land in the record has been seen with a throwaway harness of
+the same technique, and not yet with `TiloLiveProbe` itself. Nothing of it has run in a
+simulator or on a phone.
