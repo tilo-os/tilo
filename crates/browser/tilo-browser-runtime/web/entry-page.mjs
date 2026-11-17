@@ -30,7 +30,7 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -411,12 +411,13 @@ function pairingAsk(request, decide) {
 }
 
 /** Said on a new device while the person's other device decides on it:
- * the code that device shows beside its ask. */
+ * which device that is, the code it shows beside its ask, and what to do
+ * when it does not ask (`PAIRING_WAIT`). */
 function pairingWait(code) {
   document.documentElement.dataset.pairingCode = code;
-  const card = pairCard('pair-wait', 'Waiting for approval on your other device…', 'status');
-  card.append(paragraph('Approve there if it shows this code:'), paragraph(code, 'tilo-pair-digits'),
-    paragraph('This page goes on by itself once you approve.', 'tilo-pair-note'));
+  const card = pairCard('pair-wait', PAIRING_WAIT.heading, 'status');
+  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
+    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'));
   document.body.append(card);
   return () => card.remove();
 }
@@ -970,7 +971,7 @@ export async function startEntryPage({mode}) {
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
     document.documentElement.dataset.pairingCode = code;
-    status.textContent = `Pairing code ${code}. On a device where you are already signed in, choose “Pair a new device” and approve ${code}.`;
+    status.textContent = pairingStatus(code);
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),

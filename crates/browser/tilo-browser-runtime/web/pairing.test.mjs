@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_UNANSWERED,
-  PAIRING_SAME_PERSON, PAIRING_USED, pairingFailure, pairSecret, parsePairSecret, whenRequested,
+  PAIRING_SAME_PERSON, PAIRING_USED, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, parsePairSecret, whenRequested,
 } from './pairing.mjs';
 
 const USER = 'ab'.repeat(32);
@@ -110,4 +110,15 @@ test('a pairing the host refuses for the device’s clock says so, never that th
     assert.doesNotMatch(said, /expired|used already/i, 'nothing happened to the link');
   }
   assert.equal(PAIRING_CLOCK, 'The clock of this device and the clock of your workspace’s host differ by more than a minute. Check the date and time on this device, then open the link again.');
+});
+
+test('a waiting device is told where it is approved and where “Pair a new device” is found', () => {
+  assert.deepEqual({...PAIRING_WAIT}, {
+    heading: 'Waiting for approval on your other device…',
+    where: 'The device that made this link now asks you about this one. Approve there if it shows this code:',
+    then: 'This page goes on by itself once you approve.',
+    otherwise: 'Nothing asking there? Its link was made more than 10 minutes ago, or its page was closed. On a device where you are signed in, choose “Pair a new device” on your own card (your picture, at the top right) or in search, and open the new link here.',
+  });
+  assert.equal(INVITE_TTL_MS, 10 * 60 * 1000, 'the minutes the sentence names');
+  assert.equal(pairingStatus('123456'), 'Pairing code 123456. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve 123456 where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.');
 });

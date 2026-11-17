@@ -34,6 +34,28 @@ export const PAIRING_CLOCK = 'The clock of this device and the clock of your wor
  * made for. */
 export const PAIRING_SAME_PERSON = 'This browser is already signed in as you, so nothing was paired. Open the link on the device you want to add.';
 
+/**
+ * What a device that opened a pairing link shows around its code while it
+ * waits: where the person approves it, and what to do when nothing asks them
+ * there. Only the page that made a link asks about the device that answers
+ * it, and only while that link is open (`forInvites`), so that page's device
+ * is where the person is sent. "Pair a new device" is named with where it is
+ * found: on the person's own card and in the desktop's search (`PAIR`,
+ * identity-actions.mjs).
+ */
+export const PAIRING_WAIT = Object.freeze({
+  heading: 'Waiting for approval on your other device…',
+  where: 'The device that made this link now asks you about this one. Approve there if it shows this code:',
+  then: 'This page goes on by itself once you approve.',
+  otherwise: 'Nothing asking there? Its link was made more than 10 minutes ago, or its page was closed. On a device where you are signed in, choose “Pair a new device” on your own card (your picture, at the top right) or in search, and open the new link here.',
+});
+
+/** What a tab says while it waits to become a new device of the person its
+ * browser is paired to, having opened no link: its request names no invite,
+ * so no page asks about it by itself, and a new link opened in the tab is
+ * what gets it approved. */
+export const pairingStatus = code => `Pairing code ${code}. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve ${code} where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.`;
+
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
 /** A new invite id: 16 random bytes as 32 hex characters. */

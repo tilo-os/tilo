@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
-import {PAIRING_CLOCK, PAIRING_SAME_PERSON} from './pairing.mjs';
+import {PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -29,9 +29,11 @@ class Element {
 // stands for the runtime certifying this tab's device key through the host
 // (`pairDevice`, peer.mjs): what the host answers a new device. `identity` is
 // the person this tab has open, and `kept` the one this browser keeps
-// whether or not a tab opened them (`keptIdentity`).
+// whether or not a tab opened them (`keptIdentity`). `join` stands for
+// joining through a host's entry (`joinViaHost`) where a test says what the
+// host answers; without one the page's own join runs.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
-  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null} = {}) {
+  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -47,6 +49,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     assign: url => { calls.push('assign'); assigned = url; }};
   globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
+    // A card is found by its kind, as the page looks for the one a new card replaces.
+    querySelector: selector => document.body.children.find(card => selector === `[data-card="${card.dataset.card}"]`) ?? null,
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
       : id.startsWith('arrival-failure') ? (screen[id] ??= new Element(id)) : null};
   // The failure screen's parts (index.html, `#arrival-failure`), by id.
@@ -100,7 +104,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
-    joinViaHost, pair,
+    joinViaHost: join ?? joinViaHost, pair,
     boot: async options => {
       diagnostics = options.diagnostics;
       // The page loads its runtime as boot starts; the fixture's is the stub above.
@@ -675,4 +679,60 @@ test('a pairing link opened in the browser that made it says this browser is tha
     assert.equal(document.documentElement.dataset.entry, 'refused');
     assert.equal(screen['arrival-failure-body'].textContent, PAIRING_SAME_PERSON);
   }
+});
+
+/** What a card of `kind` says: its heading and paragraphs in order, or `null` when none is shown. */
+const cardWords = kind => document.body.children.find(card => card.dataset.card === kind)?.children.map(part => part.textContent) ?? null;
+
+test('a device waiting to be approved says where: the device that made its link, and where “Pair a new device” is found', async () => {
+  // The card said "Approve there if it shows this code" and not where there
+  // is. Only the page that made a link asks about the device that answers it,
+  // so that is where the person goes; and when nothing asks there, a new link
+  // is what gets them on, from an action they are told where to find.
+  let shown = null;
+  const {failure, screen} = await fixture({boot: pairingBoot(ELSEWHERE), pair: async options => {
+    // The host queued the request and said the code; the person then declines.
+    options.onPairingCode('123456');
+    shown = cardWords('pair-wait');
+    throw new Error('declined by the approving device');
+  }});
+  assert.equal(document.documentElement.dataset.pairingCode, '123456');
+  const [heading, where, code, ...rest] = shown;
+  assert.equal(heading, 'Waiting for approval on your other device…');
+  assert.equal(code, '123456');
+  assert.match(where, /Approve there if it shows this code:$/);
+  assert.match(where, /The device that made this link/, 'where to go');
+  const otherwise = rest.join(' ');
+  assert.match(otherwise, /“Pair a new device”/);
+  assert.match(otherwise, /your picture, at the top right/, 'where “Pair a new device” is found: on the person’s own card');
+  assert.match(otherwise, /in search/, 'and in the desktop’s search');
+  assert.match(otherwise, /On a device where you are signed in/);
+  assert.match(otherwise, /goes on by itself once you approve/);
+  assert.equal(cardWords('pair-wait'), null, 'the card goes with the wait');
+  assert.equal(failure?.code, 'pairing');
+  assert.equal(screen['arrival-failure-body'].textContent, PAIRING_DECLINED);
+});
+
+test('a tab that waits to be approved without a link says where to approve it, and how to get a link when nothing asks', async () => {
+  // A second tab of a paired browser is a device of its own, and asks the
+  // host with no link: its request names no invite, so no page asks about it
+  // by itself. It said to choose “Pair a new device” and approve, which makes
+  // a new link and asks about nothing; it now says to open that link here.
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  let said = null;
+  const {failure} = await fixture({
+    join: async options => {
+      options.onPairingCode('123456');
+      said = document.getElementById('status').textContent;
+      return globalThis.__entryPageFixture.page.peer;
+    },
+    boot: async ({deps}, page) => { await deps.enterViaHost({workspace: home}); return page; }});
+  assert.equal(failure, null);
+  assert.match(said, /^Pairing code 123456\./);
+  assert.match(said, /approve 123456/);
+  assert.match(said, /“Pair a new device”/);
+  assert.match(said, /your picture, at the top right/, 'where “Pair a new device” is found: on the person’s own card');
+  assert.match(said, /in search/, 'and in the desktop’s search');
+  assert.match(said, /On a device where you are signed in/);
+  assert.match(said, /open its link in this tab/);
 });
