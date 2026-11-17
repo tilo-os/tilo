@@ -640,4 +640,90 @@ mod tests {
             "the sheet control's handler took the press"
         );
     }
+
+    /// A sheet showing one button that opens a menu, as a person's role button in the
+    /// workspace settings' People tab does.
+    struct Choosing {
+        shown: std::cell::Cell<bool>,
+    }
+
+    impl OverSheet for Choosing {
+        fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), _missing: bool) -> bool {
+            if self.shown.replace(true) {
+                return false;
+            }
+            show(Some(Box::new(
+                ui::widget::Button::new("sheet-role", "Commenter").with_menu(vec![
+                    ui::widget::context_menu::MenuItem::action("Viewer", || {}),
+                ]),
+            )));
+            true
+        }
+
+        fn drawn(&self) -> bool {
+            true
+        }
+
+        fn sheet_name(&self) -> &'static str {
+            "choosing"
+        }
+    }
+
+    /// A press on a sheet's menu button opens its menu at once: the page draws no frame of its
+    /// own after a press that changes nothing else, so a menu waiting for the next one stays shut.
+    #[test]
+    fn a_press_on_a_sheets_menu_button_opens_its_menu() {
+        use std::collections::HashMap;
+
+        use ui::taffy::AvailableSpace;
+        use ui::winit::event::{DeviceId, ElementState, MouseButton};
+
+        let mut page = OverPage::new(Choosing {
+            shown: std::cell::Cell::new(false),
+        });
+        page.follow();
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = page.build_layout(&mut taffy, &theme, &mut map);
+        taffy
+            .compute_layout(
+                node,
+                ui::taffy::Size {
+                    width: AvailableSpace::Definite(240.0),
+                    height: AvailableSpace::Definite(120.0),
+                },
+            )
+            .expect("the page lays out");
+        page.apply_layout(&taffy, node, Point::ZERO);
+        assert!(
+            Widget::modal_capture(&page).is_none(),
+            "the menu starts shut"
+        );
+
+        let device = DeviceId::dummy();
+        let mut at_node = ui::testing::Dispatch::new().layout(&taffy, node);
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (12.0, 12.0).into(),
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            at_node.send(&mut page, &event);
+        }
+        assert!(
+            Widget::modal_capture(&page).is_some(),
+            "the press opened the menu without waiting for another frame"
+        );
+    }
 }

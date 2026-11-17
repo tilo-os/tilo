@@ -181,6 +181,16 @@ impl crate::widget::Decorator for MenuButton {
             _ => {}
         }
         Widget::handle_event(&mut self.button, event, ctx);
+        // The button publishes its press as its own verb; the menu button answers it here, as a
+        // popover's button does, so the menu opens on the press wherever the button is drawn
+        // (an app's window, a sheet the page draws) rather than on a later frame nothing may
+        // draw.
+        let path = ctx.path;
+        crate::widget::controls::start_pending_control_invocations(
+            &mut self.button,
+            &mut ctx.edits(),
+            path,
+        );
         self.take_request(self.request_keyboard);
     }
 
