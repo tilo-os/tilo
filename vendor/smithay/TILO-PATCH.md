@@ -269,6 +269,22 @@ backend only creates atomic surfaces; the legacy surface keeps
 Remove this once upstream queues its state commits and tracks them, or reports
 which commit is still in flight.
 
+## A display can keep its last picture while the desktop restarts (`drm`)
+
+`DrmOutputManager::initialize_output` renders and commits one black frame per
+new output, to lock the primary plane's format in before later frames. A
+desktop that restarts in place inherits displays that are already scanning out
+its predecessor's last frame, and a black frame there is a flash between the
+old picture and the new one.
+
+- `src/backend/drm/output.rs`: `DrmOutputManager` gains `initial_frame`, with
+  `set_initial_frame`; when it is off, `initialize_output` skips that warming
+  frame and leaves the plane and its buffer alone. Default stays on, as
+  upstream.
+
+Remove this once upstream lets a caller create an output without the warming
+frame (or the backend composes the first frame itself).
+
 ## An X11 display that outlives its server (`XWaylandListener`)
 
 One display number serves one workspace, and a workspace runs an X server

@@ -79,6 +79,7 @@ flight_relay_pid=""
 logout_request_dir=""
 logout_request_path=""
 restart_request_path=""
+restart_handover_path=""
 restart_requested=0
 
 # The compositor cannot safely ask the display-manager wrapper to log out by
@@ -100,6 +101,14 @@ logout_request_path="$logout_request_dir/logout-request"
 # says which it is; the run that follows consumes it.
 restart_request_path="$logout_request_dir/restart-request"
 export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
+# A desktop restarted in place keeps its last picture on the displays until the run that follows
+# has one of its own. Its device descriptors must outlive it for that, and the byte that says the
+# new run is up travels here: this wrapper holds the pipe open for the whole login, every
+# compositor run inherits it as descriptor 5, and the run that ended leaves a keeper reading it.
+restart_handover_path="$logout_request_dir/restart-handover"
+if "$MKFIFO" -m 0600 -- "$restart_handover_path" 2>/dev/null && exec 5<>"$restart_handover_path"; then
+  export TILO_SESSION_RESTART_HANDOVER=5
+fi
 # A fresh directory belongs to this successful PAM login. Native compositor
 # runs arm it locked while alive and hand their final lock state back only
 # after ordered teardown; the next run must not silently unlock this login.
@@ -163,6 +172,9 @@ cleanup_logout_channel() {
   fi
   if [ -n "$restart_request_path" ]; then
     "$RM" -f -- "$restart_request_path" "$restart_request_path.tmp" 2>/dev/null || true
+  fi
+  if [ -n "$restart_handover_path" ]; then
+    "$RM" -f -- "$restart_handover_path" 2>/dev/null || true
   fi
   if [ -n "$flight_pipe" ]; then
     "$RM" -f -- "$flight_pipe" "$flight_pipe.ready" 2>/dev/null || true

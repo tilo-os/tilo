@@ -83,6 +83,11 @@ pub trait Backend {
         "unknown"
     }
 
+    /// The login's desktop is being restarted in place: leave the displays as they are, so the last
+    /// picture stays up until the desktop that follows puts up its first frame. `false`, or a
+    /// teardown that is not a restart, ends the login and takes the hardware down as before.
+    fn keep_picture(&mut self, _restarting: bool) {}
+
     /// Add an output the backend simulates. Backends with real outputs find them themselves and
     /// refuse.
     fn add_output(

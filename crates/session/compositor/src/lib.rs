@@ -527,6 +527,13 @@ impl Compositor {
         self.data.backend.closed()
     }
 
+    /// Tell the backend how this run ends: `true` when the login's desktop is restarted in place,
+    /// so the displays are left showing what they show for the desktop that follows. Called once,
+    /// before the compositor is dropped.
+    pub fn keep_picture(&mut self, restarting: bool) {
+        self.data.backend.keep_picture(restarting);
+    }
+
     /// Start a recorded turn of the loop. The session calls it before [`Compositor::dispatch`] and
     /// ends it after the work the frame it drew answered.
     pub fn begin_tick(&mut self) {

@@ -200,6 +200,15 @@ cat "$recovery_file" >>"$TILO_SESSION_TEST_LOG.recovery"
 [ "$runs" != 1 ] || printf 'locked\n' >"$recovery_file"
 printf 'control=%s\nfirst-use=%s\n' "${TILO_TEST_CONTROL:-}" "${TILO_TEST_CONTROL_FIRST_USE:-}" \
   >"$TILO_SESSION_TEST_LOG.control"
+# The login's handover for an in-place restart: the wrapper opens it once, every compositor run
+# inherits it, and the run that follows writes the byte the previous run's keeper waits on.
+printf 'handover=%s\n' "${TILO_SESSION_RESTART_HANDOVER:-disabled}" >"$TILO_SESSION_TEST_LOG.handover"
+if [ -n "${TILO_SESSION_RESTART_HANDOVER:-}" ] \
+   && printf x >&"$TILO_SESSION_RESTART_HANDOVER" 2>/dev/null; then
+  printf 'handover-writable=yes\n' >>"$TILO_SESSION_TEST_LOG.handover"
+else
+  printf 'handover-writable=no\n' >>"$TILO_SESSION_TEST_LOG.handover"
+fi
 printf 'state=%s\ndata=%s\nconfig=%s\n' "${XDG_STATE_HOME:-}" "${XDG_DATA_HOME:-}" "${XDG_CONFIG_HOME:-}" \
   >"$TILO_SESSION_TEST_LOG.xdg"
 printf '%s-output %s trace=%s\n' "$name" "$*" "${TILO_FRAME_TRACE:-}"
@@ -268,6 +277,8 @@ native_flight="$tmp/native-state/tilo/session-logs/latest.log"
 head -n 1 "$native_flight" | grep -Fq " shell=$fake_native"
 grep -Fqx "native-session-output --backend drm trace=$native_trace" "$native_flight"
 tail -n 1 "$native_flight" | grep -Eq '^tilo-flight-record-v1 end=.* status=3 '
+grep -Fqx 'handover=5' "$native_log.handover"
+grep -Fqx 'handover-writable=yes' "$native_log.handover"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A missing native binary ends the login before any target starts.
 missing_wrapper="$tmp/tilo-session-missing-native"

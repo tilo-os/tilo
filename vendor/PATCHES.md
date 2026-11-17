@@ -949,6 +949,9 @@ the person's own. A state commit — the one that sets a mode — is queued rath
 than waited for: the atomic ioctl asks for the frame's event and the compositor
 keeps that frame, and the one queued behind it, until it arrives, instead of
 blocking the event loop while the driver trains the display's link. A
+`DrmOutputManager` can create an output without putting up its warming black
+frame, so a desktop restarting in place keeps the displays' last picture until
+its own first frame. A
 shared-memory buffer names the pool it lies in (`shm::with_buffer_pool`), so
 the app keeper hands an app's pixels on to the compositor without copying them,
 and a parent surface's whole stack is readable in drawing order

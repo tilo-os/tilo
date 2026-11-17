@@ -793,7 +793,9 @@ fn start(
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
-    let mut session = match start_session(backend, options, size, headless, &connector, &outputs) {
+    let mut session = match start_session(
+        backend, options, size, headless, &connector, &outputs, restarting,
+    ) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -849,7 +851,8 @@ struct Sockets<'a> {
     admin: Option<&'a std::path::Path>,
 }
 
-/// The session on `backend` 's displays, at `size` where the backend runs in one.
+/// The session on `backend` 's displays, at `size` where the backend runs in one. `restart` is
+/// whether this run continues a login whose desktop the wrapper is restarting in place.
 #[cfg(target_os = "linux")]
 fn start_session(
     backend: Backend,
@@ -858,6 +861,7 @@ fn start_session(
     headless: HeadlessPanel,
     connector: &str,
     outputs: &[NamedOutput],
+    restart: bool,
 ) -> Result<tilo_session::Session, tilo_session::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
 
@@ -886,7 +890,17 @@ fn start_session(
             }
             Session::headless(options, &displays)
         }
-        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Drm => Session::drm(
+            options,
+            DisplayConfig {
+                following_restart: restart,
+                // The wrapper opens this and hands it to every run of the login's desktop: the run
+                // that ends writes nothing, the one that follows says its first frame is up, and
+                // the one that ended kept the old picture until then.
+                restart_handover: restart_handover(),
+                ..DisplayConfig::default()
+            },
+        ),
         Backend::Nested => Session::nested(
             options,
             // The window's size is in the host's logical pixels, the same apparent size on a
@@ -900,6 +914,30 @@ fn start_session(
                 ..NestedConfig::default()
             },
         ),
+    }
+}
+
+/// The descriptor the login's wrapper opened for the handover between a desktop that ends for an
+/// in-place restart and the one that follows, when it named one.
+fn restart_handover() -> Option<std::os::fd::RawFd> {
+    let value = std::env::var_os("TILO_SESSION_RESTART_HANDOVER")?;
+    let Some(text) = value.to_str() else {
+        tracing::warn!(
+            handover = %value.to_string_lossy(),
+            "the login's restart handover is not a descriptor number"
+        );
+        return None;
+    };
+    match text.parse() {
+        Ok(fd) => Some(fd),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                handover = %text,
+                "the login's restart handover is not a descriptor number"
+            );
+            None
+        }
     }
 }
 

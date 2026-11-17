@@ -57,6 +57,9 @@ where
     compositor: CompositorList<A, F, U, G>,
     color_formats: Vec<DrmFourcc>,
     renderer_formats: Vec<DrmFormat>,
+    // Tilo patch: a desktop that restarts in place keeps its last picture until its first real
+    // frame, so it does not want the warming frame described on `set_initial_frame`.
+    initial_frame: bool,
 }
 
 impl<A, F, U, G> fmt::Debug for DrmOutputManager<A, F, U, G>
@@ -77,6 +80,7 @@ where
             .field("compositor", &self.compositor)
             .field("color_formats", &self.color_formats)
             .field("renderer_formats", &self.renderer_formats)
+            .field("initial_frame", &self.initial_frame)
             .finish()
     }
 }
@@ -194,7 +198,16 @@ where
             compositor: Default::default(),
             color_formats: color_formats.into_iter().collect(),
             renderer_formats: renderer_formats.into_iter().collect(),
+            initial_frame: true,
         }
+    }
+
+    /// Whether [`DrmOutputManager::initialize_output`] puts up its warming frame, a black one,
+    /// after creating a [`DrmOutput`]: it locks the primary plane's format in for the outputs that
+    /// follow. A desktop that restarts in place turns it off, so the last picture the plane holds
+    /// stays on the display until the desktop's first real frame replaces it.
+    pub fn set_initial_frame(&mut self, put: bool) {
+        self.initial_frame = put;
     }
 
     /// Create a new [`DrmOutput`] for the provided crtc of the underlying device.
@@ -385,10 +398,14 @@ where
 
         // We need to render the new output once to lock in the primary plane as used with the new format, so we don't hit the bandwidth issue,
         // when downstream potentially uses `FrameFlags::DEFAULT` immediately after this.
-
-        let compositor = write_guard.get_mut(&crtc).unwrap();
-        let compositor = compositor.get_mut().unwrap();
-        render_elements.submit_composited_frame(&mut *compositor, renderer)?;
+        //
+        // Tilo patch: unless the caller asked to keep what the plane already scans out, which is
+        // what a desktop restarting in place wants.
+        if self.initial_frame {
+            let compositor = write_guard.get_mut(&crtc).unwrap();
+            let compositor = compositor.get_mut().unwrap();
+            render_elements.submit_composited_frame(&mut *compositor, renderer)?;
+        }
 
         Ok(DrmOutput {
             compositor: self.compositor.clone(),

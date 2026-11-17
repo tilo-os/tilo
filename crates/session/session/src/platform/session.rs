@@ -2899,6 +2899,9 @@ impl Drop for Session {
                 "the desktop ends its login"
             }
         );
+        // The displays are left as they are for the desktop that follows: their last picture stays
+        // up, and the run that follows replaces it with its own first frame instead of a black one.
+        self.compositor.keep_picture(restarting);
         // A profile still recording is completed, its files written, before
         // the process goes.
         tilo_frame_metrics::profile::shutdown();
