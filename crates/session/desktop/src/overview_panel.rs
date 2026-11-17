@@ -1471,6 +1471,55 @@ mod tests {
     }
 
     #[test]
+    fn the_picture_takes_the_room_it_is_given_and_its_titles_read() {
+        // A workspace of one strip of one window on a 1280 × 800 display, beside the workspaces
+        // panel: the card is as large as the picture's area allows at the window's own aspect, not a
+        // thumbnail centred in empty ground, and its title line is wide enough to set "Settings"
+        // whole.
+        let display = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut panel = opened_in(
+            display,
+            OverviewCards::of(vec![card(1, "Acme", true, &["Settings"])]),
+        );
+        panel.shell.group_sizes.insert(100, Size::new(600.0, 720.0));
+        panel.resolve_layout(&Theme::dark());
+        assert!(panel.beside_picture());
+        let picture = panel.picture();
+        let well = picture.places[0].wells[0];
+        let title = picture.places[0].titles[0];
+        let area = panel.grid_area(1);
+        // The card fills its area at the window's aspect. `grid_area` is as tall as the picture
+        // needs, so the picture's own bounds always match it; what the size is measured against is
+        // the room there would be on the display, from the bar to the panel's band.
+        let band = picture.places[0].bounds();
+        assert!(
+            (band.height() - area.height()).abs() <= 1.0,
+            "the picture fills the area it is given: {band:?} in {area:?}"
+        );
+        assert!(
+            (well.width() / well.height() - 600.0 / 720.0).abs() < 1e-6,
+            "the card keeps the window's aspect: {well:?}"
+        );
+        // At the old half scale this window was a 300 × 360 thumbnail; the card is now drawn from
+        // the room it is given, so it stands taller than that.
+        assert!(
+            well.height() > 360.0 + 1.0,
+            "the card is no half-size thumbnail: {well:?} in {area:?}"
+        );
+        // A title of "Settings" fits whole beside its app's mark.
+        let mut text = TextRenderer::new();
+        let style = Theme::dark().text(ui::TextRole::Label);
+        let (w, _) = text.measure_style("Settings", None, &style);
+        let g = panel.grid;
+        assert!(
+            title.width() >= f64::from(w) + g.mark + 8.0,
+            "a title reads whole: {} for {} px of words",
+            title.width(),
+            w
+        );
+    }
+
+    #[test]
     fn a_wide_display_puts_the_picture_beside_the_panel_and_a_narrow_one_inside() {
         let wide = opened_in(WIDE, shell());
         assert!(wide.beside_picture());

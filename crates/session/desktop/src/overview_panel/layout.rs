@@ -691,7 +691,7 @@ impl OverviewPanel {
 
     /// Where the picture lies: beside the panel, or in the "here" block inside it (panned with the
     /// panel's scroll).
-    fn grid_area(&self, strips: usize) -> Rect {
+    pub(super) fn grid_area(&self, strips: usize) -> Rect {
         let m = self.metrics;
         if self.beside_picture() {
             let area = self.rect;
@@ -717,14 +717,43 @@ impl OverviewPanel {
         )
     }
 
-    /// The height the picture of this workspace's strips needs beside the panel: each strip's name,
-    /// its windows at the picture's own scale, and their titles. Zero when no picture is shown.
+    /// The room the picture may take beside the panel: the display inside its margins, from the
+    /// panel's edge to the left margin.
+    fn picture_room(&self) -> Rect {
+        let m = self.metrics;
+        let room = Rect::new(
+            self.rect.x0 + m.margin,
+            self.rect.y0 + m.margin,
+            self.rect.x1 - m.margin,
+            self.rect.y1 - m.margin,
+        );
+        let panel_left = self.rect.x1 - m.margin - self.panel_width();
+        Rect::new(
+            room.x0,
+            room.y0,
+            (panel_left - m.margin).max(room.x0),
+            room.y1,
+        )
+    }
+
+    /// The height the picture of this workspace's strips takes when it is laid out in the room the
+    /// display gives it: each strip's name, its windows at the picture's own scale, and their titles.
+    /// Zero when no picture is shown.
     fn picture_need_height(&self) -> f64 {
         if !self.shows_windows() {
             return 0.0;
         }
-        let strips = self.here_card().map_or(0, |card| card.strips.len());
-        band_height(strips, &self.grid, self.grid.band)
+        let strips = self.picture_strips();
+        if strips.is_empty() {
+            return 0.0;
+        }
+        let sizes: Vec<Vec<Size>> = strips.iter().map(|strip| strip.sizes.clone()).collect();
+        let joined: Vec<Vec<bool>> = strips.iter().map(|strip| strip.joined.clone()).collect();
+        let places = layout_strips(self.picture_room(), &sizes, &joined, &self.grid, None);
+        places.iter().fold(0.0_f64, |tallest, place| {
+            let bounds = place.bounds();
+            tallest.max(bounds.y1 - self.picture_room().y0)
+        })
     }
 
     /// Each strip of the workspace you are in, as the picture shows it.
