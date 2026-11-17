@@ -571,16 +571,16 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
   };
 }
 
-/**
- * An action's answer, and an invocation's: what it did, what it changed, and the link
- * to the one record a person opens it with.
- */
 /** An item a write made: its id, and the address it is published under. */
 export interface Made {
   id: string;
   address: string;
 }
 
+/**
+ * An action's answer, and an invocation's: what it did, what it changed, and the link
+ * to the one record a person opens it with.
+ */
 export interface ActionAnswer {
   /** `ok`, `pending` or `cancelled`. */
   status: string;
