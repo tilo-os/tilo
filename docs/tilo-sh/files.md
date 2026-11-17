@@ -100,12 +100,25 @@ The workspace's folder is on no one computer. So Files' verbs take a path in the
 | Copy entries, a folder with all it holds | `files#copy-into` with `from`, `entries` and `to` |
 | Put entries in the trash | `files#trash` with `folder` and `entries` |
 | Bring them back to where they were | `files#restore` with `entries` |
+| See what a folder holds | `files#list` with `folder`; `trash: true` for what the trash holds |
+| Read what a file says | `files#read-text` with `file`, its path |
 
 A path starts at the workspace's folder, with no leading `/` and no `..`, and `""` is that folder
 itself. No verb writes over a file: a name that is taken is refused, and a copy beside what it
 copies becomes `plan (2).md`. Each answers the entries it touched with where they were and where
 they are, and as `undo` the one call that takes it back. Naming a `device` and absolute paths
 instead changes that computer's own disk, through Files on it.
+
+`list` answers the folder's entries by name, each with its `name`, its `path`, its `kind` (`folder`
+or `file`), a file's `size` in bytes and `changed`, the time it last changed in milliseconds since
+1970. It answers 200 at a time: `next` is the `from` of the page after it, `limit` asks for fewer,
+and `total` is how many the folder holds. With `trash: true` it answers what the trash holds, each
+with the `id` that `files#restore` brings it back by and where it `was`.
+
+`read-text` answers a file's `text`, 65 536 characters at a time, with `next` and `total` the same
+way. It reads text up to one mebibyte: a document, a spreadsheet, a PDF or a picture is refused
+with the name of what reads it. Both read where the workspace is kept, so neither opens a window
+nor needs a computer of yours to be on.
 
 ## The round trip
 

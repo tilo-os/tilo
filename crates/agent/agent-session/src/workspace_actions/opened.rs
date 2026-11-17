@@ -392,7 +392,8 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     if provider_workspace(&target.provider).is_none() {
         return false;
     }
-    // One of Files' verbs by a path in the workspace reads the tree and writes it, as a put does.
+    // One of Files' verbs by a path in the workspace reads the tree and writes it, as a put
+    // does, and one of its reads by a path reads it.
     if super::tree_put::acts_on_tree(target) {
         return true;
     }
