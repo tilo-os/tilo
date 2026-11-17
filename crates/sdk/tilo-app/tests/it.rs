@@ -75,6 +75,8 @@ pub mod other_resources;
 pub mod outbox;
 #[path = "support/own_kinds.rs"]
 pub mod own_kinds;
+#[path = "people.rs"]
+pub mod people;
 #[path = "person_resources.rs"]
 pub mod person_resources;
 #[path = "private_windows.rs"]

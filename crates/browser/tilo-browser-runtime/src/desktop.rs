@@ -428,6 +428,12 @@ pub(crate) struct Shared {
     pub peer: Option<u32>,
     /// The workspace it shows: whose plane those windows' pages travel.
     pub workspace: String,
+    /// The workspace's agents, as Chat's record of them names each: an agent is a member of
+    /// the workspace like a person is, so a page names it to its windows whether or not a
+    /// device of its works here now. `None` for a page in no workspace.
+    pub agents: Option<
+        tilo_app::framework::WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>,
+    >,
 }
 
 impl Shared {
@@ -1926,6 +1932,14 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
         shared.standing = Standing::unknown();
     }
     shared.linked = linked_accounts(&shared, notify);
+    if inputs.peer.is_some() {
+        shared.agents = crate::page_agents::open(
+            &inputs.owners,
+            &shared.stores,
+            &inputs.workspace,
+            inputs.author.clone(),
+        );
+    }
     shared
 }
 

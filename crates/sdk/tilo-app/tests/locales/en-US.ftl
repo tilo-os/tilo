@@ -334,3 +334,7 @@ test-blob-store = Keep the bytes a file holds
 ## crates/sdk/tilo-app/tests/view_outline.rs
 test-outline-notebook = Notebook
 test-outline-notebook-write = Write a page
+
+## crates/sdk/tilo-app/tests/people.rs
+test-ticket = Ticket
+test-ticket-assign = Give the ticket to someone, or to nobody

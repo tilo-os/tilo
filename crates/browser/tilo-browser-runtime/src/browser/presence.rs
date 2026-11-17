@@ -8,6 +8,7 @@
 use tilo_desktop::here::LiveMember;
 use ui::permissions::MemberId;
 use ui::presence::PresenceKey;
+use ui::tokens::PresenceHue;
 use wasm_bindgen::prelude::*;
 
 use crate::peer_sync::BoardView;
@@ -28,6 +29,12 @@ pub(crate) struct Presence {
     /// The names of the workspace's people as its governance last gave them, as this mount put
     /// them on its presence.
     pub(crate) named: std::collections::BTreeMap<String, String>,
+    /// Who the workspace lists as its members, as this mount put them on its presence: who its
+    /// windows offer as people, whether or not each is here now.
+    pub(crate) members: Option<std::collections::BTreeSet<String>>,
+    /// The workspace's agents, as its record of them names each, and as this mount put them
+    /// on its presence: a cursor named, and an agent a retired one no longer is.
+    pub(crate) agents: Vec<(MemberId, String, PresenceHue)>,
 }
 
 impl Mount {
@@ -58,21 +65,40 @@ impl Mount {
         });
         let numbered = desktop.here.borrow_mut().set_joined(&joined);
         let renamed = *desktop.shared.names.borrow() != self.presence.named;
-        if !std::mem::take(&mut self.here_stale) && !numbered && !renamed {
+        let members = desktop.shared.members.borrow().clone();
+        let admitted = members != self.presence.members;
+        if !std::mem::take(&mut self.here_stale) && !numbered && !renamed && !admitted {
             return;
         }
         self.presence.named = desktop.shared.names.borrow().clone();
+        self.presence.members.clone_from(&members);
         let tree = desktop.handle.read(Clone::clone);
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();
         let own = here.own_user().map(str::to_owned);
+        // A host runs workspaces for people and is nobody in them itself: the person its own
+        // device acts for is no row of a list of the workspace's people, unless it is this
+        // page's own.
+        let host = self.peer.and_then(crate::peer_sync::host_person);
+        let offered =
+            |person: &str| host.as_deref() != Some(person) || own.as_deref() == Some(person);
         let named = &self.presence.named;
         self.frame.update_presence(|presence| {
+            // Who the workspace says is in it: its windows offer exactly these as its people,
+            // and a device that named someone it never admitted is nobody's row.
+            if let Some(members) = &members {
+                presence.set_workspace_members(
+                    members
+                        .iter()
+                        .filter(|person| offered(person))
+                        .map(|person| MemberId::person(person.clone())),
+                );
+            }
             // Everyone the workspace lists is named as its governance calls them, here or not:
             // a change someone made while away reads as theirs, never as their key. Who is here
             // is then named as their presence says, as everywhere else.
             for (person, name) in named {
-                if own.as_deref() != Some(person.as_str()) {
+                if own.as_deref() != Some(person.as_str()) && offered(person) {
                     presence.set_display_name(MemberId::person(person.clone()), name);
                 }
             }
@@ -80,6 +106,61 @@ impl Mount {
             here.register_windows(&people, presence);
             true
         });
+    }
+
+    /// Name the workspace's agents as its record of them does, and forget each the record
+    /// retired, so an app's people list offers exactly those it keeps now.
+    fn place_agents(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let Some(record) = &desktop.shared.agents else {
+            return;
+        };
+        let Some(state) = record.try_get() else {
+            return;
+        };
+        let mut agents: Vec<(MemberId, String, PresenceHue)> = state
+            .active()
+            .filter_map(|agent| {
+                let name = agent.name.trim();
+                (!name.is_empty()).then(|| {
+                    (
+                        MemberId::agent(agent.id.0.clone()),
+                        name.to_owned(),
+                        PresenceHue::from_slot(usize::from(agent.slot())),
+                    )
+                })
+            })
+            .collect();
+        agents.sort_by(|a, b| {
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then(a.0.cmp(&b.0))
+        });
+        if agents == self.presence.agents {
+            return;
+        }
+        let retired: Vec<MemberId> = self
+            .presence
+            .agents
+            .iter()
+            .map(|(agent, _, _)| agent.clone())
+            .filter(|agent| !agents.iter().any(|(kept, _, _)| kept == agent))
+            .collect();
+        self.presence.agents.clone_from(&agents);
+        self.frame.update_presence(|presence| {
+            for agent in &retired {
+                presence.unregister_peer(agent);
+            }
+            for (agent, name, hue) in agents {
+                presence.set_display_name(agent.clone(), name);
+                presence.set_presence_hue(agent, hue);
+            }
+            true
+        });
+        self.pending = true;
+        self.window.request_redraw();
     }
 
     /// The tiles this mount shows, where the workspace's pointers land.
@@ -106,6 +187,9 @@ impl Mount {
     /// for the shells and editors that draw them. Runs at the start of every frame and after each
     /// drawn one.
     pub(super) fn place_presence(&mut self) {
+        // The workspace's agents are members of it like people are, named whether or not a
+        // device of theirs works here now: an app's people list offers them by their names.
+        self.place_agents();
         let Some(peer) = self.peer else {
             return;
         };
@@ -246,7 +330,13 @@ impl Mount {
                 presence.unregister_peer(member);
             }
             for (user, member) in &members {
-                if !member.label.is_empty() {
+                // A device names the member behind it. The workspace's own host is a device of
+                // nobody in it: its label is no name a list of the workspace's people shows.
+                let admitted = !presence.knows_members()
+                    || presence.is_member(user)
+                    || presence.is_own_identity(user)
+                    || user.is_agent();
+                if admitted && !member.label.is_empty() {
                     presence.set_display_name(user.clone(), member.label.clone());
                 }
                 match selection_anchors(member.selection.as_ref()) {

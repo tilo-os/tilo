@@ -22,6 +22,26 @@ impl PresenceCtx {
         ids.into_iter().map(|id| self.user(id)).collect()
     }
 
+    /// Take who the workspace's members are, by id, without the rest of its member list: a
+    /// surface that heard the list apart from its rows (a page, whose host names its people)
+    /// still offers only them, and nobody a device of theirs happened to name.
+    pub fn set_workspace_members(&mut self, members: impl IntoIterator<Item = MemberId>) {
+        self.members = members.into_iter().collect();
+    }
+
+    /// Whether this surface has heard who the workspace's members are: a list of its people
+    /// offers them ([`Self::is_member`]) then, and whatever else presence knows of nobody.
+    #[must_use]
+    pub fn knows_members(&self) -> bool {
+        !self.members.is_empty()
+    }
+
+    /// Whether `id` is one of the members the workspace's last member list named.
+    #[must_use]
+    pub fn is_member(&self, id: &MemberId) -> bool {
+        self.members.contains(id)
+    }
+
     /// What this session's own member is shown as, numbered like
     /// anyone else's name; `None` until the workspace has named them.
     pub fn self_label(&self) -> Option<String> {

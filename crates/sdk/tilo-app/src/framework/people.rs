@@ -20,8 +20,9 @@ use ui_core::LocalState;
 use ui_core::icons::Icon;
 use ui_core::presence::PresenceCtx;
 use ui_core::tokens::PresenceHue;
+use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
-use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
+use ui_core::widget::{Button, ButtonRole, Element, Tone};
 
 use super::ViewCx;
 use tilo_resource::MemberId;
@@ -211,6 +212,16 @@ impl People {
 
     /// Take the names the host's roster holds now. Whether any changed.
     pub(crate) fn follow(&self, presence: &PresenceCtx) -> bool {
+        let mut members = merged_roster(presence, &[]);
+        if presence.knows_members() {
+            // The workspace's own list says who its people are: a device that named someone
+            // it never admitted — a host's own — is nobody's row.
+            members.retain(|candidate| {
+                candidate.id.is_agent()
+                    || presence.is_member(&candidate.id)
+                    || presence.is_own_identity(&candidate.id)
+            });
+        }
         let next = Roster {
             names: presence
                 .names
@@ -223,7 +234,7 @@ impl People {
                 .map(|user| (user.clone(), presence.hue_for(user)))
                 .collect(),
             own: presence.self_label(),
-            members: merged_roster(presence, &[]),
+            members,
             registry: {
                 let mut registry =
                     ui_core::history_source::AuthorDirectory::from_presence(presence);
@@ -316,7 +327,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 (Rc::clone(&label), Rc::clone(&nobody), Rc::clone(&value_of));
             let held_action = action.clone();
             cx.switch(&held, move |cx, who| {
-                let mut choices = Stack::new();
+                let mut choices = Arranged::stack();
                 choices = choices.push(cx.person_choice(
                     &format!("{id}-none"),
                     &nobody,

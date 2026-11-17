@@ -15,7 +15,8 @@ use crate::part::{IssuePart, issue_part};
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
-use ui::widget::{Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
+use ui::widget::arrange::Stack;
+use ui::widget::{Badge, ButtonRole, ChipStyle, Fact, Facts, Tone};
 
 use crate::{Nav, Tasks, Window, reference, tr, tr_with};
 
@@ -176,7 +177,7 @@ fn status_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     });
     let id = id.clone();
     cx.switch(&status, move |cx, status| {
-        let mut choices = Stack::new();
+        let mut choices = Stack::stack();
         for choice in Status::ALL {
             let place_id = id.clone();
             let place = IssuePart::PLACE.map(move |()| issue_part::Place {

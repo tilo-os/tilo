@@ -243,6 +243,8 @@ mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod page_activity;
 #[cfg(target_arch = "wasm32")]
+mod page_agents;
+#[cfg(target_arch = "wasm32")]
 mod pages;
 #[cfg(target_arch = "wasm32")]
 pub use page_activity::{LoadActivity, defer_activity_pane};
