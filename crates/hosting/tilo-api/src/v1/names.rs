@@ -248,7 +248,9 @@ const STOP: &[&str] = &[
 
 /// One call, as `surface` writes it.
 fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
-    let named = |prefix: &str| match arg {
+    // A placeholder names no path: a person types the verb alone, rather than
+    // a template nobody filled in.
+    let named = |prefix: &str| match arg.filter(|arg| !arg.contains('{')) {
         Some(arg) => format!("{prefix} {arg}"),
         None => prefix.to_owned(),
     };
@@ -345,6 +347,15 @@ mod tests {
         assert_eq!(
             said("run tilo_do {path: \"notes#open\"}", Surface::Rest),
             "run POST /v1/workspaces/…/resources/{path}/actions/{action} {path: \"notes#open\"}"
+        );
+        // A route with a placeholder names no path, so the command says its
+        // verb alone, never a template nobody filled in.
+        assert_eq!(
+            said(
+                "start it with POST /v1/workspaces/…/resources/{path}/actions/{action}",
+                Surface::Cli
+            ),
+            "start it with tilo do"
         );
         // A route already written is the command's verb, argument and all.
         assert_eq!(

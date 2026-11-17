@@ -544,12 +544,16 @@ tilo_test_env::scenario! {
             moved.contains("v5:old") && moved.contains("v5:new"),
             "{moved}"
         );
-        // Another refusal keeps the wording it always had.
+        // Another refusal says the code the API documents, then the words it
+        // always had.
         assert_eq!(
             String::from(BridgeError::Host(
                 tilo_actions::remote::ActionHostError::NotPermitted
             )),
-            tilo_actions::remote::ActionHostError::NotPermitted.to_string()
+            format!(
+                "not_permitted: {}",
+                tilo_actions::remote::ActionHostError::NotPermitted
+            )
         );
         moved.clear();
         assert!(moved.is_empty());

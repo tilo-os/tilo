@@ -80,6 +80,14 @@ pub(super) fn text_result(
 fn refused(failure: &Failure, retry_safe: bool) -> Value {
     use tilo_actions::remote::ActionHostError;
     let message = failure.message.as_str();
+    // A failure with no host error of its own may name the code itself
+    // (`unknown_action: …`): that is what a caller acts on, and the words
+    // after it are what it reads.
+    let (named, said) = coded(message);
+    let message = match failure.host {
+        None => said,
+        Some(_) => message,
+    };
     let (code, next, wait) = match &failure.host {
         Some(ActionHostError::Busy { retry_after_ms }) if retry_safe => (
             "rate_limited",
@@ -101,7 +109,7 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
             None,
         ),
         Some(other) => (other.code(), String::new(), None),
-        None => ("failed", String::new(), None),
+        None => (named, String::new(), None),
     };
     let mut error = json!({"code": code, "message": message});
     if let Some(fields) = error.as_object_mut() {
@@ -113,6 +121,44 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         }
     }
     json!({"status":"failed","error":error})
+}
+
+/// The codes a refusal is documented with (`docs/tilo-sh/errors.md`).
+const CODES: [&str; 14] = [
+    "invalid_arguments",
+    "unknown_action",
+    "unknown_resource",
+    "unknown_app",
+    "not_found",
+    "not_permitted",
+    "beyond_scope",
+    "no_payment_method",
+    "rate_limited",
+    "surface_changed",
+    "action_unavailable",
+    "action_failed",
+    "unavailable",
+    "stale_revision",
+];
+
+/// `message` without the code it starts with: what a sentence embedding a
+/// refusal says, so the code is not repeated mid-sentence.
+pub(super) fn words(message: &str) -> &str {
+    coded(message).1
+}
+
+/// `message` split into the code it starts with, when it starts with one of
+/// the documented ones, and the words that follow it.
+pub(super) fn coded(message: &str) -> (&str, &str) {
+    for code in CODES {
+        if let Some(said) = message
+            .strip_prefix(code)
+            .and_then(|rest| rest.strip_prefix(": "))
+        {
+            return (code, said);
+        }
+    }
+    ("failed", message)
 }
 
 /// The typed answer of one invocation's answer (`{invocation_id, update,

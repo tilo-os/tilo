@@ -1127,7 +1127,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // an empty one: the agent would conclude the app does not exist.
         let installed = installed.map_err(|reason| {
             format!(
-                "no running app is named {name}, and the installed apps could not be read: {reason}"
+                "no running app is named {name}, and the installed apps could not be read: {}",
+                answer::words(&reason)
             )
         })?;
         let ids = installed
@@ -1696,12 +1697,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     fn not_running_note(name: &str, opens: bool) -> String {
         if opens {
             format!(
-                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}, or run one of its actions and it starts first",
+                "not_found: {name} is installed but not running; start it with tilo_do {}#open, or run one of its actions and it starts first",
                 path_name(name)
             )
         } else {
             format!(
-                "{name} is installed but not running, and {}",
+                "not_found: {name} is installed but not running, and {}",
                 Self::may_not_open(name)
             )
         }
@@ -1728,7 +1729,7 @@ fn no_app_named(name: &str, running: &[(String, Value)], installed: &[InstalledA
         .map(|app| app.app_id.clone())
         .collect::<Vec<_>>();
     format!(
-        "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
+        "unknown_app: no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
         running_ids.first().map_or("<app_id>", String::as_str),
         list_or_none(&app_names(&running_ids)),
         list_or_none(&app_names(&installed_ids)),
@@ -2160,7 +2161,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             );
         }
         if let Some(reason) = unread {
-            let _ = write!(text, "\nthe installed apps could not be read: {reason}");
+            let _ = write!(
+                text,
+                "\nthe installed apps could not be read: {}",
+                answer::words(&reason)
+            );
         } else if total == 0 {
             text.push_str("\nnone: no app runs in this workspace and none is installed");
         }
@@ -2641,13 +2646,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<Done, Failure> {
-        let parsed = parse_path(path)?;
+        let parsed = parse_path(path).map_err(|why| format!("invalid_arguments: {why}"))?;
         let action = parsed.action.clone().ok_or_else(|| {
-            format!("name the action: {path}#<action>; tilo_ls {path} lists them")
+            format!(
+                "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
+            )
         })?;
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
-        let Some((app_id, provider, pinned)) = self.acting_in(&parsed, &action, wait_ms).await?
+        let Some((app_id, provider, pinned)) = self
+            .acting_in(&parsed, &action, wait_ms)
+            .await
+            .map_err(|why| refused_as("not_found", why))?
         else {
             let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
                 return Err(format!("{} started while it was asked to", parsed.app).into());
@@ -2667,7 +2677,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 false,
                 forms.as_ref(),
             )
-            .await?
+            .await
+            .map_err(|why| refused_as("not_found", why))?
         } else {
             self.resolve_published(
                 &parsed,
@@ -2676,7 +2687,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 false,
                 forms.as_ref(),
             )
-            .await?
+            .await
+            .map_err(|why| refused_as("not_found", why))?
         };
         if forms.is_some() && resolved.chain.is_empty() {
             resolved = if pinned {
@@ -2915,6 +2927,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
 /// Whether `action`, named on an app itself, starts it: `open` shows it in a window, `start`
 /// runs it without one.
+/// `why` naming `code`, unless it already names the documented code it was
+/// refused with.
+fn refused_as(code: &str, why: String) -> String {
+    if answer::coded(&why).0 == "failed" {
+        format!("{code}: {why}")
+    } else {
+        why
+    }
+}
+
 fn starts_app(action: &str) -> bool {
     action == tilo_actions::remote::APPLICATION_OPEN_ACTION
         || action == tilo_actions::remote::APPLICATION_START_ACTION

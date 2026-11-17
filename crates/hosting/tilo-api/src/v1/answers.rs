@@ -634,6 +634,9 @@ pub struct ProgramAnswer {
     pub output: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<u64>,
+    /// Why it failed: the trap's words, or what did not compile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
     /// Every step of the run that changed something, oldest first.
     #[serde(default)]
     pub steps: Vec<Value>,
