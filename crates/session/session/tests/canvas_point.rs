@@ -321,7 +321,8 @@ fn card_foot(session: &mut Session, (x, top): (f64, f64), width: f64) -> Option<
     let ground = at(top - 30.0)?;
     let mut y = top + 1.0;
     while let Some(px) = at(y) {
-        if px == ground && at(y + 4.0) == Some(ground) {
+        let below = at(y + 4.0);
+        if px == ground && below == Some(ground) {
             return Some(y);
         }
         y += 1.0;
