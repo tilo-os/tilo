@@ -629,12 +629,17 @@ impl Relay {
             agents: handler.agents.clone(),
             environments: handler.environments.clone(),
         };
+        // A server enrolled into its person's identity: a host of theirs alone,
+        // given the workspaces' content to keep when it was enrolled.
+        let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser)
+            && cfg.home_peer_bundle.exists();
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
             identity: live.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
             state_root: cfg.state_root.clone(),
+            workspaces: governed.clone().filter(|_| enrolled_server),
         };
         let certification = crate::certification::CertificationProtocol::new(
             live.clone(),
@@ -688,6 +693,13 @@ impl Relay {
         // the same bytes from this host alone. What no record of a workspace
         // names any more is let go of, so replaced files do not pile up.
         if let Some(governed) = &governed {
+            // A server of the person's own takes part in their admin workspace,
+            // whose record of their servers says what it should be.
+            if enrolled_server {
+                crate::servers::enroll(governed, &identity.device_cert)
+                    .await
+                    .map_err(|error| RelayError::Identity(format!("admin workspace: {error}")))?;
+            }
             governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
                 &content,
             ))));
@@ -1304,6 +1316,9 @@ struct ManagementProtocol {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
     state_root: PathBuf,
+    /// The workspaces this host governs, its person's admin workspace among
+    /// them: where its name is kept.
+    workspaces: Option<crate::workspaces::Workspaces>,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -1355,12 +1370,18 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                tilo_files::native::atomic::write_with_mode(
-                    &self.state_root.join("home-peer-name"),
-                    label.as_bytes(),
-                    0o644,
+                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
+                    AcceptError::from_err(std::io::Error::other(
+                        "this home peer keeps no admin workspace",
+                    ))
+                })?;
+                let device = crate::servers::device_id(&self.identity.cert.device_public_key);
+                crate::servers::apply(
+                    workspaces,
+                    crate::servers::Servers::RENAME_SERVER.with((device, label.to_owned())),
                 )
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+                .await
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
             HomePeerManagementRequest::Decommission { revocation } => {
                 if !peer.cert.capabilities.can_admit_devices {
@@ -1377,6 +1398,18 @@ impl ProtocolHandler for ManagementProtocol {
                     return Err(AcceptError::from_err(std::io::Error::other(
                         "revocation does not target this home peer",
                     )));
+                }
+                // Its entry among the person's servers is retired first, while
+                // its device still signs: none of their devices counts it as
+                // serving anything from then on.
+                if let Some(workspaces) = &self.workspaces {
+                    let device = crate::servers::device_id(&self.identity.cert.device_public_key);
+                    crate::servers::apply(
+                        workspaces,
+                        crate::servers::Servers::RETIRE_SERVER.with(device),
+                    )
+                    .await
+                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
                 }
                 crate::store::append_revocation(&self.state_root, &revocation).map_err(
                     |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
@@ -1397,10 +1430,20 @@ impl ProtocolHandler for ManagementProtocol {
                 decommissioned = true;
             }
         }
-        let label = std::fs::read_to_string(self.state_root.join("home-peer-name"))
-            .ok()
-            .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| self.identity.cert.device_label.clone());
+        // Its name is its entry's in the admin workspace, its certificate's
+        // until it has one.
+        let named = match &self.workspaces {
+            Some(workspaces) => crate::servers::read(workspaces)
+                .await
+                .ok()
+                .and_then(|servers| {
+                    servers
+                        .active(&self.identity.cert.device_public_key)
+                        .map(|server| server.label.clone())
+                }),
+            None => None,
+        };
+        let label = named.unwrap_or_else(|| self.identity.cert.device_label.clone());
         let files_ready = self.full_replica.current().is_some();
         write_frame(
             &mut send,
@@ -2020,6 +2063,16 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(renamed.label, "Living workspace NAS");
+            // The name is the server's entry in its person's admin workspace,
+            // which the enrolled host made and entered itself into: no file of
+            // the host's own keeps it.
+            let governed = relay.workspaces().unwrap();
+            let servers = crate::servers::read(governed).await.unwrap();
+            assert_eq!(
+                servers.active(&host.public_key).unwrap().label,
+                "Living workspace NAS"
+            );
+            assert!(!temp.path().join("relay/home-peer-name").exists());
             let mut revocation = tilo_user_identity::RevocationEntry {
                 user_public_key: user.public_key,
                 revoked_device_public_key: host.public_key,
@@ -2042,6 +2095,14 @@ mod tests {
             .unwrap();
             assert!(removed.decommissioned);
             assert!(temp.path().join("relay/decommissioned").exists());
+            assert!(
+                crate::servers::read(relay.workspaces().unwrap())
+                    .await
+                    .unwrap()
+                    .active(&host.public_key)
+                    .is_none(),
+                "a decommissioned server is retired among its person's servers"
+            );
             assert!(
                 crate::client::RelayClient::manage_home_peer(
                     &client_endpoint,

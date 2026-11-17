@@ -200,6 +200,22 @@ certificate:
   key, or a copy of one, certify another key on its own: a stolen device key
   revoked from the person would otherwise mint unrevoked successors.
 
+### A person's servers
+
+A person's servers are configured in their admin workspace: an ordinary
+workspace whose only member is the person, in which each server, being one of
+their devices, takes part. Its id follows from the person's root, so every
+server finds the same one; a server enrolled into the person's identity makes
+it where it holds none and enters itself on its first start. One record of
+kind `tilo.servers` holds each server's desired configuration: its name, which
+workspaces it holds and as what (store or participant), what it offers
+(storage, compute, machines), its update channel and daily maintenance window,
+how it unlocks after a boot, and whether it was retired. Every change is a
+typed action on that record, so it has history and an author, and a server
+applies what its entry says: no setting of a server lives in a file of its
+own. Today a server takes its name and its retirement from the record; the
+other fields are declared for the parts that apply them.
+
 ## Transport
 
 Devices talk over iroh, and nothing else. A device reaches the other devices
