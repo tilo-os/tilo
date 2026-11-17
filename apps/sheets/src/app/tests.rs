@@ -51,11 +51,9 @@ pub(crate) fn doc_snapshot(
     idx: usize,
     _currency: Currency,
 ) -> crate::workbook::SheetSnapshot {
-    doc_workbook(doc)
-        .sheets
-        .values()
-        .nth(idx)
-        .map(crate::workbook::Sheet::snapshot)
+    let book = doc_workbook(doc);
+    book.sheet_id(idx)
+        .and_then(|id| book.snapshot_of(id))
         .unwrap_or_default()
 }
 
@@ -417,11 +415,10 @@ fn shown(app: &mut TestApp<crate::resource::SheetsShell>) -> (usize, String) {
 }
 
 fn raw_at(app: &TestApp<crate::resource::SheetsShell>, sheet: usize, addr: Addr) -> String {
-    app.state()
-        .sheets
-        .values()
-        .nth(sheet)
-        .map(crate::workbook::Sheet::snapshot)
+    let state = app.state();
+    state
+        .sheet_id(sheet)
+        .and_then(|id| state.snapshot_of(id))
         .and_then(|snapshot| snapshot.raw.get(&addr).cloned())
         .unwrap_or_default()
 }

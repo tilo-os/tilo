@@ -2,6 +2,8 @@
 //! the built-in field edits; the methods below address cells by position, as people and agents
 //! do, and keep formulas, charts and comments pointing at the cells they meant.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -16,6 +18,7 @@ use ui::widget::Element;
 
 use crate::actions::SheetsEffect;
 use crate::app::SheetsApp;
+use crate::bound::{Input, Lines};
 use crate::model::{Addr, CellFormat, GridEdit, a1_to_addr, addr_to_a1, letters_to_col};
 use crate::workbook::{
     Area, Chart, ChartKind, Comment, CommentCells, Layout, MAX_ANNOTATION_BYTES, MAX_COLUMN,
@@ -273,8 +276,9 @@ fn annotation(text: &str) -> Result<String, Refusal> {
     Ok(text.to_owned())
 }
 
-/// Write `cells` into `sheet`, each changing only what it names.
-fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
+/// Write `cells` into `sheet`, each changing only what it names, and answer the cells given an
+/// input. An input is written as typed: [`Workbook::write`] binds the formulas among them.
+fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<Vec<Addr>, Refusal> {
     if cells.len() > MAX_WRITES {
         return Err(Refusal::new(format!("at most {MAX_WRITES} cells at once")));
     }
@@ -282,10 +286,14 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
         .iter()
         .map(|write| cell_of(&write.cell))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut typed = Vec::new();
     for (addr, write) in addrs.into_iter().zip(cells) {
+        if write.input.is_some() {
+            typed.push(addr);
+        }
         sheet.update(addr, |cell| {
             if let Some(input) = &write.input {
-                cell.raw = Atom(input.clone());
+                cell.raw = Input::typed(input.clone());
             }
             if let Some(format) = write.format {
                 cell.format = format;
@@ -295,36 +303,137 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
             }
         });
     }
-    Ok(())
+    Ok(typed)
 }
 
-/// Rewrite every formula of the workbook that names a sheet through `rewrite`.
-fn rewrite_naming(book: &mut Workbook, rewrite: impl Fn(&str) -> String) -> Result<(), Refusal> {
-    let ids: Vec<Id> = book.sheets.ids().cloned().collect();
-    for id in &ids {
-        let Some(held) = book.sheet(id) else {
-            continue;
+impl Workbook {
+    /// Write `cells` into sheet `id`, binding each formula among them to the rows, columns and
+    /// sheets it names now. A formula written again as it reads keeps what it was bound to.
+    fn write(&mut self, id: &Id, cells: &[CellWrite]) -> Result<(), Refusal> {
+        let held: HashMap<Addr, (String, Input)> = {
+            let lines = Lines::of(self);
+            match (self.sheet(id), lines.layout(id)) {
+                (Some(sheet), Some(layout)) => cells
+                    .iter()
+                    .filter(|write| {
+                        write
+                            .input
+                            .as_deref()
+                            .is_some_and(|input| input.starts_with('='))
+                    })
+                    .filter_map(|write| {
+                        let addr = cell_of(&write.cell).ok()?;
+                        let raw = &sheet.cell_at(&layout, addr)?.raw;
+                        raw.is_formula()
+                            .then(|| (addr, (raw.shown(&layout, &lines).into_owned(), raw.clone())))
+                    })
+                    .collect(),
+                _ => HashMap::new(),
+            }
         };
-        let formulas: Vec<(Id, Id, String)> = held
-            .cells
-            .cells()
-            .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && cell.raw.0.contains('!'))
-            .filter_map(|(row, column, cell)| {
-                let rewritten = rewrite(&cell.raw.0);
-                (rewritten != cell.raw.0).then_some((row, column, rewritten))
-            })
-            .collect();
-        if formulas.is_empty() {
-            continue;
-        }
-        let target = book.sheet_mut(id)?;
-        for (row, column, raw) in formulas {
-            if let Some(cell) = target.cells.cell_mut(&row, &column) {
-                cell.raw = Atom(raw);
+        let typed = write_into(self.sheet_mut(id)?, cells)?;
+        self.bind(id, &typed, &held);
+        Ok(())
+    }
+
+    /// Bind the formulas typed into `cells` of sheet `id` to what they name now. `held` is
+    /// what a cell read before it was written, and its input then: a formula typed as that
+    /// read is that input.
+    fn bind(&mut self, id: &Id, cells: &[Addr], held: &HashMap<Addr, (String, Input)>) {
+        let bound: Vec<(Id, Id, Input)> = {
+            let lines = Lines::of(self);
+            let (Some(sheet), Some(layout)) = (self.sheet(id), lines.layout(id)) else {
+                return;
+            };
+            cells
+                .iter()
+                .filter_map(|addr| {
+                    let (row, column) = layout.ids(*addr)?;
+                    let raw = &sheet.cells.cell(row, column)?.raw;
+                    if raw.is_bound() || !raw.is_formula() {
+                        return None;
+                    }
+                    let input = match held.get(addr) {
+                        Some((shown, input)) if shown == raw.text() => input.clone(),
+                        _ => Input::bound(raw.text(), &layout, &lines),
+                    };
+                    Some((row.clone(), column.clone(), input))
+                })
+                .collect()
+        };
+        let Ok(sheet) = self.sheet_mut(id) else {
+            return;
+        };
+        for (row, column, input) in bound {
+            if let Some(cell) = sheet.cells.cell_mut(&row, &column) {
+                cell.raw = input;
             }
         }
     }
-    Ok(())
+
+    /// Refuse a write made against rows and columns that have moved since its caller read
+    /// them: `seen` is the stamp that read answered ([`Workbook::seen`]). A caller that names
+    /// none is not held to any.
+    fn as_seen(&self, seen: Option<&str>) -> Result<(), Refusal> {
+        match seen.map(str::trim) {
+            Some(seen) if !seen.is_empty() && seen != self.seen() => Err(Refusal::new(
+                "rows, columns or sheets moved since the read you name with `seen`, so these cell references may mean other cells now: read again and write against what that answers; nothing was written",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Bind every formula of the sheets `ids` that has no binding: sheets just made, whose
+    /// formulas may read one another.
+    fn bind_sheets(&mut self, ids: &[Id]) {
+        for id in ids {
+            let Some(sheet) = self.sheet(id) else {
+                continue;
+            };
+            let layout = sheet.layout();
+            let cells: Vec<Addr> = sheet
+                .cells
+                .cells()
+                .filter(|(_, _, cell)| cell.raw.is_formula() && !cell.raw.is_bound())
+                .filter_map(|(row, column, _)| layout.addr(&row, &column))
+                .collect();
+            self.bind(id, &cells, &HashMap::new());
+        }
+    }
+
+    /// Bind every formula with no binding that names sheet `id`, before the sheet is renamed
+    /// or deleted: bound to the sheet itself, it reads it under any name, and `#REF!` once it
+    /// is gone, with nothing rewritten.
+    fn bind_naming(&mut self, id: &Id) {
+        let Some(named) = self.name_reaching(id) else {
+            return;
+        };
+        let ids: Vec<Id> = self.sheets.ids().cloned().collect();
+        for on in &ids {
+            let Some(sheet) = self.sheet(on) else {
+                continue;
+            };
+            let layout = sheet.layout();
+            let cells: Vec<Addr> = sheet
+                .cells
+                .cells()
+                .filter(|(_, _, cell)| {
+                    let raw = &cell.raw;
+                    if raw.is_bound() || !raw.is_formula() || !raw.text().contains('!') {
+                        return false;
+                    }
+                    let mut reads = false;
+                    crate::refs::each_reference(raw.text(), |sheet, _, _| {
+                        reads |=
+                            sheet.is_some_and(|written| crate::refs::fold_sheet(written) == named);
+                    });
+                    reads
+                })
+                .filter_map(|(row, column, _)| layout.addr(&row, &column))
+                .collect();
+            self.bind(on, &cells, &HashMap::new());
+        }
+    }
 }
 
 /// The formulas a structural change of one sheet may move, found once for the whole action:
@@ -349,7 +458,7 @@ impl Reshape {
                     .cells
                     .cells()
                     .filter(|(_, _, cell)| {
-                        cell.raw.0.starts_with('=') && (own || cell.raw.0.contains('!'))
+                        cell.raw.is_formula() && (own || cell.raw.text().contains('!'))
                     })
                     .map(|(row, column, _)| (row, column))
                     .collect();
@@ -364,40 +473,67 @@ impl Reshape {
         }
     }
 
-    /// Rewrite the workbook for one inserted or deleted row or column of the sheet: the formulas
-    /// pointing past it, on the sheet and on every sheet that reads it, and the charts and
-    /// comments it cuts into. Answers the sheet's layout before the change.
+    /// Ready the workbook for one inserted or deleted row or column of the sheet. No formula is
+    /// rewritten: each reads its lines by id, so it follows them by itself. A formula with no
+    /// binding that the change would move gains one first, to what it reads now; a range that
+    /// begins or ends on a deleted line shrinks to the line beside it; and the charts and
+    /// comments a delete cuts into move or go. Answers the sheet's layout before the change.
     fn apply(&self, book: &mut Workbook, edit: GridEdit) -> Result<Layout, Refusal> {
-        for (id, cells) in &self.formulas {
-            let own = *id == self.sheet;
-            let Some(held) = book.sheet(id) else {
-                continue;
-            };
-            let moved: Vec<(&Id, &Id, String)> = cells
-                .iter()
-                .filter_map(|(row, column)| {
-                    let raw = &held.cells.cell(row, column)?.raw.0;
-                    let moved =
-                        crate::refs::remap_sheet_refs(raw, edit, own, self.named.as_deref());
-                    (moved != *raw).then_some((row, column, moved))
-                })
-                .collect();
-            if moved.is_empty() {
-                continue;
-            }
-            let target = book.sheet_mut(id)?;
-            for (row, column, raw) in moved {
-                if let Some(cell) = target.cells.cell_mut(row, column) {
-                    cell.raw = Atom(raw);
+        let doomed = match edit {
+            GridEdit::DeleteRow(at) => Some((true, at)),
+            GridEdit::DeleteColumn(at) => Some((false, at)),
+            GridEdit::InsertRow(_) | GridEdit::InsertColumn(_) => None,
+        };
+        let (bound, layout) = {
+            let lines = Lines::of(book);
+            let layout = lines
+                .layout(&self.sheet)
+                .ok_or_else(|| Refusal::new("no such sheet"))?;
+            let mut bound: Vec<(&Id, &Id, &Id, Input)> = Vec::new();
+            for (id, cells) in &self.formulas {
+                let own = *id == self.sheet;
+                let (Some(held), Some(there)) = (book.sheet(id), lines.layout(id)) else {
+                    continue;
+                };
+                for (row, column) in cells {
+                    let Some(raw) = held.cells.cell(row, column).map(|cell| &cell.raw) else {
+                        continue;
+                    };
+                    let mut next = None;
+                    if !raw.is_bound() {
+                        let text = raw.text();
+                        let moved =
+                            crate::refs::remap_sheet_refs(text, edit, own, self.named.as_deref());
+                        if moved != text {
+                            next = Some(Input::bound(text, &there, &lines));
+                        }
+                    }
+                    if let Some((rows, at)) = doomed {
+                        let shrunk = next.as_ref().unwrap_or(raw).without_line(
+                            (id, &there),
+                            &lines,
+                            &self.sheet,
+                            rows,
+                            at,
+                        );
+                        if shrunk.is_some() {
+                            next = shrunk;
+                        }
+                    }
+                    if let Some(input) = next {
+                        bound.push((id, row, column, input));
+                    }
                 }
+            }
+            (bound, Layout::clone(&layout))
+        };
+        for (id, row, column, input) in bound {
+            if let Some(cell) = book.sheet_mut(id)?.cells.cell_mut(row, column) {
+                cell.raw = input;
             }
         }
         let id = &self.sheet;
-        let layout = book
-            .sheet(id)
-            .ok_or_else(|| Refusal::new("no such sheet"))?
-            .layout();
-        if !matches!(edit, GridEdit::DeleteRow(_) | GridEdit::DeleteColumn(_)) {
+        if doomed.is_none() {
             return Ok(layout);
         }
         let sheet = book.sheet_mut(id)?;
@@ -470,19 +606,28 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     })
 }
 
-/// Bring a workbook of version 1 up to this one: it stored each mark's
-/// value in a comment's paragraphs flat beside its variant's name; it is
-/// stored by its variant now.
+/// Bring a workbook of an older version up to this one. Version 1 stored each mark's value in
+/// a comment's paragraphs flat beside its variant's name; it is stored by its variant now.
+/// Version 3 stores what a formula's references are bound to after its text
+/// ([`crate::bound::Input`]): a cell of version 2 holds the text alone and reads by position
+/// as it did, so none is rewritten, and each gains its binding when it is next written. The
+/// version still changes, because a build that knows no binding would take the text for the
+/// whole formula.
 fn upgrade(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
-    if from != 1 {
-        return Err(ui::tilo_resource::ModelError::invalid(format!(
+    match from {
+        1 => tilo_rich_text::annotation::store_bodies_by_variant(
+            doc,
+            &ui::automerge::ROOT,
+            "comments",
+        ),
+        2 => Ok(()),
+        _ => Err(ui::tilo_resource::ModelError::invalid(format!(
             "no workbook migration from {from}"
-        )));
+        ))),
     }
-    tilo_rich_text::annotation::store_bodies_by_variant(doc, &ui::automerge::ROOT, "comments")
 }
 
 #[resource(
@@ -493,7 +638,7 @@ fn upgrade(
     document_child = Workbook::document_child,
     answer = crate::cell_actions::answer,
     params = verbs,
-    version = 2,
+    version = 3,
     migrate = upgrade,
 )]
 impl Workbook {
@@ -551,10 +696,11 @@ impl Workbook {
         {
             self.title = Some(title.to_owned());
         }
-        self.sheets.insert(at, cx.id(), sheet);
+        let made = self.sheets.insert(at, cx.id(), sheet);
         if let Some(blank) = blank {
             self.sheets.remove(&blank);
         }
+        self.bind_sheets(&[made]);
         Ok(())
     }
 
@@ -604,7 +750,7 @@ impl Workbook {
         if writes.is_empty() {
             return Err(Refusal::new("records hold no values to write"));
         }
-        write_into(self.sheet_mut(sheet)?, &writes)
+        self.write(sheet, &writes)
     }
 
     /// Update or add a row by its key.
@@ -648,7 +794,7 @@ impl Workbook {
         {
             target.cells.insert_row(at, cx.id());
         }
-        write_into(target, &writes)
+        self.write(sheet, &writes)
     }
 
     /// Duplicate a sheet.
@@ -673,15 +819,12 @@ impl Workbook {
     #[action(destructive, writes = comments, item = sheets)]
     pub fn delete_sheet(&mut self, sheet: &Id) -> Result<(), Refusal> {
         let sheet = &self.sheet_key(sheet)?;
-        let named = self.name_reaching(sheet);
+        // What read the sheet is bound to it, so it reads `#REF!` from now on: a sheet that
+        // later takes its name is not the one those formulas meant.
+        self.bind_naming(sheet);
         self.sheets
             .remove(sheet)
             .ok_or_else(|| Refusal::new("no such sheet"))?;
-        if let Some(named) = named {
-            // What read the sheet reads `#REF!` from now on: a sheet that later takes its name
-            // is not the one those formulas meant.
-            rewrite_naming(self, |raw| crate::refs::unsheet_refs(raw, &named))?;
-        }
         let gone: Vec<Id> = self
             .comments
             .iter()
@@ -704,13 +847,18 @@ impl Workbook {
             "Rows of values written rightward and down from start; \"=…\" is a formula (one that does not parse is kept, shows its error and is listed in the answer's formula_errors; Other!A1 reads another sheet), \"\" clears, null skips, an ISO date such as \"2026-10-22\" (or \"2026-10-22T09:30\") becomes a real date and a leading apostrophe (\"'007\") marks text"
         )]
         rows: Vec<Vec<serde_json::Value>>,
+        #[param(
+            "The `seen` a read of this workbook answered, to write against the rows and columns that read showed: when a row, a column or a sheet has moved since, nothing is written and the refusal says so"
+        )]
+        seen: Option<String>,
     ) -> Result<(), Refusal> {
+        self.as_seen(seen.as_deref())?;
         let sheet = &self.sheet_key(sheet)?;
         let cells = row_writes(cell_of(&start)?, &rows)?;
         if cells.is_empty() {
             return Err(Refusal::new("rows hold no values to write"));
         }
-        write_into(self.sheet_mut(sheet)?, &cells)
+        self.write(sheet, &cells)
     }
 
     /// Write cells: values, formulas, formats and bold.
@@ -719,7 +867,12 @@ impl Workbook {
         &mut self,
         sheet: &Id,
         #[param("The cells to write; what a cell leaves out stays as it is")] cells: Vec<CellWrite>,
+        #[param(
+            "The `seen` a read of this workbook answered, to write against the rows and columns that read showed: when a row, a column or a sheet has moved since, nothing is written and the refusal says so"
+        )]
+        seen: Option<String>,
     ) -> Result<(), Refusal> {
+        self.as_seen(seen.as_deref())?;
         if cells.is_empty() {
             return Err(Refusal::new("name at least one cell"));
         }
@@ -728,7 +881,7 @@ impl Workbook {
             .into_iter()
             .map(typed_write)
             .collect::<Result<Vec<_>, _>>()?;
-        write_into(self.sheet_mut(sheet)?, &cells)
+        self.write(sheet, &cells)
     }
 
     /// Format cells.
@@ -754,7 +907,7 @@ impl Workbook {
                 bold,
             })
             .collect();
-        write_into(self.sheet_mut(sheet)?, &cells)
+        self.write(sheet, &cells)
     }
 
     /// Sort rows by a column.
@@ -775,10 +928,9 @@ impl Workbook {
             .snapshot_of(sheet)
             .ok_or_else(|| Refusal::new("no such sheet"))?;
         let shown = crate::cell_actions::shown_cells(&snap);
-        let target = self.sheet_mut(sheet)?;
         let writes =
             crate::cell_actions::sort_writes(&shown, range, by, descending.unwrap_or(false));
-        write_into(target, &writes)
+        self.write(sheet, &writes)
     }
 
     /// Insert rows above a row.
@@ -839,7 +991,11 @@ impl Workbook {
             }
             let layout = reshape.apply(self, GridEdit::DeleteRow(at))?;
             if let Some(id) = layout.rows().get(at as usize) {
-                self.sheet_mut(sheet)?.cells.remove_row(id);
+                let held = self.sheet_mut(sheet)?;
+                if layout.is_last_row(id) {
+                    held.cut.insert(id.clone());
+                }
+                held.cells.remove_row(id);
             }
         }
         Ok(())
@@ -903,7 +1059,11 @@ impl Workbook {
             }
             let layout = reshape.apply(self, GridEdit::DeleteColumn(at))?;
             if let Some(id) = layout.columns().get(at as usize) {
-                self.sheet_mut(sheet)?.cells.remove_column(id);
+                let held = self.sheet_mut(sheet)?;
+                if layout.is_last_column(id) {
+                    held.cut.insert(id.clone());
+                }
+                held.cells.remove_column(id);
             }
         }
         Ok(())
@@ -933,16 +1093,18 @@ impl Workbook {
             .is_blank()
             .then(|| self.sheets.ids().next().cloned())
             .flatten();
+        let mut made = Vec::new();
         for imported in sheets {
             let mut sheet = Sheet::named(imported.name.trim());
             sheet.source = source.clone().map(Atom);
             sheet.hidden = imported.hidden;
             write_into(&mut sheet, &imported.cells)?;
-            self.sheets.push(cx.id(), sheet);
+            made.push(self.sheets.push(cx.id(), sheet));
         }
         if let Some(blank) = blank {
             self.sheets.remove(&blank);
         }
+        self.bind_sheets(&made);
         if let Some(title) = title.as_deref().map(str::trim)
             && !title.is_empty()
             && self.title.is_none()
@@ -1040,19 +1202,11 @@ impl Workbook {
         sheet: &Id,
         #[param("The new name")] name: NonBlank,
     ) -> Result<(), Refusal> {
-        use crate::refs::{fold_sheet, rename_sheets};
         let sheet = &self.sheet_key(sheet)?;
-        let name = name.as_str();
-        // References reach the first sheet of a name: when that is another
-        // one, no formula reads this sheet by name.
-        if let Some(old) = self.name_reaching(sheet) {
-            rewrite_naming(self, |raw| {
-                rename_sheets(raw, |written| {
-                    (fold_sheet(written) == old).then(|| name.to_owned())
-                })
-            })?;
-        }
-        self.sheet_mut(sheet)?.name = Atom(name.to_owned());
+        // A formula reads the sheet by its id and spells whatever it is called: one written
+        // before references were bound gains its binding first.
+        self.bind_naming(sheet);
+        self.sheet_mut(sheet)?.name = Atom(name.as_str().to_owned());
         Ok(())
     }
 
@@ -1210,7 +1364,9 @@ impl Workbook {
                 SearchEntry::new(sheet.name.0.clone(), sheet.name.0.clone())
                     .anchored(tilo_resource::items::item_resource_id::<Self>("sheets", id)),
             );
-            let snap = self.snapshot_of(id).unwrap_or_else(|| sheet.snapshot());
+            let Some(snap) = self.snapshot_of(id) else {
+                continue;
+            };
             for cell in crate::cell_actions::shown_cells(&snap) {
                 let reference = addr_to_a1(cell.col, cell.row);
                 let title = format!("{}!{reference}", sheet.name.0);
@@ -1276,7 +1432,9 @@ impl Workbook {
                 **id == sheet_key || sheet.name.0.eq_ignore_ascii_case(sheet_part.trim())
             })
             .ok_or_else(|| format!("no sheet `{sheet_part}`; read with no item for the sheets"))?;
-        let snap = self.snapshot_of(id).unwrap_or_else(|| sheet.snapshot());
+        let snap = self
+            .snapshot_of(id)
+            .ok_or_else(|| format!("no sheet `{sheet_part}`"))?;
         let cells = crate::cell_actions::shown_cells_and_spills(&snap);
         let (top_left, bottom_right) = match range {
             Some(range) => read_range(range)?,
@@ -1290,9 +1448,12 @@ impl Workbook {
                 }),
         };
         if cells.is_empty() && range.is_none() {
-            return Ok(
-                serde_json::json!({ "sheet": sheet.name.0, "item": id.as_str(), "rows": [] }),
-            );
+            return Ok(serde_json::json!({
+                "sheet": sheet.name.0,
+                "item": id.as_str(),
+                "rows": [],
+                "seen": self.seen(),
+            }));
         }
         let width = usize::try_from(bottom_right.0 - top_left.0 + 1).unwrap_or(usize::MAX);
         let most_rows = u32::try_from((MAX_READ_CELLS / width.max(1)).max(1)).unwrap_or(1);
@@ -1333,6 +1494,7 @@ impl Workbook {
             ),
             "rows": rows,
             "formulas": formulas,
+            "seen": self.seen(),
         });
         if last_row < bottom_right.1
             && let Some(map) = answer.as_object_mut()
@@ -1647,6 +1809,15 @@ mod agent_tests;
 
 #[cfg(test)]
 mod reference_tests;
+
+#[cfg(test)]
+mod binding_tests;
+
+#[cfg(test)]
+mod concurrent_tests;
+
+#[cfg(test)]
+mod cost_tests;
 
 ui::reach_tests!(SheetsShell);
 

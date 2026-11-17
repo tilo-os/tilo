@@ -3,10 +3,16 @@
 //! are field edits at its path, so typing writes that cell only. Positions map to ids through a
 //! sheet's [`Layout`], and the ids are derived the same way on every device.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::OnceLock;
 
-use ui::tilo_resource::{self, Atom, Collection, Edit, EditOp, Grid, Id, Model, Path, Refusal};
+use ui::tilo_resource::{
+    self, Atom, Collection, Edit, EditOp, Grid, Id, Model, Path, Refusal, Set,
+};
 
+use crate::bound::{Input, Lines};
 use crate::model::{Addr, CellFormat};
 use crate::settings::DocSettings;
 use tilo_locale::Currency;
@@ -31,8 +37,8 @@ pub const MAX_ANNOTATION_BYTES: usize = 4 * 1024;
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = Cell::valid)]
 pub struct Cell {
-    /// The input: a value or a formula, written whole.
-    pub raw: Atom,
+    /// The input: a value, or a formula with what its references are bound to, written whole.
+    pub raw: Input,
     pub format: CellFormat,
     pub bold: bool,
 }
@@ -40,17 +46,17 @@ pub struct Cell {
 impl Cell {
     pub fn of(raw: impl Into<String>) -> Self {
         Self {
-            raw: Atom(raw.into()),
+            raw: Input::typed(raw),
             ..Self::default()
         }
     }
 
     pub fn is_blank(&self) -> bool {
-        self.raw.0.is_empty() && self.format == CellFormat::General && !self.bold
+        self.raw.is_empty() && self.format == CellFormat::General && !self.bold
     }
 
     fn valid(&self) -> Result<(), Refusal> {
-        if self.raw.0.len() > MAX_CELL_INPUT_BYTES {
+        if self.raw.text().len() > MAX_CELL_INPUT_BYTES {
             return Err(Refusal::new("a cell holds at most 32 KiB"));
         }
         Ok(())
@@ -193,6 +199,13 @@ pub struct Sheet {
     /// work, as a file that hid the sheet kept them.
     #[model(default = false)]
     pub hidden: bool,
+    /// Cut lines
+    ///
+    /// The rows and columns deleted while they were the last their sheet had
+    /// made. A reference to one reads as deleted, not as a line the sheet has
+    /// yet to reach, and no line made later takes its id.
+    #[model(readonly)]
+    pub cut: Set<Id>,
 }
 
 impl Sheet {
@@ -204,6 +217,7 @@ impl Sheet {
             cells: Grid::new(),
             charts: Collection::new(),
             hidden: false,
+            cut: Set::new(),
         }
     }
 
@@ -225,15 +239,12 @@ impl Sheet {
     }
 
     pub fn layout(&self) -> Layout {
-        Layout::of(&self.cells)
+        Layout::of(&self.cells, &self.cut)
     }
 
-    /// The sheet's cells by position.
-    pub fn snapshot(&self) -> SheetSnapshot {
-        self.snapshot_in(&self.layout())
-    }
-
-    pub fn snapshot_in(&self, layout: &Layout) -> SheetSnapshot {
+    /// The sheet's cells by position, laid out as `layout`: each input as it reads now
+    /// ([`Input::shown`]), the other sheets found through `lines`.
+    pub fn snapshot_in(&self, layout: &Layout, lines: &Lines<'_>) -> SheetSnapshot {
         let mut snapshot = SheetSnapshot {
             name: self.name.0.clone(),
             hidden: self.hidden,
@@ -243,8 +254,10 @@ impl Sheet {
             let Some(addr) = layout.addr(&row, &column) else {
                 continue;
             };
-            if !cell.raw.0.is_empty() {
-                snapshot.raw.insert(addr, cell.raw.0.clone());
+            if !cell.raw.is_empty() {
+                snapshot
+                    .raw
+                    .insert(addr, cell.raw.shown(layout, lines).into_owned());
             }
             if cell.format != CellFormat::General {
                 snapshot.fmt.insert(addr, cell.format);
@@ -256,13 +269,17 @@ impl Sheet {
         snapshot
     }
 
-    pub fn inputs(&self) -> HashMap<Addr, String> {
-        let layout = self.layout();
+    /// Every input of the sheet by position, as it reads now: what [`Self::snapshot_in`]
+    /// holds as `raw`.
+    pub fn inputs_in(&self, layout: &Layout, lines: &Lines<'_>) -> HashMap<Addr, String> {
         self.cells
             .cells()
-            .filter(|(_, _, cell)| !cell.raw.0.is_empty())
+            .filter(|(_, _, cell)| !cell.raw.is_empty())
             .filter_map(|(row, column, cell)| {
-                Some((layout.addr(&row, &column)?, cell.raw.0.clone()))
+                Some((
+                    layout.addr(&row, &column)?,
+                    cell.raw.shown(layout, lines).into_owned(),
+                ))
             })
             .collect()
     }
@@ -274,7 +291,7 @@ impl Sheet {
 
     /// Add the rows and columns `addr` needs, under the ids every device derives.
     pub fn reach(&mut self, addr: Addr) {
-        let (rows, columns) = Layout::of(&self.cells).missing(addr);
+        let (rows, columns) = self.layout().missing(addr);
         for id in rows {
             let at = self.cells.rows().len();
             self.cells.insert_row(at, id);
@@ -407,14 +424,185 @@ pub struct Layout {
     columns: Vec<Id>,
     row_at: HashMap<Id, u32>,
     column_at: HashMap<Id, u32>,
+    /// The highest number among the derived rows, and among the derived columns, cut from the
+    /// sheet's end.
+    cut: (Option<u32>, Option<u32>),
+    /// What the ids say of the sheet, read when first asked.
+    made: OnceLock<Made>,
+}
+
+/// How far a sheet has numbered its own rows and columns, and whether those are all it holds.
+#[derive(Clone, Copy, Debug)]
+struct Made {
+    /// One past the highest number a derived row ever had here; the next row the sheet makes
+    /// takes it.
+    rows: u32,
+    columns: u32,
+    /// Every line is the one the sheet derives for its place: nothing was inserted, and
+    /// nothing deleted but from the end.
+    plain: bool,
+}
+
+/// The id a sheet derives for the row (`r`) or column (`c`) it makes as its `number`th.
+pub(crate) fn derived_id(prefix: char, number: u32) -> String {
+    format!("{prefix}{number}")
+}
+
+/// The number of a derived id: `r12` is row number 12. `None` for an id made otherwise.
+fn derived_number(id: &str, prefix: char) -> Option<u32> {
+    let digits = id.strip_prefix(prefix)?;
+    if digits.is_empty() || (digits.len() > 1 && digits.starts_with('0')) {
+        return None;
+    }
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 impl Layout {
-    pub fn of(grid: &Grid<Cell>) -> Self {
+    pub fn of(grid: &Grid<Cell>, cut: &Set<Id>) -> Self {
+        let highest = |prefix: char| {
+            cut.iter()
+                .filter_map(|id| derived_number(id.as_str(), prefix))
+                .max()
+        };
         Self::from_ids(
             grid.rows().cloned().collect(),
             grid.columns().cloned().collect(),
+            (highest('r'), highest('c')),
         )
+    }
+
+    fn made(&self) -> Made {
+        *self.made.get_or_init(|| {
+            let read = |line: &[Id], prefix: char, cut: Option<u32>| {
+                let (mut highest, mut ordered) = (cut, true);
+                for (at, id) in (0u32..).zip(line) {
+                    match derived_number(id.as_str(), prefix) {
+                        Some(number) => {
+                            highest = Some(highest.map_or(number, |held| held.max(number)));
+                            ordered &= number == at;
+                        }
+                        None => ordered = false,
+                    }
+                }
+                (
+                    highest.map_or(0, |highest| highest.saturating_add(1)),
+                    ordered,
+                )
+            };
+            let (rows, rows_ordered) = read(&self.rows, 'r', self.cut.0);
+            let (columns, columns_ordered) = read(&self.columns, 'c', self.cut.1);
+            Made {
+                rows,
+                columns,
+                plain: rows_ordered
+                    && columns_ordered
+                    && usize::try_from(rows).is_ok_and(|rows| rows == self.rows.len())
+                    && usize::try_from(columns).is_ok_and(|columns| columns == self.columns.len()),
+            }
+        })
+    }
+
+    /// Whether every row and column is the one the sheet derives for its place, so a line's
+    /// number is where it is.
+    pub fn is_plain(&self) -> bool {
+        self.made().plain
+    }
+
+    /// Whether row `id` is the last the sheet has numbered: deleting it must be remembered
+    /// ([`Sheet::cut`]), or the next row made would take its id.
+    pub fn is_last_row(&self, id: &Id) -> bool {
+        derived_number(id.as_str(), 'r')
+            .is_some_and(|number| number.saturating_add(1) == self.made().rows)
+    }
+
+    /// [`Self::is_last_row`] for a column.
+    pub fn is_last_column(&self, id: &Id) -> bool {
+        derived_number(id.as_str(), 'c')
+            .is_some_and(|number| number.saturating_add(1) == self.made().columns)
+    }
+
+    /// Where the row a binding names is: by `code`, its id, or with none the row the sheet
+    /// derives for position `written`. A row the sheet has yet to make comes after every row
+    /// it holds; `None` for a row that was deleted.
+    pub fn row_of(&self, code: &str, written: u32) -> Option<u32> {
+        self.line_of(true, code, written)
+    }
+
+    /// [`Self::row_of`] for a column.
+    pub fn column_of(&self, code: &str, written: u32) -> Option<u32> {
+        self.line_of(false, code, written)
+    }
+
+    fn line_of(&self, rows: bool, code: &str, written: u32) -> Option<u32> {
+        let (line, at, prefix, made) = if rows {
+            (&self.rows, &self.row_at, 'r', self.made().rows)
+        } else {
+            (&self.columns, &self.column_at, 'c', self.made().columns)
+        };
+        let derived = if code.is_empty() {
+            Some(written)
+        } else {
+            derived_number(code, prefix)
+        };
+        let Some(number) = derived else {
+            return at.get(&Id::from_raw(code)).copied();
+        };
+        // Most lines are where their number says.
+        let there = usize::try_from(number).ok().and_then(|at| line.get(at));
+        if there.is_some_and(|id| derived_number(id.as_str(), prefix) == Some(number)) {
+            return Some(number);
+        }
+        if let Some(place) = at.get(&Id::from_raw(derived_id(prefix, number))) {
+            return Some(*place);
+        }
+        let held = u32::try_from(line.len()).ok()?;
+        (number >= made).then(|| held.saturating_add(number - made))
+    }
+
+    /// How a binding names the row at position `at` for a reference whose text names position
+    /// `written`: nothing when it is the row the sheet derives for `written`, else its id; for
+    /// a row the sheet has yet to make, the id it will derive for it. `None` outside the grid
+    /// and for an id a binding cannot hold.
+    pub fn row_code(&self, at: u32, written: u32) -> Option<String> {
+        self.line_code(true, at, written)
+    }
+
+    /// [`Self::row_code`] for a column.
+    pub fn column_code(&self, at: u32, written: u32) -> Option<String> {
+        self.line_code(false, at, written)
+    }
+
+    fn line_code(&self, rows: bool, at: u32, written: u32) -> Option<String> {
+        let (line, prefix, made, most) = if rows {
+            (&self.rows, 'r', self.made().rows, MAX_ROW)
+        } else {
+            (&self.columns, 'c', self.made().columns, MAX_COLUMN)
+        };
+        if at > most {
+            return None;
+        }
+        let held = u32::try_from(line.len()).ok()?;
+        let number = match usize::try_from(at).ok().and_then(|at| line.get(at)) {
+            Some(id) => {
+                let id = id.as_str();
+                let Some(number) = derived_number(id, prefix) else {
+                    let plain = id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                    return (plain && !id.is_empty()).then(|| id.to_owned());
+                };
+                number
+            }
+            None => made.saturating_add(at - held),
+        };
+        Some(if number == written {
+            String::new()
+        } else {
+            derived_id(prefix, number)
+        })
     }
 
     pub fn rows(&self) -> &[Id] {
@@ -436,11 +624,13 @@ impl Layout {
         ))
     }
 
-    /// The rows and columns to add so the sheet reaches `addr`, under ids derived from what it holds.
+    /// The rows and columns to add so the sheet reaches `addr`, under ids derived from what it
+    /// holds and what was cut from its end.
     pub fn missing(&self, (col, row): Addr) -> (Vec<Id>, Vec<Id>) {
+        let made = self.made();
         (
-            extension(&self.rows, row, 'r'),
-            extension(&self.columns, col, 'c'),
+            extension(&self.rows, row, 'r', made.rows),
+            extension(&self.columns, col, 'c', made.columns),
         )
     }
 
@@ -451,10 +641,10 @@ impl Layout {
         rows_now.extend(rows);
         let mut columns_now = self.columns.clone();
         columns_now.extend(columns);
-        Self::from_ids(rows_now, columns_now)
+        Self::from_ids(rows_now, columns_now, self.cut)
     }
 
-    fn from_ids(rows: Vec<Id>, columns: Vec<Id>) -> Self {
+    fn from_ids(rows: Vec<Id>, columns: Vec<Id>, cut: (Option<u32>, Option<u32>)) -> Self {
         let index = |ids: &[Id]| {
             ids.iter()
                 .zip(0u32..)
@@ -466,6 +656,8 @@ impl Layout {
             column_at: index(&columns),
             rows,
             columns,
+            cut,
+            made: OnceLock::new(),
         }
     }
 
@@ -483,25 +675,18 @@ impl Layout {
     }
 }
 
-/// The ids to append so the line reaches `index`, counting on from the highest it holds.
-fn extension(line: &[Id], index: u32, prefix: char) -> Vec<Id> {
+/// The ids to append so the line reaches `index`, counting on from `made`: one past the highest
+/// number a derived line of it ever had.
+fn extension(line: &[Id], index: u32, prefix: char, made: u32) -> Vec<Id> {
     let Ok(index) = usize::try_from(index) else {
         return Vec::new();
     };
     if index < line.len() {
         return Vec::new();
     }
-    let mut next = line
-        .iter()
-        .filter_map(|id| id.as_str().strip_prefix(prefix)?.parse::<u64>().ok())
-        .max()
-        .map_or(0, |highest| highest + 1);
     (line.len()..=index)
-        .map(|_| {
-            let id = Id::from_raw(format!("{prefix}{next}"));
-            next += 1;
-            id
-        })
+        .zip(made..)
+        .map(|(_, number)| Id::from_raw(derived_id(prefix, number)))
         .collect()
 }
 
@@ -602,10 +787,17 @@ impl Workbook {
         )))
     }
 
-    /// The cells of sheet `id` by position, with the other sheets when its formulas read them.
+    /// The cells of sheet `id` by position, each formula as it reads now, with the other sheets
+    /// when its formulas read them.
     pub fn snapshot_of(&self, id: &Id) -> Option<SheetSnapshot> {
+        self.snapshot_among(id, &Lines::of(self))
+    }
+
+    /// [`Self::snapshot_of`], the sheets found through `lines`, which may hold layouts its
+    /// caller already made.
+    pub fn snapshot_among(&self, id: &Id, lines: &Lines<'_>) -> Option<SheetSnapshot> {
         let sheet = self.sheet(id)?;
-        let mut snap = sheet.snapshot();
+        let mut snap = sheet.snapshot_in(&*lines.layout(id)?, lines);
         if crate::calc::Book::needed(&snap.raw) {
             let sheets = self
                 .sheets
@@ -614,7 +806,10 @@ impl Workbook {
                     let raw = if other == id {
                         snap.raw.clone()
                     } else {
-                        sheet.snapshot().raw
+                        lines
+                            .layout(other)
+                            .map(|layout| sheet.inputs_in(&layout, lines))
+                            .unwrap_or_default()
                     };
                     (sheet.name.0.clone(), raw)
                 })
@@ -674,6 +869,36 @@ impl Workbook {
     pub fn currency(&self) -> Currency {
         self.settings.currency.unwrap_or(Currency::USD)
     }
+
+    /// The sheets and where their rows and columns are, as a short stamp. A read answers it as
+    /// `seen`; a write that names cells by position can hand it back, and is refused when a
+    /// row, a column or a sheet has moved since, instead of landing on other cells than its
+    /// caller read.
+    pub fn seen(&self) -> String {
+        // FNV-1a, which is the same on every device and in every build.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut part = |text: &str| {
+            for byte in text.bytes().chain([0xff]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for (id, sheet) in self.sheets.iter() {
+            part(id.as_str());
+            part(&sheet.name.0);
+            for row in sheet.cells.rows() {
+                part(row.as_str());
+            }
+            part("");
+            for column in sheet.cells.columns() {
+                part(column.as_str());
+            }
+            part("");
+        }
+        ui::format::machine!(
+            "a stamp a caller hands back as it got it, not a number shown",
+            format!("{hash:016x}")
+        )
+    }
 }
 
 /// One sheet's cells by position.
@@ -715,8 +940,31 @@ pub struct CommentThread {
     pub replies: Vec<CommentReply>,
 }
 
+/// `cell` as it is stored when written over `stored`. A formula typed anew is bound to the lines
+/// it names now; one that reads as the stored one does is the stored one, so entering a formula
+/// unchanged writes nothing and keeps what it was bound to.
+fn entered<'c>(
+    cell: &'c Cell,
+    stored: Option<&Cell>,
+    layout: &Layout,
+    lines: &Lines<'_>,
+) -> Cow<'c, Cell> {
+    if cell.raw.is_bound() || !cell.raw.is_formula() {
+        return Cow::Borrowed(cell);
+    }
+    let raw = match stored {
+        Some(stored) if stored.raw.shown(layout, lines) == cell.raw.text() => stored.raw.clone(),
+        _ => Input::bound(cell.raw.text(), layout, lines),
+    };
+    Cow::Owned(Cell {
+        raw,
+        ..cell.clone()
+    })
+}
+
 /// The edits that write `cells` into the sheet, the rows and columns they need first; one group
-/// is one undo step.
+/// is one undo step. A formula among them is bound to the rows, columns and sheets it names as
+/// the workbook holds them now.
 pub fn cell_edits(workbook: &Workbook, id: &Id, cells: &[(Addr, Cell)]) -> Vec<Edit<Workbook>> {
     let Some(sheet) = workbook.sheet(id) else {
         return Vec::new();
@@ -737,11 +985,15 @@ pub fn cell_edits(workbook: &Workbook, id: &Id, cells: &[(Addr, Cell)]) -> Vec<E
     for (addr, cell) in cells {
         written.insert(*addr, cell);
     }
+    let layout = Rc::new(layout);
+    let lines = Lines::with(workbook, id, Rc::clone(&layout));
     for (addr, cell) in written {
         let Some((row, column)) = layout.ids(addr) else {
             continue;
         };
         let stored = sheet.cells.cell(row, column);
+        let cell = entered(cell, stored, &layout, &lines);
+        let cell = &*cell;
         if stored == Some(cell) || (stored.is_none() && cell.is_blank()) {
             continue;
         }
@@ -765,12 +1017,14 @@ mod tests {
             theirs.write((0, 2), Cell::of("y"));
             let rows = |sheet: &Sheet| sheet.layout().rows().to_vec();
             assert_eq!(rows(&ours), rows(&theirs), "the same row ids");
-            assert_eq!(
-                ours.snapshot().raw.get(&(1, 2)).map(String::as_str),
-                Some("x")
-            );
+            let held = |sheet: &Sheet| {
+                sheet
+                    .cell_at(&sheet.layout(), (1, 2))
+                    .map(|cell| cell.raw.text().to_owned())
+            };
+            assert_eq!(held(&ours).as_deref(), Some("x"));
             ours.write((1, 2), Cell::default());
-            assert!(ours.snapshot().raw.is_empty(), "a blank write clears");
+            assert_eq!(held(&ours), None, "a blank write clears");
         }
 
         phase an_area_moves_with_the_rows_around_it;

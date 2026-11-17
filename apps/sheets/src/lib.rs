@@ -23,6 +23,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod bound;
 pub mod calc;
 pub mod cell_actions;
 pub mod csv;

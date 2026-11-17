@@ -653,9 +653,9 @@ impl ui::tilo_resource::Model for CellFormat {
     fn store(
         &self,
         doc: &mut ui::tilo_resource::Doc,
-        slot: ui::tilo_resource::Slot<'_>,
+        at: ui::tilo_resource::Slot<'_>,
     ) -> Result<(), ui::tilo_resource::ModelError> {
-        slot.put_scalar(doc, automerge::ScalarValue::Str(self.as_str().into()))
+        at.put_scalar(doc, automerge::ScalarValue::Str(self.as_str().into()))
     }
     fn stores_as(&self, before: &Self) -> bool {
         self == before

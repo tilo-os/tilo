@@ -112,6 +112,7 @@ impl Store {
                     .map(|mut read| {
                         if let Some(fields) = read.as_object_mut() {
                             fields.insert("item".into(), id.as_str().into());
+                            fields.insert("seen".into(), workbook.seen().into());
                         }
                         Effected::value(read)
                     })

@@ -3,7 +3,7 @@
 //! re-parses one formula rather than all. Literal input arrives as the value the app already
 //! read it as, never as text to interpret again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -15,9 +15,10 @@ use ironcalc_base::expressions::types::CellReferenceRC;
 use ironcalc_base::expressions::utils::{is_valid_column_number, is_valid_row};
 use ironcalc_base::types::{Cell, FormulaValue, SpillValue};
 
+use crate::bound::Lines;
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, parse_number};
 use crate::refs::{fold_sheet, offset_refs, rename_sheets};
-use crate::workbook::{SheetSnapshot, Workbook};
+use crate::workbook::{Sheet, SheetSnapshot, Workbook};
 use ui::tilo_resource::Id;
 
 /// The sheet name a lone sheet's workbook uses.
@@ -203,6 +204,9 @@ pub struct WorkbookCalc {
     state: Option<Rc<Workbook>>,
     /// Each sheet's raw inputs as last read, by id.
     inputs: HashMap<Id, Inputs>,
+    /// The sheets whose formulas read another sheet: their inputs spell where that sheet's
+    /// rows and columns are and what it is called, so they are read again when those change.
+    reading: HashSet<Id>,
     /// Each sheet's [`effective_formats`] as last worked out, until the sheet changes: inferring
     /// them parses every formula.
     formats: HashMap<Id, HashMap<Addr, CellFormat>>,
@@ -212,25 +216,61 @@ impl WorkbookCalc {
     /// Evaluate `state`; `known` is one sheet's inputs the caller already read.
     pub fn update(&mut self, state: &Rc<Workbook>, known: Option<(&Id, &HashMap<Addr, String>)>) {
         let previous = self.state.replace(Rc::clone(state));
-        let mut inputs = HashMap::with_capacity(state.sheets.len());
-        for (id, sheet) in state.sheets.iter() {
-            let unchanged = previous
+        let held = |id: &Id, sheet: &Sheet| {
+            previous
                 .as_ref()
                 .and_then(|previous| previous.sheet(id))
-                .is_some_and(|held| std::ptr::eq(held, sheet));
+                .is_some_and(|held| std::ptr::eq(held, sheet))
+        };
+        // What a formula reads of another sheet is where that sheet's rows and columns are and
+        // what it is called, never what its cells hold: typing into one sheet leaves the
+        // others' inputs as they are.
+        let lines_held = previous.as_ref().is_some_and(|previous| {
+            previous.sheets.len() == state.sheets.len()
+                && state.sheets.iter().all(|(id, sheet)| {
+                    previous.sheet(id).is_some_and(|held| {
+                        std::ptr::eq(held, sheet)
+                            || (held.name == sheet.name
+                                && held.cut == sheet.cut
+                                && held.cells.rows().eq(sheet.cells.rows())
+                                && held.cells.columns().eq(sheet.cells.columns()))
+                    })
+                })
+        });
+        let lines = Lines::of(state);
+        let mut inputs = HashMap::with_capacity(state.sheets.len());
+        let mut reading = HashSet::new();
+        for (id, sheet) in state.sheets.iter() {
+            let reads_others = self.reading.contains(id);
+            let unchanged = held(id, sheet) && (lines_held || !reads_others);
             if !unchanged {
                 self.formats.remove(id);
             }
             let read = match self.inputs.remove(id) {
-                Some(held) if unchanged => held,
-                _ => match known {
-                    Some((known, raw)) if known == id => Arc::new(raw.clone()),
-                    _ => Arc::new(sheet.inputs()),
-                },
+                Some(held) if unchanged => {
+                    if reads_others {
+                        reading.insert(id.clone());
+                    }
+                    held
+                }
+                _ => {
+                    let read = match known {
+                        Some((known, raw)) if known == id => raw.clone(),
+                        _ => lines
+                            .layout(id)
+                            .map(|layout| sheet.inputs_in(&layout, &lines))
+                            .unwrap_or_default(),
+                    };
+                    if Book::needed(&read) {
+                        reading.insert(id.clone());
+                    }
+                    Arc::new(read)
+                }
             };
             inputs.insert(id.clone(), read);
         }
         self.inputs = inputs;
+        self.reading = reading;
         self.formats.retain(|id, _| state.sheets.contains(id));
         let inputs = &self.inputs;
         self.calc.update(

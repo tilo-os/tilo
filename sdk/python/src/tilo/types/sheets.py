@@ -140,6 +140,7 @@ class Sheet(TypedDict):
     cells: Any
     charts: list[Entry[Chart]]
     hidden: bool
+    cut: list[str]
 
 class SheetSpec(TypedDict):
     name: str | None
@@ -249,7 +250,7 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@dfe78ea182f2be65"
+    __surface__ = "so.tilo.sheets@752f6346ae9b3383"
     sheets: list[Entry[Sheet]]
     comments: list[Entry[Comment]]
     settings: DocSettings
@@ -341,17 +342,30 @@ class Workbook(Resource):
         sheet: str,
         start: str,
         rows: list[list[Any]],
+        seen: str | None = None,
     ) -> Any:
         """Runs the app's action."""
-        return self.action("set-cells", sheet=sheet, start=start, rows=rows)
+        args: dict[str, Any] = {}
+        args["sheet"] = sheet
+        args["start"] = start
+        args["rows"] = rows
+        if seen is not None:
+            args["seen"] = seen
+        return self.action("set-cells", **args)
 
     def write_cells(self,
         *,
         sheet: str,
         cells: list[CellWrite],
+        seen: str | None = None,
     ) -> Any:
         """Runs the app's action."""
-        return self.action("write-cells", sheet=sheet, cells=cells)
+        args: dict[str, Any] = {}
+        args["sheet"] = sheet
+        args["cells"] = cells
+        if seen is not None:
+            args["seen"] = seen
+        return self.action("write-cells", **args)
 
     def format_cells(self,
         *,

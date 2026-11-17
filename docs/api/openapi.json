@@ -23363,6 +23363,12 @@
               "type": "array"
             },
             "type": "array"
+          },
+          "seen": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23413,6 +23419,12 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "seen": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
