@@ -27,7 +27,11 @@ use tilo_session_client::remote::SessionActions;
 /// The tree the workspace's host keeps, as the records its members read: the
 /// tree's own record and each chunk it lists.
 async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tree {
-    let workspaces = hosted.server.workspaces().unwrap();
+    tree_kept(hosted.server.workspaces().unwrap(), workspace).await
+}
+
+/// [`tree_of`], read from the workspaces a server keeps.
+async fn tree_kept(workspaces: &tilo_server::workspaces::Workspaces, workspace: &str) -> Tree {
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await
@@ -476,3 +480,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         "the laptop's file is still there"
     );
 }
+
+/// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.
+#[path = "put_files_by_path.rs"]
+mod by_path;

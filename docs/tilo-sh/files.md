@@ -87,6 +87,26 @@ And an action that makes a file answers its reference instead of a value: Writer
 (`format`: `docx`, `pdf`, `odt`, `md`, `html`, `rtf` and `txt`; PDF is export only), Notes'
 `export-markdown-content`, a Browser page's `capture-page`.
 
+## Folders, moves and the trash
+
+The workspace's folder is on no one computer. So Files' verbs take a path in the workspace
+(`Tasks/12 Plan/notes.md`) and no device, and they work whether or not a computer of yours is on:
+
+| To | Action |
+| :--- | :--- |
+| Make a folder, with the folders on the way to it | `files#new-folder` with `parent` and `name` |
+| Move entries into a folder, making it when it is not there | `files#move` with `from`, `entries` and `to` |
+| Rename an entry | `files#rename` with `folder`, `entry` and `name` |
+| Copy entries, a folder with all it holds | `files#copy-into` with `from`, `entries` and `to` |
+| Put entries in the trash | `files#trash` with `folder` and `entries` |
+| Bring them back to where they were | `files#restore` with `entries` |
+
+A path starts at the workspace's folder, with no leading `/` and no `..`, and `""` is that folder
+itself. No verb writes over a file: a name that is taken is refused, and a copy beside what it
+copies becomes `plan (2).md`. Each answers the entries it touched with where they were and where
+they are, and as `undo` the one call that takes it back. Naming a `device` and absolute paths
+instead changes that computer's own disk, through Files on it.
+
 ## The round trip
 
 Upload a file, make one, and read it back:

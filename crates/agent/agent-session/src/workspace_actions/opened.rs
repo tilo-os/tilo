@@ -389,8 +389,14 @@ impl Worker {
 /// tree ([`super::tree_put`]).
 fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     let target = &request.target;
-    provider_workspace(&target.provider).is_some()
-        && target.address.action == APPLICATION_OPEN_ACTION
+    if provider_workspace(&target.provider).is_none() {
+        return false;
+    }
+    // One of Files' verbs by a path in the workspace reads the tree and writes it, as a put does.
+    if super::tree_put::acts_on_tree(target) {
+        return true;
+    }
+    target.address.action == APPLICATION_OPEN_ACTION
         && target
             .address
             .resource

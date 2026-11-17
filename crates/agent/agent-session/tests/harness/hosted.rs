@@ -188,6 +188,16 @@ pub async fn serving_records_with_actions(
     .unwrap()
 }
 
+/// What a server that reaches nothing beyond this machine is set up with: its state under
+/// `state`, and devices reaching it on loopback.
+pub fn on_this_machine(state: &Path) -> tilo_server::ServerConfig {
+    tilo_server::ServerConfig {
+        state_root: state.join("server"),
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+        ..Default::default()
+    }
+}
+
 /// Start a host for `root`'s person on `host`'s device as tilo.sh's server
 /// runs (`--workspace-documents`): no agents, its workspaces' records served to
 /// their devices, each action run in the record's own app worker here,
@@ -199,13 +209,8 @@ pub async fn serving_documents(
     state: &Path,
     catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
 ) -> Server {
-    let cfg = tilo_server::ServerConfig {
-        state_root: state.join("server"),
-        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-        ..Default::default()
-    };
     tilo_server::agents::start_serving_documents(
-        cfg,
+        on_this_machine(state),
         ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host.key.clone(),

@@ -106,6 +106,26 @@ pub trait Carries: Send + Sync {
 /// The carriers of this server, by their word.
 pub(super) type Carriers = Arc<std::sync::Mutex<BTreeMap<String, Arc<dyn Carries>>>>;
 
+/// This server's one way of asking a person, as a turn's provider keeps it
+/// (`as_asker` of this server's agents), with the workspaces its agents work
+/// in: such a provider needs nothing else of the agents.
+#[derive(Clone)]
+pub(super) struct Asker {
+    pub(super) workspaces: Workspaces,
+    ask: Arc<dyn Fn(ServerAsk) -> Carried<'static> + Send + Sync>,
+}
+
+impl Asker {
+    /// Ask a person what `asking` says, as `ask` of this server's agents
+    /// does.
+    ///
+    /// # Errors
+    /// As `ask` of this server's agents.
+    pub(super) async fn ask(&self, asking: ServerAsk) -> Result<(), String> {
+        (self.ask)(asking).await
+    }
+}
+
 /// What code of this server asks a person, for one of the agents this server
 /// has for them. Nothing in it is a model's: the words are the server's.
 #[derive(Clone, Debug)]
@@ -126,7 +146,9 @@ pub struct ServerAsk {
     /// (`carries` of this server's agents).
     pub carrier: String,
     /// What that carrier needs when the answer comes: its own to read. No
-    /// secret.
+    /// secret. What it holds under `shown`, an object, the question's detail
+    /// shows beside the ask's id: what a client draws the question's card
+    /// from.
     pub kept: Value,
     /// What an answer of always lets stand; `None` offers no such answer.
     pub always: Option<Asked>,
@@ -233,6 +255,15 @@ fn detail_of(ask: &KeptAsk) -> Value {
     detail.insert("ask".to_owned(), json!(ask.ask));
     if let Some(draft) = ask.kept.get("draft").filter(|_| ask.carrier == ACTION) {
         detail.insert("draft".to_owned(), draft.clone());
+    }
+    // What code of this server's own shows its person beside its words, kept under `shown`:
+    // the question shows exactly what the server does on the answer.
+    if ask.carrier != ACTION
+        && let Some(Value::Object(shown)) = ask.kept.get("shown")
+    {
+        for (name, value) in shown {
+            detail.entry(name.clone()).or_insert_with(|| value.clone());
+        }
     }
     if let Some(scope) = &ask.always {
         detail.insert(
@@ -565,6 +596,19 @@ impl HostAgents {
     /// yet waits: its answer is carried out once it is.
     pub fn carries(&self, carrier: &str, by: Arc<dyn Carries>) {
         self.carriers.lock_recover().insert(carrier.to_owned(), by);
+    }
+
+    /// [`Self::ask`] as a turn's provider keeps it: whenever the provider
+    /// asks through it, these agents ask.
+    pub(super) fn as_asker(&self) -> Asker {
+        let agents = self.clone();
+        Asker {
+            workspaces: self.workspaces.clone(),
+            ask: Arc::new(move |asking| {
+                let agents = agents.clone();
+                Box::pin(async move { agents.ask(asking).await })
+            }),
+        }
     }
 
     /// Ask a person, for one of the agents this server has for them, what

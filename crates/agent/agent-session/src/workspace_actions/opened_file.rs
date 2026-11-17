@@ -170,6 +170,10 @@ impl Worker {
         (named, state): (&str, &WorkspaceState),
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let target = &request.target;
+        // Files' verbs on the workspace's own folder change its tree, by a path in it.
+        if super::tree_put::acts_on_tree(target) {
+            return self.change_tree(workspace_id, caller, request, named);
+        }
         // How a file lands is checked before any record is made for it.
         let file = OpenedFile::named(&super::invoke_arguments(&request.argument))?;
         let landing = match &file {
