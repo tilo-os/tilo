@@ -335,6 +335,14 @@ tilo_test_env::scenario! {
                 },
                 catch_up: crate::shortcut::CatchUp::RunOnce,
             },
+            TriggerSpec::Once {
+                at_ms: 1_794_915_120_000,
+            },
+            TriggerSpec::Once {
+                at_ms: 1_794_915_120_250,
+            },
+            // No year of four digits holds this one.
+            TriggerSpec::Once { at_ms: i64::MAX },
             TriggerSpec::AppOpened {
                 app_id: "so.tilo.notes".into(),
             },
@@ -411,6 +419,22 @@ tilo_test_env::scenario! {
         assert!(
             text.contains(r#"when "so.tilo.mail" announces "mail.message""#),
             "an app's event names the app and the event it declared: {text}"
+        );
+        assert!(
+            text.contains("once at 2026-11-17T11:32:00Z")
+                && text.contains("once at 2026-11-17T11:32:00.250Z"),
+            "a moment reads as its date and time, to the millisecond it has: {text}"
+        );
+        assert_eq!(
+            trigger::trigger_of("once at 2026-11-17T12:32:00+01:00"),
+            Ok(TriggerSpec::Once {
+                at_ms: 1_794_915_120_000
+            }),
+            "a moment written in another offset is the same moment"
+        );
+        assert!(
+            trigger::trigger_of("once at noon").is_err(),
+            "a moment is a date and a time, not a word"
         );
     }
 }

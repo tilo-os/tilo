@@ -140,7 +140,9 @@ pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> Invo
 
 fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<'_>) -> bool {
     match (trigger, event) {
-        (TriggerSpec::Schedule { .. }, Event::Schedule(fired)) => fired.trigger == index,
+        (TriggerSpec::Schedule { .. } | TriggerSpec::Once { .. }, Event::Schedule(fired)) => {
+            fired.trigger == index
+        }
         (
             TriggerSpec::ResourceChanged {
                 kind,

@@ -531,6 +531,13 @@ pub enum TriggerSpec {
         #[serde(default)]
         catch_up: CatchUp,
     },
+    /// One moment, in milliseconds since the Unix epoch. The trigger fires
+    /// once when the moment has come, however late whoever keeps the time
+    /// gets to it (a host that was down then fires it when it is up again),
+    /// and never a second time.
+    Once {
+        at_ms: i64,
+    },
     AppOpened {
         app_id: String,
     },
@@ -691,7 +698,8 @@ impl TriggerSpec {
             | Self::Connector { .. }
             | Self::IncomingMessage { .. }
             | Self::AppEvent { .. }
-            | Self::Schedule { .. } => &EVENT_PAYLOAD,
+            | Self::Schedule { .. }
+            | Self::Once { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }
@@ -702,6 +710,7 @@ impl TriggerSpec {
         match self {
             Self::Keyboard { .. } => "keyboard",
             Self::Schedule { .. } => "schedule",
+            Self::Once { .. } => "once",
             Self::AppOpened { .. } => "app_opened",
             Self::WorkspaceJoined { .. } => "workspace_joined",
             Self::FileChanged { .. } => "file_changed",

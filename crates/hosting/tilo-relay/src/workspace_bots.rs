@@ -367,9 +367,11 @@ pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &st
     }
 }
 
+pub mod assistant;
 pub mod attachments;
 pub mod discord;
 pub mod installed;
+pub mod kept;
 pub mod membership;
 pub mod requested;
 

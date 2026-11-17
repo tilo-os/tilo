@@ -1,5 +1,5 @@
-//! A shortcut's triggers as text: the `when ...` and `every ...` lines a
-//! program opens with, written and read.
+//! A shortcut's triggers as text: the `when ...`, `every ...` and `once at ...`
+//! lines a program opens with, written and read.
 //!
 //! A trigger is one line, and that line is the trigger's whole state: which
 //! event it waits for, and every filter the event carries. The writer and the
@@ -25,6 +25,7 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
             schedule: Schedule::Calendar { at, weekdays },
             catch_up,
         } => calendar_text(*at, weekdays, *catch_up),
+        TriggerSpec::Once { at_ms } => format!("once at {}", moment_text(*at_ms)),
         TriggerSpec::AppOpened { app_id } => {
             format!("when the app opens {}", quoted(app_id))
         }
@@ -130,6 +131,20 @@ fn calendar_text(
     )
 }
 
+/// A moment as the text writes it: its date and time in UTC, to the
+/// millisecond when it has any (`2026-11-17T11:32:00Z`). A moment no year of
+/// four digits holds is written as its milliseconds since 1970
+/// (`253402300800000 ms`), so every stored trigger has a line that reads back.
+fn moment_text(at_ms: i64) -> String {
+    use chrono::Datelike as _;
+    chrono::DateTime::from_timestamp_millis(at_ms)
+        .filter(|at| (1..=9999).contains(&at.year()))
+        .map_or_else(
+            || format!("{at_ms} ms"),
+            |at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+        )
+}
+
 /// Several names as the text writes them: each in quotation marks, joined by
 /// `or`.
 fn quoted_list(names: &[String]) -> String {
@@ -169,6 +184,7 @@ pub(super) fn is_trigger(text: &str) -> bool {
     [
         "when someone presses ",
         "every ",
+        "once at ",
         "when the app opens ",
         "when the network changes",
         "when a message arrives",
@@ -192,6 +208,9 @@ pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
     }
     if let Some(rest) = text.strip_prefix("every ") {
         return schedule_of(rest);
+    }
+    if let Some(rest) = text.strip_prefix("once at ") {
+        return once_of(rest);
     }
     if let Some(rest) = text.strip_prefix("when the app opens ") {
         let (app_id, after) = text_at(rest)?;
@@ -425,6 +444,27 @@ fn require_nothing_after(after: &str, subject: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("`{}` follows {subject}", after.trim()))
+}
+
+/// One moment, as `trigger_text` writes it: a date and time with its offset
+/// from UTC, or milliseconds since 1970.
+fn once_of(rest: &str) -> Result<TriggerSpec, String> {
+    let rest = rest.trim();
+    if let Some(ms) = rest.strip_suffix(" ms") {
+        let at_ms = ms
+            .trim()
+            .parse()
+            .map_err(|_| format!("`{ms}` is not a number of milliseconds"))?;
+        return Ok(TriggerSpec::Once { at_ms });
+    }
+    chrono::DateTime::parse_from_rfc3339(rest)
+        .map(|at| TriggerSpec::Once {
+            at_ms: at.timestamp_millis(),
+        })
+        .map_err(|_| {
+            "write the moment as a date and time with its offset from UTC: `once at 2026-11-17T11:32:00Z`"
+                .to_owned()
+        })
 }
 
 /// A schedule, as `trigger_text` writes it: a period in seconds, or a local

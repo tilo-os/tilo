@@ -12,7 +12,11 @@ use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
 use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
+use serde_json::Value;
 use tilo_actions::MemberId;
+use tilo_agent_session::bot::host_steps::{
+    HostStepError, HostSteps, Instruction, Judgement, Question,
+};
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -421,18 +425,30 @@ fn greeter(channel: &str) -> installed::InstalledBot {
     }
 }
 
-/// A bot that posts `text` in `channel` once every `seconds`, answering
+/// A bot that posts `tick` in `channel` once every `seconds`, answering
 /// fire times missed while its host was down as `catch_up` says.
 fn ticker(
     channel: &str,
     seconds: u64,
     catch_up: tilo_automation::CatchUp,
 ) -> installed::InstalledBot {
-    use tilo_automation::{Binding, Schedule, Selector, Shortcut, Step, StepKind, TriggerSpec};
-    let trigger = TriggerSpec::Schedule {
-        schedule: Schedule::Interval { seconds },
-        catch_up,
-    };
+    on_the_clock(
+        channel,
+        tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Interval { seconds },
+            catch_up,
+        },
+    )
+}
+
+/// A bot that posts `tick` in `channel` once, at `at_ms`.
+fn reminder(channel: &str, at_ms: i64) -> installed::InstalledBot {
+    on_the_clock(channel, tilo_automation::TriggerSpec::Once { at_ms })
+}
+
+/// A bot that posts `tick` in `channel` whenever `trigger`'s time comes.
+fn on_the_clock(channel: &str, trigger: tilo_automation::TriggerSpec) -> installed::InstalledBot {
+    use tilo_automation::{Binding, Selector, Shortcut, Step, StepKind};
     let shortcut = Shortcut {
         id: "ticker".into(),
         name: "Ticker".into(),
@@ -799,6 +815,960 @@ async fn a_restarted_host_skips_the_times_it_missed() {
         1,
         "the next time is the one that runs"
     );
+}
+
+/// How many times the bot on the clock posted.
+async fn ticks(workspaces: &Workspaces, workspace: &str) -> usize {
+    posts(workspaces, workspace)
+        .await
+        .into_iter()
+        .filter(|message| message.text == "tick")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moment_fires_once_at_its_time_and_never_again() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("reminder.json");
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "its moment has not come"
+    );
+    manual.set(FIRST_TICK_MS - 1);
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "not a millisecond early"
+    );
+    manual.set(FIRST_TICK_MS);
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "a moment comes once"
+    );
+    manual.set(FIRST_TICK_MS + 24 * 3_600_000);
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "and never again, however long the host runs"
+    );
+    drop(runner);
+
+    // A restarted host reads that it answered the moment.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms),
+        state,
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "a restart answers no moment twice"
+    );
+    assert_eq!(
+        ticks(&workspaces, &workspace).await,
+        1,
+        "the bot posted once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moment_that_passed_while_the_host_was_down_fires_once_when_it_is_back() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("reminder.json");
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+
+    // Down across the moment and for hours after it: it fires once, however
+    // late, where a schedule that skips would let the time go.
+    let back_ms = FIRST_TICK_MS + 6 * 3_600_000;
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(back_ms));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms),
+        state,
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "the next restart does not answer it again"
+    );
+    assert_eq!(ticks(&workspaces, &workspace).await, 1);
+
+    // A moment that had passed before its bot was installed at all (the
+    // host was down from the request on) fires in the first pass.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminder(general.as_str(), at_ms + 1_000),
+        scratch.path().join("installed-late.json"),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert_eq!(
+        runner.step().await.unwrap().len(),
+        1,
+        "not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    assert_eq!(ticks(&workspaces, &workspace).await, 2);
+}
+
+/// A host whose assistant takes what programs hand it and whose model
+/// judges what they ask, answering each as scripted, and with nothing once
+/// a script is spent.
+#[derive(Default)]
+struct Assistant {
+    taken: std::sync::Mutex<Vec<Instruction>>,
+    answers: std::sync::Mutex<std::collections::VecDeque<Result<String, HostStepError>>>,
+    judged: std::sync::Mutex<Vec<Judgement>>,
+    judgements: std::sync::Mutex<std::collections::VecDeque<Result<Value, HostStepError>>>,
+}
+
+impl Assistant {
+    fn answering(answers: Vec<Result<String, HostStepError>>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            answers: std::sync::Mutex::new(answers.into()),
+            ..Self::default()
+        })
+    }
+
+    fn judging(judgements: Vec<Result<Value, HostStepError>>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            judgements: std::sync::Mutex::new(judgements.into()),
+            ..Self::default()
+        })
+    }
+
+    fn taken(&self) -> Vec<Instruction> {
+        self.taken.lock().unwrap().clone()
+    }
+
+    fn judged(&self) -> Vec<Judgement> {
+        self.judged.lock().unwrap().clone()
+    }
+}
+
+impl HostSteps for Assistant {
+    fn instruct(&self, instruction: Instruction) -> Result<String, HostStepError> {
+        self.taken.lock().unwrap().push(instruction);
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Ok(String::new()))
+    }
+
+    fn judge(&self, judgement: Judgement) -> Result<Value, HostStepError> {
+        self.judged.lock().unwrap().push(judgement);
+        self.judgements
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Ok(Value::Null))
+    }
+}
+
+/// A person's own program `steps`, started once at `at_ms` and told the
+/// moment that fired it.
+fn at_a_moment(at_ms: i64, steps: Vec<tilo_automation::Step>) -> installed::InstalledBot {
+    own_program(tilo_automation::TriggerSpec::Once { at_ms }, steps)
+}
+
+/// A person's own program `steps`, started by `trigger`, and told what fired
+/// it and its own note.
+fn own_program(
+    trigger: tilo_automation::TriggerSpec,
+    steps: Vec<tilo_automation::Step>,
+) -> installed::InstalledBot {
+    use tilo_automation::Shortcut;
+    let mut inputs = trigger.payload().to_vec();
+    inputs.push(tilo_actions::params::ActionParam::optional(
+        "note",
+        tilo_actions::params::ParamType::Object,
+        "The program's note",
+    ));
+    let shortcut = Shortcut {
+        id: "reminder".into(),
+        name: "Reminder".into(),
+        inputs,
+        steps,
+        step_timeout_secs: None,
+        output: None,
+        grant: Vec::new(),
+        triggers: vec![trigger],
+        saved_by: None,
+        saved_proof: None,
+    };
+    // Exactly what its steps need, as a workspace admits a bot.
+    let shortcut = Shortcut {
+        grant: tilo_automation::grant::derived_rules(
+            &shortcut,
+            &tilo_automation::ActionCatalog::new(Vec::new()),
+        ),
+        ..shortcut
+    };
+    installed::InstalledBot {
+        installation: TICKER.into(),
+        entry: "reminder".into(),
+        name: "Reminder".into(),
+        program: String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap())
+            .unwrap(),
+        inputs: serde_json::Map::new(),
+        installed_at_ms: 1,
+        release: String::new(),
+    }
+}
+
+/// The step that hands `instruction` to the assistant.
+fn tell(instruction: &str) -> tilo_automation::Step {
+    tilo_automation::Step::new(
+        "remind",
+        tilo_automation::StepKind::Task {
+            instruction: instruction.into(),
+            allow: Vec::new(),
+            output: None,
+        },
+    )
+}
+
+/// A person's own program: at `at_ms`, hand `instruction` to their
+/// assistant.
+fn reminding(at_ms: i64, instruction: &str) -> installed::InstalledBot {
+    at_a_moment(at_ms, vec![tell(instruction)])
+}
+
+/// A person's own program: at `at_ms`, ask their model `question` about
+/// the moment, and hand `instruction` to their assistant only on a yes.
+fn judging(at_ms: i64, question: &str, instruction: &str) -> installed::InstalledBot {
+    use tilo_automation::{Binding, Condition, Step, StepKind};
+    at_a_moment(
+        at_ms,
+        vec![
+            Step::new(
+                "judge",
+                StepKind::Ai {
+                    prompt: question.into(),
+                    output: Some(serde_json::json!({"type": "boolean"})),
+                    input: Some(Binding::Template("{{input.event}}".into())),
+                },
+            ),
+            Step::new(
+                "when",
+                StepKind::If {
+                    cond: Condition::Truthy(Binding::step("judge", "")),
+                    then: vec![tell(instruction)],
+                    otherwise: Vec::new(),
+                },
+            ),
+        ],
+    )
+}
+
+/// A step on what the program itself keeps.
+fn own_step(
+    id: &str,
+    action: &str,
+    args: Vec<(&str, tilo_automation::Binding)>,
+) -> tilo_automation::Step {
+    use tilo_automation::{SHORTCUT_RESOURCE_KIND, SHORTCUTS_APP_ID, Selector, Step, StepKind};
+    Step::new(
+        id,
+        StepKind::Invoke {
+            action: tilo_actions::ActionKey::new(SHORTCUTS_APP_ID, SHORTCUT_RESOURCE_KIND, action),
+            resource: Selector::FirstOfKind(SHORTCUT_RESOURCE_KIND.into()),
+            args: args
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+            appearance: None,
+        },
+    )
+}
+
+/// The steps `then`, taken when `cond` holds.
+fn when(
+    cond: tilo_automation::Condition,
+    then: Vec<tilo_automation::Step>,
+) -> tilo_automation::Step {
+    tilo_automation::Step::new(
+        "when",
+        tilo_automation::StepKind::If {
+            cond,
+            then,
+            otherwise: Vec::new(),
+        },
+    )
+}
+
+/// Every minute, in a program of a person's own.
+fn every_minute() -> tilo_automation::TriggerSpec {
+    tilo_automation::TriggerSpec::Schedule {
+        schedule: tilo_automation::Schedule::Interval { seconds: 60 },
+        catch_up: tilo_automation::CatchUp::Skip,
+    }
+}
+
+/// The minute-long schedule's fire time number `tick`, from 1.
+const fn tick_ms(tick: u64) -> u64 {
+    3_600_000_u64.saturating_add(tick.saturating_mul(60_000))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_acts_on_every_tenth_firing_and_its_count_survives_a_restart() {
+    use tilo_automation::{Binding, Condition};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("counting.json");
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let program = || {
+        own_program(
+            every_minute(),
+            vec![
+                own_step(
+                    "count",
+                    "count",
+                    vec![("every", Binding::Literal(serde_json::json!(10)))],
+                ),
+                when(
+                    Condition::Truthy(Binding::step("count", "/reached")),
+                    vec![tell("Sum up the last ten.")],
+                ),
+            ],
+        )
+    };
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state.clone())
+        .await
+        .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    for tick in 1..=25_u64 {
+        if tick == 5 || tick == 15 {
+            // The host restarts between two firings: the count stands
+            // where it stood.
+            runner = member_runner(&workspaces, &workspace, &cert, program(), state.clone())
+                .await
+                .runs_for(ada.clone(), assistant.clone());
+            runner.use_clock(manual.clone());
+        }
+        manual.set(tick_ms(tick));
+        let reports = runner.step().await.unwrap();
+        assert_eq!(
+            reports.len(),
+            1,
+            "firing {tick}: {reports:?}, not run: {:?}",
+            runner.dead_letters().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reports[0].outcome,
+            tilo_automation::InvocationOutcome::Completed,
+            "firing {tick}: {reports:?}"
+        );
+        assert_eq!(
+            u64::try_from(assistant.taken().len()).unwrap(),
+            tick.div_euclid(10),
+            "after {tick} firings"
+        );
+    }
+    assert_eq!(runner.kept().read().counts().get(""), Some(&25));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_programs_note_is_read_by_every_run_and_changed_by_one_typed_change() {
+    use tilo_agent_session::bot::host_steps::Keeps as _;
+    use tilo_agent_session::bot::kept::NoteChange;
+    use tilo_automation::{Binding, Condition};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("noting.json");
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    // Hand the work over once the note says how to write it, and keep the
+    // time of this run for the next.
+    let program = || {
+        own_program(
+            every_minute(),
+            vec![
+                when(
+                    Condition::Truthy(Binding::Input("note/style".into())),
+                    vec![tell("Write what is new since the last run.")],
+                ),
+                own_step(
+                    "keep",
+                    "keep",
+                    vec![(
+                        "kept",
+                        Binding::Object(
+                            [("last_ms".to_owned(), Binding::Input("event/due_ms".into()))]
+                                .into_iter()
+                                .collect(),
+                        ),
+                    )],
+                ),
+            ],
+        )
+    };
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state.clone())
+        .await
+        .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+
+    // No style yet: the run reads that in its note and hands nothing over,
+    // and keeps where it stopped.
+    manual.set(tick_ms(1));
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert!(assistant.taken().is_empty());
+    assert_eq!(
+        runner.kept().read().note().kept,
+        serde_json::json!({"last_ms": tick_ms(1)})
+    );
+
+    // The person's assistant writes how they want it, between two runs, by
+    // the change a run's own step makes too. It is kept at once.
+    runner
+        .kept()
+        .keep(NoteChange {
+            style: Some("Three lines, no greeting.".into()),
+            accepted: Some("Two new orders. One return. Nothing waits.".into()),
+            ..NoteChange::default()
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            runner.kept().keep(NoteChange {
+                guidance: Some("x".repeat(64 * 1024)),
+                ..NoteChange::default()
+            }),
+            Err(HostStepError::Refused(_))
+        ),
+        "a part past its bound is refused"
+    );
+    drop(runner);
+
+    // After a restart the next run reads all of it, and its instruction
+    // carries the note.
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state)
+        .await
+        .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    manual.set(tick_ms(2));
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    let taken = assistant.taken();
+    assert_eq!(taken.len(), 1, "{taken:?}");
+    assert_eq!(taken[0].note["style"], "Three lines, no greeting.");
+    assert_eq!(
+        taken[0].note["accepted"],
+        serde_json::json!(["Two new orders. One return. Nothing waits."])
+    );
+    assert_eq!(
+        taken[0].note["kept"],
+        serde_json::json!({"last_ms": tick_ms(1)}),
+        "what the run before kept for this one"
+    );
+    assert_eq!(
+        runner.kept().read().note().kept,
+        serde_json::json!({"last_ms": tick_ms(2)})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paused_program_fires_nothing_until_its_person_lets_it_go_on() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("pausing.json");
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let program = || own_program(every_minute(), vec![tell("Say what is new.")]);
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state.clone())
+        .await
+        .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    manual.set(tick_ms(1));
+    assert_eq!(runner.step().await.unwrap().len(), 1);
+    assert_eq!(assistant.taken().len(), 1);
+
+    runner.kept().pause(true).unwrap();
+    for tick in 2..=3 {
+        manual.set(tick_ms(tick));
+        assert!(
+            runner.step().await.unwrap().is_empty(),
+            "paused at firing {tick}"
+        );
+    }
+    drop(runner);
+    // It stays paused across a restart.
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state)
+        .await
+        .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    manual.set(tick_ms(4));
+    assert!(runner.step().await.unwrap().is_empty());
+    assert_eq!(assistant.taken().len(), 1);
+
+    runner.kept().pause(false).unwrap();
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "what came while it was paused is let go"
+    );
+    manual.set(tick_ms(5));
+    assert_eq!(runner.step().await.unwrap().len(), 1, "it goes on");
+    assert_eq!(assistant.taken().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_programs_work_may_send_unasked_only_what_its_person_permitted() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("permitted.json");
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let program = || own_program(every_minute(), vec![tell("Answer what came in.")]);
+    let node = |action: &str| {
+        tilo_automation::step_node(
+            Some(workspace.as_str()),
+            "so.tilo.mail",
+            "mail.mailbox",
+            &tilo_actions::ActionAddress::new("mail.mailbox:inbox", action),
+        )
+    };
+    let send = tilo_automation::action_rule(
+        "so.tilo.mail",
+        "mail.mailbox",
+        None,
+        "send",
+        KindSet::OUTSIDE,
+        Answer::Allow,
+    );
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state.clone())
+        .await
+        .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+
+    // Set up and nothing more: what its work would send still asks.
+    manual.set(tick_ms(1));
+    assert_eq!(runner.step().await.unwrap().len(), 1);
+    assert!(!assistant.taken()[0].lets_through(&node("send")));
+
+    // Its person says "always" for that one action. Nothing wider is kept.
+    runner.kept().permit(send.clone()).unwrap();
+    let whole_app = tilo_action_policy::Rule::new(
+        TreePath::root()
+            .any(tilo_action_policy::Level::Workspace)
+            .app("so.tilo.mail"),
+        KindSet::ALL,
+        Answer::Allow,
+    );
+    assert!(matches!(
+        runner.kept().permit(whole_app),
+        Err(HostStepError::Refused(_))
+    ));
+    drop(runner);
+    let mut runner = member_runner(&workspaces, &workspace, &cert, program(), state)
+        .await
+        .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    manual.set(tick_ms(2));
+    assert_eq!(runner.step().await.unwrap().len(), 1);
+    let taken = assistant.taken();
+    assert!(
+        taken[1].lets_through(&node("send")),
+        "the permission is kept across a restart and goes with the instruction"
+    );
+    assert!(!taken[1].lets_through(&node("delete")));
+
+    // Taken back, it asks again.
+    runner.kept().withdraw(&send).unwrap();
+    manual.set(tick_ms(3));
+    assert_eq!(runner.step().await.unwrap().len(), 1);
+    assert!(!assistant.taken()[2].lets_through(&node("send")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_asks_its_persons_model_and_acts_only_on_a_yes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::judging(vec![
+        Ok(Value::Bool(true)),
+        Ok(Value::Bool(false)),
+        Err(HostStepError::Refused(
+            "no model is linked for this kind of work".into(),
+        )),
+    ]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(FIRST_TICK_MS));
+    let question = "Is this the first working day of the month?";
+
+    // Yes: the instruction is handed over.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        judging(at_ms, question, "Say that the report is due."),
+        scratch.path().join("yes.json"),
+    )
+    .await
+    .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    let judged = assistant.judged();
+    assert_eq!(judged.len(), 1, "{judged:?}");
+    assert_eq!(judged[0].person, ada, "their own model is the one asked");
+    assert_eq!(
+        judged[0].question,
+        Question::Prompt {
+            prompt: question.into(),
+            schema: Some(serde_json::json!({"type": "boolean"})),
+        }
+    );
+    assert!(
+        judged[0]
+            .input
+            .as_deref()
+            .is_some_and(|input| input.contains(&at_ms.to_string())),
+        "it judges what fired the run: {judged:?}"
+    );
+    assert_eq!(assistant.taken().len(), 1);
+    drop(runner);
+
+    // No: the run is done, and nothing is handed over.
+    manual.set(FIRST_TICK_MS + 60_000);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        judging(at_ms + 60_000, question, "Say that the report is due."),
+        scratch.path().join("no.json"),
+    )
+    .await
+    .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert_eq!(assistant.judged().len(), 2);
+    assert_eq!(assistant.taken().len(), 1, "a no hands nothing over");
+    drop(runner);
+
+    // No model to ask: the run stops at the judgement, with the reason
+    // kept, and guesses nothing.
+    manual.set(FIRST_TICK_MS + 120_000);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        judging(at_ms + 120_000, question, "Say that the report is due."),
+        scratch.path().join("no-model.json"),
+    )
+    .await
+    .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    runner.step().await.unwrap();
+    let dead: Vec<_> = runner.dead_letters().collect();
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!(dead[0].step.as_deref(), Some("judge"));
+    assert!(dead[0].reason.contains("no model is linked"), "{dead:?}");
+    assert_eq!(assistant.taken().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reminder_hands_its_instruction_to_its_persons_assistant_once() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("reminder.json");
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![]);
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminding(at_ms, "Say that it is time to call home."),
+        state.clone(),
+    )
+    .await
+    .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    assert!(assistant.taken().is_empty(), "nothing before its moment");
+
+    manual.set(FIRST_TICK_MS);
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    let taken = assistant.taken();
+    assert_eq!(taken.len(), 1, "{taken:?}");
+    assert_eq!(taken[0].person, ada, "it runs for the person it is of");
+    assert_eq!(taken[0].workspace, workspace);
+    assert_eq!(taken[0].instruction, "Say that it is time to call home.");
+    assert_eq!(taken[0].cause.installation, TICKER);
+    assert!(
+        taken[0]
+            .cause
+            .event
+            .as_deref()
+            .is_some_and(|event| event.starts_with("schedule")),
+        "the moment that fired it is its cause: {taken:?}"
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+
+    // A restarted host hands nothing over a second time.
+    manual.set(FIRST_TICK_MS + 3_600_000);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminding(at_ms, "Say that it is time to call home."),
+        state,
+    )
+    .await
+    .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    assert_eq!(assistant.taken().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_letter() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
+    let ada = hex::encode(ADA);
+    let assistant = Assistant::answering(vec![
+        Err(HostStepError::Unavailable(
+            "the assistant is starting".into(),
+        )),
+        Ok(String::new()),
+        Err(HostStepError::Refused(
+            "this person keeps no assistant".into(),
+        )),
+    ]);
+    let failed = |reports: &[tilo_automation::InvocationReport]| {
+        matches!(
+            reports,
+            [tilo_automation::InvocationReport {
+                outcome: tilo_automation::InvocationOutcome::Failed { .. },
+                ..
+            }]
+        )
+    };
+
+    // Nothing can take it yet: the run is tried again after its backoff,
+    // and the step comes back as the same one.
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(FIRST_TICK_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminding(at_ms, "Say that it is time to call home."),
+        scratch.path().join("reminder.json"),
+    )
+    .await
+    .runs_for(ada.clone(), assistant.clone());
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert!(failed(&reports), "{reports:?}");
+    assert_eq!(runner.dead_letters().count(), 0, "it is tried again");
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "not before its backoff"
+    );
+    manual.set(FIRST_TICK_MS + 1_000);
+    let reports = runner.step().await.unwrap();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    let taken = assistant.taken();
+    assert_eq!(taken.len(), 2, "{taken:?}");
+    assert_eq!(
+        taken[0].cause.invocation, taken[1].cause.invocation,
+        "the same step both times, so a host starts one turn for it"
+    );
+    drop(runner);
+
+    // Refused for good: kept with the reason, where it can be read.
+    manual.set(FIRST_TICK_MS + 60_000);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminding(at_ms + 60_000, "Say it again."),
+        scratch.path().join("refused.json"),
+    )
+    .await
+    .runs_for(ada, assistant.clone());
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert!(failed(&reports), "{reports:?}");
+    let dead: Vec<_> = runner.dead_letters().collect();
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!(dead[0].step.as_deref(), Some("remind"));
+    assert!(
+        dead[0].reason.contains("this person keeps no assistant"),
+        "{dead:?}"
+    );
+    drop(runner);
+
+    // A bot that runs for nobody is offered no such step, as before.
+    manual.set(FIRST_TICK_MS + 120_000);
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        reminding(at_ms + 120_000, "Say hello."),
+        scratch.path().join("nobody.json"),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert!(failed(&reports), "{reports:?}");
+    assert_eq!(runner.dead_letters().count(), 1);
+    assert_eq!(assistant.taken().len(), 3, "nobody's assistant was asked");
+
+    // Until this host can start a turn of a person's assistant, its own
+    // answer is that nothing takes the instruction yet.
+    assert!(matches!(
+        assistant::host_steps().instruct(taken[0].clone()),
+        Err(HostStepError::Unavailable(_))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

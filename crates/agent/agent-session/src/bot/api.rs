@@ -15,9 +15,16 @@
 //! result the next step reads. A refusal settles failed; an unavailable
 //! service leaves the entry pending and the step unavailable, so the run
 //! is retried in order and the entry performed again.
+//!
+//! A program that runs for a person ([`BotApi::runs_for`]) is also offered
+//! the steps the host answers itself for that person
+//! ([`super::host_steps`]): an instruction handed to their assistant, and a
+//! judgement asked of their model. Any program whose host keeps things for
+//! it between its runs ([`BotApi::keeps`]) is offered its counts and its
+//! note.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::api::{ActionAddress, ApiError};
@@ -33,6 +40,7 @@ use tilo_actions::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
+use super::host_steps::{self, Asked, AskedFor, HostStepError, HostSteps, Keeps, StepCause};
 use super::item_json::OutboxRow;
 use crate::member::actions::{api_status, record_provider, resource_of};
 use tilo_lock::MutexRecover as _;
@@ -183,6 +191,11 @@ pub struct BotApi<P: ApiMember> {
     cause: Mutex<Option<Cause>>,
     /// Steps taken since the API was made, by invocation.
     ledger: Mutex<HashMap<InvocationId, ReceiptStatus>>,
+    /// The person the program runs for (hex root) and what the host answers
+    /// for them, for a program that runs for one.
+    host: OnceLock<(String, Arc<dyn HostSteps>)>,
+    /// What the program keeps between its runs, where its host keeps any.
+    keeps: OnceLock<Arc<dyn Keeps>>,
 }
 
 impl<P: ApiMember> BotApi<P> {
@@ -200,7 +213,25 @@ impl<P: ApiMember> BotApi<P> {
             outboxes,
             cause: Mutex::new(None),
             ledger: Mutex::new(HashMap::new()),
+            host: OnceLock::new(),
+            keeps: OnceLock::new(),
         }
+    }
+
+    /// Run the program for `person` (hex root): the steps that ask the host
+    /// itself, an instruction to that person's assistant and a judgement of
+    /// their model, are offered to it and answered through `steps`. A program runs for one person from its
+    /// start, so a second call changes nothing.
+    pub fn runs_for(&self, person: String, steps: Arc<dyn HostSteps>) {
+        let _ = self.host.set((person, steps));
+    }
+
+    /// Keep the program's counts and its note in `kept` between its runs:
+    /// the steps that count and that change the note are offered to it and
+    /// answered there, and the note goes with every instruction and
+    /// judgement the host is asked for. Set once, at the program's start.
+    pub fn keeps(&self, kept: Arc<dyn Keeps>) {
+        let _ = self.keeps.set(kept);
     }
 
     /// Forget the steps this api took. For a run whose changes the workspace
@@ -265,6 +296,18 @@ impl<P: ApiMember> BotApi<P> {
             }));
         }
         drop(member);
+        if query
+            .provider
+            .as_deref()
+            .is_none_or(|wanted| wanted == host_steps::PROVIDER)
+        {
+            if self.host.get().is_some() {
+                rows.extend(host_steps::rows());
+            }
+            if self.keeps.get().is_some() {
+                rows.extend(host_steps::kept_rows(&self.installation));
+            }
+        }
         let mut page = CataloguePage::from_rows(String::from("0"), rows, query);
         if query.provider.is_none() {
             page.providers = providers;
@@ -273,6 +316,9 @@ impl<P: ApiMember> BotApi<P> {
     }
 
     fn run(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionHostError> {
+        if request.target.provider == host_steps::PROVIDER {
+            return self.host_step(request);
+        }
         // The name the step shows, if any: every member admits it only from
         // a bot its installation lets post under other names.
         let invoker = self.invoker().with_appearance(request.appearance.clone());
@@ -337,6 +383,59 @@ impl<P: ApiMember> BotApi<P> {
             return Ok(ReceiptStatus::Completed { output });
         }
         self.perform(&route, &request.target.address, spec, queued, output)
+    }
+
+    /// Take a step the host answers itself: one for the person the program
+    /// runs for, or one on what the program keeps. None of it is in a
+    /// record's history, so a step the run takes again after a restart is
+    /// asked of the host again under the same invocation and run step, which
+    /// the host answers once ([`HostSteps`], [`Keeps`]).
+    fn host_step(&self, request: &InvokeRequest) -> Result<ReceiptStatus, ActionHostError> {
+        let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            return Err(invalid("a host step takes JSON arguments".into()));
+        };
+        let host = self.host.get();
+        let keeps = self.keeps.get();
+        let workspace = self.lock().workspace().to_owned();
+        let asked = Asked::read(
+            &request.target.address.action,
+            arguments,
+            AskedFor {
+                person: host.map(|(person, _)| person.as_str()),
+                workspace: &workspace,
+                cause: StepCause {
+                    installation: self.installation.clone(),
+                    invocation: request.invocation,
+                    event: self.cause().map(|cause| cause.event),
+                },
+                step: request.context.as_ref().and_then(RunStep::of),
+                note: keeps.map_or(Value::Null, |keeps| keeps.note()),
+                permits: keeps.map_or_else(Vec::new, |keeps| keeps.permits()),
+            },
+        )
+        .map_err(invalid)?
+        .ok_or(ActionHostError::UnknownAction)?;
+        let answered = asked
+            .answered_by(host.map(|(_, steps)| &**steps), keeps.map(|keeps| &**keeps))
+            .ok_or(ActionHostError::UnknownAction)?;
+        match answered {
+            Ok(value) => Ok(ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value,
+                    resources: Vec::new(),
+                },
+            }),
+            Err(HostStepError::Unavailable(reason)) => Err(ActionHostError::Unavailable { reason }),
+            Err(HostStepError::Refused(reason)) => Ok(ReceiptStatus::Failed {
+                error: ActionFailure {
+                    code: host_steps::REFUSED.to_owned(),
+                    message: reason,
+                    details: None,
+                    retryable: false,
+                },
+            }),
+        }
     }
 
     /// Hand each newly queued entry to the connector and settle it, so the
