@@ -133,6 +133,7 @@ calendar-sync-unreachable = Der Kalenderserver war nicht erreichbar
 calendar-sync-unavailable = Abgleich nicht verfügbar: { $reason }
 calendar-sync-no-accounts = Noch keine Kalenderkonten. Füge eines in den Einstellungen hinzu.
 calendar-account-gone = Dieses Kalenderkonto ist nicht mehr eingerichtet
+calendar-kept-for-reading = Dieser Kalender ist nur zum Lesen verbunden, deshalb wird darin nichts geändert
 calendar-invite-address-required = Gib eine vollständige E-Mail-Adresse ein, etwa name@example.com
 calendar-invite-already = { $email } ist bereits eingeladen
 calendar-invite-added = { $email } hinzugefügt. Sende die Einladung in Mail.

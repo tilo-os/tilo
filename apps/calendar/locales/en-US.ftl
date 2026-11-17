@@ -133,6 +133,7 @@ calendar-sync-unreachable = Couldn't reach the calendar server
 calendar-sync-unavailable = Sync unavailable: { $reason }
 calendar-sync-no-accounts = No calendar accounts yet. Add one in Settings.
 calendar-account-gone = That calendar account is no longer configured
+calendar-kept-for-reading = This calendar is connected for reading only, so nothing in it is changed
 calendar-invite-address-required = Enter a complete email address, such as name@example.com
 calendar-invite-already = { $email } is already invited
 calendar-invite-added = Added { $email }. Send the invitation in Mail.
