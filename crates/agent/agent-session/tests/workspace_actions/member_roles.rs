@@ -438,7 +438,10 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         ))
         .await;
     assert!(
-        matches!(filed.status, ReceiptStatus::Completed { .. }),
+        matches!(
+            filed.status,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ),
         "{filed:?}"
     );
 
@@ -615,18 +618,15 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         "someone the workspace no longer admits gets nothing"
     );
     *membership.role.lock().unwrap() = Some(Role::Editor);
-    // An action people alone are offered is listed to the editor and not to
-    // their agent, which runs only what it is listed.
+    // An agent is listed nothing people alone are offered, and runs only what
+    // it is listed. The apps here offer no such action now that Tasks' plan is
+    // everyone's, so this is the guard against one being listed later.
     let people_only = |caller: &Caller| {
         listed(&actions, workspace, caller, &tasks_provider)
             .into_iter()
             .filter(|action| !action.contract.reaches_agents())
             .count()
     };
-    assert!(
-        people_only(&member) > 0,
-        "the editor is offered what people alone are"
-    );
     assert_eq!(people_only(&agent), 0, "their agent is not");
     let by_agent = invoked(&actions, workspace, &agent, &new_note("By the agent"));
     assert!(

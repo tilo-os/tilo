@@ -131,9 +131,8 @@ async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: Workspace
 }
 
 /// `page`, a member of only `workspace` (`workspace_id`), comes back after it
-/// was deleted: its host no longer lets the device in, and says nothing to it
-/// at the handshake, but its address says the workspace was deleted, so the
-/// device forgets it.
+/// was deleted: its host refuses it with the reason, that the workspace was
+/// deleted, so the device forgets it, and its address says the same.
 async fn only_member_hears_deleted(
     on_server: &OnServer,
     page: &Device,
@@ -152,11 +151,11 @@ async fn only_member_hears_deleted(
         .status()
         .failures
         .iter()
-        .any(|failure| failure.code == "not-admitted")
+        .any(|failure| failure.code == "workspace-deleted")
     {
         assert!(
             Instant::now() < deadline,
-            "the host never turned the device away: {:?}",
+            "the host never told the device the workspace was deleted: {:?}",
             back.status()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
