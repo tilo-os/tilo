@@ -38,7 +38,73 @@ pub(super) struct Followed {
     pub(super) refused: Option<String>,
 }
 
+impl Workspaces {
+    /// Tell whoever follows the workspace's documents that `message`, a member's
+    /// write of `document` of `app`, is in `workspace`'s copy: the write that
+    /// starts a document as every write after it, since a follower nobody told
+    /// reads it only when it next looks at everything. Sent while the
+    /// workspace is still locked, so whoever it wakes reads a copy that holds
+    /// the write.
+    #[cfg_attr(
+        not(feature = "agents"),
+        expect(
+            clippy::unused_async,
+            reason = "one signature with the build that reads what a write carried"
+        )
+    )]
+    pub(super) async fn tell_followers(
+        &self,
+        workspace: &GovernedWorkspace,
+        (app, document): (String, String),
+        message: &neighbour_wire::NeighbourMsg,
+    ) {
+        // What the write carried, read here where it is at hand, so a document
+        // whose repair keeps changes is read only for a write that could
+        // release one of them.
+        #[cfg(feature = "agents")]
+        let carried = {
+            let name = workspace.workspace().to_owned();
+            self.carried_into(workspace, (&name, &app, &document), message)
+                .await
+        };
+        #[cfg(not(feature = "agents"))]
+        let _ = message;
+        let _ = self.inner.document_writes.send(ResourceWrite {
+            workspace: workspace.workspace().to_owned(),
+            app,
+            record: document,
+            #[cfg(feature = "agents")]
+            carried,
+        });
+    }
+}
+
 impl GovernedWorkspace {
+    /// Whether `author` may start `document` of `app` in this workspace with a
+    /// write of its own: a device of an editor may, and no other.
+    ///
+    /// # Errors
+    ///
+    /// The device is not admitted here, or may not edit the document.
+    pub(super) fn may_start(
+        &self,
+        author: [u8; 32],
+        (app, document): (&str, &str),
+        now: web_time::SystemTime,
+    ) -> Result<(), String> {
+        let member = self
+            .peer()
+            .permissions(author, now)
+            .map_err(|error| error.to_string())?;
+        let node = collab_types::validator::document_node(&member.policy.workspace, app, document);
+        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
+            return Err(format!(
+                "{app} record written by a device that may not edit"
+            ));
+        }
+        Ok(())
+    }
+
     /// The governance this workspace published that the relay has not retained,
     /// in order, each with its place reserved in `records`; `published`
     /// moves past them. Stops before a change that does not read, with why.

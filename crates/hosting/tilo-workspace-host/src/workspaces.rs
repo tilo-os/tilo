@@ -2361,17 +2361,7 @@ impl Workspaces {
             return Ok(());
         }
         let now = tilo_clock::wall();
-        let member = workspace
-            .peer()
-            .permissions(author, now)
-            .map_err(|error| error.to_string())?;
-        let node =
-            collab_types::validator::document_node(&member.policy.workspace, &app_id, &document_id);
-        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
-            return Err(format!(
-                "{app_id} record written by a device that may not edit"
-            ));
-        }
+        workspace.may_start(author, (&app_id, &document_id), now)?;
         // A record starts from the write that founds it: a write that is the
         // whole record founds the route on its own, and is not preceded by a
         // cleartext genesis the members, who read only what the channel seals,
@@ -2390,7 +2380,11 @@ impl Workspaces {
             )?;
         }
         candidate
-            .receive_from(TransportOrigin::RetainedRelayDelta(author), message, now)
+            .receive_from(
+                TransportOrigin::RetainedRelayDelta(author),
+                message.clone(),
+                now,
+            )
             .map_err(|error| error.to_string())?;
         // A sealed write stays in the record's sealed history; a readable
         // one is folded into the governor's checkpoint.
@@ -2409,6 +2403,10 @@ impl Workspaces {
         workspace.commit(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;
+        // The write that starts a document is told like every write after
+        // it: an agent a person's first message asks is woken by it.
+        self.tell_followers(&workspace, (app_id, document_id), &message)
+            .await;
         self.settle(&mut workspace).await
     }
 
@@ -2611,7 +2609,7 @@ impl Workspaces {
     /// Take `message`, `author`'s write to the record `(app, record)` the
     /// governor holds, into its copy, compact the workspace's sealed histories
     /// before one is full (past its bound the copy would stop following
-    /// the record), tell whoever follows the workspace's records, and file its
+    /// the record), tell whoever follows the workspace's documents, and file its
     /// verdict on a write admission refused.
     async fn follow_write(
         &self,
@@ -2643,22 +2641,8 @@ impl Workspaces {
             }
             crate::timing::window("workspace.compact", compacting);
         }
-        // What the write carried, read here where it is at hand, so a record
-        // whose repair keeps changes is read only for a write that could
-        // release one of them.
-        #[cfg(feature = "agents")]
-        let carried = {
-            let name = workspace.workspace().to_owned();
-            self.carried_into(&*workspace, (&name, &app, &record), &message)
-                .await
-        };
-        let _ = self.inner.document_writes.send(ResourceWrite {
-            workspace: workspace.workspace().to_owned(),
-            app,
-            record,
-            #[cfg(feature = "agents")]
-            carried,
-        });
+        self.tell_followers(workspace, (app, record), &message)
+            .await;
     }
 
     /// File this device's verdict on the write `message` carried, which
