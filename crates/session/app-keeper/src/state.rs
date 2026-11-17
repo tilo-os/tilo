@@ -79,6 +79,11 @@ pub struct State {
     /// The app-facing activation global, and the tokens the desktop still owes.
     pub(crate) activation_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
     pub(crate) activation_pending: crate::activation::PendingTokens,
+    /// The app-facing presentation global, its clock, and the feedback the desktop owes.
+    pub(crate) presentation_global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    pub(crate) presentation_clock: Option<u32>,
+    pub(crate) presentation_pending: crate::presentation::Pending,
+    pub(crate) presentation_flight: crate::presentation::Flights,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -135,6 +140,10 @@ impl State {
             kde_decorations: std::sync::OnceLock::new(),
             activation_global: None,
             activation_pending: HashMap::new(),
+            presentation_global: None,
+            presentation_clock: None,
+            presentation_pending: HashMap::new(),
+            presentation_flight: crate::presentation::Flights::default(),
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
@@ -258,6 +267,7 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         self.absorb(surface);
         self.first_configure_while_away(surface);
+        self.presentation_committed(surface);
         self.push(&surface.id());
     }
 

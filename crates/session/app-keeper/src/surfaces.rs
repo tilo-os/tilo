@@ -1461,6 +1461,7 @@ impl State {
             us.surface.destroy();
         }
         self.surface_feedback.remove(id);
+        self.presentation_surface_gone(id);
         self.seat.surface_gone(id);
     }
 
@@ -1482,6 +1483,7 @@ impl State {
     pub(crate) fn hold_all(&mut self) {
         self.buffers.detached();
         self.hold_activation();
+        self.hold_presentation();
         for kept in self.surfaces.values_mut() {
             kept.up = None;
             match &mut kept.role {

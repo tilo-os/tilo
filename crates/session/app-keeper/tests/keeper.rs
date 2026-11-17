@@ -626,6 +626,65 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn a_frames_presentation_feedback_is_the_desktops_and_survives_a_restart() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Video", Some("video"));
+    app.show(&mut rig, (100, 80), GREEN);
+    assert_eq!(
+        app.heard.clock_ids.first().copied(),
+        Some(1),
+        "the desktop's presentation clock is passed on"
+    );
+
+    let surface = app.surface.clone().unwrap();
+    let _feedback = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), RED);
+    rig.pump(&mut [&mut app], |rig, apps| {
+        rig.desktop().render().unwrap();
+        apps[0].heard.sync_outputs > 0 && !apps[0].heard.presented.is_empty()
+    });
+    let shown = app.heard.presented.last().copied().unwrap();
+    assert!(
+        shown.secs > 0 || shown.nsec > 0,
+        "the desktop's own presentation time"
+    );
+    assert!(shown.nsec < 1_000_000_000, "a valid nanosecond part");
+    assert_eq!(
+        shown.seq, 0,
+        "the headless desktop has no display frame counter"
+    );
+    assert_eq!(shown.flags, 0, "and no display flags");
+    assert_eq!(
+        shown.refresh, 16_666_666,
+        "the output's refresh interval in nanoseconds"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+
+    // Content replaced before the desktop showed it is discarded, and a feedback asked for while
+    // no desktop is attached can never be shown.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let _away = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), BLUE);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.presentation_discarded > 0
+    });
+
+    // The next desktop answers the app's feedback again.
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    let _again = app.request_presentation();
+    let _frame = app.draw(&surface, (100, 80), GREEN);
+    let before = app.heard.presented.len();
+    rig.pump(&mut [&mut app], |rig, apps| {
+        rig.desktop().render().unwrap();
+        apps[0].heard.presented.len() > before
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn an_activation_token_is_the_desktops_and_activation_reaches_it() {
     let mut rig = Rig::new(None);
     let mut first = App::connect(&mut rig);

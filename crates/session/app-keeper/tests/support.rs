@@ -74,6 +74,9 @@ use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_v3::{
         self as text_input, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
     },
+use wayland_protocols::wp::presentation_time::client::{
+    wp_presentation::{self, WpPresentation},
+    wp_presentation_feedback::{self, WpPresentationFeedback},
 };
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -343,6 +346,11 @@ pub struct Heard {
     pub kde_modes: Vec<KdeMode>,
     pub activation: Option<XdgActivationV1>,
     pub activation_tokens: Vec<String>,
+    pub presentation: Option<WpPresentation>,
+    pub clock_ids: Vec<u32>,
+    pub presented: Vec<Presented>,
+    pub presentation_discarded: usize,
+    pub sync_outputs: usize,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -659,6 +667,16 @@ impl App {
         activation.activate(token, surface);
     }
 
+    /// Ask for presentation feedback on the window's next commit.
+    pub fn request_presentation(&self) -> WpPresentationFeedback {
+        let qh = self.qh();
+        self.heard
+            .presentation
+            .as_ref()
+            .expect("a presentation object")
+            .feedback(self.surface.as_ref().unwrap(), &qh, FeedbackSeen)
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -803,6 +821,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "xdg_activation_v1" => {
                     heard.activation = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_presentation" => {
+                    heard.presentation = Some(registry.bind(name, version.min(2), qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1156,6 +1177,70 @@ impl Dispatch<XdgActivationTokenV1, ()> for Heard {
     ) {
         if let xdg_activation_token_v1::Event::Done { token } = event {
             heard.activation_tokens.push(token);
+        }
+    }
+}
+
+/// One presentation the desktop reported.
+#[derive(Clone, Copy, Debug)]
+pub struct Presented {
+    pub secs: u64,
+    pub nsec: u32,
+    pub refresh: u32,
+    pub seq: u64,
+    pub flags: u32,
+}
+
+/// The user data marking a presentation feedback request.
+pub struct FeedbackSeen;
+
+impl Dispatch<WpPresentation, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WpPresentation,
+        event: wp_presentation::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_presentation::Event::ClockId { clk_id } = event {
+            heard.clock_ids.push(clk_id);
+        }
+    }
+}
+
+impl Dispatch<WpPresentationFeedback, FeedbackSeen> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        _: &FeedbackSeen,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wp_presentation_feedback::Event::SyncOutput { .. } => {
+                heard.sync_outputs = heard.sync_outputs.saturating_add(1);
+            }
+            wp_presentation_feedback::Event::Presented {
+                tv_sec_hi,
+                tv_sec_lo,
+                tv_nsec,
+                refresh,
+                seq_hi,
+                seq_lo,
+                flags: WEnum::Value(flags),
+            } => heard.presented.push(Presented {
+                secs: (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo),
+                nsec: tv_nsec,
+                refresh,
+                seq: (u64::from(seq_hi) << 32) | u64::from(seq_lo),
+                flags: flags.bits(),
+            }),
+            wp_presentation_feedback::Event::Discarded => {
+                heard.presentation_discarded = heard.presentation_discarded.saturating_add(1);
+            }
+            _ => {}
         }
     }
 }

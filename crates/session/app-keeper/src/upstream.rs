@@ -68,6 +68,11 @@ pub(crate) struct Upstream {
     pub activation: Option<
         wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
     >,
+    pub presentation: Option<
+        wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
+    >,
+    /// The version the desktop's presentation global was bound at.
+    pub presentation_version: u32,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -136,6 +141,8 @@ impl Upstream {
                 xdg_decoration: None,
                 kde_decoration: None,
                 activation: None,
+                presentation: None,
+                presentation_version: 0,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -298,6 +305,11 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
             }
             "xdg_activation_v1" => {
                 up.activation = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wp_presentation" => {
+                let version = version.min(2);
+                up.presentation = Some(registry.bind(name, version, qh, ()));
+                up.presentation_version = version;
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
