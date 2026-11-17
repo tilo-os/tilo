@@ -112,13 +112,21 @@ impl Web {
                 if let (Some(workspaces), Ok(runtime)) =
                     (&self.workspaces, tokio::runtime::Handle::try_current())
                 {
-                    runtime.spawn(
-                        crate::workspace_telling::Teller::new(
-                            workspaces.clone(),
-                            Arc::new(push.clone()),
-                        )
-                        .run(),
+                    let teller = crate::workspace_telling::Teller::new(
+                        workspaces.clone(),
+                        Arc::new(push.clone()),
                     );
+                    // An app of theirs that is closed hears of it through
+                    // Apple's push service, where this server was given a
+                    // key for that at its start.
+                    let named = self.context.closed_apps.get();
+                    let apple = crate::apple_push::ApplePush::open(named, workspaces.clone());
+                    let teller = if let Some(apple) = apple {
+                        teller.also(Arc::new(apple))
+                    } else {
+                        teller
+                    };
+                    runtime.spawn(teller.run());
                 }
                 self.context.certification.set_notifier(Arc::new(push));
             }

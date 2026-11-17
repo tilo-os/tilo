@@ -66,6 +66,8 @@
 #[cfg(feature = "agents")]
 pub mod agents;
 #[cfg(feature = "agents")]
+pub mod apple_push;
+#[cfg(feature = "agents")]
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;

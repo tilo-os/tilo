@@ -43,7 +43,7 @@ const MAX_MESSAGE: usize = 3_000;
 /// The record size the message is sent with: one record holds it all.
 const RECORD_SIZE: u32 = 4096;
 
-/// This host's push sender: its key and the subscriptions people gave it.
+/// This server's push sender: its key and the subscriptions people gave it.
 /// A clone is the same sender.
 #[derive(Clone)]
 pub struct WebPush {
@@ -400,13 +400,13 @@ impl crate::workspace_telling::Outside for WebPush {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ring::{aead, agreement, hkdf};
 
     /// What a browser does with a push: agree on the key with its own
     /// private key and auth secret, and open the one record.
-    fn decrypt(
+    pub(crate) fn decrypt(
         own: agreement::EphemeralPrivateKey,
         own_public: &[u8],
         auth: &[u8],

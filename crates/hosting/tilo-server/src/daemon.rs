@@ -224,6 +224,10 @@ pub(crate) struct WebContext {
     pub(crate) certification: crate::certification::CertificationProtocol,
     /// The device of the session beside this node, once named.
     pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
+    /// What this server was told at its start about Apple's push service,
+    /// once named.
+    #[cfg(feature = "agents")]
+    pub(crate) closed_apps: Arc<std::sync::OnceLock<crate::apple_push::ApplePushSetup>>,
 }
 
 impl Server {
@@ -256,6 +260,17 @@ impl Server {
     /// once; a later call keeps the first.
     pub fn set_node_session(&self, device: [u8; 32]) {
         let _ = self.web.node_session.set(device);
+    }
+
+    /// Name the key this server signs in to Apple's push service with and
+    /// the apps it pushes for: what its people's closed apps are told
+    /// through. Named once, before browsers are served; a later call keeps
+    /// the first.
+    #[cfg(feature = "agents")]
+    pub fn set_apple_push(&self, setup: crate::apple_push::ApplePushSetup) {
+        if self.web.closed_apps.set(setup).is_err() {
+            tracing::warn!("the key for Apple's push service was named twice: the first is kept");
+        }
     }
 }
 
@@ -673,6 +688,8 @@ impl Server {
             #[cfg(feature = "web")]
             certification: certification.clone(),
             node_session: Arc::default(),
+            #[cfg(feature = "agents")]
+            closed_apps: Arc::default(),
         });
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
