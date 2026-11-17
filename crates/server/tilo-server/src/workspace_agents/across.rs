@@ -16,7 +16,10 @@
 //!   owner of;
 //! - where they are the only member not removed. Whoever is in that workspace holds the
 //!   conversation, so from the moment somebody else is, a call is refused in words that say
-//!   why.
+//!   why. A turn of theirs that begins after that is still named the list where this server
+//!   keeps the workspace as theirs, so that its call says so. On a server that keeps no
+//!   workspaces for people nothing tells a person's own workspace that gained a member from a
+//!   shared one they own, and such a turn is named none.
 //!
 //! Every other caller is answered what an unknown action is, and its listing of everything
 //! names no such provider.
@@ -96,8 +99,9 @@ pub(super) struct TurnElsewhere {
     workspace_id: WorkspaceId,
     /// The turn's agent, as the workspace's list held it when the turn began.
     agent: Agent,
-    /// Whether this answered the turn when it began: no other turn's listing names the
-    /// provider.
+    /// Whether the turn's listing names the provider: this answered the turn when it began,
+    /// or would have but for somebody else in its person's own workspace, where this server
+    /// keeps that workspace as theirs. No other turn's listing names it.
     offered: bool,
 }
 
@@ -126,7 +130,14 @@ pub(super) async fn join(
         offered: false,
     };
     let caller = scope.reply(turn).caller;
-    own.offered = own.whose(&caller, LIST).await.is_ok();
+    own.offered = match own.whose(&caller, LIST).await {
+        Ok(_) => true,
+        // Where this server keeps the workspace as that person's own, a turn of theirs that
+        // begins once somebody else is in it is still named the list, so that its call says
+        // why nothing is listed. Nobody else's turn is named it.
+        Err(Refusal::NotAlone) => workspaces.keeps_own_workspaces(),
+        Err(Refusal::Unknown) => false,
+    };
     let service = &mut scope.provider;
     *service = service.clone().answering(Arc::new(own));
 }
