@@ -24,8 +24,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use automerge::AutoCommit;
-use fs_protocol::files::TreeChunk;
 use collab_types::DocumentMutation;
+use fs_protocol::files::TreeChunk;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
@@ -611,8 +611,10 @@ impl Worker {
             BTreeMap::new()
         };
         let writes = followed.tree.document_writes(&known);
-        let held: Option<BTreeSet<TreeChunk>> =
-            followed.chunks.as_ref().map(|chunks| chunks.keys().copied().collect());
+        let held: Option<BTreeSet<TreeChunk>> = followed
+            .chunks
+            .as_ref()
+            .map(|chunks| chunks.keys().copied().collect());
         self.commit_tree_writes(workspace_id, &workspace, held.as_ref(), writes)?;
         // Each record of the tree now stands where this pass left it: the next pass merges
         // only what others write after.

@@ -8491,6 +8491,30 @@
         ],
         "description": ""
       },
+      "chat.workspace.keep-summary.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "through": {
+            "type": "string"
+          },
+          "through_ts": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "through",
+          "through_ts",
+          "text"
+        ],
+        "description": ""
+      },
       "chat.workspace.submit-feedback.Arguments": {
         "type": "object",
         "properties": {
@@ -10349,6 +10373,62 @@
         ],
         "description": ""
       },
+      "chat.learned.learn.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "description": ""
+      },
+      "chat.learned.correct.Arguments": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fact",
+          "text"
+        ],
+        "description": ""
+      },
+      "chat.learned.forget.Arguments": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact"
+        ],
+        "description": ""
+      },
       "tilo.workspace.emoji.add-emoji.Arguments": {
         "type": "object",
         "properties": {
@@ -10534,6 +10614,24 @@
             "type": "string"
           },
           "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "chat.agent.set-agent-instruction.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "instruction": {
             "type": [
               "string",
               "null"
@@ -28689,6 +28787,12 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.workspace",
+      "action": "keep-summary",
+      "arguments": "#/components/schemas/chat.workspace.keep-summary.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.workspace",
       "action": "submit-feedback",
       "arguments": "#/components/schemas/chat.workspace.submit-feedback.Arguments"
     },
@@ -28844,6 +28948,24 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "learn",
+      "arguments": "#/components/schemas/chat.learned.learn.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "correct",
+      "arguments": "#/components/schemas/chat.learned.correct.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.learned",
+      "action": "forget",
+      "arguments": "#/components/schemas/chat.learned.forget.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tilo.workspace.emoji",
       "action": "add-emoji",
       "arguments": "#/components/schemas/tilo.workspace.emoji.add-emoji.Arguments"
@@ -28901,6 +29023,12 @@
       "resource": "chat.agent",
       "action": "set-agent-model",
       "arguments": "#/components/schemas/chat.agent.set-agent-model.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "set-agent-instruction",
+      "arguments": "#/components/schemas/chat.agent.set-agent-instruction.Arguments"
     },
     {
       "app": "so.tilo.chat",

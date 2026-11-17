@@ -51,6 +51,7 @@ __all__ = [
     "Span",
     "SpanUnit",
     "Submission",
+    "Summary",
     "TextKind",
     "Triage",
     "TriageUpdate",
@@ -86,6 +87,7 @@ __all__ = [
     "Withdrawn",
     "Work",
     "WorkUpdate",
+    "Fact",
     "Emoji",
     "Agent",
     "AgentState",
@@ -94,6 +96,7 @@ __all__ = [
     "Workspace",
     "Messages",
     "Drafts",
+    "Learned",
     "WorkspaceEmoji",
     "ChatAgent",
     "BeginChatArgs",
@@ -116,6 +119,7 @@ __all__ = [
     "DecideReportsArgs",
     "OverturnDecisionArgs",
     "MarkReadArgs",
+    "KeepSummaryArgs",
     "SubmitFeedbackArgs",
     "TriageArgs",
     "PostArgs",
@@ -139,6 +143,9 @@ __all__ = [
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
+    "LearnArgs",
+    "CorrectArgs",
+    "ForgetArgs",
     "AddEmojiArgs",
     "RemoveEmojiArgs",
     "RemoveAnyEmojiArgs",
@@ -149,6 +156,7 @@ __all__ = [
     "SetAgentColourArgs",
     "RenameAgentArgs",
     "SetAgentModelArgs",
+    "SetAgentInstructionArgs",
     "SetAgentBoundArgs",
     "RetireAgentArgs",
 ]
@@ -328,6 +336,11 @@ class Submission(TypedDict):
     id: str
     destination: Destination
     feedback: ReviewedFeedback
+
+class Summary(TypedDict):
+    text: str
+    through: str
+    through_ts: int
 
 TextKind = Literal["interface", "content"]
 
@@ -527,6 +540,12 @@ class WorkUpdate(TypedDict):
     trace: list[StepUpdate]
     detail: str | None
 
+class Fact(TypedDict):
+    text: str
+    source: str
+    at: int
+    by: str | None
+
 class Emoji(TypedDict):
     image: Any
     added_by: str
@@ -545,6 +564,7 @@ class Agent(TypedDict):
     spent: Spent | None
     state: AgentState
     created_at: int
+    instruction: str | None
 
 AgentState = Literal["active", "retired"]
 
@@ -685,6 +705,14 @@ MarkReadArgs = TypedDict("MarkReadArgs", {
     "seen": "int",
 })
 """The arguments of `mark-read`."""
+
+KeepSummaryArgs = TypedDict("KeepSummaryArgs", {
+    "channel": "str",
+    "through": "str",
+    "through_ts": "int",
+    "text": "str",
+})
+"""The arguments of `keep-summary`."""
 
 SubmitFeedbackArgs = TypedDict("SubmitFeedbackArgs", {
     "channel": "str",
@@ -849,6 +877,24 @@ StartDraftArgs = TypedDict("StartDraftArgs", {
 })
 """The arguments of `start-draft`."""
 
+LearnArgs = TypedDict("LearnArgs", {
+    "text": "str",
+    "source": "str",
+})
+"""The arguments of `learn`."""
+
+CorrectArgs = TypedDict("CorrectArgs", {
+    "fact": "str",
+    "text": "str",
+    "source": NotRequired["str | None"],
+})
+"""The arguments of `correct`."""
+
+ForgetArgs = TypedDict("ForgetArgs", {
+    "fact": "str",
+})
+"""The arguments of `forget`."""
+
 AddEmojiArgs = TypedDict("AddEmojiArgs", {
     "name": "str",
     "image": "str",
@@ -912,6 +958,12 @@ SetAgentModelArgs = TypedDict("SetAgentModelArgs", {
 })
 """The arguments of `set-agent-model`."""
 
+SetAgentInstructionArgs = TypedDict("SetAgentInstructionArgs", {
+    "agent": "str",
+    "instruction": NotRequired["str | None"],
+})
+"""The arguments of `set-agent-instruction`."""
+
 SetAgentBoundArgs = TypedDict("SetAgentBoundArgs", {
     "agent": "str",
     "bound": "list[Bound]",
@@ -925,7 +977,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@6190627852b619e4"
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -942,6 +994,10 @@ class Workspace(Resource):
     def files(self) -> WorkspaceFiles:
         """Read only."""
         return self.fields["files"]
+    @property
+    def summaries(self) -> dict[str, dict[str, Summary]]:
+        """Read only."""
+        return self.fields["summaries"]
 
     def begin_chat(self,
         *,
@@ -1206,6 +1262,20 @@ class Workspace(Resource):
         """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mark-read", items)
 
+    def keep_summary(self,
+        *,
+        channel: str,
+        through: str,
+        through_ts: int,
+        text: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("keep-summary", channel=channel, through=through, through_ts=through_ts, text=text)
+
+    def keep_summary_many(self, items: list[KeepSummaryArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep-summary", items)
+
     def submit_feedback(self,
         *,
         channel: str,
@@ -1256,12 +1326,12 @@ class Workspace(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"begin_chat", "begin_chat_many", "introduce", "introduce_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many", "mark_read", "mark_read_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
+    __actions__ = frozenset({"begin_chat", "begin_chat_many", "introduce", "introduce_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
 
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@6190627852b619e4"
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1626,7 +1696,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@6190627852b619e4"
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1642,9 +1712,60 @@ class Drafts(Resource):
     __actions__ = frozenset({"start_draft", "start_draft_many"})
 
 
+class Learned(Resource):
+    """What your agents learned — `chat.learned`."""
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    @property
+    def facts(self) -> list[Entry[Fact]]:
+        """Read only."""
+        return self.fields["facts"]
+
+    def learn(self,
+        *,
+        text: str,
+        source: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("learn", text=text, source=source)
+
+    def learn_many(self, items: list[LearnArgs]) -> list[dict[str, Any]]:
+        """Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("learn", items)
+
+    def correct(self,
+        *,
+        fact: str,
+        text: str,
+        source: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["fact"] = fact
+        args["text"] = text
+        if source is not None:
+            args["source"] = source
+        return self.action("correct", **args)
+
+    def correct_many(self, items: list[CorrectArgs]) -> list[dict[str, Any]]:
+        """Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("correct", items)
+
+    def forget(self, *, fact: str) -> None:
+        """Runs the app's action."""
+        return self.action("forget", fact=fact)
+
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"learn", "learn_many", "correct", "correct_many", "forget", "forget_many"})
+
+
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@6190627852b619e4"
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1682,7 +1803,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@6190627852b619e4"
+    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
@@ -1794,6 +1915,22 @@ class ChatAgent(Resource):
         """Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-model", items)
 
+    def set_agent_instruction(self,
+        *,
+        agent: str,
+        instruction: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if instruction is not None:
+            args["instruction"] = instruction
+        return self.action("set-agent-instruction", **args)
+
+    def set_agent_instruction_many(self, items: list[SetAgentInstructionArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-agent-instruction", items)
+
     def set_agent_bound(self,
         *,
         agent: str,
@@ -1816,6 +1953,6 @@ class ChatAgent(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "set_agent_colour", "set_agent_colour_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "set_agent_colour", "set_agent_colour_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many"})
 
 

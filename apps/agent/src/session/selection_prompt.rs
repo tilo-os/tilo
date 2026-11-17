@@ -233,6 +233,8 @@ mod tests {
             message: "chat.workspace/channels/c/messages/m".into(),
             title: "Tighten this".into(),
             instruction: "Tighten this sentence".into(),
+            agent_instruction: None,
+            fold: None,
             subject,
             spend: None,
         }

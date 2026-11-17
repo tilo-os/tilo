@@ -215,73 +215,6 @@ pub fn request(message: &Message) -> (String, Option<tilo_actions::SelectionSubj
     (instruction, subject)
 }
 
-/// The most characters of earlier conversation a turn's instruction carries, all messages
-/// together: the newest are kept and the older ones counted, so a long conversation stays within
-/// what a turn's instruction may hold (32 KiB, the agent's `validate`).
-const CONVERSATION_CHARS: usize = 12 * 1024;
-/// The most characters of one earlier message a turn is told.
-const SAID_CHARS: usize = 1_500;
-
-/// `instruction` with what came before `summons` in its conversation appended under `heading`,
-/// oldest first: one line per message, the person's and the agent's own told apart. The agent
-/// reads what the request asks for from the person's own words alone; the conversation is what a
-/// follow-up ("move the reminder to Friday", "what did I ask you before?") is understood through.
-#[must_use]
-pub fn with_conversation(
-    instruction: String,
-    part: &ChatPart,
-    summons: &Summons,
-    heading: &str,
-) -> String {
-    let Some(asked) = part.messages.get(&summons.message) else {
-        return instruction;
-    };
-    let mut earlier: Vec<&Message> = part
-        .messages
-        .iter()
-        .map(|(_, earlier)| earlier)
-        .filter(|earlier| earlier.channel == asked.channel)
-        .filter(|earlier| earlier.ts < asked.ts && !earlier.text.trim().is_empty())
-        .collect();
-    earlier.sort_by_key(|earlier| earlier.ts);
-    if earlier.is_empty() {
-        return instruction;
-    }
-    let mut kept = Vec::new();
-    let mut room = CONVERSATION_CHARS;
-    for message in earlier.iter().rev() {
-        let said = message.text.trim();
-        let mut text: String = said.chars().take(SAID_CHARS).collect();
-        if text.len() < said.len() {
-            text.push('…');
-        }
-        let who = if person_of(&message.author).is_some() {
-            "Person: "
-        } else {
-            "You: "
-        };
-        let line = format!("\n{who}{}", text.replace('\n', "\n  "));
-        let Some(left) = room.checked_sub(line.len()) else {
-            break;
-        };
-        room = left;
-        kept.push(line);
-    }
-    let mut out = instruction;
-    out.push_str(heading);
-    let left_out = earlier.len().saturating_sub(kept.len());
-    if left_out > 0 {
-        let _ = std::fmt::Write::write_fmt(
-            &mut out,
-            format_args!("\n({left_out} earlier messages left out)"),
-        );
-    }
-    for line in kept.into_iter().rev() {
-        out.push_str(&line);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing, reason = "in a test this is the assertion")]
@@ -365,41 +298,5 @@ mod tests {
         let left = summonses(&chat, &part);
         assert_eq!(left.len(), 1, "{left:?}");
         assert_eq!(left[0].agent, "planner");
-    }
-
-    /// An agent is told what came before the message in its conversation, oldest first, and
-    /// nothing said elsewhere.
-    #[test]
-    fn a_turn_carries_the_conversation_before_it() {
-        let chat = Chat::default();
-        let mut part = ChatPart::default();
-        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
-        let elsewhere = Id::from_raw("c_general");
-        part.messages.push(
-            Id::from_raw("m1"),
-            said(&direct, MemberId::person(ADA), "Remind me to call Bo", 1),
-        );
-        part.messages.push(
-            Id::from_raw("m2"),
-            said(&direct, MemberId::agent("scout"), "Done, for 3 pm", 2),
-        );
-        part.messages.push(
-            Id::from_raw("m3"),
-            said(&elsewhere, MemberId::person(ADA), "Lunch at noon", 3),
-        );
-        part.messages.push(
-            Id::from_raw("m4"),
-            said(&direct, MemberId::person(ADA), "Move it to Friday", 4),
-        );
-        let asked = summonses(&chat, &part);
-        let turn = asked
-            .iter()
-            .find(|summons| summons.message.as_str() == "m4")
-            .expect("the newest message asks");
-        let told = with_conversation("Move it to Friday".to_owned(), &part, turn, "\nBefore:");
-        assert_eq!(
-            told,
-            "Move it to Friday\nBefore:\nPerson: Remind me to call Bo\nYou: Done, for 3 pm"
-        );
     }
 }

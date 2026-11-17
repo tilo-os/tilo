@@ -80,7 +80,9 @@ mod tree_put;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
-pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink};
+pub use link::{
+    FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink,
+};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -94,7 +96,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::member::actions::{Outcome, api_outcome, resource_of, record_provider};
+use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::WorkspaceDocuments;
 use catch_up::{catch_up, hold_parts};
@@ -1369,7 +1371,11 @@ impl Shared {
 }
 
 impl Worker {
-    fn new(link: &dyn WorkspaceDocumentsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+    fn new(
+        link: &dyn WorkspaceDocumentsLink,
+        catalogue: AppCatalogue,
+        shared: Arc<Shared>,
+    ) -> Self {
         let host_device = link.host_device();
         let _ = shared.host_device.set(host_device.clone());
         Self {

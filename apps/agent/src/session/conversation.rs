@@ -83,6 +83,10 @@ pub(super) fn validate(run: &runtime_collab::TurnRequest) -> Result<Cause, Strin
         || run.title.len() > 4 * 1024
         || run.instruction.trim().is_empty()
         || run.instruction.len() > 32 * 1024
+        || run
+            .agent_instruction
+            .as_ref()
+            .is_some_and(|told| told.len() > 8 * 1024)
     {
         return Err("The turn has an invalid title or instruction".into());
     }
@@ -126,6 +130,12 @@ impl Session {
                 &crate::session::Failure::said(crate::i18n::t("agent-failure-no-answer")),
             );
         };
+        if run.fold.is_some() {
+            // The reply reads its words first: the conversation's summary is kept once the
+            // person has their answer, and the turn ends after it.
+            self.record_state(run, "doing", json!({}), Some(&message))?;
+            self.keep_summary(run)?;
+        }
         self.report_task(run, TurnUpdate::Succeeded { message })
     }
 
@@ -600,6 +610,8 @@ mod tests {
             message: message.into(),
             title: "Split the launch checklist".into(),
             instruction: "Split the launch checklist into subtasks".into(),
+            agent_instruction: None,
+            fold: None,
             subject: None,
             spend: None,
         }

@@ -32,6 +32,13 @@ const CHAT_APP: (&str, &str) = ("chat", "Chat");
 /// Chat's verb that records a turn's work on the reply to its message: the one Chat's window
 /// publishes on each message, run here on the same record from the same declaration.
 const RECORD_WORK: &str = "record-work";
+/// Chat's verb that keeps a conversation's summary: the one its agent keeps while it answers a
+/// turn there ([`chat::recall`]), run here on Chat's record as `record-work` is.
+const KEEP_SUMMARY: &str = "keep-summary";
+/// The verbs of the person's own record of what their agents learned about them
+/// ([`tilo_app::tilo_workspace_agent::learned`]): an agent keeps, corrects and forgets a fact
+/// while it answers a turn, on the turn's own item.
+const LEARNED_VERBS: [&str; 3] = ["learn", "correct", "forget"];
 
 /// One workspace as the pass hands it over: the grants its turns are decided against.
 pub(crate) struct WorkspaceFacts {
@@ -106,6 +113,52 @@ impl Conversations {
     fn agent_names(opened: &Opened) -> chat::projection::AgentNames {
         Self::workspace_agents(opened)
             .map(|record| record.get().active_names())
+            .unwrap_or_default()
+    }
+
+    /// The person's own record of what their agents learned about them in the workspace `opened`
+    /// holds, opened here where it is held. `None` where nothing was learned yet: reading the
+    /// record creates none.
+    fn learned(
+        opened: &Opened,
+        person: &str,
+    ) -> Option<WorkspaceResource<tilo_app::tilo_workspace_agent::learned::Learned>> {
+        use tilo_app::tilo_workspace_agent::learned::KIND;
+        let id = DocumentId::of_member(person, KIND)?;
+        let held = opened
+            .records
+            .holds_resource(CHAT_OWNER, id.as_str(), KIND)
+            .unwrap_or(false);
+        if !held {
+            return None;
+        }
+        let standing = tilo_action_policy::Standing::new(
+            opened.policy.clone(),
+            tilo_action_policy::Acting::member(opened.records.author().clone()),
+        );
+        let permissions = PermissionContext::from_standing(standing)
+            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
+        WorkspaceResource::<tilo_app::tilo_workspace_agent::learned::Learned>::open_at(
+            &opened.records,
+            CHAT_OWNER,
+            id.as_str(),
+            CHAT_APP,
+            Some(LivePermissions::fixed(permissions)),
+            None,
+        )
+    }
+
+    /// What each of the workspace's agents was told by its keeper about how to work for them, by
+    /// the agent's id: what a turn's request carries to the model beside what every agent is told.
+    fn agent_instructions(opened: &Opened) -> std::collections::HashMap<String, String> {
+        Self::workspace_agents(opened)
+            .map(|record| {
+                record
+                    .get()
+                    .active()
+                    .filter_map(|agent| Some((agent.id.0.clone(), agent.told()?.to_owned())))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -204,6 +257,165 @@ impl Conversations {
         Err(unknown())
     }
 
+    /// Keep, correct or forget a fact in the person's own record of what their agents learned
+    /// about them, as `invoker` (the agent answering a turn for them): `action` is the record's
+    /// verb and `arguments` are its own. The record is the person's at this device, in the
+    /// workspace that holds the turn's message; the first fact makes it. The record's verbs
+    /// decide what a fact is, and the rule for a member's own record decides who may write it.
+    ///
+    /// # Errors
+    /// The arguments do not read, no open workspace holds the turn's message, the record cannot
+    /// be opened, or it refused the change.
+    fn learn(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        use tilo_app::tilo_workspace_agent::learned::{KIND, Learned, learned};
+        let unknown =
+            || tilo_actions::ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let invalid = |what: &str| tilo_actions::ApiError::InvalidArguments(what.to_owned());
+        let text = |name: &str| arguments.get(name).and_then(serde_json::Value::as_str);
+        let said = |name: &str, what: &str| {
+            text(name)
+                .and_then(tilo_resource::NonBlank::parse)
+                .ok_or_else(|| invalid(what))
+        };
+        let fact = || {
+            text("fact")
+                .filter(|fact| !fact.is_empty())
+                .map(Id::from_raw)
+                .ok_or_else(|| invalid("a fact is named by its id"))
+        };
+        let invoke = match action {
+            "learn" => Learned::LEARN.with(learned::Learn {
+                text: said("text", "a fact says something")?,
+                source: said("source", "a fact says where it came from")?,
+            }),
+            "correct" => Learned::CORRECT.with(learned::Correct {
+                fact: fact()?,
+                text: said("text", "a fact says something")?,
+                source: text("source").map(str::to_owned),
+            }),
+            "forget" => Learned::FORGET.with(learned::Forget { fact: fact()? }),
+            _ => return Err(unknown()),
+        };
+        let message = message_of(resource).map(Id::from_raw).ok_or_else(unknown)?;
+        let member = self.member();
+        let id = member
+            .person_id()
+            .and_then(|person| DocumentId::of_member(person, KIND))
+            .ok_or_else(unknown)?;
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            if opened.chat.is_none() {
+                continue;
+            }
+            let Some(asked_by) = part
+                .get()
+                .messages
+                .get(&message)
+                .map(|asked| asked.author.clone())
+            else {
+                continue;
+            };
+            // What an agent learns is kept about the person it answers. A turn somebody else
+            // asked writes nothing into the record of the person at this device.
+            if member.person_id().map(MemberId::person) != Some(asked_by) {
+                return Err(tilo_actions::ApiError::Unavailable {
+                    code: "learned_not_theirs".to_owned(),
+                    reason: "what is learned is kept for the person who asked, on their own device"
+                        .to_owned(),
+                });
+            }
+            let standing = tilo_action_policy::Standing::new(
+                opened.policy.clone(),
+                tilo_action_policy::Acting::member(opened.records.author().clone()),
+            );
+            let permissions = PermissionContext::from_standing(standing)
+                .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
+            let record = WorkspaceResource::<Learned>::open_at(
+                &opened.records,
+                CHAT_OWNER,
+                id.as_str(),
+                CHAT_APP,
+                Some(LivePermissions::fixed(permissions)),
+                None,
+            )
+            .ok_or_else(|| tilo_actions::ApiError::Unavailable {
+                code: "learned_unavailable".to_owned(),
+                reason: "what was learned about the person cannot be opened here".to_owned(),
+            })?;
+            return record
+                .invoke_as(invoker, &invoke)
+                .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()));
+        }
+        Err(unknown())
+    }
+
+    /// Keep a conversation's summary through Chat's own `keep-summary` on the workspace's open Chat
+    /// record, as `invoker` (the agent answering a turn there): `arguments` are the verb's. Chat's
+    /// verb decides who may keep one and how far it reaches; nothing is decided here.
+    ///
+    /// # Errors
+    /// The arguments do not read, no open workspace holds the conversation, or Chat refused it.
+    fn keep_summary(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        let text = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    tilo_actions::ApiError::InvalidArguments(format!("a summary names its {name}"))
+                })
+        };
+        let channel = Id::from_raw(text("channel")?);
+        let through_ts = arguments
+            .get("through_ts")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                tilo_actions::ApiError::InvalidArguments(
+                    "a summary says when its last message was written".to_owned(),
+                )
+            })?;
+        let invoke = chat::Chat::KEEP_SUMMARY.with(chat::record::chat::KeepSummary {
+            channel: channel.clone(),
+            through: text("through")?,
+            through_ts,
+            text: text("text")?,
+        });
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let (Some(record), Some((_, part))) = (&opened.chat, &opened.part) else {
+                continue;
+            };
+            if !part
+                .get()
+                .messages
+                .iter()
+                .any(|(_, message)| message.channel == channel)
+            {
+                continue;
+            }
+            return record
+                .invoke_as(invoker, &invoke)
+                .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()));
+        }
+        Err(tilo_actions::ApiError::Unknown(
+            tilo_actions::ActionAddress::new(resource, KEEP_SUMMARY),
+        ))
+    }
+
     /// Record on `turn` 's message that `agent` stopped before it answered it, through Chat's own
     /// `record-work` as the agent records its work: the person reads the failure on the reply and
     /// can ask the message again from there. Nothing is written over an answer the agent gave.
@@ -278,6 +490,20 @@ impl Conversations {
                     .get(&workspace.workspace)
                     .map(Self::agent_names)
                     .unwrap_or_default();
+                let instructions = self
+                    .open
+                    .borrow()
+                    .get(&workspace.workspace)
+                    .map(Self::agent_instructions)
+                    .unwrap_or_default();
+                // What the person's agents learned about them: the person's own record here,
+                // which only their devices hold.
+                let learned = self
+                    .open
+                    .borrow()
+                    .get(&workspace.workspace)
+                    .and_then(|opened| Self::learned(opened, person))
+                    .map(|record| record.get());
                 let chat_record = chat.get();
                 let part_record = part.get();
                 turns(
@@ -286,6 +512,8 @@ impl Conversations {
                     &part_record,
                     person,
                     &names,
+                    &instructions,
+                    learned.as_deref(),
                 )
             }
             None => Vec::new(),
@@ -742,6 +970,18 @@ impl tilo_service::Service for TurnSummonses {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        if action == KEEP_SUMMARY {
+            return self
+                .conversations
+                .keep_summary(invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if LEARNED_VERBS.contains(&action) && message_of(resource).is_some() {
+            return self
+                .conversations
+                .learn(invoker, resource, action, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
         if action != RECORD_WORK {
             return Err(tilo_actions::ApiError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
@@ -867,6 +1107,26 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     if let Some(declaration) = declaration {
         spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
     }
+    // The summary of the conversation the turn is in is kept from the turn's own item too: the
+    // agent keeps it while it answers, whether or not Chat's window is open to publish the verb.
+    let summary = tilo_resource::vocabulary::<chat::Chat>()
+        .declarations()
+        .iter()
+        .find(|declaration| declaration.id == KEEP_SUMMARY)
+        .cloned();
+    if let Some(declaration) = summary {
+        spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
+    }
+    // What the agent learns about its person while it answers is kept from the turn's item as
+    // well: the person's own record, written through its own verbs, with Chat's window closed.
+    for declaration in
+        tilo_resource::vocabulary::<tilo_app::tilo_workspace_agent::learned::Learned>()
+            .declarations()
+            .iter()
+            .filter(|declaration| LEARNED_VERBS.contains(&declaration.id))
+    {
+        spec = spec.with_action(tilo_resource::declaration_spec(declaration));
+    }
     spec
 }
 
@@ -878,6 +1138,8 @@ fn turns(
     part: &chat::parts::ChatPart,
     person: &str,
     agent_names: &chat::projection::AgentNames,
+    agent_instructions: &std::collections::HashMap<String, String>,
+    learned: Option<&tilo_app::tilo_workspace_agent::learned::Learned>,
 ) -> Vec<(AgentTurn, String)> {
     chat::summons::summonses(chat, part)
         .into_iter()
@@ -885,12 +1147,23 @@ fn turns(
             let message = part.messages.get(&summons.message)?;
             let address = summons.address();
             let (instruction, subject) = chat::summons::request(message);
-            let instruction = chat::summons::with_conversation(
-                instruction,
+            // What came before it in the conversation, as every turn is told it
+            // ([`chat::recall::told`]): "what did I ask you before?" and "move the reminder to
+            // Friday" are understood through it.
+            let told = chat::recall::told(
+                chat,
                 part,
-                &summons,
-                runtime_collab::INSTRUCTION_CONVERSATION,
+                // What was learned about a person is theirs: only a turn they asked is told it,
+                // also on the device that holds their record.
+                learned.filter(|_| summons.person == person),
+                &summons.conversation,
+                &summons.message,
+                &MemberId::agent(&summons.agent),
+                instruction,
             );
+            let instruction = told.instruction;
+            let fold = told.fold;
+            let agent_instruction = agent_instructions.get(&summons.agent).cloned();
             let name = agent_names
                 .get(&summons.agent)
                 .cloned()
@@ -913,6 +1186,8 @@ fn turns(
                             (agent_names, &chat::projection::PeopleNames::new()),
                         ),
                         instruction,
+                        agent_instruction,
+                        fold,
                         subject,
                         spend: None,
                     },
@@ -952,6 +1227,159 @@ mod tests {
         assert!(offered.params().is_empty(), "it takes nothing");
     }
 
+    /// A turn's item offers what its agent writes while it answers, with Chat's window closed:
+    /// the reply's work, the conversation's summary, and the facts it learns about its person.
+    #[test]
+    fn a_turns_item_offers_the_reply_the_summary_and_what_was_learned() {
+        let item = summons_item(&Id::from_raw("m1"));
+        let offered: Vec<&str> = item
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for verb in ["record-work", "keep-summary", "learn", "correct", "forget"] {
+            assert!(offered.contains(&verb), "{verb}: {offered:?}");
+        }
+    }
+
+    /// What a turn's request carries beside the person's words: what was learned about them,
+    /// what their agent's keeper told it, and what to take into the conversation's summary once
+    /// more of it stands outside the summary than a turn is told as written.
+    #[test]
+    fn a_turns_request_carries_what_was_learned_the_instruction_and_the_fold() {
+        use tilo_app::tilo_workspace_agent::learned::{Learned, learned};
+        let mut record = tilo_resource::Replica::<Learned>::new().as_agent_for(AGENT, ME);
+        record
+            .apply(Learned::LEARN.with(learned::Learn {
+                text: tilo_resource::NonBlank::parse("Prefers short answers.").unwrap(),
+                source: tilo_resource::NonBlank::parse("They said so").unwrap(),
+            }))
+            .unwrap();
+        let known = record.state().unwrap();
+        let chat = workspace();
+        let agent = MemberId::agent(AGENT);
+        let long = "a long answer about the launch list ".repeat(30);
+        let mut said = Vec::new();
+        for n in 0..12_i64 {
+            said.push((
+                format!("q{n}"),
+                message(MemberId::person(ME), &format!("question {n}"), 10 + n * 2),
+            ));
+            said.push((format!("a{n}"), message(agent.clone(), &long, 11 + n * 2)));
+        }
+        said.push((
+            "ask".to_owned(),
+            message(MemberId::person(ME), "what do you know about me?", 100),
+        ));
+        let mut head = chat::parts::ChatPart::default();
+        for (id, message) in said {
+            head.messages.push(Id::from_raw(id), message);
+        }
+        let told =
+            std::collections::HashMap::from([(AGENT.to_owned(), "Answer in German.".to_owned())]);
+        let read = turns(
+            "w1",
+            &chat,
+            &head,
+            ME,
+            &chat::projection::AgentNames::new(),
+            &told,
+            Some(&known),
+        );
+        let [(turn, _)] = read.as_slice() else {
+            panic!("one turn, not {} of them", read.len());
+        };
+        let request = &turn.request;
+        assert_eq!(request.request(), "what do you know about me?");
+        assert!(
+            request.instruction.contains(&format!(
+                "{}\n- Prefers short answers. (from: They said so)",
+                runtime_collab::INSTRUCTION_LEARNED
+            )),
+            "{}",
+            request.instruction
+        );
+        assert!(request.instruction.len() <= runtime_collab::recall::INSTRUCTION_BYTES);
+        assert_eq!(
+            request.agent_instruction.as_deref(),
+            Some("Answer in German.")
+        );
+        let fold = request
+            .fold
+            .as_ref()
+            .expect("the oldest messages are to be taken in");
+        assert_eq!(fold.conversation, CONVERSATION);
+        assert!(
+            fold.lines.starts_with("Person: question 0"),
+            "{}",
+            fold.lines
+        );
+        // A person with nothing learned and an agent told nothing carry neither.
+        let plain = turns(
+            "w1",
+            &chat,
+            &head,
+            ME,
+            &chat::projection::AgentNames::new(),
+            &std::collections::HashMap::new(),
+            None,
+        );
+        let request = &plain[0].0.request;
+        assert!(
+            !request
+                .instruction
+                .contains(runtime_collab::INSTRUCTION_LEARNED)
+        );
+        assert_eq!(request.agent_instruction, None);
+    }
+
+    /// What was learned about a person is theirs: the device that holds their record tells it to
+    /// a turn they asked, and to no turn somebody else asked.
+    #[test]
+    fn only_a_turn_its_person_asked_is_told_what_was_learned_about_them() {
+        use tilo_app::tilo_workspace_agent::learned::{Learned, learned};
+        let mut record = tilo_resource::Replica::<Learned>::new().as_agent_for(AGENT, ME);
+        record
+            .apply(Learned::LEARN.with(learned::Learn {
+                text: tilo_resource::NonBlank::parse("Prefers short answers.").unwrap(),
+                source: tilo_resource::NonBlank::parse("They said so").unwrap(),
+            }))
+            .unwrap();
+        let known = record.state().unwrap();
+        let chat = workspace();
+        let mut head = chat::parts::ChatPart::default();
+        head.messages.push(
+            Id::from_raw("ask".to_owned()),
+            message(MemberId::person(ME), "what do you know about me?", 100),
+        );
+        // The same message, read on the device of the person who wrote it and on another's.
+        let told_on_the_device_of = |person: &str| {
+            let read = turns(
+                "w1",
+                &chat,
+                &head,
+                person,
+                &chat::projection::AgentNames::new(),
+                &std::collections::HashMap::new(),
+                Some(&known),
+            );
+            let [(turn, _)] = read.as_slice() else {
+                panic!("one turn, not {} of them", read.len());
+            };
+            turn.request.instruction.clone()
+        };
+        let theirs = told_on_the_device_of(ME);
+        assert!(
+            theirs.contains(runtime_collab::INSTRUCTION_LEARNED),
+            "{theirs}"
+        );
+        let another = told_on_the_device_of("someone-else");
+        assert!(
+            !another.contains(runtime_collab::INSTRUCTION_LEARNED),
+            "{another}"
+        );
+    }
+
     /// The agent the tests' conversations take in.
     const AGENT: &str = "tide";
     /// The person sitting here, by their member key.
@@ -989,10 +1417,18 @@ mod tests {
 
     /// The turns `chat` 's conversations give for the messages of `head` .
     fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<AgentTurn> {
-        turns("w1", chat, head, ME, &chat::projection::AgentNames::new())
-            .into_iter()
-            .map(|(turn, _)| turn)
-            .collect()
+        turns(
+            "w1",
+            chat,
+            head,
+            ME,
+            &chat::projection::AgentNames::new(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .into_iter()
+        .map(|(turn, _)| turn)
+        .collect()
     }
 
     tilo_test_env::scenario! {
@@ -1305,6 +1741,8 @@ mod tests {
             &asked,
             ME,
             &chat::projection::AgentNames::new(),
+            &std::collections::HashMap::new(),
+            None,
         );
         let sessions = crate::agent_sessions::AgentSessions::new();
         let held = |turns: Vec<(AgentTurn, String)>| vec![("w1".to_owned(), turns)];

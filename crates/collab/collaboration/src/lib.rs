@@ -274,7 +274,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, write_attribution};
+pub use runtime_collab::{file_clipboard, recall, write_attribution};
 
 pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;
