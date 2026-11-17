@@ -2456,8 +2456,8 @@ const OPEN_OWN_TRIES = 6;
  * Open the person's own workspace in a tab an agent just signed in: it
  * paired through the home workspace (`page`), so the host makes or finds the
  * person's own and this device enters it, then the page loads it. A host
- * that did not answer or asks to wait is asked again; a refusal is the
- * host's answer, and the tab stays where it is.
+ * that did not answer is asked again; a refusal is the host's answer, and
+ * the tab stays where it is.
  */
 async function openOwnAfterSignIn({page, status}) {
   for (let attempt = 1; ; attempt++) {
@@ -2466,10 +2466,8 @@ async function openOwnAfterSignIn({page, status}) {
       own = await ensureOwnWorkspace(page.peer);
     } catch (error) {
       console.warn('signed in: opening your workspace', error);
-      const transient = error?.code === 'unanswered' || error?.code === 'rate_limited';
-      if (!transient || attempt >= OPEN_OWN_TRIES) { openOwnDone(); return; }
-      const asked = Number.isFinite(error?.retryAfter) ? error.retryAfter * 1000 : 0;
-      await new Promise(resolve => setTimeout(resolve, Math.max(1000 * 2 ** (attempt - 1), asked)));
+      if (error?.code !== 'unanswered' || attempt >= OPEN_OWN_TRIES) { openOwnDone(); return; }
+      await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
       continue;
     }
     // The load that opened it: the person's own workspace is in front.

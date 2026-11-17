@@ -441,3 +441,8 @@ reason = "the refusal a spent content budget sent goes with that budget; a refus
 file = "crates/server/tilo-server-protocol/src/refusal.rs"
 enum = "Refusal"
 reason = "the refusal a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 53 to 54 with the removal, so a device at another version reads none of these bytes"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "WireActionCallError"
+reason = "the rate-limited answer a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer in a versioned frame and nothing keeps it, and the remote-action frame version is bumped from 1 to 2 with the removal, so a device at another version reads none of these bytes"

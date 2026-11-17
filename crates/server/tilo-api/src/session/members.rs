@@ -162,9 +162,7 @@ impl Session {
             .ask_host(id, target, arguments)
             .await
             .map_err(|error| {
-                if error.code == HostRefusal::RATE_LIMITED {
-                    refused(&error.into())
-                } else if error.code == HostRefusal::UNANSWERED {
+                if error.code == HostRefusal::UNANSWERED {
                     failed("unavailable", error.message, "try again shortly")
                 } else {
                     failed(

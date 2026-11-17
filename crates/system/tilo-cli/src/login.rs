@@ -258,10 +258,6 @@ fn certify_said(error: &CertifyError) -> String {
              the person's Tilo tab."
                 .to_owned()
         }
-        CertifyError::RateLimited { retry_after_ms } => format!(
-            "Tilo is taking in changes slowly right now: try again in {} seconds.",
-            retry_after_ms.div_ceil(1000).max(1)
-        ),
         CertifyError::Request(_) | CertifyError::Sign(_) => {
             "Tilo couldn't ask the person's Tilo tab to approve this computer. Try again in a \
              minute."
@@ -1130,13 +1126,6 @@ mod tests {
         use tilo_user_identity::DeviceCertError;
         let said = certify_said(&CertifyError::Expired);
         assert!(said.contains("Keep the tab open"), "{said}");
-        assert!(
-            certify_said(&CertifyError::RateLimited {
-                retry_after_ms: 1500
-            })
-            .contains("2 seconds"),
-            "a pause reads in seconds"
-        );
         for error in [
             CertifyError::Denied("declined".into()),
             CertifyError::Denied("not admissible".into()),

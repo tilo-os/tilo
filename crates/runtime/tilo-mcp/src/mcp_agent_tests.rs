@@ -1484,18 +1484,12 @@ tilo_test_env::scenario! {
     )]
     fn the_agents_tools_answer_typed_when_a_call_asks;
 
-    phase a_busy_host_answers_rate_limited_with_its_wait;
-    // A host busy with the person's changes ran nothing: a typed call is told
-    // `rate_limited` with the wait the host said, so the caller asks again then.
+    phase a_host_that_does_not_serve_yet_answers_typed;
+    // A host that is not serving yet, or did not answer, ran nothing: a typed
+    // call is told the code so the caller asks again by it.
     {
         run(async {
             let busy = Notes::new(true);
-            *busy.unreachable.lock().unwrap() =
-                Some(ActionCallError::Busy { retry_after_ms: 480 });
-            let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
-            assert!(failed, "{typed}");
-            assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
-            assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
             let left = ActionCallError::Unavailable { reason: "left".into() };
             for (error, code) in [
                 (ActionCallError::NotReady, "not_ready"),

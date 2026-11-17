@@ -1139,28 +1139,6 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
     );
 }
 
-/// A server busy with the person's changes ran nothing: the server answers it
-/// typed as `rate_limited`, with the wait the server said, never as a refusal
-/// the caller must act on.
-#[test]
-fn a_busy_server_answers_rate_limited_with_its_wait() {
-    let busy = tilo_actions::remote::ActionCallError::Busy {
-        retry_after_ms: 480,
-    };
-    let server = server::ServerError::from(tilo_session_client::device::HostRefusal::of(&busy));
-    assert_eq!(
-        server,
-        server::ServerError::RateLimited {
-            retry_after_ms: 480
-        }
-    );
-    let answered = account::answer(true, "account/workspaces#create", account::refused(&server));
-    let error = &answered["structuredContent"]["error"];
-    assert_eq!(error["code"], "rate_limited", "{answered}");
-    assert_eq!(error["retry_after_ms"], 480, "{answered}");
-    assert_eq!(answered["isError"], true);
-}
-
 /// A workspace operation the server refused is read by its case, never by its
 /// words: one that is not the person's own is not theirs, and a branch that
 /// could not take everything names the part that did not come.

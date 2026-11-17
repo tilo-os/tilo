@@ -33,7 +33,6 @@ export {
   KeyExpired,
   KeyRefused,
   KeyRevoked,
-  RateLimited,
   Refused,
   ProtocolError,
   SurfaceChanged,

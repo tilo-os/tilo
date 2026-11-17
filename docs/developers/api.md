@@ -47,8 +47,7 @@ Every refusal has one shape, whatever route it came from:
 
 ```json
 {"error": {"code": "invalid_arguments", "message": "…",
-           "next_steps": ["GET /v1/workspaces/…/resources?path=notes/Todo lists its actions"],
-           "retry_after_ms": 2000}}
+           "next_steps": ["GET /v1/workspaces/…/resources?path=notes/Todo lists its actions"]}}
 ```
 
 `code` is stable and typed; `message` is for people; `next_steps` and `retry_after_ms` appear
@@ -62,7 +61,6 @@ when there are any. The HTTP status follows the code:
 | 404 | `not_found`, `unknown_action`, `unknown_resource` |
 | 409 | `idempotency_conflict`, `surface_changed` |
 | 422 | `failed`, `refused`, `branch_incomplete`, `action_confirmation_required` and every other code an app gives |
-| 429 | `rate_limited` |
 | 503 | `unavailable` |
 
 ## Idempotency

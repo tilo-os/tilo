@@ -11,7 +11,6 @@ from tilo import (
     KeyRefused,
     KeyRevoked,
     ProtocolError,
-    RateLimited,
     Refused,
     UnsupportedVersion,
 )
@@ -72,7 +71,7 @@ async def test_a_server_of_another_major_version_is_refused(api):
     assert "tilo-sdk" in str(raised.value)
 
 
-async def test_a_busy_host_is_asked_again_with_the_same_idempotency_key(tilo, api):
+async def test_a_transient_refusal_is_asked_again_with_the_same_idempotency_key(tilo, api):
     api.busy = 2
 
     created = await tilo.workspaces.create("Applicant: Jane Doe")
@@ -86,19 +85,16 @@ async def test_a_busy_host_is_asked_again_with_the_same_idempotency_key(tilo, ap
     assert len(set(keys)) == 1
 
 
-async def test_a_host_busy_past_the_deadline_raises_rate_limited(api):
+async def test_a_transient_refusal_past_the_deadline_is_raised(api):
     api.busy = 1000
-    api.busy_wait_ms = 20
     made = client(api, retry_deadline=0.1)
     try:
-        with pytest.raises(RateLimited) as raised:
+        with pytest.raises(Refused) as raised:
             await made.workspaces.create("Applicant: Jane Doe")
     finally:
         await made.aclose()
 
-    assert isinstance(raised.value, Refused)
-    assert raised.value.code == "rate_limited"
-    assert raised.value.retry_after_ms == 20
+    assert raised.value.code == "unavailable"
     assert api.busy < 1000
 
 

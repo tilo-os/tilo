@@ -122,9 +122,8 @@ export class FakeApi {
   /** Whether the person answered a workspace's ask to run commands
    * unattended: `null` while they have not, then whether they allowed it. */
   unattendedAllowed: boolean | null = null;
-  /** How many calls the host refuses as busy before it answers them, and the wait it says. */
+  /** How many calls the server says it is briefly unavailable for before answering them. */
   busy = 0;
-  busyWaitMs = 5;
   /** How many answers the invocation stays pending for, once it is asked about. */
   pendingRuns = 0;
   /** Whether an action waits for the person, and whether they have decided. */
@@ -216,13 +215,12 @@ export class FakeApi {
       return this.json(
         {
           error: {
-            code: "rate_limited",
-            message: "the host takes your changes more slowly; nothing ran",
+            code: "unavailable",
+            message: "the server is briefly unavailable; nothing ran",
             next_steps: ["wait and retry the same call"],
-            retry_after_ms: this.busyWaitMs,
           },
         },
-        429,
+        503,
       );
     }
     return this.route(method, segments.map((part) => decodeURIComponent(part)), call);

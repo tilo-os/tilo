@@ -13,7 +13,6 @@ import {
   AskPending,
   NetworkError,
   ProtocolError,
-  RateLimited,
   Refused,
   refusalOf,
 } from "./errors.ts";
@@ -222,16 +221,16 @@ export class Endpoint {
         continue;
       }
       versionOf(reply.headers);
-      if (reply.status !== 429 && reply.status !== 503) {
+      if (reply.status !== 503) {
         return await shaped(reply, options.stream === true);
       }
-      const busy = refusalOf(reply.status, await jsonOf(reply));
-      if (!(busy instanceof Refused)) {
-        throw busy;
+      const refusal = refusalOf(reply.status, await jsonOf(reply));
+      if (!(refusal instanceof Refused)) {
+        throw refusal;
       }
-      const wait = busy instanceof RateLimited ? busy.retryAfterMs : retryAfterOf(reply.headers);
+      const wait = retryAfterOf(reply.headers);
       if (Date.now() + (wait ?? 0) > deadline) {
-        throw busy;
+        throw refusal;
       }
       await pause(delayOf(attempt, wait));
     }
@@ -239,8 +238,8 @@ export class Endpoint {
 
   /**
    * One request's JSON answer; a refusal of it is thrown as what it was
-   * (`Refused`, `KeyRevoked`, `SurfaceChanged`), and a refusal of the host
-   * because it is busy is asked again.
+   * (`Refused`, `KeyRevoked`, `SurfaceChanged`), and a refusal of a server
+   * that is briefly unavailable is asked again.
    */
   async answer(method: string, path: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {
     const reply = await this.request(method, path, options);
@@ -526,7 +525,7 @@ function retryAfterOf(headers: HeadersLike): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
 }
 
-/** How long to wait before asking again: what the host said, else growing with jitter. */
+/** How long to wait before asking again: what the server said, else growing with jitter. */
 function delayOf(attempt: number, wait: number | null): number {
   const growing = Math.min(50 * 2 ** attempt, 2000);
   return Math.max(wait ?? 0, growing) * (1 + Math.random() * 0.5);

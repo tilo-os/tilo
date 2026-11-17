@@ -315,16 +315,12 @@ fn follow(
     // asks for, never sent.
     let caller = Caller::local_app("tilo.server");
     let until = Instant::now().checked_add(OPEN_PATIENCE);
-    // The same invocation asked again runs once: a machine that did not answer, or was busy
-    // (after the wait it said), is asked again within the open's patience. Any other answer is
-    // the answer.
+    // The same invocation asked again runs once: a machine that did not answer is asked
+    // again within the open's patience. Any other answer is the answer.
     let receipt = loop {
         let asked = placed_shells::settled(device.invoke(&caller, request.clone()));
         let again = match &asked {
             Err(_) | Ok(Err(ActionCallError::Unanswered)) => Some(Duration::ZERO),
-            Ok(Err(ActionCallError::Busy { retry_after_ms })) => {
-                Some(Duration::from_millis(*retry_after_ms))
-            }
             Ok(_) => None,
         };
         let in_time = |wait: Duration| {

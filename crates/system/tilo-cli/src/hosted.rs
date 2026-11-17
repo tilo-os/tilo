@@ -2135,10 +2135,10 @@ mod tests {
             );
         }
 
-        phase a_busy_host_is_asked_again_under_the_same_idempotency_key;
-        // A host busy with the person's changes answers `429` and names the wait;
-        // the same call is asked again under the id it first went with, so the
-        // host runs one invocation however often it is retried.
+        phase a_server_that_did_not_answer_is_asked_again_under_the_same_idempotency_key;
+        // A server that says it is briefly unavailable answers `503`; the same
+        // call is asked again under the id it first went with, so the host
+        // runs one invocation however often it is retried.
         {
             let _key = keyed();
             let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2154,9 +2154,8 @@ mod tests {
                 };
                 if first {
                     reply(
-                        429,
-                        json!({"error": {"code": "rate_limited", "message": "busy",
-                            "retry_after_ms": 1}}),
+                        503,
+                        json!({"error": {"code": "unavailable", "message": "still running"}}),
                     )
                 } else {
                     reply(200, json!({"revoked": "grant-1"}))
@@ -2175,7 +2174,11 @@ mod tests {
                 },
             );
             let sent = api_server.drain_requests();
-            assert_eq!(sent.len(), 2, "the busy answer is retried, not reported");
+            assert_eq!(
+                sent.len(),
+                2,
+                "the unavailable answer is retried, not reported"
+            );
             assert_eq!(sent[1].target, "/v1/keys/grant-1");
             assert_eq!(
                 sent[0].header("idempotency-key"),

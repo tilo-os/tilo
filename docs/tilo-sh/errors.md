@@ -8,7 +8,6 @@ the command exits non-zero and prints the same words.
 | What happened | Python | TypeScript | Carries |
 | :--- | :--- | :--- | :--- |
 | The host refused the action | `Refused` | `Refused` | `code`, `message`, `next_steps` (`nextSteps` in TypeScript) |
-| The host is busy with the person's changes | `RateLimited` | `RateLimited` | `code` is `rate_limited`, `retry_after_ms` (`retryAfterMs`) |
 | The action waits for a person | `AskPending` | `AskPending` | `url`, `invocation_id` (`invocationId`), `question` |
 | The key was turned away | `KeyRefused` | `KeyRefused` | `code`, `status` 401, `next_steps` |
 | …because it was revoked | `KeyRevoked` | `KeyRevoked` | `revoked_at_ms` (`revokedAtMs`) |
@@ -17,7 +16,7 @@ the command exits non-zero and prints the same words.
 | The app's surface moved past the generated types | `SurfaceChanged` | `SurfaceChanged` | `code` is `surface_changed`; run `tilo sdk gen` |
 | The server speaks another major version of the API | `UnsupportedVersion` | `ProtocolError` | `version`, and the one this SDK speaks (`api_version_unsupported`) |
 
-`RateLimited` is a `Refused`; `KeyRevoked` and `KeyExpired` are `KeyRefused`s, and `KeyRefused` is a
+`KeyRevoked` and `KeyExpired` are `KeyRefused`s, and `KeyRefused` is a
 `ProtocolError` with HTTP status 401. So catching the parent catches its cases. `SurfaceChanged` is a
 `Refused` and `UnsupportedVersion` is a `ProtocolError`.
 
@@ -34,7 +33,6 @@ naming a path.
 | `not_found` | No such workspace, resource or key, or one that is not yours |
 | `beyond_scope` | The key reaches one workspace and this is another one, or an account call |
 | `not_permitted` | The key reaches this workspace but may not do this in it |
-| `rate_limited` | The host is busy with the person's changes; nothing ran |
 | `no_payment_method` | The account's plan does not include it yet; `next_steps` says what adds it |
 | `unknown_app` | The path names an app the workspace does not have; `message` lists the ones it has |
 | `action_failed` | The action ran and refused: `message` is what the app tells a person, and nothing else ran |
@@ -52,13 +50,6 @@ The action asked the person first and has not run. `invocation_id` is the run th
 where the person answers it when the API says (a hosted workspace asks them on their own device instead);
 `question` is what they are being asked. `ask.wait()` follows the run until they decide, and answers its
 result. [Approvals](approvals.md) is the whole story.
-
-## RateLimited
-
-The host is running the person's own changes and ran nothing. The SDKs retry by themselves: they wait what
-the host says, with backoff, until their retry deadline — 60 seconds by default,
-`retry_deadline`/`retryDeadlineMs` on the client. Only when that passes is `RateLimited` raised, so
-catching it means "still busy after a minute".
 
 ## A key that is turned away
 

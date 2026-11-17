@@ -377,14 +377,10 @@ impl Refused {
         self
     }
 
-    /// Whether the workspace said the same step works when asked again: it was busy (after the
-    /// wait it said), not serving yet, or did not answer. Asked again under its same id, a step
-    /// runs once.
+    /// Whether the workspace said the same step works when asked again: it was not serving yet, or
+    /// did not answer. Asked again under its same id, a step runs once.
     pub(super) fn asks_again(&self) -> bool {
-        matches!(
-            self.code.as_str(),
-            "rate_limited" | "not_ready" | "unanswered"
-        )
+        matches!(self.code.as_str(), "not_ready" | "unanswered")
     }
 }
 

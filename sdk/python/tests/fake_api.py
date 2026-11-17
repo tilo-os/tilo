@@ -137,11 +137,9 @@ class FakeApi:
         # What a test drives.
         self.requests: list[dict[str, Any]] = []
         self.version = "1"
-        # How many calls the host refuses as busy before answering them, and
-        # how long it says to wait.
+        # How many calls the server says it is briefly unavailable for before
+        # answering them.
         self.busy = 0
-        self.busy_status = 429
-        self.busy_wait_ms = 5
         # Runs that have not finished: each with the polls it was asked for.
         self.polls: dict[str, int] = {}
         self.polls_until_done = 1
@@ -229,10 +227,9 @@ class FakeApi:
         if self.busy > 0:
             self.busy -= 1
             return self.refuse(
-                self.busy_status,
-                "rate_limited" if self.busy_status == 429 else "unavailable",
-                "the host takes your changes more slowly; nothing ran",
-                retry_after_ms=self.busy_wait_ms,
+                503,
+                "unavailable",
+                "the server is briefly unavailable; nothing ran",
             )
         return self.route(request, call)
 
@@ -892,13 +889,10 @@ class FakeApi:
         code: str,
         message: str,
         next_steps: list[str] | None = None,
-        retry_after_ms: int | None = None,
     ) -> httpx.Response:
         error: dict[str, Any] = {"code": code, "message": message}
         if next_steps:
             error["next_steps"] = list(next_steps)
-        if retry_after_ms is not None:
-            error["retry_after_ms"] = retry_after_ms
         return httpx.Response(status, json={"error": error}, headers=self.headers())
 
     def stream(

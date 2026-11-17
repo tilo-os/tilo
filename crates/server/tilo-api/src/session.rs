@@ -202,11 +202,10 @@ pub struct Call {
 /// any tool ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallError {
-    /// The typed code: `not_found`, `beyond_scope`, `rate_limited`,
-    /// `invalid_request` or `unavailable`.
+    /// The typed code: `not_found`, `beyond_scope`, `invalid_request` or
+    /// `unavailable`.
     pub code: &'static str,
     pub message: String,
-    pub retry_after_ms: Option<u64>,
 }
 
 impl CallError {
@@ -214,7 +213,6 @@ impl CallError {
         Self {
             code: "beyond_scope",
             message: "this key reaches another workspace only".into(),
-            retry_after_ms: None,
         }
     }
 
@@ -222,7 +220,6 @@ impl CallError {
         Self {
             code: "unavailable",
             message: "your workspace didn't answer; try again in a minute".into(),
-            retry_after_ms: None,
         }
     }
 
@@ -233,20 +230,12 @@ impl CallError {
             .and_then(Value::as_str)
             .unwrap_or("the call was refused")
             .to_owned();
-        let retry_after_ms = error
-            .pointer("/data/retry_after_ms")
-            .and_then(Value::as_u64);
         let code = match error.get("code").and_then(Value::as_i64) {
-            _ if retry_after_ms.is_some() => crate::account::RATE_LIMITED,
             Some(-32602) if message.contains("no such workspace") => "not_found",
             Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
             _ => "unavailable",
         };
-        Self {
-            code,
-            message,
-            retry_after_ms,
-        }
+        Self { code, message }
     }
 }
 
@@ -254,17 +243,6 @@ impl CallError {
 #[must_use]
 pub fn error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
-}
-
-/// The JSON-RPC error of a call the server ran nothing for because it is busy
-/// with the person's changes: `data` says so typed, with the wait, so a
-/// client retries the same call then.
-fn rate_limited(id: &Value, retry_after_ms: u64) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"error":{
-        "code": -32000,
-        "message": ServerError::RateLimited { retry_after_ms }.to_string(),
-        "data": {"code": crate::account::RATE_LIMITED, "retry_after_ms": retry_after_ms},
-    }})
 }
 
 fn result(id: &Value, value: &Value) -> Value {
@@ -503,9 +481,6 @@ impl Session {
             Ok(held) => held,
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
-            }
-            Err(ServerError::RateLimited { retry_after_ms }) => {
-                return Reply::one(rate_limited(&id, retry_after_ms));
             }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
@@ -852,7 +827,6 @@ impl Session {
                         message: "that program session ended: its lets and references are gone; \
                                   leave `session` out to start a new one"
                             .into(),
-                        retry_after_ms: None,
                     })?;
                 sessions.remove(at).1
             }

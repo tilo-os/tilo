@@ -36,9 +36,9 @@ export interface TiloOptions {
   /** How it reaches the API: `fetch` unless you bring your own. */
   fetch?: FetchLike;
   /**
-   * How long a call keeps asking again while the host is busy with the
-   * person's changes or unreachable, in ms (60 000 by default; 0 throws
-   * `RateLimited` at once).
+   * How long a call keeps asking again while the server is briefly
+   * unavailable or unreachable, in ms (60 000 by default; 0 throws its
+   * refusal at once).
    */
   retryDeadlineMs?: number;
   /** The boundary under the API: an API server over `fetch` unless you pass one. */

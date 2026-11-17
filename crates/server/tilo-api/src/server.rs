@@ -69,9 +69,6 @@ pub enum ServerError {
     Refused(String),
     /// The server or the site could not be reached.
     Unavailable(String),
-    /// The server is busy with this person's changes: nothing ran, and the
-    /// same call works once `retry_after_ms` passed.
-    RateLimited { retry_after_ms: u64 },
     /// The server refused one of its own workspace operations, saying which
     /// case it was instead of leaving the caller to read it from words.
     RefusedWorkspace(WorkspaceRefusal),
@@ -120,13 +117,6 @@ impl std::fmt::Display for ServerError {
                     }
                 }
             }
-            Self::RateLimited { retry_after_ms } => {
-                let seconds = retry_after_ms.div_ceil(1000).max(1);
-                write!(
-                    f,
-                    "Tilo is busy with your changes; try again in {seconds} s"
-                )
-            }
         }
     }
 }
@@ -135,7 +125,6 @@ impl From<CertifyError> for ServerError {
     fn from(error: CertifyError) -> Self {
         match error {
             CertifyError::Denied(reason) => Self::Refused(reason),
-            CertifyError::RateLimited { retry_after_ms } => Self::RateLimited { retry_after_ms },
             other => Self::Unavailable(other.to_string()),
         }
     }

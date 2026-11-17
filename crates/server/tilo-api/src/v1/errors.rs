@@ -92,9 +92,7 @@ impl ApiError {
 
 impl From<crate::session::CallError> for ApiError {
     fn from(error: crate::session::CallError) -> Self {
-        let mut refused = Self::new(error.code, error.message);
-        refused.body.retry_after_ms = error.retry_after_ms;
-        refused
+        Self::new(error.code, error.message)
     }
 }
 
@@ -117,11 +115,6 @@ impl From<crate::server::ServerError> for ApiError {
             // the message itself.
             ServerError::NoHolder => Self::new("unavailable", error.to_string())
                 .next("open Tilo on a device that holds the workspace, then try again"),
-            ServerError::RateLimited { retry_after_ms } => {
-                let mut refused = Self::new("rate_limited", error.to_string());
-                refused.body.retry_after_ms = Some(retry_after_ms);
-                refused
-            }
         }
     }
 }
@@ -145,7 +138,6 @@ pub fn status_of(code: &str) -> StatusCode {
             StatusCode::CONFLICT
         }
         "too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
         "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
     }

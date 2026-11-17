@@ -399,13 +399,16 @@ fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
 
     let waiting = Call::of(&serde_json::json!({
         "status": "failed",
-        "error": {"code": "rate_limited", "message": "busy", "retry_after_ms": 40},
+        "error": {"code": "not_ready", "message": "the workspace is not serving yet"},
     }))
     .unwrap();
     assert_eq!(waiting.status, Status::Failed);
     let error = waiting.error.unwrap();
-    assert_eq!(error.code(), "rate_limited");
-    assert!(error.asks_again(), "a busy workspace is asked again");
+    assert_eq!(error.code(), "not_ready");
+    assert!(
+        error.asks_again(),
+        "a workspace not serving yet is asked again"
+    );
 
     let already = Call::of(&serde_json::json!({
         "status": "failed",

@@ -57,9 +57,9 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   `AskPending(url, invocationId)` and `await ask.wait()` answers once they
   decide. A key that was revoked or expired throws `KeyRevoked`/`KeyExpired`.
 - **Every change is idempotent.** Each POST, PUT or DELETE carries an
-  `Idempotency-Key`, and a retry carries the same one: a call the host is busy
-  with (`RateLimited`, `retry_after_ms`) or one that never arrived is asked
-  again until the client's retry deadline, and the host runs it once.
+  `Idempotency-Key`, and a retry carries the same one: a call the server says
+  it cannot take just now, or one that never arrived, is asked again until the
+  client's retry deadline, and the host runs it once.
 - **Invocations group calls.** `await ws.invocation("Fill Jane's application",
   async (invocation) => …)` puts every call inside into one group: one undo step
   per app, named in

@@ -93,14 +93,8 @@ pub(crate) enum Outcome {
         code: &'static str,
         message: String,
         next: String,
-        /// How long to wait before the same call works, when the host said.
-        retry_after_ms: Option<u64>,
     },
 }
-
-/// The code of an answer that ran nothing because the host is busy with the
-/// person's changes: the same call works after its `retry_after_ms`.
-pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
 pub(crate) fn failed(
     code: &'static str,
@@ -111,7 +105,6 @@ pub(crate) fn failed(
         code,
         message: message.into(),
         next: next.into(),
-        retry_after_ms: None,
     }
 }
 
@@ -150,12 +143,6 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
             error.to_string(),
             "open Tilo on a device that holds the workspace, then try again",
         ),
-        ServerError::RateLimited { retry_after_ms } => Outcome::Failed {
-            code: RATE_LIMITED,
-            message: error.to_string(),
-            next: format!("wait {retry_after_ms} ms and retry the same call"),
-            retry_after_ms: Some(*retry_after_ms),
-        },
     }
 }
 
@@ -217,12 +204,8 @@ pub(crate) fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
             code,
             message,
             next,
-            retry_after_ms,
         } => {
-            let mut error = json!({"code": code, "message": message, "next_steps": [next]});
-            if let (Some(fields), Some(wait)) = (error.as_object_mut(), retry_after_ms) {
-                fields.insert("retry_after_ms".into(), json!(wait));
-            }
+            let error = json!({"code": code, "message": message, "next_steps": [next]});
             tool_result(
                 structured,
                 &format!("failed: {code}: {message}. Next: {next}"),

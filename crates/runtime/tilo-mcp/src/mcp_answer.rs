@@ -8,10 +8,10 @@ use std::fmt::Write as _;
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
 /// second rendering would be read twice. A call the host refused for a reason
-/// it can act on is answered with the host's code: `rate_limited` with the
-/// wait, `not_ready` until the workspace serves it, `unanswered` to ask again
-/// under the same invocation id. A call that ran more than is safe to run
-/// again (`retry_safe` false) is never told to.
+/// it can act on is answered with the host's code: `not_ready` until the
+/// workspace serves it, `unanswered` to ask again under the same invocation
+/// id. A call that ran more than is safe to run again (`retry_safe` false) is
+/// never told to.
 pub(super) fn text_result(
     result: Result<Reply, Failure>,
     structured: bool,
@@ -88,43 +88,33 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         None => said,
         Some(_) => message,
     };
-    let (code, next, wait) = match &failure.host {
-        Some(ActionCallError::Busy { retry_after_ms }) if retry_safe => (
-            "rate_limited",
-            format!("wait {retry_after_ms} ms and retry the same call"),
-            Some(*retry_after_ms),
-        ),
+    let (code, next) = match &failure.host {
         Some(ActionCallError::NotReady) if retry_safe => (
             "not_ready",
             "retry the same call once what it waits for arrived: tilo_watch says when the \
              workspace serves this session"
                 .to_owned(),
-            None,
         ),
         Some(ActionCallError::Unanswered) => (
             "unanswered",
             "call again with the same invocation_id: it answers what the call did, and runs it \
              once if it never arrived"
                 .to_owned(),
-            None,
         ),
-        Some(other) => (other.code(), String::new(), None),
-        None => (named, String::new(), None),
+        Some(other) => (other.code(), String::new()),
+        None => (named, String::new()),
     };
     let mut error = json!({"code": code, "message": message});
-    if let Some(fields) = error.as_object_mut() {
-        if let Some(wait) = wait {
-            fields.insert("retry_after_ms".into(), wait.into());
-        }
-        if !next.is_empty() {
-            fields.insert("next_steps".into(), json!([next]));
-        }
+    if let Some(fields) = error.as_object_mut()
+        && !next.is_empty()
+    {
+        fields.insert("next_steps".into(), json!([next]));
     }
     json!({"status":"failed","error":error})
 }
 
 /// The codes a refusal is documented with (`docs/tilo-sh/errors.md`).
-const CODES: [&str; 14] = [
+const CODES: [&str; 13] = [
     "invalid_arguments",
     "unknown_action",
     "unknown_resource",
@@ -133,7 +123,6 @@ const CODES: [&str; 14] = [
     "not_permitted",
     "beyond_scope",
     "no_payment_method",
-    "rate_limited",
     "surface_changed",
     "action_unavailable",
     "action_failed",

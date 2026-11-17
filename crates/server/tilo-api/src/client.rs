@@ -30,9 +30,8 @@ const MAX_ANSWER: usize = 64 * 1024 * 1024;
 /// The longest one request is held before the server answers that it still
 /// waits: `Prefer: wait=` takes seconds, 60 at most.
 const WAIT_SECONDS: &str = "60";
-/// How long a call keeps asking while Tilo is busy with the person's
-/// changes.
-const BUSY_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a call keeps asking while the server says it is unavailable.
+const RETRY_DEADLINE: Duration = Duration::from_secs(60);
 /// How long an action waits for the person to answer it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(300);
 /// How long a request is given, uploads included.
@@ -155,19 +154,6 @@ impl Answer {
             retry_after_ms: field("retry_after_ms").and_then(Value::as_u64),
         })
     }
-
-    /// How long the answer asks the caller to wait before the same call works,
-    /// when it says Tilo is busy with the person's changes.
-    fn busy_for(&self) -> Option<Duration> {
-        let json = self.json();
-        (json.pointer("/error/code").and_then(Value::as_str) == Some("rate_limited")).then(|| {
-            Duration::from_millis(
-                json.pointer("/error/retry_after_ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1000),
-            )
-        })
-    }
 }
 
 /// A call the API refused: the code it answered, its words, and the wait it
@@ -186,7 +172,7 @@ impl Refusal {
         error.downcast_ref()
     }
 
-    /// The API's stable code for why it refused (`rate_limited`).
+    /// The API's stable code for why it refused.
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
@@ -210,10 +196,10 @@ impl std::error::Error for Refusal {}
 /// Whether a call is asked again while it does not answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Waiting {
-    /// A workspace busy with the person's changes answers `429`, and the same call
-    /// works after the wait it names.
-    Busy,
-    /// [`Self::Busy`], and an action that waits for the person answers `202`:
+    /// The server says it is briefly unavailable (`503`): the same call works
+    /// once it is back.
+    Transient,
+    /// [`Self::Transient`], and an action that waits for the person answers `202`:
     /// asking again under the same idempotency key asks about that same
     /// invocation, which is how a caller awaits it.
     ForPerson,
@@ -285,7 +271,7 @@ impl Client {
     /// `GET path` (a route with its query), as JSON.
     pub async fn get(&self, path: &str) -> Result<Value> {
         let answer = self
-            .call(Method::Get, path, &[], &[], Waiting::Busy)
+            .call(Method::Get, path, &[], &[], Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -298,7 +284,7 @@ impl Client {
     pub async fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let said = body.to_string();
         let answer = self
-            .call(Method::Post, path, said.as_bytes(), &[], Waiting::Busy)
+            .call(Method::Post, path, said.as_bytes(), &[], Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -323,7 +309,7 @@ impl Client {
     /// `DELETE path`, under a new idempotency key: the answer.
     pub async fn delete(&self, path: &str) -> Result<Value> {
         let answer = self
-            .call(Method::Delete, path, &[], &[], Waiting::Busy)
+            .call(Method::Delete, path, &[], &[], Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -421,7 +407,7 @@ impl Client {
                 &path,
                 said.as_bytes(),
                 &headers,
-                Waiting::Busy,
+                Waiting::Transient,
             )
             .await?;
         if !answer.ok() && answer.status != 202 {
@@ -438,7 +424,7 @@ impl Client {
             encode_path(run)
         );
         let answer = self
-            .call(Method::Get, &path, &[], &[], Waiting::Busy)
+            .call(Method::Get, &path, &[], &[], Waiting::Transient)
             .await?;
         if !answer.ok() && answer.status != 202 {
             return Err(answer.refused());
@@ -458,7 +444,7 @@ impl Client {
                 &path,
                 body.as_bytes(),
                 &headers,
-                Waiting::Busy,
+                Waiting::Transient,
             )
             .await?;
         if !answer.ok() {
@@ -473,7 +459,7 @@ impl Client {
         let path = format!("/v1/workspaces/{workspace}/uploads");
         let headers = [("content-type", "application/octet-stream".to_owned())];
         let answer = self
-            .call(Method::Post, &path, &bytes, &headers, Waiting::Busy)
+            .call(Method::Post, &path, &bytes, &headers, Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -575,7 +561,7 @@ impl Client {
         let headers = [("content-type", "application/octet-stream".to_owned())];
         let path = format!("{upload}?offset={offset}");
         let answer = self
-            .call(Method::Put, &path, piece, &headers, Waiting::Busy)
+            .call(Method::Put, &path, piece, &headers, Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -586,7 +572,7 @@ impl Client {
     /// Where `upload` stands: how many of its bytes the workspace has.
     pub async fn upload_status(&self, upload: &str) -> Result<Value> {
         let answer = self
-            .call(Method::Get, upload, &[], &[], Waiting::Busy)
+            .call(Method::Get, upload, &[], &[], Waiting::Transient)
             .await?;
         if !answer.ok() {
             return Err(answer.refused());
@@ -624,7 +610,7 @@ impl Client {
                 .saturating_sub(1);
             let headers = [("range", format!("bytes={written}-{end}"))];
             let answer = match self
-                .call(Method::Get, &path, &[], &headers, Waiting::Busy)
+                .call(Method::Get, &path, &[], &headers, Waiting::Transient)
                 .await
             {
                 Ok(answer) => {
@@ -689,16 +675,15 @@ impl Client {
         if waiting == Waiting::ForPerson {
             headers.push(("prefer", format!("wait={WAIT_SECONDS}")));
         }
-        let busy_until = Instant::now().checked_add(BUSY_DEADLINE);
+        let retry_until = Instant::now().checked_add(RETRY_DEADLINE);
         let answered_until = (waiting == Waiting::ForPerson)
             .then(|| Instant::now().checked_add(ANSWER_DEADLINE))
             .flatten();
         let mut told = false;
         loop {
             let answer = self.send(method, path, &headers, body).await?;
-            if matches!(answer.status, 429 | 503) && ahead(busy_until) {
-                let pause = answer.busy_for().unwrap_or_else(|| Duration::from_secs(1));
-                tokio::time::sleep(pause).await;
+            if answer.status == 503 && ahead(retry_until) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
             if waiting == Waiting::ForPerson && answer.status == 202 && ahead(answered_until) {
@@ -968,24 +953,6 @@ mod tests {
                 bare.refused().to_string(),
                 "the API refused the call (HTTP 500)"
             );
-        }
-
-        phase only_a_busy_host_says_how_long_to_wait;
-        {
-            let busy = Answer {
-                status: 429,
-                body: serde_json::json!({"error": {"code": "rate_limited", "retry_after_ms": 480}})
-                    .to_string()
-                    .into_bytes(),
-            };
-            assert_eq!(busy.busy_for(), Some(Duration::from_millis(480)));
-            let refused = Answer {
-                status: 422,
-                body: serde_json::json!({"error": {"code": "refused"}})
-                    .to_string()
-                    .into_bytes(),
-            };
-            assert_eq!(refused.busy_for(), None);
         }
     }
 }
