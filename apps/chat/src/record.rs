@@ -1524,17 +1524,20 @@ impl Chat {
     /// an agent the conversation is with keeps one, under its own name, and a summary only
     /// reaches further: one that ends before the one kept changes nothing, so two runtimes
     /// answering for the same agent keep the further of the two.
-    #[action(item = channels, housekeeping, audience = "agents")]
+    ///
+    /// The conversation is a plain argument and comes last: a conversation with an agent is no
+    /// channel this record lists, so the verb names no item of it.
+    #[action(housekeeping, audience = "agents")]
     pub fn keep_summary(
         &mut self,
         cx: &mut ActionCx,
-        channel: &Id,
         #[param("The last message it takes in")] through: String,
         #[param("When that message was written, in seconds since the epoch")] through_ts: i64,
         #[param("The summary")] text: String,
+        #[param("The conversation it is the summary of")] conversation: Id,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
-        if me.is_person() || !self.conversation_members(channel).contains(&me) {
+        if me.is_person() || !self.conversation_members(&conversation).contains(&me) {
             return Err(Refusal::new(
                 "only an agent the conversation is with keeps its summary",
             ));
@@ -1552,7 +1555,7 @@ impl Chat {
         }
         let kept = self
             .summaries
-            .entry(channel.to_string())
+            .entry(conversation.to_string())
             .or_default()
             .entry(member_slot(&me).to_string())
             .or_default();

@@ -8511,9 +8511,6 @@
       "chat.workspace.keep-summary.Arguments": {
         "type": "object",
         "properties": {
-          "channel": {
-            "type": "string"
-          },
           "through": {
             "type": "string"
           },
@@ -8522,13 +8519,16 @@
           },
           "text": {
             "type": "string"
+          },
+          "conversation": {
+            "type": "string"
           }
         },
         "required": [
-          "channel",
           "through",
           "through_ts",
-          "text"
+          "text",
+          "conversation"
         ],
         "description": ""
       },

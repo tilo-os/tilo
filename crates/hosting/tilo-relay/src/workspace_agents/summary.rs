@@ -57,7 +57,7 @@ impl HostAgents {
             self.charge(workspace, &turn.agent, day, cost).await;
         }
         let mut arguments = Map::new();
-        arguments.insert("channel".into(), json!(fold.conversation));
+        arguments.insert("conversation".into(), json!(fold.conversation));
         arguments.insert("through".into(), json!(fold.through));
         arguments.insert("through_ts".into(), json!(fold.through_ts));
         arguments.insert("text".into(), json!(fold.kept(&said)));

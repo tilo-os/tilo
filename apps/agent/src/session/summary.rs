@@ -90,7 +90,7 @@ impl Session {
             })
             .cloned()?;
         let mut arguments = Map::new();
-        arguments.insert("channel".into(), json!(fold.conversation));
+        arguments.insert("conversation".into(), json!(fold.conversation));
         arguments.insert("through".into(), json!(fold.through));
         arguments.insert("through_ts".into(), json!(fold.through_ts));
         // Checked with a text of its own, so a workspace whose verb takes other arguments is
