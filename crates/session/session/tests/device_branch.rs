@@ -189,12 +189,19 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
     }
     copy.wait_holding(&site.workspace);
     laptop.wait_holding(&site.workspace);
-    // Nobody was removed (Ada owns the site, so it lists her as no member of
-    // its own), and a member is a person: the copy adds none.
+    // Nobody was removed, and a member is a person: Ada, the owner, is the one member, and the
+    // copy adds none.
     let members = site.members();
     assert!(members.values().all(|mark| !mark.removed), "{members:?}");
     assert!(!members.contains_key(&hex::encode(copy.cert.device_public_key)));
-    assert!(!members.contains_key(&hex::encode(ada.public)) || members.len() == 1);
+    assert_eq!(
+        members
+            .get(&hex::encode(ada.public))
+            .map(|mark| mark.role.as_str()),
+        Some("owner"),
+        "{members:?}"
+    );
+    assert_eq!(members.len(), 1, "{members:?}");
 }
 
 /// What either opens on the workspace's sealed shell the other shows, before

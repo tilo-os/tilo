@@ -1811,9 +1811,9 @@ impl Workspaces {
         Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
-    /// Every person governance records in `workspace` other than this host's
-    /// own person, by person (hex root), with the workspace's governance
-    /// generation.
+    /// Every person `workspace` has, as [`Self::people`] lists them, by person
+    /// (hex root), with the workspace's governance generation: its owner among
+    /// them, also where the owner is this host's own person.
     ///
     /// # Errors
     ///
@@ -1829,15 +1829,11 @@ impl Workspaces {
             .peer()
             .permissions(self.inner.host.cert.device_public_key, now)?
             .policy;
-        let host = self.inner.host.cert.user_public_key;
-        let marks = governed
-            .peer()
-            .governance()
-            .governed_members(now)
-            .unwrap_or_default()
+        let people = self.people(&governed);
+        drop(governed);
+        let marks = people
             .members
             .into_iter()
-            .filter(|member| member.root() != Some(host))
             .map(|member| {
                 let person = member.id.person_id().unwrap_or_default().to_owned();
                 let role = match member.role {
@@ -1853,7 +1849,7 @@ impl Workspaces {
                 (person, mark)
             })
             .collect();
-        Ok((governed.summary().generation, marks))
+        Ok((people.generation, marks))
     }
 
     /// The workspace-join contract's membership answer for `device`, a

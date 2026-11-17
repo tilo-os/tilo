@@ -59,17 +59,17 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
         device.wait_holding(&site.workspace);
     }
 
-    // The workspace's own governance names Bob, in the part the invitation gave him, and no device
-    // of either person is a person of its own: the workspace's owner is its own, not one of its
-    // members.
+    // The workspace's own governance names Ada as its owner and Bob in the part the invitation gave
+    // him, and no device of either person is a person of its own: the owner is a member like any
+    // other, also where her own device hosts the workspace.
     site.wait_for_member(bob.public);
     let members = site.members();
     assert_eq!(
         members
             .get(&hex::encode(ada.public))
             .map(|mark| mark.role.as_str()),
-        None,
-        "Ada's site owns the workspace rather than holding a member's part: {members:?}"
+        Some("owner"),
+        "Ada owns the workspace and is listed among its members: {members:?}"
     );
     assert_eq!(
         members
@@ -80,8 +80,8 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     );
     assert_eq!(
         members.len(),
-        1,
-        "one person joined the workspace, not their two devices: {members:?}"
+        2,
+        "two people are in the workspace, not their four devices: {members:?}"
     );
 
     // Each of the four sessions keeps the workspace, shows it on its shell,
