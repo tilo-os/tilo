@@ -29,7 +29,7 @@ use tilo_actions::remote::person_accounts::{
     SentMail, StartedSend,
 };
 use tilo_actions::remote::person_accounts::{
-    FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
+    ArrivedAfter, FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
 };
 use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
@@ -66,6 +66,9 @@ impl Workspaces {
         self.inner
             .person_settings_moved
             .send_modify(|count| *count = count.wrapping_add(1));
+        // An inbox somebody listens for is watched with the accounts as its
+        // person keeps them now.
+        self.watch_listened_inboxes();
     }
 
     /// Fires whenever a person's own settings kept here change.
@@ -170,6 +173,13 @@ impl Workspaces {
             person_accounts::MARK => {
                 let marking: MarkMail = argument(request, "what changed about a message")?;
                 answer(&mark_with(self.mail_session(), &root, marking).await)
+            }
+            person_accounts::ARRIVED => {
+                let asking: ArrivedAfter = match &request.argument {
+                    InvokeArgument::Json(_) => argument(request, "a place in the arrival log")?,
+                    _ => ArrivedAfter::default(),
+                };
+                answer(&Ok::<_, String>(self.arrived_after(&person, asking.after)))
             }
             person_accounts::BEGIN_SEND => {
                 let beginning: BeginSend = argument(request, "a message to begin")?;
@@ -1182,6 +1192,16 @@ mod mail_session_tests {
             Ok(SentMail {
                 unfiled: self.unfiled.lock().unwrap().clone(),
             })
+        }
+
+        fn watch(
+            &self,
+            _: &accounts::Account,
+            _: &accounts::Secret,
+            _: Option<tilo_mail_session::InboxSeen>,
+            _: Arc<dyn tilo_mail_session::InboxHeard>,
+        ) -> Result<tilo_mail_session::Watching, String> {
+            Err("no inbox is watched in this test".into())
         }
 
         fn mark(

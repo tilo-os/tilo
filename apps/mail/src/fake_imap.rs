@@ -121,6 +121,9 @@ pub struct FakeImap {
     logins: Arc<std::sync::atomic::AtomicUsize>,
     cleartext_logins: Arc<std::sync::atomic::AtomicUsize>,
     refuses_appends: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the server cannot tell an idling connection of a change.
+    tells_nothing: Arc<std::sync::atomic::AtomicBool>,
+    drops: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 impl FakeImap {
@@ -161,6 +164,8 @@ impl FakeImap {
             logins: Arc::default(),
             cleartext_logins: Arc::default(),
             refuses_appends: Arc::default(),
+            tells_nothing: Arc::default(),
+            drops: Arc::new(tokio::sync::watch::Sender::new(0)),
         };
         let serving = server.clone();
         tokio::spawn(async move {
@@ -299,6 +304,29 @@ impl FakeImap {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// From now on the server cannot tell an idling connection of a change:
+    /// it leaves `IDLE` out of what it says it can do, and refuses it.
+    pub fn without_idle(&self) {
+        self.tells_nothing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Close every connection the server holds, as one that restarts or
+    /// drops what idled for too long. New connections are taken as before.
+    pub fn drop_connections(&self) {
+        self.drops.send_modify(|drops| *drops += 1);
+    }
+
+    /// What the server says it can do, on a connection that is secure.
+    fn capabilities(&self) -> String {
+        let all = self.layout.capabilities();
+        if self.tells_nothing.load(std::sync::atomic::Ordering::SeqCst) {
+            all.replace(" IDLE", "")
+        } else {
+            all.to_owned()
+        }
+    }
+
     /// The names of the folders the server holds, in the order they came to be.
     pub fn folders(&self) -> Vec<String> {
         self.state
@@ -327,14 +355,20 @@ impl FakeImap {
         let mut reader = BufReader::new(read);
         let mut selected: Option<String> = None;
         let mut news = self.changed.subscribe();
-        let greeting = format!("* OK [CAPABILITY {}] ready\r\n", self.layout.capabilities());
+        let mut dropped = self.drops.subscribe();
+        let greeting = format!("* OK [CAPABILITY {}] ready\r\n", self.capabilities());
         if greet && write.write_all(greeting.as_bytes()).await.is_err() {
             return;
         }
         let mut line = String::new();
         loop {
             line.clear();
-            match reader.read_line(&mut line).await {
+            let read = tokio::select! {
+                // A dropped connection is closed under its client.
+                _ = dropped.changed() => return,
+                read = reader.read_line(&mut line) => read,
+            };
+            match read {
                 Ok(0) | Err(_) => return,
                 Ok(_) => {}
             }
@@ -363,6 +397,10 @@ impl FakeImap {
                     .write_all(format!("* BYE\r\n{tag} OK LOGOUT\r\n").as_bytes())
                     .await;
                 return;
+            } else if upper.starts_with("IDLE")
+                && self.tells_nothing.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                format!("{tag} BAD unknown command\r\n")
             } else if upper.starts_with("IDLE") {
                 if write.write_all(b"+ idling\r\n").await.is_err() {
                     return;
@@ -376,6 +414,7 @@ impl FakeImap {
                 self.idling
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let heard = tokio::select! {
+                    _ = dropped.changed() => None,
                     _ = news.changed() => Some(true),
                     read = reader.read_line(&mut done) => {
                         read.is_ok_and(|read| read > 0).then_some(false)
@@ -462,10 +501,7 @@ impl FakeImap {
             return format!("{tag} OK done\r\n");
         }
         if upper.starts_with("CAPABILITY") {
-            return format!(
-                "* CAPABILITY {}\r\n{tag} OK\r\n",
-                self.layout.capabilities()
-            );
+            return format!("* CAPABILITY {}\r\n{tag} OK\r\n", self.capabilities());
         }
         if upper.starts_with("LIST") {
             let mut out = String::new();
