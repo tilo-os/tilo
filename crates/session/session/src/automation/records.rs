@@ -4,7 +4,7 @@
 //! becomes a [`DocumentEvent`]. The first look at a record only learns its heads: a shortcut saved
 //! today never fires on last year's messages.
 //! The records are followed as every role that follows them does: off the one stream of record
-//! changes ([`Changes`]) and through the store they are kept in, on a worker of the feed's own. The
+//! changes ([`Changes`]) and through the engine that holds them, on a worker of the feed's own. The
 //! session's loop only takes what the worker found ([`RecordFeed::take`]).
 //! A workspace a shortcut starts watching is read on the loop's pass that armed it
 //! ([`RecordFeed::follow`]), so the heads it learns as its baseline are the heads at that moment: a
@@ -15,12 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use automerge::{AutoCommit, ChangeHash};
-use durable_store::DurableStore;
 use tilo_actions::ActionContext;
 use tilo_automation::dispatch::{DocumentEvent, event_of};
 
-use crate::platform::Store;
-use crate::platform::records::{Changed, Changes, document, named_checkouts};
+use crate::platform::records::{Changed, Changes, Records as Reads, Source};
 
 /// What the worker keeps between reads.
 #[derive(Default)]
@@ -38,19 +36,19 @@ pub struct RecordFeed {
     /// What the worker keeps between reads, shared with the loop, which reads a workspace's
     /// records once when it starts watching them.
     worker: Arc<Mutex<Worker>>,
-    /// The store the records are kept in; `None` on a session that keeps none.
-    store: Option<Store>,
+    /// What the workspaces hold; `None` on a session that holds none.
+    held: Option<Source>,
 }
 
 impl RecordFeed {
     /// Follow the records `records` keeps, as its stream notes their changes, waking the loop
     /// through `wake` when one became an event. Nothing is read until a shortcut watches a
     /// workspace ([`Self::follow`]).
-    pub fn start(records: Option<(Store, Changes)>, wake: tilo_service::Wake) -> Self {
+    pub fn start(held: Option<(Source, Changes)>, wake: tilo_service::Wake) -> Self {
         let worker = Arc::new(Mutex::new(Worker::default()));
-        let store = records.map(|(store, changes)| {
+        let held = held.map(|(held, changes)| {
             let reader = changes.reader();
-            let (following, reading) = (Arc::downgrade(&worker), Store::clone(&store));
+            let (following, reading) = (Arc::downgrade(&worker), Source::clone(&held));
             let spawned = std::thread::Builder::new()
                 .name("tilo-automation-records".into())
                 .spawn(move || {
@@ -74,9 +72,9 @@ impl RecordFeed {
             if let Err(error) = spawned {
                 tracing::warn!(%error, "record changes fire no shortcut");
             }
-            store
+            held
         });
-        Self { worker, store }
+        Self { worker, held }
     }
 
     /// Read the records of exactly `workspaces` from now on: the workspaces where an armed shortcut
@@ -93,25 +91,20 @@ impl RecordFeed {
             .cursors
             .retain(|(workspace, ..), _| workspaces.contains(workspace));
         worker.workspaces = workspaces;
-        let Some(store) = &self.store else {
+        let Some(held) = &self.held else {
             return;
         };
-        let indexes = store.workspace_indexes().unwrap_or_default();
         for workspace in added {
-            for (app, _) in indexes.iter().filter(|(_, held)| *held == workspace) {
-                for (checkout, _) in
-                    named_checkouts(store.as_ref(), app, &workspace).unwrap_or_default()
-                {
-                    worker.look(
-                        store.as_ref(),
-                        &Changed {
-                            workspace: workspace.clone(),
-                            app: app.clone(),
-                            record: checkout.id.route().to_owned(),
-                            replayed: true,
-                        },
-                    );
-                }
+            for (app, route) in held.held(&workspace) {
+                worker.look(
+                    held.as_ref(),
+                    &Changed {
+                        workspace: workspace.clone(),
+                        app,
+                        record: route,
+                        replayed: true,
+                    },
+                );
             }
         }
     }
@@ -130,12 +123,12 @@ fn lock(worker: &Mutex<Worker>) -> MutexGuard<'_, Worker> {
 impl Worker {
     /// Read the record `changed` reached, where a shortcut watches its workspace: what changed
     /// since its heads were last read becomes events, and its heads are kept. Whether it found any.
-    fn look(&mut self, store: &dyn DurableStore, changed: &Changed) -> bool {
+    fn look(&mut self, held: &dyn Reads, changed: &Changed) -> bool {
         // The workspace's own document is its list of records, not one of them.
         if changed.record.is_empty() || !self.workspaces.contains(&changed.workspace) {
             return false;
         }
-        let Some(doc) = document(store, &changed.app, &changed.workspace, &changed.record) else {
+        let Some(doc) = held.document(&changed.app, &changed.workspace, &changed.record) else {
             return false;
         };
         let kind = ui::resource::identity(&doc)
@@ -251,7 +244,7 @@ mod tests {
     }
 
     /// A record a file opened as, kept under a storage key its route does not spell: a change of it
-    /// written through the records' store reaches the shortcuts by the record's route.
+    /// written to it reaches the shortcuts by the resource's route.
     #[test]
     fn a_change_written_to_a_file_record_becomes_an_event() {
         use durable_store::{StorageKey, WriteOp};
@@ -285,7 +278,13 @@ mod tests {
 
         let (woke, woken) = std::sync::mpsc::channel();
         let feed = RecordFeed::start(
-            Some((Store::clone(&store), changes)),
+            Some((
+                Arc::new(crate::platform::records::Kept::over(
+                    crate::platform::Store::clone(&store),
+                    changes.clone(),
+                )) as Source,
+                changes,
+            )),
             Arc::new(move || {
                 let _ = woke.send(());
             }),

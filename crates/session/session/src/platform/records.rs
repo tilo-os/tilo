@@ -392,10 +392,78 @@ pub trait Records {
         let _ = (app, workspace, record);
         None
     }
-    /// The kind of the records `app` keeps in `workspace` (`notes.notebook`), empty when unknown.
+    /// The kind of what `app` keeps in `workspace` (`notes.notebook`), empty when unknown: what
+    /// the workspace's index names first.
     fn kind(&self, app: &str, workspace: &str) -> String {
-        let _ = (app, workspace);
-        String::new()
+        self.document(app, workspace, "")
+            .and_then(|index| {
+                ui::resource::index::discoverable_references(&index)
+                    .into_iter()
+                    .next()
+            })
+            .map(|checkout| checkout.kind.as_str().to_owned())
+            .unwrap_or_default()
+    }
+    /// Everything `workspace` holds here, by app and route; the empty route is the app's own
+    /// document of the workspace, its index.
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        let _ = workspace;
+        Vec::new()
+    }
+}
+
+/// What a role that reads on a worker of its own reads the workspaces through.
+#[cfg(target_os = "linux")]
+pub type Source = Arc<dyn Records + Send + Sync>;
+/// What a role reads the workspaces through, where the session has one thread.
+#[cfg(not(target_os = "linux"))]
+pub type Source = std::rc::Rc<dyn Records>;
+
+/// What a store keeps, as a page's replication writes it, with the changes noted as they were
+/// written.
+pub struct Kept {
+    store: Store,
+    changes: Changes,
+}
+
+impl Kept {
+    /// What `store` keeps, with `changes` saying what moved in it.
+    #[must_use]
+    pub fn over(store: Store, changes: Changes) -> Self {
+        Self { store, changes }
+    }
+}
+
+impl Records for Kept {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.changes.take()
+    }
+
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        document(self.store.as_ref(), app, workspace, route)
+    }
+
+    /// The apps' own documents of `workspace`, and what their indexes name.
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        let indexes = self
+            .store
+            .workspace_indexes()
+            .inspect_err(|error| tracing::warn!(%error, "the workspace indexes are not listed"))
+            .unwrap_or_default();
+        indexes
+            .into_iter()
+            .filter(|(_, held)| held == workspace)
+            .flat_map(|(app, _)| {
+                let named = named_checkouts(self.store.as_ref(), &app, workspace)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(checkout, _)| checkout.id.route().to_owned());
+                std::iter::once(String::new())
+                    .chain(named)
+                    .map(move |route| (app.clone(), route))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }
 
@@ -417,31 +485,6 @@ pub fn named_checkouts(
             })
             .collect(),
     )
-}
-
-/// `app`'s workspace document in `workspace` read once: the checkouts its index names, and the
-/// document itself as the record `app` keeps as itself (Notes' notebook, Chat's chat) once an
-/// action was done in it. Keeping the index alone is no one's work.
-#[must_use]
-pub fn workspace_resources(
-    store: &dyn DurableStore,
-    app: &str,
-    workspace: &str,
-) -> Option<(Vec<DocumentCheckout>, Option<AutoCommit>)> {
-    let document = index_document(store, app, workspace)?;
-    let checkouts = ui::resource::index::discoverable_references(&document);
-    // Only the changes' messages are read: rebuilding every change would cost the whole log.
-    let acted = document
-        .committed_document()
-        .get_changes_meta(&[])
-        .iter()
-        .any(|change| {
-            change.message.as_deref().is_some_and(|message| {
-                message.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX)
-                    || message.starts_with(tilo_actions::CONTINUATION_PREFIX)
-            })
-        });
-    Some((checkouts, acted.then_some(document)))
 }
 
 /// `app`'s workspace document in `workspace`, as its app last wrote it.
@@ -1007,16 +1050,10 @@ impl Records for Held {
         }
     }
 
-    /// The kind the workspace's index names its first document as: the workspace's own word for
-    /// what its app keeps.
-    fn kind(&self, app: &str, workspace: &str) -> String {
-        self.document(app, workspace, "")
-            .and_then(|index| {
-                ui::resource::index::discoverable_references(&index)
-                    .into_iter()
-                    .next()
-            })
-            .map(|checkout| checkout.kind.as_str().to_owned())
+    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+        self.engine
+            .records(workspace)
+            .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))
             .unwrap_or_default()
     }
 }
