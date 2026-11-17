@@ -9,7 +9,8 @@
 
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 
-use crate::selection::{TEXT_MIME, is_text_mime, normalized_mimes};
+pub(crate) use tilo_x11_transfer::pick_format;
+use tilo_x11_transfer::{TEXT_MIME, is_text_mime, normalized_mimes};
 
 /// The newest XDND version spoken.
 pub(crate) const VERSION: u32 = 5;
@@ -293,24 +294,6 @@ pub(crate) fn targets_of_mimes(mimes: &[String]) -> Vec<String> {
     normalized_mimes(mimes.iter().cloned())
 }
 
-/// Text's names, best first: UTF-8 under either protocol's name, then the ambiguous ones.
-const TEXT_PREFERENCE: [&str; 5] = [TEXT_MIME, "UTF8_STRING", "text/plain", "STRING", "TEXT"];
-
-/// Which of `available` serves a request for `wanted` : the same name, or for text whichever text
-/// name is there, UTF-8 first.
-pub(crate) fn pick_format(wanted: &str, available: &[String]) -> Option<String> {
-    if available.iter().any(|name| name == wanted) {
-        return Some(wanted.to_owned());
-    }
-    if !is_text_mime(wanted) {
-        return None;
-    }
-    TEXT_PREFERENCE
-        .iter()
-        .find(|name| available.iter().any(|offered| offered == *name))
-        .map(|name| (*name).to_owned())
-}
-
 /// Files dragged out of a sandbox through the document portal: a key the receiving app redeems with
 /// the portal. It passes through as any format.
 pub(crate) const PORTAL_FILES_MIME: &str = "application/vnd.portal.filetransfer";
@@ -510,25 +493,6 @@ mod tests {
             assert!(targets.contains(&"text/uri-list".to_owned()));
             assert!(targets.contains(&"UTF8_STRING".to_owned()));
             assert!(targets.contains(&"STRING".to_owned()));
-        }
-
-        phase requests_are_served_by_the_same_name_or_any_text_name;
-        {
-            let offered = strings(&["text/uri-list", "UTF8_STRING", "STRING"]);
-            assert_eq!(
-                pick_format("text/uri-list", &offered).as_deref(),
-                Some("text/uri-list")
-            );
-            assert_eq!(
-                pick_format(TEXT_MIME, &offered).as_deref(),
-                Some("UTF8_STRING")
-            );
-            assert_eq!(pick_format("image/png", &offered), None);
-            let wayland = strings(&["text/plain", TEXT_MIME]);
-            assert_eq!(
-                pick_format("UTF8_STRING", &wayland).as_deref(),
-                Some(TEXT_MIME)
-            );
         }
 
         phase file_lists_are_read_ahead_first;

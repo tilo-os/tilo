@@ -35,6 +35,9 @@ serde.workspace = true
 serde_json.workspace = true
 # The rules an app's colour-management requests are checked by, the compositor's own.
 tilo-color-params = { path = "../color-params" }
+# The names text goes by for X11 and Wayland programs: a kept X11 program's copy is offered
+# under the Wayland ones too, as the compositor offers its own X11 programs' copies.
+tilo-x11-transfer = { path = "../x11-transfer" }
 # The control socket's frames: the length prefix every session socket uses.
 wire-frame = { path = "../../system/wire-frame" }
 # A socket in a directory of any depth.

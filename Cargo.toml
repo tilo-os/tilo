@@ -430,6 +430,7 @@ members = [
 
     # Session
     "crates/session/color-params",
+    "crates/session/x11-transfer",
     "crates/session/color-pipeline",
     "crates/session/compositor",
     "crates/session/app-keeper",

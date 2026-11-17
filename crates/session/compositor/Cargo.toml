@@ -80,6 +80,8 @@ tilo-liveness = { path = "../liveness" }
 # A surface's HDR signal and the tone-mapped SDR rendition the scene draws:
 # the plane and the layer compositing it, shared with the colour passes.
 tilo-color-pipeline = { path = "../color-pipeline" }
+# The names text goes by for X11 and Wayland programs, shared with the app keeper.
+tilo-x11-transfer = { path = "../x11-transfer" }
 # What a window's content is in and what an output displays, in the
 # vocabulary a share stream and the colour pass speak.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
