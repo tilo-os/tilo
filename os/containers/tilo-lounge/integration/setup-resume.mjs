@@ -380,7 +380,7 @@ const ran = await agent;
 mark('case 4: tilo login finished');
 check(ran.code === 0, '3. tilo login finished', `${ran.stderr}${ran.stdout}`.slice(-600));
 // 5. Entered: the person's own workspace.
-const own = await until(tab, OWN_WORKSPACE, "the person's own workspace drawn", stepLimit(3));
+const own = await until(tab, OWN_WORKSPACE, stepLimit(3));
 check(own, '5. entered: the tab lands in the person\'s own workspace', JSON.stringify(await where(tab)));
 shot(tab, 'resume-5-entered');
 check((await setup(tab))?.step === 'done', '5. the setup is kept as done');
@@ -418,7 +418,7 @@ check(['waiting', 'connected'].includes(frame.step), '6. reopened: the setup it 
 const said = await until(tab, `document.documentElement.dataset.firstRun === 'connected' && document.getElementById('first-run-connected').textContent`, stepLimit(2));
 check(said === 'Claude Code is in your workspace', '6. reopened: "Claude Code is in your workspace"', said ?? await pageText(tab));
 shot(tab, 'resume-6-agent-done-while-closed');
-check(await until(tab, OWN_WORKSPACE, '6. reopened: the own workspace opens', stepLimit(3)),
+check(await until(tab, OWN_WORKSPACE, stepLimit(3)),
   '6. reopened: the own workspace opens', JSON.stringify(await where(tab)));
 await close(tab);
 

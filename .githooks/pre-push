@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Lint the packages a push changes, natively and for the page, before the refs
-# leave. This is the fast subset of what CI checks on every commit: rustfmt,
-# Clippy over the host's targets, and Clippy for wasm32 on the touched packages
-# that build for the page, because a crate can compile here and still break the
-# page (std's clocks and files are not there). Only the packages the pushed
-# commits touch are linted, and the runs start together, so a one-crate push
-# costs about one build. tools/ci/pre_push_lint.py selects them and runs them;
-# a run that passed is not repeated while nothing it reads has changed, so a push
-# retried after a rebase onto unrelated commits does not lint again.
+# Lint what a push can break, natively and for the page, before the refs leave.
+# This is the fast subset of what CI checks: the repository's format check over
+# the changed files, Clippy over the host's targets with the features the
+# workspace's whole build gives each package, and Clippy for wasm32 on the
+# packages that build for the page, because a crate can compile here and still
+# break the page (std's clocks and files are not there). It lints the packages
+# the pushed commits change and the packages whose own source names something
+# they changed, because a rename or a removed item breaks the crates that use
+# it, not the crate that declares it; the runs start together, so a one-crate
+# push costs about one build. tools/ci/pre_push_lint.py selects them and runs
+# them; a run that passed is not repeated while nothing it reads has changed, so
+# a push retried after a rebase onto unrelated commits does not lint again.
 #
 # It is Git's own hook: this clone runs it through core.hooksPath (see
 # CONTRIBUTING.md). There is no environment variable to skip it; the escape is

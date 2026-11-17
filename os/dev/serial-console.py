@@ -140,6 +140,11 @@ class Console:
 
     def login(self, userpass):
         """Sign in at the console's own prompt, or find a session already open."""
+        # A connection sees only what the console says from now on, and a
+        # terminal that is already at a prompt says nothing until it is typed
+        # at. A bare return asks for that prompt: a signed-in shell prints it
+        # again, and a login prompt prints itself again.
+        self.send("")
         _, prompt = self.read_until(r"login: |[#$] ")
         if not prompt.group(0).startswith(b"login"):
             return

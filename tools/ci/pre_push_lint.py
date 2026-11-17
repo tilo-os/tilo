@@ -1,59 +1,80 @@
 #!/usr/bin/env python3
-"""Lint the packages a push touches before its refs leave, natively and for the page.
+"""Lint what a push can break before its refs leave, natively and for the page.
 
 Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
     <local ref> <local oid> <remote ref> <remote oid>
 
-The workspace packages those commits touch are then linted the way CI lints
-them: `cargo fmt --check`, Clippy over every target of the host, and Clippy for
-`wasm32-unknown-unknown` on the touched packages that build for the page. A
-change can compile on the host and still break the page - std's clocks and
-files are not there - and pushes that had only been built natively broke main
-that way repeatedly.
+Two sets of packages are linted the way CI lints them: the ones the pushed
+commits own, and the ones whose own source names something those commits
+changed. A rename, a removed item or a field added to a struct breaks the crates
+that use it, not the crate that declares it, and a gate that linted only the
+declaring crate left main red with every linted package green.
 
-Only the touched packages are linted, and the Clippy runs start together, so a
-one-crate push costs about one build. A run that passed is not repeated while
-everything it reads is unchanged (tools/ci/lint_inputs.py), so a push retried
-after a rebase onto unrelated commits does not lint again. Cargo compiles wherever `$CARGO` points
-when it is set - any cargo drop-in, which may build on another machine - and
-otherwise the `cargo` on PATH. Formatting is always checked by the `cargo` on
-PATH: it compiles nothing, so it needs no other machine, and a drop-in that
-builds elsewhere need not format at all. The wasm32 pass needs the target, so
-it is skipped with a line saying so where the cargo in use cannot build it.
+What is linted is what CI lints: the changed files through the repository's own
+format check, Clippy over every target of the host with the features the
+workspace's unified build gives each package (so code behind a feature that no
+default build enables is compiled), the packages CI also checks as they ship,
+and Clippy for `wasm32-unknown-unknown` on the ones that build for the page,
+under the page's own Clippy configuration (std's clocks are banned there). A
+change can compile on the host and still break the page.
+
+The Clippy runs start together, so a one-crate push costs about one build. A run
+that passed is not repeated while everything it reads is unchanged
+(tools/ci/lint_inputs.py), so a push retried after a rebase onto unrelated
+commits does not lint again. Cargo compiles wherever `$CARGO` points when it is
+set - any cargo drop-in, which may build on another machine - and otherwise the
+`cargo` on PATH. Formatting is always checked by the `cargo` and `rustfmt` on
+PATH: they compile nothing, so they need no other machine.
+
+The lint reads the files on disk, so a push is refused when what it sends is not
+the tree checked out here: a lint that spoke for another commit would say
+nothing about this one. A push whose changed packages the gate cannot name, or
+whose page lint cannot run here, is refused too, rather than passed unread.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.
 
     tools/ci/pre_push_lint.py --plan < pre-push-stdin    print what a push would lint
+    tools/ci/pre_push_lint.py --range BASE..HEAD         lint what that range changes
 """
 from __future__ import annotations
 
 import argparse
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from typing import Iterable, NamedTuple
 
 TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
-from ci.package_sets import PAGE_ENTRY, page_closure, wasm_crates
+from ci import package_features, suites, wasm_clippy_conf
+from ci.package_sets import PAGE_ENTRY, browser_crates, page_closure, wasm_crates
 from ci.lint_inputs import Workspace
-from ci.workspace_graph import cargo_metadata, owner_for, package_maps
+from ci.workspace_graph import (
+    cargo_metadata, closure, file_at, lockfile_change, package_maps, reverse_dependencies,
+)
 
 WASM_TARGET = "wasm32-unknown-unknown"
 # A changed file is Rust or Cargo when it can change what a package compiles.
 RUST_SUFFIXES = (".rs", ".tl")
 RUST_NAMES = ("Cargo.toml", "Cargo.lock", "build.rs")
-# Files that steer the whole workspace's build: a change to one can break every
-# crate, which is more than a lint of the touched ones can speak for.
-WORKSPACE_INPUTS = {"Cargo.toml", "Cargo.lock"}
+# Files that steer the whole workspace's build: a change to one can reach every
+# member, so one the gate cannot attribute refuses the push instead.
+WORKSPACE_MANIFEST = "Cargo.toml"
+WORKSPACE_LOCK = "Cargo.lock"
+# The manifest that gives every member the features the workspace's whole build
+# resolves for it (tools/ci/workspace_unify.py); a lint without it compiles code
+# no other family's build leaves out of a default feature set.
+UNIFY_MANIFEST = Path("crates/dev/workspace-unify/Cargo.toml")
 # How much of a failed run's output is shown before the rest is counted. The
 # rerun command in the failure line prints all of it.
 SHOWN_DIAGNOSTIC_LINES = 80
@@ -70,6 +91,32 @@ REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
 ZERO_OID = {"0"}
 # How many passing lint keys a clone keeps.
 KEPT_PASSES = 256
+# Identifiers of the language itself, and words every crate uses, say nothing
+# about which crate names what a change did: a dependent is picked by the names
+# a change removed or declared, never by these.
+KEYWORDS = frozenset("""as async await box break const continue crate dyn else enum extern false
+fn for if impl in let loop macro_rules match mod move mut pub raw ref return self Self static
+struct super trait true try type union unsafe use where while""".split())
+EVERYDAY = frozenset("""allow cfg cfg_attr default derive deny doc expect allow warn Option Result
+Some None Ok Err String Vec Box Arc Rc HashMap HashSet BTreeMap default new from into try_from
+clone eq ne fmt debug display hash iter map filter collect extend push pop insert remove get set
+len is_empty as_ref as_mut as_str as_deref to_string to_owned iter_mut into_iter collect
+Default Clone Copy Debug Display Send Sync Sized Drop From Iterator Into PartialEq Eq Hash
+Self self serde derive macro use super crate""".split())
+# A line that declares a name another crate can spell: an item, or a field of a
+# public struct, which a dependent's own struct literal has to name.
+DECLARED_ITEM = re.compile(
+    r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(?:default[ \t]+)?(?:const[ \t]+)?(?:async[ \t]+)?"
+    r"(?:unsafe[ \t]+)?(?:extern[ \t]+\"[^\"]*\"[ \t]+)?"
+    r"(?:struct|enum|trait|fn|type|union|static|const|mod)[ \t]+([A-Za-z_][A-Za-z0-9_]*)",
+    re.MULTILINE)
+DECLARED_MACRO = re.compile(r"^[ \t]*macro_rules![ \t]*([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+DECLARED_FIELD = re.compile(r"^[ \t]*pub[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*:", re.MULTILINE)
+# Names a change names: the dependents are searched for these in one pass. Above
+# this many the change reaches too much of the workspace for a word match to
+# narrow, so every dependent is linted instead; the number is about how long a
+# command line may be, not how many crates a change may touch.
+NAMED_LIMIT = 2000
 
 
 def say(message: str) -> None:
@@ -80,16 +127,6 @@ def say(message: str) -> None:
 def cargo_command() -> list[str]:
     """The cargo that builds: any drop-in named in $CARGO (which may build on another machine), else cargo."""
     return shlex.split(os.environ.get("CARGO", "")) or ["cargo"]
-
-
-def format_command() -> list[str]:
-    """The cargo that formats: always the one here.
-
-    Formatting reads source files and compiles nothing, so it never needs the
-    machine `$CARGO` builds on, and a drop-in that builds elsewhere need not
-    run `cargo fmt` at all.
-    """
-    return ["cargo"]
 
 
 def wasm_target_installed() -> bool:
@@ -110,6 +147,19 @@ class Lint(NamedTuple):
     command: list[str]
     packages: list[str]
     dependencies: bool
+    env: dict[str, str] | None = None
+    # A run too cheap to be worth keying: formatting a handful of files. It is
+    # always made, because what it reads is the changed files rather than the
+    # packages, and a key of the packages would speak for them.
+    reusable: bool = True
+
+
+class Push(NamedTuple):
+    """What the refs being pushed change, and what the gate could not name about them."""
+    files: set[str]
+    comparisons: list[tuple[str, str]]
+    tips: list[str]
+    unnamed: list[str]
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -159,24 +209,25 @@ def unreferenced(root: Path, head: str) -> set[str]:
     return files
 
 
-def changed_files(root: Path, remote: str, remote_oid: str, head: str, ref: str) -> set[str] | None:
-    """What a pushed ref changes, or None when there is nothing to compare it with."""
+def comparison(root: Path, remote: str, remote_oid: str, head: str) -> tuple[str, set[str]] | None:
+    """Where a pushed ref starts and what it changes, or None when there is nothing to compare it with."""
     if set(remote_oid) != ZERO_OID and known(root, remote_oid):
-        return diff(root, remote_oid, head)
+        return remote_oid, diff(root, remote_oid, head)
     start = start_of(root, remote, head)
     if start:
-        return diff(root, start, head)
+        return start, diff(root, start, head)
     files = unreferenced(root, head)
     if files:
-        return files
-    say(f"pre-push: cannot tell what {ref} adds (no main to compare it with); "
-        "the lint is skipped for this push")
+        return None, files
     return None
 
 
-def pushed(root: Path, remote: str, lines: Iterable[str]) -> set[str]:
-    """Every file the pushed refs change."""
+def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
+    """Every file the pushed refs change, and each ref's comparison."""
     files: set[str] = set()
+    comparisons: list[tuple[str, str]] = []
+    tips: list[str] = []
+    unnamed: list[str] = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
@@ -184,34 +235,311 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> set[str]:
         ref, head, _remote_ref, remote_oid = parts
         if set(head) == ZERO_OID:
             continue  # a deleted ref changes nothing that is built
-        changed = changed_files(root, remote, remote_oid, head, ref)
-        if changed is not None:
-            files |= changed
-    return files
+        result = comparison(root, remote, remote_oid, head)
+        if result is None:
+            unnamed.append(ref)
+            say(f"pre-push: cannot tell what {ref} adds (no main to compare it with); "
+                "its packages cannot be named")
+            continue
+        start, changed = result
+        if start:
+            comparisons.append((start, head))
+        tips.append(head)
+        files |= changed
+    return Push(files, comparisons, tips, unnamed)
 
 
 def rust_changes(files: set[str]) -> set[str]:
     return {path for path in files if path.endswith(RUST_SUFFIXES) or Path(path).name in RUST_NAMES}
 
 
-def touched(root: Path, files: set[str]) -> tuple[list[str], list[str], dict]:
-    """The packages owning the changed files, and what is linted for the page.
+def rev(root: Path, revision: str) -> str | None:
+    result = git(root, "rev-parse", "--verify", "--quiet", revision)
+    return result.stdout.strip() or None
 
-    That is each touched package that builds for the page, and the page itself
-    when a touched package is one the page compiles: a change made and linted
-    only natively - a field or a function the page's own code still names under
-    its cfg - otherwise breaks the page with every touched crate green.
+
+def unchecked_tree(root: Path, push: Push) -> str | None:
+    """The pushed commit whose tree is not the one checked out here, if any.
+
+    The lint reads the files on disk. A ref whose tree they are not would be
+    sent unlinted, and a pass recorded for it would be reused for a tree nobody
+    read.
+    """
+    checkout = rev(root, "HEAD^{tree}")
+    for tip in push.tips:
+        if rev(root, f"{tip}^{{tree}}") != checkout:
+            return tip
+    return None
+
+
+def declarations(text: str) -> set[str]:
+    """The names a source text declares: an item, a macro, or a public field."""
+    return (set(DECLARED_ITEM.findall(text)) | set(DECLARED_MACRO.findall(text))
+            | set(DECLARED_FIELD.findall(text)))
+
+
+def named_by_change(names: set[str]) -> set[str]:
+    """The words of a change worth matching a dependent against."""
+    return {name for name in names
+            if len(name) >= 3 and name not in KEYWORDS and name not in EVERYDAY}
+
+
+def changed_names(root: Path, comparisons: list[tuple[str, str]], files: set[str]) -> set[str]:
+    """The names the pushed commits stop offering, and the ones they start declaring.
+
+    What a dependent can break on is a declared name: an item or a public field
+    it names goes away, or a public field it has to spell in a struct literal
+    appears. A value on a changed line is nobody's to depend on, and an import
+    line names what its own crate borrows, not what another crate offers.
+    """
+    paths = sorted(path for path in files if path.endswith(RUST_SUFFIXES))
+    if not paths:
+        return set()
+    names: set[str] = set()
+    for base, head in comparisons:
+        result = subprocess.run(
+            ["git", "diff", "-U0", "--no-renames", f"{base}..{head}", "--", *paths],
+            cwd=root, capture_output=True, check=False,
+        )
+        for line in result.stdout.decode("utf-8", "surrogateescape").splitlines():
+            if line.startswith(("---", "+++")):
+                continue
+            if line.startswith(("-", "+")):
+                names |= declarations(line[1:])
+    return named_by_change(names)
+
+
+def owner_of(path: str, by_directory: dict[str, str]) -> str | None:
+    """The package owning a repository path: the nearest directory above it that is one.
+
+    owner_for walks every directory of the workspace for each path; walking up
+    from the path instead is what a search that matched thousands of files can
+    afford.
+    """
+    candidate = path
+    while candidate:
+        owner = by_directory.get(candidate)
+        if owner is not None:
+            return owner
+        parent = candidate.rsplit("/", 1)[0] if "/" in candidate else ""
+        candidate = parent
+    return by_directory.get("")
+
+
+def naming(root: Path, by_dir: dict[Path, str], candidates: set[str], names: set[str]) -> list[str]:
+    """The candidates whose own source names what the change did.
+
+    One pass of Git's own search, over the candidates' sources only: a search
+    of the whole tree reads the vendored crates and shipped assets that no
+    member compiles from source, which costs more than everything else here.
+    """
+    if not names or not candidates:
+        return []
+    patterns = [item for name in sorted(names) for item in ("-e", name)]
+    by_directory = {directory.as_posix(): name for directory, name in by_dir.items()}
+    directories = {directory for directory, name in by_directory.items() if name in candidates}
+    sources = [pattern for directory in sorted(directories)
+               for pattern in (f"{directory}/*.rs", f"{directory}/*.tl")]
+    result = subprocess.run(["git", "grep", "-l", "-z", "-F", "-w", *patterns, "--", *sources],
+                            cwd=root, capture_output=True, check=False)
+    found = {owner_of(path, by_directory) for path in
+             result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
+    return sorted(found & candidates)
+
+
+def lock_seeds(root: Path, push: Push, members: set[str]) -> set[str] | None:
+    """The members a Cargo.lock change reaches, or None when the change cannot be attributed."""
+    seeds: set[str] = set()
+    for base, head in push.comparisons:
+        before = file_at(root, base, WORKSPACE_LOCK)
+        after = file_at(root, head, WORKSPACE_LOCK)
+        if before is None or after is None:
+            return None
+        change = lockfile_change(before, after, members)
+        if change is None:
+            return None
+        seeds |= change.seeds & members
+    return seeds
+
+
+def manifest_seeds(root: Path, push: Push, metadata: dict) -> set[str] | None:
+    """The members a root Cargo.toml change reaches, or None when it reaches all of them."""
+    packages = {package["name"]: package for package in metadata["packages"]}
+    by_dir = {Path(package["manifest_path"]).parent.resolve(): name
+              for name, package in packages.items()}
+    seeds: set[str] = set()
+    for base, head in push.comparisons:
+        before, after = file_at(root, base, WORKSPACE_MANIFEST), file_at(root, head, WORKSPACE_MANIFEST)
+        if before is None or after is None:
+            return None
+        try:
+            old, new = tomllib.loads(before.decode("utf-8")), tomllib.loads(after.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        # A change outside the workspace table - the lint table, a profile, a
+        # patch - decides how every member is built.
+        if {key: value for key, value in old.items() if key != "workspace"} != {
+                key: value for key, value in new.items() if key != "workspace"}:
+            return None
+        old_workspace, new_workspace = old.get("workspace", {}), new.get("workspace", {})
+        if not isinstance(old_workspace, dict) or not isinstance(new_workspace, dict):
+            return None
+        changed = {key for key in old_workspace.keys() | new_workspace.keys()
+                   if old_workspace.get(key) != new_workspace.get(key)}
+        if not changed <= {"members", "dependencies"}:
+            return None
+        if "members" in changed:
+            added = set(new_workspace.get("members", ())) - set(old_workspace.get("members", ()))
+            for member in added:
+                owner = by_dir.get((root / member).resolve())
+                if owner is None:
+                    return None
+                seeds.add(owner)
+        if "dependencies" in changed:
+            old_shared = old_workspace.get("dependencies", {})
+            new_shared = new_workspace.get("dependencies", {})
+            names: set[str] = set()
+            for key in {key for key in old_shared.keys() | new_shared.keys()
+                        if old_shared.get(key) != new_shared.get(key)}:
+                names.add(key)
+                for value in (old_shared.get(key), new_shared.get(key)):
+                    if isinstance(value, dict) and value.get("package"):
+                        names.add(value["package"])
+            seeds |= {name for name, package in packages.items()
+                      if any(dependency.get("name") in names or dependency.get("rename") in names
+                             for dependency in package.get("dependencies", []))}
+    return seeds
+
+
+class Selection(NamedTuple):
+    """What a push is linted as: the packages, and the dependents that made them that many."""
+    native: list[str]
+    web: list[str]
+    dependents: list[str]
+    metadata: dict
+
+
+def reading_packages(root: Path, paths: list[str]) -> list[str]:
+    """The packages whose own build reads one of these repository files (tools/ci/suites.toml).
+
+    A tilolang app or a shipped asset is compiled into a package that holds no
+    Cargo package of its own, so the package's own files say nothing about it.
+    """
+    try:
+        return suites.select_packages(suites.load(root), paths)
+    except (OSError, ValueError, KeyError) as error:
+        say(f"pre-push: cannot read which packages read these files: {error}")
+        return []
+
+
+def select(root: Path, push: Push, files: set[str]) -> Selection | None:
+    """The packages to lint for the host and the page, or None when the push cannot be named.
+
+    Those are the packages the commits own or read the changed files through,
+    plus every package whose own source names something they changed: a rename,
+    a removed item or a field added to a struct breaks the crates that use it.
+    The page lint covers the same crates that build for it, and the page's entry
+    when the change reaches anything the page compiles.
     """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
-    owners = {owner_for(path, by_dir) for path in files} & set(packages)
-    web = owners & wasm_crates(packages)
-    if owners & page_closure(packages):
-        web.add(PAGE_ENTRY)
-    return sorted(owners), sorted(web), metadata
+    members = set(packages)
+    by_directory = {directory.as_posix(): name for directory, name in by_dir.items()}
+    owned = {path: owner_of(path, by_directory) for path in files}
+    owners = {owner for owner in owned.values() if owner} & members
+    unowned = sorted(path for path, owner in owned.items()
+                     if owner is None and path.endswith(RUST_SUFFIXES))
+    if unowned:
+        # A package that reads one of these compiles it, so its lint covers it;
+        # one no package reads is a file CI builds outside the workspace.
+        readers = set(reading_packages(root, unowned))
+        if not readers:
+            say(f"pre-push: no workspace package reads {', '.join(unowned[:3])}"
+                f"{' and more' if len(unowned) > 3 else ''}, so CI builds them outside the gate; "
+                "they are not linted here")
+        owners |= readers & members
+    seeds = set(owners)
+    if WORKSPACE_LOCK in files:
+        reached = lock_seeds(root, push, members)
+        if reached is None:
+            say(f"pre-push: {WORKSPACE_LOCK}'s change cannot be attributed to the packages it "
+                "reaches; that reaches the whole workspace and only CI builds all of it")
+            return None
+        seeds |= reached
+    if WORKSPACE_MANIFEST in files:
+        reached = manifest_seeds(root, push, metadata)
+        if reached is None:
+            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built; "
+                "lint the workspace (`t cargo clippy --workspace`) or push past the gate "
+                "deliberately")
+            return None
+        seeds |= reached
+    names = changed_names(root, push.comparisons, files)
+    dependents = closure(seeds, reverse_dependencies(packages, root)) - seeds
+    if len(names) > NAMED_LIMIT:
+        say(f"pre-push: the change names {len(names)} items, too many to say which of the "
+            f"{len(dependents)} packages that build on these use one: they are all linted")
+        named = sorted(dependents)
+    else:
+        named = naming(root, by_dir, dependents, names)
+    native = sorted(seeds | set(named))
+    web = (set(native) & wasm_crates(packages))
+    if set(native) & (page_closure(packages) | browser_crates(packages)):
+        web |= {PAGE_ENTRY}
+    web &= members
+    return Selection(native, sorted(web), named, metadata)
 
 
-def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]:
+def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
+    """The features the workspace's whole build gives the selected packages.
+
+    crates/dev/workspace-unify unifies every family's build for the members, in
+    the manifest tools/ci/workspace_unify.py generates. A lint that leaves it out
+    compiles those members with their default features only, so code behind a
+    feature another family enables goes unlinted.
+    """
+    manifest = root / UNIFY_MANIFEST
+    try:
+        document = tomllib.loads(manifest.read_text())
+    except (OSError, ValueError):
+        return []
+    wanted = set(selected)
+    features: list[str] = []
+    tables = [document.get(table, {}) for table in
+              ("dependencies", "build-dependencies", "dev-dependencies")]
+    for target, tables_under in document.get("target", {}).items():
+        # The members resolve the same features whichever Linux host build they
+        # are part of; a Windows or Apple table names what only those hosts link.
+        if "linux" in target and "windows" not in target and "apple" not in target:
+            tables += [tables_under.get(table, {}) for table in
+                       ("dependencies", "build-dependencies")]
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for name, spec in table.items():
+            if name in wanted and isinstance(spec, dict):
+                features += [f"{name}/{feature}" for feature in spec.get("features", ())]
+    return ["--features", ",".join(sorted(set(features)))] if features else []
+
+
+def page_clippy_config(root: Path) -> dict[str, str]:
+    """The environment of the page's lint: the workspace's Clippy configuration, with std's clocks banned.
+
+    The same configuration tools/ci/check-wasm.sh lints with. A configuration
+    that could not be written is said, not silently replaced by the root one:
+    the clocks are why the run exists.
+    """
+    directory = Path(os.environ.get("CARGO_TARGET_DIR", str(root / "target"))) / "wasm-clippy"
+    result = subprocess.run([sys.executable, "-I", str(TOOLS / "ci/wasm_clippy_conf.py"), str(directory)],
+                            cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode != 0 or not (directory / "clippy.toml").is_file():
+        say("pre-push: the page's Clippy configuration could not be written, so the page lint runs "
+            f"without it: {(result.stderr or result.stdout).strip()}")
+        return {}
+    return {"CLIPPY_CONF_DIR": str(directory)}
+
+
+def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str]) -> list[Lint]:
     """The runs the gate makes: formatting, the host lint, and the page lint where it can run.
 
     `web` is what is actually linted for the page, so a toolchain without the
@@ -219,27 +547,38 @@ def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]
     rerun it.
     """
     cargo = cargo_command()
+    native = selection.native
     selected = [item for name in native for item in ("-p", name)]
     runs = []
     if formatting:
-        runs.append(Lint("rustfmt", [*format_command(), "fmt", "--check", *selected], native, False))
+        runs.append(Lint("rustfmt", formatting, native, False, None, False))
     runs.append(Lint("clippy (native)",
-                     [*cargo, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"],
-                     native, True))
+                     [*cargo, "clippy", "--locked", *selected, *unified_features(root, native),
+                      "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
+    # The packages CI lints as they ship too (tools/ci/package_features.py): a
+    # lint that only sees them with extra features never builds that shape.
+    shipped = package_features.default_builds(native)
+    if shipped:
+        runs.append(Lint("clippy (native, as it ships)", [
+            *cargo, "clippy", "--locked",
+            *(item for name in shipped for item in ("-p", name)),
+            "--all-targets", "--keep-going", "--", "-D", "warnings",
+        ], shipped, True))
     if web:
         page = [item for name in web for item in ("-p", name)]
         runs.append(Lint("clippy (wasm32)", [
             *cargo, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
-        ], web, True))
+        ], web, True, page_clippy_config(root)))
     return runs
 
 
 def rustfmt_available() -> bool:
-    """Whether the cargo here can format, whatever `$CARGO` names to build with."""
-    if shutil.which(format_command()[0]) is None:
-        return False
-    return subprocess.run([*format_command(), "fmt", "--version"], capture_output=True,
-                          check=False).returncode == 0
+    """Whether the repository's format check can run here.
+
+    It calls rustfmt on the changed files itself, so it needs that binary and
+    nothing from the cargo `$CARGO` may point at.
+    """
+    return shutil.which("rustfmt") is not None
 
 
 def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, str]], float]:
@@ -250,7 +589,8 @@ def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, st
         # A file, not a pipe: a run whose output outgrows the pipe buffer must
         # not wait on a reader that is still waiting on another run.
         log = tempfile.TemporaryFile(mode="w+")
-        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True)
+        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
+                                   env={**os.environ, **(run.env or {})})
         running.append((run, process, log))
     results = []
     for run, process, log in running:
@@ -290,7 +630,8 @@ def lint_keys(root: Path, metadata: dict, runs: list[Lint]) -> list[str | None]:
         return [None] * len(runs)
     try:
         workspace = Workspace(root, metadata)
-        return [workspace.key(run.packages, run.dependencies, run.command) for run in runs]
+        return [workspace.key(run.packages, run.dependencies, run.command) if run.reusable else None
+                for run in runs]
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         say(f"pre-push: cannot name what the lint reads, so earlier passes are not reused: {error}")
         return [None] * len(runs)
@@ -317,56 +658,87 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
     return 1
 
 
+def formatting_run(root: Path, push: Push) -> list[str]:
+    """The repository's own format check over the changed files (tools/ci/check-changed-rustfmt.sh).
+
+    It checks exactly the hand-written Rust the push adds, the way CI does,
+    rather than every file of the packages it touches.
+    """
+    comparisons = push.comparisons
+    if not comparisons:
+        return []
+    base, head = comparisons[0]
+    return ["bash", str(TOOLS / "ci/check-changed-rustfmt.sh"), base, head]
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("remote", nargs="?", default="origin", help="the remote being pushed to")
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
+    parser.add_argument("--range", metavar="BASE..HEAD",
+                        help="lint what that range changes, for a run outside a push (CI, t)")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
                         help="the ref lines Git writes for a pre-push hook")
     options = parser.parse_args(argv)
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").stdout.strip())
-    files = rust_changes(pushed(root, options.remote, options.stdin))
+    if options.range:
+        base, _, head = options.range.partition("..")
+        if not base or not head:
+            parser.error("--range takes BASE..HEAD")
+        push = Push(diff(root, base, head), [(base, head)], [head], [])
+    else:
+        push = pushed(root, options.remote, options.stdin)
+    files = rust_changes(push.files)
     if not files:
         say("pre-push: no Rust or Cargo file changed; nothing to lint")
         return 0
+    if push.unnamed:
+        say("pre-push: refusing a push the gate cannot name")
+        return 1
+    if tip := unchecked_tree(root, push):
+        say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
+            "on disk: check it out and push again")
+        return 1
     try:
-        native, web, metadata = touched(root, files)
+        selection = select(root, push, files)
     except (subprocess.CalledProcessError, RuntimeError) as error:
-        say(f"pre-push: cargo metadata could not name the packages this push touches, so the lint is "
-            f"skipped: {error}")
-        return 0
-    if not native:
-        say("pre-push: the changed Rust files belong to no workspace package (a workspace manifest or "
-            "the lock); CI builds the whole workspace for that")
+        say(f"pre-push: cargo metadata could not name the packages this push touches: {error}")
+        return 1
+    if selection is None:
+        say("pre-push: refusing the push until the changed packages can be named")
+        return 1
+    if not selection.native:
+        say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")
         return 0
     if options.plan:
-        print(f"native: {' '.join(native)}")
-        print(f"wasm32: {' '.join(web)}")
+        print(f"native: {' '.join(selection.native)}")
+        print(f"wasm32: {' '.join(selection.web)}")
+        if selection.dependents:
+            print(f"dependents: {' '.join(selection.dependents)}")
         return 0
-    if workspace_wide := sorted(files & WORKSPACE_INPUTS):
-        say(f"pre-push: {', '.join(workspace_wide)} changed too: only the touched packages are linted "
-            "here, CI builds the whole workspace")
+    web = selection.web
     if shutil.which(cargo_command()[0]) is None:
-        say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint is skipped for "
-            "this push")
-        return 0
+        say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
+        return 1
     if web and not (os.environ.get("CARGO", "").strip() or wasm_target_installed()):
-        say(f"pre-push: {WASM_TARGET} is not installed here, so the page build is not linted "
-            f"(rustup target add {WASM_TARGET} adds it)")
-        web = []
+        say(f"pre-push: {WASM_TARGET} is not installed here, so the page build cannot be linted, and "
+            f"this push changes crates the page compiles (rustup target add {WASM_TARGET})")
+        return 1
     if git(root, "status", "--porcelain").stdout.strip():
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
             "is not quite the pushed commit")
-    formatting = rustfmt_available()
+    formatting = formatting_run(root, push) if rustfmt_available() else []
     if not formatting:
         say("pre-push: rustfmt is not installed, so formatting is not checked here")
     page = f", {len(web)} of them for the page" if web else ""
-    say(f"pre-push: linting {packages(len(native))}{page}")
-    runs = lint_runs(native, web, formatting)
-    checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(native))}{page}"
+    dependents = (f" and {packages(len(selection.dependents))} built on them"
+                  if selection.dependents else "")
+    say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
+    runs = lint_runs(root, selection, web, formatting)
+    checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
     passes = Passes(root)
     pending = []
-    for run, key in zip(runs, lint_keys(root, metadata, runs)):
+    for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
         if passes.passed(key):
             say(f"pre-push: {run.label} passed before on the same inputs")
         else:
