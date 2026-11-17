@@ -36,7 +36,7 @@ impl SystemResourceBroker {
         Self::for_uid(uid)
     }
 
-    /// Construct for a compositor session uid. This is deliberately numeric
+    /// Construct for a session uid. This is deliberately numeric
     /// rather than a path supplied by a caller; the only host endpoint the
     /// audio proxy names is `/run/user/<uid>/pulse/native`.
     #[must_use]

@@ -40,7 +40,7 @@ pub struct AudioProxyLease {
 
 impl AudioProxyLease {
     /// Start a private graph rooted in the already-daemon-owned lease path.
-    /// `uid` is taken from the compositor session/effective uid, never from a
+    /// `uid` is taken from the session's effective uid, never from a
     /// catalogue record or application request.
     pub fn start(root: PathBuf, uid: u32, microphone: bool) -> Result<Self, AudioProxyError> {
         let audio_root = root.join("audio");

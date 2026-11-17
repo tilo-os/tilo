@@ -6,7 +6,7 @@ the host and guest presentation stack enforce.
 
 ## Selection
 
-At Tilo session startup, the compatibility service runs
+When the appliance is first found set up, the compatibility service starts
 `/usr/libexec/tilo-windows-rail --probe`. Native RAIL is selected only when the
 immutable image contains both upstream FreeRDP and `xwayland-satellite`, and
 the active Tilo Wayland socket exists. Otherwise the authenticated guest bridge

@@ -129,31 +129,45 @@ setup stays visible with a retry action on the stored digest.
 
 ## Session boundary
 
-The compositor loads the immutable Tilo, pinned UMU and metadata-only Bottles
-catalogues and owns the compatibility service. The launcher writes an
-authenticated app and workspace preamble to a connected descriptor; the service
-corroborates the launcher PID and kernel start time with a single-use,
-short-lived registry record the compositor owns. Requests carry only bounded
-typed methods. Launch and remove-launcher use opaque server entry IDs; installer
-inspection and either confirmed destination are the only methods allowed a
-descriptor; retry, vendor uninstall, publication removal and data deletion use
-opaque server-owned IDs the session already authorized.
+The desktop session serves the compatibility service as one of its own
+services (`compat` in its service table), on threads of its own beside the
+session's loop. It loads the immutable Tilo, pinned UMU and metadata-only
+Bottles catalogues; a computer without them, or without the runtime payloads,
+still answers the manager, and a launch says that Windows support is not
+installed.
 
-Workspace grants are re-read from the compositor's tree for every operation.
-Application query, executable, capsule path, environment, VM fallback intent and
-grants never come from the client. Blocking service I/O runs on the Windows Apps
-worker thread; the render thread paints a bounded cache and clears it after an
-invalid or disconnected response.
+Only the Windows Apps manager (`so.tilo.windows`) connects. The launcher
+writes an authenticated app and workspace preamble to a connected descriptor;
+the service accepts it only from a process running the session's
+`tilo-launcher`, whose parent is the session, and that the session itself
+started for the manager in that workspace and that is still alive (pid and kernel
+start time against the session's launch list). Each launch hands off once: a
+second connection of the same launcher process is refused. Requests carry only
+bounded typed methods. Launch and remove-launcher use opaque server entry IDs;
+installer inspection and either confirmed destination are the only methods
+allowed a descriptor; retry, vendor uninstall, publication removal and data
+deletion use opaque server-owned IDs the session already authorized.
 
-The managed-entry registry carries a monotonic compositor generation and is
-re-read from capsule state. A running manager starts with the entry snapshot
-authenticated at its launch. A VM installer transaction belongs to the
-workspace that imported its descriptor: that workspace can resume and publish
-its candidates, and another workspace sees neither. Publishing returns the
-opaque host entry only to the requesting session, so an app launches without
-widening other sessions. Deleting a launcher or capsule removes authority at
-once, and an entry another manager created needs a new authenticated launch
-snapshot, so a live client cannot widen itself by guessing identifiers.
+Workspace grants are re-read from the workspace's sandbox in the session's
+layout for every operation. Application query, executable, capsule path,
+environment, VM fallback intent and grants never come from the client.
+Blocking service I/O happens on the Windows Apps worker thread; the render thread
+paints a bounded cache and clears it after an invalid or disconnected response.
+
+A program is given its display when it starts, not when the service starts:
+the session answers with the Wayland socket its compositor bound and the
+render node it draws on, and refuses the launch while it has neither. The
+appliance's rail and SPICE presentations are given the same display.
+
+The entries a manager may address are read from capsule state and the
+appliance's published applications when it connects; it keeps that set until
+it ends. A VM installer transaction belongs to the workspace that imported its
+descriptor: that workspace can resume and publish its candidates, and another
+workspace sees neither. Publishing returns the opaque entry only to the
+requesting manager, so an app launches without widening other managers.
+Deleting a launcher or capsule removes authority at once, and an entry another
+manager created needs a new authenticated launch, so a live client cannot
+widen itself by guessing identifiers.
 
 ## Catalogue resolution
 

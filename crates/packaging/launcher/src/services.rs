@@ -136,7 +136,9 @@ use tilo_app_id::apps::STORE as STORE_APP_ID;
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON handoff.
 const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
-const COMPAT_PROTOCOL_VERSION: u16 = 1;
+/// The version of the handoff the launcher writes the compatibility service, apart from the
+/// version of the requests the app then sends.
+pub const COMPAT_HANDOFF_PROTOCOL: u16 = 1;
 /// The compatibility service's handoff: a little-endian `u32` length, then JSON.
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
@@ -832,7 +834,7 @@ fn write_compat_handoff(
     workspace_id: &str,
 ) -> std::io::Result<()> {
     let value = serde_json::json!({
-        "protocol": COMPAT_PROTOCOL_VERSION,
+        "protocol": COMPAT_HANDOFF_PROTOCOL,
         "app_id": app_id,
         "workspace_id": workspace_id,
     });

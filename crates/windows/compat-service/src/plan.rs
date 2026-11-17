@@ -150,9 +150,11 @@ impl SystemRuntimeRegistry {
         }
     }
 
-    /// Planning tests run on hosts that are not Tilo images.
-    #[cfg(test)]
-    pub(crate) const fn assuming_provider() -> Self {
+    /// For tests on computers that are not Tilo images: the runtime payloads
+    /// and the translated provider are taken as present.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn assuming_provider() -> Self {
         Self {
             provider_manifest: None,
             require_payload: false,
@@ -317,18 +319,22 @@ fn runtime_bind(host: &str, sandbox: &str) -> RuntimeBind {
     }
 }
 
+/// The display a Windows program shows its windows on, and the GPU it draws
+/// with: what the caller of a launch gives it at that moment.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostSession {
+pub struct LaunchDisplay {
     pub uid: u32,
+    /// The login's runtime directory (`XDG_RUNTIME_DIR`), which the display's
+    /// socket sits directly in.
+    pub runtime_dir: PathBuf,
     pub wayland_socket: PathBuf,
     pub render_node: PathBuf,
 }
 
-impl HostSession {
+impl LaunchDisplay {
     pub fn validate(&self) -> Result<(), PlanError> {
-        let runtime = PathBuf::from(format!("/run/user/{}", self.uid));
-        if !self.wayland_socket.starts_with(&runtime)
-            || self.wayland_socket.parent() != Some(runtime.as_path())
+        if !self.runtime_dir.is_absolute()
+            || self.wayland_socket.parent() != Some(self.runtime_dir.as_path())
         {
             return Err(PlanError::UnsafeWaylandSocket);
         }
@@ -345,6 +351,23 @@ impl HostSession {
             return Err(PlanError::UnsafeRenderNode);
         }
         Ok(())
+    }
+}
+
+/// Where each launch's program shows its windows. The caller of the service
+/// answers it when a program starts, not when the service starts: a display
+/// that is bound later, or one made for a single launch, is the one the
+/// program gets.
+pub trait LaunchDisplays: Send + Sync + 'static {
+    /// The display a program launched into `workspace_id` gets now, or why
+    /// there is none.
+    fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, String>;
+}
+
+/// One display for every launch.
+impl LaunchDisplays for LaunchDisplay {
+    fn display_for(&self, _workspace_id: &str) -> Result<LaunchDisplay, String> {
+        Ok(self.clone())
     }
 }
 
@@ -493,7 +516,7 @@ impl CapsuleCommandPlan {
 pub struct SandboxPlanner<'a, R> {
     store: &'a CapsuleStore,
     runtimes: &'a R,
-    session: &'a HostSession,
+    display: &'a LaunchDisplay,
     icd_search: IcdSearch,
 }
 
@@ -501,13 +524,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
     pub fn new(
         store: &'a CapsuleStore,
         runtimes: &'a R,
-        session: &'a HostSession,
+        display: &'a LaunchDisplay,
     ) -> Result<Self, PlanError> {
-        session.validate()?;
+        display.validate()?;
         Ok(Self {
             store,
             runtimes,
-            session,
+            display,
             icd_search: IcdSearch::default(),
         })
     }
@@ -538,8 +561,8 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         let launch_paths = self.store.open_launch_paths(&capsule.id)?;
 
         let wayland =
-            launcher::sandbox::wayland_bind_for(&self.session.wayland_socket, self.session.uid);
-        let gpu = select_for_node(&self.session.render_node, &self.icd_search);
+            launcher::sandbox::wayland_bind_for(&self.display.wayland_socket, self.display.uid);
+        let gpu = select_for_node(&self.display.render_node, &self.icd_search);
         let mut argv = Vec::new();
         launcher::sandbox::push_clean_environment(&mut argv);
         argv.extend(["--unshare-all".to_string()]);
@@ -639,14 +662,14 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         launcher::sandbox::push_wayland_bind(&mut argv, &wayland);
         landlock_write.push(wayland.sandbox_socket.clone());
         launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
-        landlock_write.push(self.session.render_node.clone());
+        landlock_write.push(self.display.render_node.clone());
         if route.runtime.layer == Layer::Proton {
             let ntsync = PathBuf::from("/dev/ntsync");
             bind(&mut argv, "--dev-bind", &ntsync, &ntsync);
             landlock_write.push(ntsync);
         }
         landlock_read.extend(gpu.manifest_files());
-        push_audio(&mut argv, lease, self.session.uid, &mut landlock_write);
+        push_audio(&mut argv, lease, self.display.uid, &mut landlock_write);
         if let Some(proxy) = &lease.egress_proxy {
             launcher::sandbox::push_egress_proxy(&mut argv, proxy);
             landlock_write.push(proxy.sandbox_socket.clone());
@@ -725,7 +748,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             lease_id: lease.id.clone(),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
-            identity_uid: self.session.uid,
+            identity_uid: self.display.uid,
         })
     }
 }
@@ -1011,6 +1034,8 @@ pub enum PlanError {
     RunnerNotInstalled(String),
     #[error("Wayland socket is outside the session runtime directory")]
     UnsafeWaylandSocket,
+    #[error("the program has no display to show its windows on: {0}")]
+    NoDisplay(String),
     #[error("GPU device is not a DRM render node")]
     UnsafeRenderNode,
     #[error("capsule does not match resolved route")]
@@ -1085,10 +1110,11 @@ mod tests {
         (directory, store, state, program)
     }
 
-    fn session() -> HostSession {
-        HostSession {
+    fn session() -> LaunchDisplay {
+        LaunchDisplay {
             uid: 1000,
-            wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+            runtime_dir: PathBuf::from("/xdg/1000"),
+            wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
             render_node: PathBuf::from("/dev/dri/renderD999"),
         }
     }
@@ -1662,8 +1688,9 @@ mod tests {
         let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
         let listener = UnixListener::bind(&socket).unwrap();
         drop(listener);
-        let host = HostSession {
+        let host = LaunchDisplay {
             uid,
+            runtime_dir: runtime,
             wayland_socket: socket.clone(),
             render_node: PathBuf::from("/dev/dri/renderD128"),
         };

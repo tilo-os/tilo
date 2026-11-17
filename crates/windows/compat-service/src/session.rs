@@ -26,7 +26,7 @@ use wire_frame::{FrameError, Framing};
 
 use crate::service::published_vm_explanation;
 use crate::{
-    CapsuleStore, CompatibilityService, HostSession, InstallOutcome, InstallationStatus,
+    CapsuleStore, CompatibilityService, InstallOutcome, InstallationStatus, LaunchDisplays,
     LaunchInput, LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION,
     ProgramKind, ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
@@ -54,7 +54,7 @@ pub struct SessionHandoff {
     pub workspace_id: String,
 }
 
-/// Source of fresh compositor-owned grants. An implementation must look up
+/// Source of fresh session-owned grants. An implementation must look up
 /// `workspace_id` and `app_id`; it must never deserialize grants from this
 /// service connection.
 pub trait CapabilityAuthority: Send + Sync + 'static {
@@ -65,17 +65,20 @@ pub trait CapabilityAuthority: Send + Sync + 'static {
     ) -> Result<Vec<CapOverride>, String>;
 }
 
-/// Compositor-owned, single-use registry of launcher children. `/proc` facts
-/// are only corroboration; this record is the authority that a launch was
-/// actually initiated by Tilo for this app/workspace.
+/// The session's own account of the launcher processes it started. `/proc`
+/// facts are only corroboration; this is the authority that a launch was
+/// actually started by Tilo for this app in this workspace. Each launch hands
+/// off to the service once ([`LauncherAuthenticator`] keeps that).
 pub trait TrustedLauncherRegistry: Send + Sync + 'static {
-    fn consume(
+    /// Whether `pid`, started at `process_start_time`, is a launch of `app_id`
+    /// in `workspace_id` the session started and that still lives.
+    fn is_launch(
         &self,
         pid: u32,
         process_start_time: u64,
         app_id: &str,
         workspace_id: &str,
-    ) -> Option<BTreeSet<String>>;
+    ) -> bool;
 }
 
 pub struct ManagedCompatibility<R, B, E, V> {
@@ -97,7 +100,7 @@ where
         resources: B,
         executor: E,
         vm: V,
-        session: HostSession,
+        displays: Arc<dyn LaunchDisplays>,
     ) -> Result<Self, ServiceError> {
         let service = CompatibilityService::new(
             catalogue,
@@ -106,9 +109,27 @@ where
             resources,
             executor,
             vm,
-            session,
+            displays,
         )?;
         Ok(Self { service, store })
+    }
+
+    /// The entries a manager connecting now may address: the programs set up
+    /// in capsules and the appliance's published applications, read as it
+    /// connects. A manager that is already connected keeps its own set, which
+    /// only what it installs itself widens.
+    fn allowed_entries(&self) -> Result<BTreeSet<String>, SessionError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .map(|entry| entry.entry_id)
+            .chain(
+                self.vm_inventory()
+                    .applications
+                    .into_iter()
+                    .map(|application| application.entry_id),
+            )
+            .collect())
     }
 
     fn entries(&self) -> Result<Vec<RegisteredProgram>, SessionError> {
@@ -355,6 +376,10 @@ pub struct LauncherAuthenticator {
     expected_parent_pid: u32,
     expected_executable: PathBuf,
     registry: Arc<dyn TrustedLauncherRegistry>,
+    /// The launches that handed off already, by process and start time: each
+    /// hands off once, so a launcher cannot open a second connection with a
+    /// fresh entry set.
+    handed_off: Arc<Mutex<BTreeSet<(u32, u64)>>>,
 }
 
 impl LauncherAuthenticator {
@@ -370,6 +395,7 @@ impl LauncherAuthenticator {
             expected_parent_pid,
             expected_executable: expected_executable.into(),
             registry,
+            handed_off: Arc::default(),
         }
     }
 
@@ -391,7 +417,7 @@ impl LauncherAuthenticator {
         &self,
         stream: &UnixStream,
         handoff: &SessionHandoff,
-    ) -> Result<BTreeSet<String>, SessionError> {
+    ) -> Result<(), SessionError> {
         let credentials = peer_credentials(stream)?;
         let pid = u32::try_from(credentials.pid).map_err(|_| SessionError::UnauthenticatedPeer)?;
         let start_time = process_start_time(pid)?;
@@ -399,15 +425,33 @@ impl LauncherAuthenticator {
         // may reach connect first on another CPU. Wait briefly for that one
         // parent-side insertion, never for an unregistered identity change.
         for _ in 0..20 {
-            if let Some(entry_ids) =
-                self.registry
-                    .consume(pid, start_time, &handoff.app_id, &handoff.workspace_id)
+            if self
+                .registry
+                .is_launch(pid, start_time, &handoff.app_id, &handoff.workspace_id)
             {
-                return Ok(entry_ids);
+                return self.take_handoff(pid, start_time);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         Err(SessionError::UnauthenticatedPeer)
+    }
+
+    /// Spend the one handoff of the launch `pid` started at `start_time`.
+    /// Launches that ended are forgotten, so a later process given the same
+    /// pid is a launch of its own.
+    fn take_handoff(&self, pid: u32, start_time: u64) -> Result<(), SessionError> {
+        let mut handed_off = self
+            .handed_off
+            .lock()
+            .map_err(|_| SessionError::UnauthenticatedPeer)?;
+        handed_off.retain(|&(earlier, started)| {
+            process_start_time(earlier).is_ok_and(|now| now == started)
+        });
+        if handed_off.insert((pid, start_time)) {
+            Ok(())
+        } else {
+            Err(SessionError::UnauthenticatedPeer)
+        }
     }
 }
 
@@ -485,10 +529,10 @@ impl Drop for CompatSessionHandle {
     }
 }
 
-pub fn spawn_session_service<R, B, E, V, A>(
+pub fn spawn_session_service<R, B, E, V>(
     path: PathBuf,
     managed: Arc<ManagedCompatibility<R, B, E, V>>,
-    authority: Arc<A>,
+    authority: Arc<dyn CapabilityAuthority>,
     authenticator: LauncherAuthenticator,
 ) -> Result<CompatSessionHandle, SessionError>
 where
@@ -496,7 +540,6 @@ where
     B: LaunchResourceBroker + 'static,
     E: SandboxExecutor + 'static,
     V: VmDelegate + 'static,
-    A: CapabilityAuthority,
 {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -526,7 +569,7 @@ where
                         let Some(permit) = WorkerPermit::try_acquire(&thread_active_workers) else {
                             // The only accepted peers are launcher children, but a
                             // compromised manager must still not turn retained
-                            // descriptors into unbounded compositor threads.
+                            // descriptors into unbounded session threads.
                             drop(stream);
                             continue;
                         };
@@ -643,7 +686,8 @@ where
     let handoff: SessionHandoff =
         read_frame(&mut stream, launcher::services::COMPAT_HANDOFF_FRAMING)?;
     validate_handoff(&handoff)?;
-    let mut allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
+    authenticator.consume_handoff(&stream, &handoff)?;
+    let mut allowed_entry_ids = managed.allowed_entries()?;
     let mut pending_vm_install = None;
     loop {
         let (request, descriptor) = match read_request_frame(&mut stream, FRAMING) {
@@ -667,7 +711,7 @@ where
 }
 
 fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
-    if handoff.protocol != PROTOCOL_VERSION
+    if handoff.protocol != launcher::services::COMPAT_HANDOFF_PROTOCOL
         || handoff.app_id != MANAGER_APP_ID
         || !valid_id(&handoff.workspace_id)
     {
@@ -1500,6 +1544,8 @@ impl SessionError {
 mod tests {
     use std::io::Seek;
 
+    use crate::LaunchDisplay;
+
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -1509,7 +1555,7 @@ mod tests {
         {
             assert!(
                 validate_handoff(&SessionHandoff {
-                    protocol: PROTOCOL_VERSION,
+                    protocol: launcher::services::COMPAT_HANDOFF_PROTOCOL,
                     app_id: MANAGER_APP_ID.to_string(),
                     workspace_id: "workspace-1".to_string(),
                 })
@@ -1517,7 +1563,7 @@ mod tests {
             );
             assert!(matches!(
                 validate_handoff(&SessionHandoff {
-                    protocol: PROTOCOL_VERSION,
+                    protocol: launcher::services::COMPAT_HANDOFF_PROTOCOL,
                     app_id: "arbitrary.client".to_string(),
                     workspace_id: "workspace-1".to_string(),
                 }),
@@ -1734,8 +1780,8 @@ mod tests {
     struct DenyRegistry;
 
     impl TrustedLauncherRegistry for DenyRegistry {
-        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
-            None
+        fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+            false
         }
     }
 
@@ -1789,9 +1835,32 @@ mod tests {
     struct IdleLaunchers;
 
     impl TrustedLauncherRegistry for IdleLaunchers {
-        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
-            None
+        fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+            false
         }
+    }
+
+    /// A launch hands off once: a second connection of the same launcher process is refused,
+    /// whatever the session says of it.
+    #[test]
+    fn a_launch_hands_off_once() {
+        struct Every;
+
+        impl TrustedLauncherRegistry for Every {
+            fn is_launch(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
+                true
+            }
+        }
+
+        let executable = fs::read_link("/proc/self/exe").unwrap();
+        let auth = LauncherAuthenticator::new(executable, std::process::id(), Arc::new(Every));
+        let pid = std::process::id();
+        let started = process_start_time(pid).unwrap();
+        assert!(auth.take_handoff(pid, started).is_ok());
+        assert!(matches!(
+            auth.take_handoff(pid, started),
+            Err(SessionError::UnauthenticatedPeer)
+        ));
     }
 
     #[test]
@@ -1807,11 +1876,12 @@ mod tests {
                 IdleResources,
                 IdleExecutor,
                 IdleVm,
-                HostSession {
+                Arc::new(LaunchDisplay {
                     uid: 1000,
-                    wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                    runtime_dir: PathBuf::from("/xdg/1000"),
+                    wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
                     render_node: PathBuf::from("/dev/dri/renderD128"),
-                },
+                }),
             )
             .unwrap(),
         );

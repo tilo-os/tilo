@@ -426,6 +426,7 @@ mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
 pub mod windows;
+mod windows_compat;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

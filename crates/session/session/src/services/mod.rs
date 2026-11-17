@@ -89,6 +89,9 @@ pub(crate) enum Service {
     /// The apps' render services: a toolkit app hands its frame to the service of its workspace,
     /// which draws it on the GPU.
     Render,
+    /// The Windows compatibility service the Windows Apps manager sets up and starts Windows
+    /// programs through ([`crate::windows_compat`]).
+    Windows,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -141,10 +144,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::COMPAT_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "a Windows application's handoff reaches no compatibility service in this session \
-             yet, because no session runs the appliance it would start",
-        ),
+        owner: Owner::Session(Service::Windows),
     },
     Row {
         name: tools::SERVICE,
@@ -206,6 +206,8 @@ pub(crate) struct Served {
     tools: Option<tools::Tools>,
     /// The apps' render services, one per workspace, and their supervision.
     render: Option<render::Broker>,
+    /// The Windows compatibility service.
+    windows: Option<crate::windows_compat::Served>,
 }
 
 /// What a session serves its services with.
@@ -232,6 +234,8 @@ pub(crate) struct Serving {
     pub tools: Option<tools::Handle>,
     /// What wakes the session's loop when a worker read something that the loop counts.
     pub wake: tilo_service::Wake,
+    /// What the Windows compatibility service is served with, for a session that starts apps.
+    pub windows: Option<crate::windows_compat::Serving>,
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -287,6 +291,9 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                             }
                         });
             }
+            Service::Windows => {
+                served.windows = windows(&mut serving);
+            }
             Service::DataUsage => {}
         }
     }
@@ -309,6 +316,17 @@ impl Served {
             render.sync_workspaces();
         }
     }
+}
+
+/// The Windows compatibility service at the launcher's socket for it, for a session whose apps
+/// start through a launcher and read the workspaces' sandboxes from its app wire.
+fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
+    let layout = serving.shell.as_ref().map(Arc::clone)?;
+    crate::windows_compat::serve(serving.windows.take()?, layout)
+        .inspect_err(
+            |error| tracing::warn!(%error, "the Windows compatibility service is unavailable"),
+        )
+        .ok()
 }
 
 /// The identity service at the launcher's socket for it, signing in the workspace the shell shows.
@@ -1004,6 +1022,7 @@ mod tests {
                 Service::DataUsage,
                 Service::Tools,
                 Service::Render,
+                Service::Windows,
             ] {
                 assert!(
                     TABLE

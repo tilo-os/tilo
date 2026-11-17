@@ -14,10 +14,10 @@ use thiserror::Error;
 
 use crate::{
     CapsuleCommandPlan, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, ExecutionError,
-    ExecutionOutcome, HostSession, InstallationRecord, InstallationStatus, InstallerError,
-    InstallerInspection, InstallerKind, LaunchResourceBroker, MAX_INSTALLER_BYTES, NetworkShape,
-    PlanError, ProgramKind, ResourceError, ResourceRequest, RuntimeRegistry, SandboxExecutor,
-    SandboxPlanner, inspect_installer,
+    ExecutionOutcome, InstallationRecord, InstallationStatus, InstallerError, InstallerInspection,
+    InstallerKind, LaunchDisplay, LaunchDisplays, LaunchResourceBroker, MAX_INSTALLER_BYTES,
+    NetworkShape, PlanError, ProgramKind, ResourceError, ResourceRequest, RuntimeRegistry,
+    SandboxExecutor, SandboxPlanner, inspect_installer,
 };
 
 /// One application published by the authenticated singleton Windows guest.
@@ -509,27 +509,6 @@ macro_rules! forward_vm_delegate {
 
 forward_vm_delegate!(Box, Arc);
 
-/// Fail-closed adapter used until the privileged authenticated guest bridge is
-/// available in the compositor session. The protocol exposes this state as a
-/// disabled route instead of pretending the VM can launch.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UnavailableVmDelegate;
-
-impl VmDelegate for UnavailableVmDelegate {
-    fn availability(&self) -> VmAvailability {
-        VmAvailability::unavailable(
-            "The privileged authenticated Windows guest adapter is not installed in this session.",
-        )
-    }
-
-    fn launch(
-        &self,
-        _request: VmRouteRequest<'_>,
-    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        Err(windows_vm::AgentError::Unavailable.into())
-    }
-}
-
 pub struct CompatibilityService<R, B, E, V> {
     catalogue: Catalogue,
     store: CapsuleStore,
@@ -537,7 +516,8 @@ pub struct CompatibilityService<R, B, E, V> {
     resources: B,
     executor: E,
     vm: V,
-    session: HostSession,
+    /// Where each launch's program shows its windows, asked as it starts.
+    displays: Arc<dyn LaunchDisplays>,
     capsule_lock: Mutex<()>,
     /// Setup/removal is a mutation transaction. It does not block ordinary
     /// application launches, but two managers cannot concurrently replace or
@@ -559,10 +539,9 @@ where
         resources: B,
         executor: E,
         vm: V,
-        session: HostSession,
+        displays: Arc<dyn LaunchDisplays>,
     ) -> Result<Self, ServiceError> {
         catalogue.validate()?;
-        session.validate()?;
         Ok(Self {
             catalogue,
             store,
@@ -570,10 +549,18 @@ where
             resources,
             executor,
             vm,
-            session,
+            displays,
             capsule_lock: Mutex::new(()),
             installation_lock: Mutex::new(()),
         })
+    }
+
+    /// The display a program launched into `workspace_id` shows its windows
+    /// on, as the caller gives it now.
+    fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, PlanError> {
+        self.displays
+            .display_for(workspace_id)
+            .map_err(PlanError::NoDisplay)
     }
 
     /// Resolve only. It performs no prefix, broker, VM, or process mutation.
@@ -694,7 +681,8 @@ where
             capabilities: &capabilities,
         })?;
         let result: Result<(CapsuleCommandPlan, ExecutionOutcome), ServiceError> = (|| {
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
+            let display = self.display_for(&input.workspace_id)?;
+            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
             let plan = planner.plan(
                 &route,
                 &capsule,
@@ -1100,7 +1088,8 @@ where
             capabilities: &resolved,
         })?;
         let execution = (|| {
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
+            let display = self.display_for(workspace_id)?;
+            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
             let command =
                 planner.plan(&route, &state, &program, &resolved, workspace_id, &lease)?;
             self.executor.execute(&command).map_err(ServiceError::from)
@@ -1216,7 +1205,8 @@ where
             capabilities: &capabilities,
         })?;
         let execution = (|| {
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
+            let display = self.display_for(workspace_id)?;
+            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
             let plan =
                 planner.plan(route, &state, &control, &capabilities, workspace_id, &lease)?;
             self.executor.execute(&plan).map_err(ServiceError::from)
@@ -1697,11 +1687,12 @@ mod tests {
             Resources,
             Executor,
             Vm::default(),
-            HostSession {
+            Arc::new(LaunchDisplay {
                 uid: 1000,
-                wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                runtime_dir: PathBuf::from("/xdg/1000"),
+                wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
                 render_node: PathBuf::from("/dev/dri/renderD128"),
-            },
+            }),
         )
         .unwrap()
     }
@@ -1806,11 +1797,12 @@ mod tests {
                     calls: Arc::clone(&calls),
                     install_calls: Arc::new(AtomicUsize::new(0)),
                 },
-                HostSession {
+                Arc::new(LaunchDisplay {
                     uid: 1000,
-                    wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                    runtime_dir: PathBuf::from("/xdg/1000"),
+                    wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
                     render_node: PathBuf::from("/dev/dri/renderD128"),
-                },
+                }),
             )
             .unwrap();
             let application = VmPublishedApplication {
@@ -1830,5 +1822,126 @@ mod tests {
             ));
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
+    }
+
+    /// A catalogue routing `probe.exe` to Wine.
+    fn probe_catalogue() -> Catalogue {
+        Catalogue::from_json(
+            r#"{
+              "schema_version": 1,
+              "records": [{
+                "id": "probe",
+                "version": 1,
+                "provenance": "built_in",
+                "signed": true,
+                "matches": [{"executable": "probe.exe"}],
+                "recipe": {
+                  "layer": "wine",
+                  "runner": {"family": "wine", "version": "system"},
+                  "settings": {},
+                  "security_profile": "windows-app"
+                }
+              }]
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// The display a program shows its windows on is the one its launch finds: none before the
+    /// session bound one, and the bound one after.
+    #[test]
+    fn a_program_is_given_the_display_its_launch_finds() {
+        struct Later(Mutex<Option<LaunchDisplay>>);
+
+        impl LaunchDisplays for Later {
+            fn display_for(&self, _: &str) -> Result<LaunchDisplay, String> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| "not bound yet".to_string())
+            }
+        }
+
+        struct Seen(Arc<Mutex<Vec<String>>>);
+
+        impl SandboxExecutor for Seen {
+            fn execute(
+                &self,
+                plan: &CapsuleCommandPlan,
+            ) -> Result<ExecutionOutcome, ExecutionError> {
+                plan.bwrap_argv.clone_into(&mut self.0.lock().unwrap());
+                Ok(ExecutionOutcome {
+                    success: true,
+                    exit_code: Some(0),
+                })
+            }
+        }
+
+        let directory = TempDir::new().unwrap();
+        let catalogue = probe_catalogue();
+        let query = ApplicationQuery::executable("probe.exe");
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let route = catalogue
+            .resolver()
+            .unwrap()
+            .resolve(&query, VmFallback::Disabled);
+        let capsule = store.ensure_for_plan(&route).unwrap();
+        store
+            .register_program(
+                &capsule.id,
+                CapsuleProgram {
+                    id: "probe".to_string(),
+                    display_name: "Probe".to_string(),
+                    prefix_relative_executable: PathBuf::from("drive_c/probe.exe"),
+                    query: query.clone(),
+                    kind: crate::ProgramKind::Application,
+                    arguments: Vec::new(),
+                },
+            )
+            .unwrap();
+        let later = Arc::new(Later(Mutex::new(None)));
+        let argv = Arc::new(Mutex::new(Vec::new()));
+        let service = CompatibilityService::new(
+            catalogue,
+            store,
+            SystemRuntimeRegistry::assuming_provider(),
+            Resources,
+            Seen(Arc::clone(&argv)),
+            Vm::default(),
+            Arc::clone(&later) as Arc<dyn LaunchDisplays>,
+        )
+        .unwrap();
+        let input = LaunchInput {
+            app_id: "app".to_string(),
+            workspace_id: "workspace".to_string(),
+            program_id: "probe".to_string(),
+            query,
+            vm_fallback: VmFallback::Disabled,
+            capabilities: Vec::new(),
+            now_unix: Some(1),
+        };
+
+        assert!(matches!(
+            service.launch(&input),
+            Err(ServiceError::Plan(PlanError::NoDisplay(_)))
+        ));
+        *later.0.lock().unwrap() = Some(LaunchDisplay {
+            uid: 1000,
+            runtime_dir: PathBuf::from("/xdg/1000"),
+            wayland_socket: PathBuf::from("/xdg/1000/wayland-3"),
+            render_node: PathBuf::from("/dev/dri/renderD128"),
+        });
+        assert!(service.launch(&input).unwrap().success);
+        let argv = argv.lock().unwrap().clone();
+        assert!(
+            argv.windows(3).any(|bind| bind
+                == [
+                    "--ro-bind",
+                    "/xdg/1000/wayland-3",
+                    "/run/user/1000/wayland-0"
+                ]),
+            "the bound display is the program's: {argv:?}"
+        );
     }
 }

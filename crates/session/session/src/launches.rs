@@ -401,6 +401,12 @@ impl Launches {
         (start_time(pid) == Some(start)).then_some((start, windowless))
     }
 
+    /// The start time of the process `pid` this session started, when that process is the launch
+    /// of `app` in `workspace` and is still alive: what a service admits a launcher's connection by.
+    pub fn started_at(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
+        self.live(pid, app, workspace)
+    }
+
     /// The start time of the process `pid` started, when that process is the launch of `app` in
     /// `workspace` and still runs.
     fn live(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {

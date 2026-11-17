@@ -1265,10 +1265,9 @@ impl Session {
                 std::sync::Arc::clone(&agent_sessions),
             )));
         }
-        // Every service this session serves, from the one table that says
-        // who serves each: the identity an app signs in through, the
-        // machine's readings an app the launcher connects reads, and the
-        // data this device used. They start here, before any app does.
+        // Every service this session serves, from the one table that says who serves each: the
+        // identity an app signs in through, the machine's readings, the data this device used and
+        // Windows programs. They start here, before any app does.
         let table = crate::services::start(crate::services::Serving {
             shell: app_wire
                 .as_ref()
@@ -1286,6 +1285,7 @@ impl Session {
                 .cloned(),
             tools: Some(tools),
             wake: options.wake.handle(),
+            windows: crate::windows_compat::serving(&mut options),
         });
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,

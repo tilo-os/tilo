@@ -16,8 +16,11 @@ pub struct RemoteAppProcess {
 }
 
 pub trait RemoteAppLauncher: Send + Sync {
+    /// Show the guest's application `guest` for a launch into `workspace_id`,
+    /// whose display the presentation is put on.
     fn launch(
         &self,
+        workspace_id: &str,
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<RemoteAppProcess, RemoteAppError>;
@@ -142,6 +145,7 @@ impl<R> FreeRdpLauncher<R> {
 impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
     fn launch(
         &self,
+        _workspace_id: &str,
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<RemoteAppProcess, RemoteAppError> {
@@ -226,6 +230,7 @@ impl<R> AppFocusedSpiceLauncher<R> {
 impl<R: CommandRunner> RemoteAppLauncher for AppFocusedSpiceLauncher<R> {
     fn launch(
         &self,
+        _workspace_id: &str,
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<RemoteAppProcess, RemoteAppError> {

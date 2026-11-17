@@ -116,6 +116,9 @@ struct State {
     authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The same display and GPU, as a Windows program started by the compatibility service is
+    /// given them.
+    windows_display: Arc<crate::windows_compat::Display>,
     /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
     /// software renderer it draws with ([`Apps::follow_render_node`]).
     software: bool,
@@ -284,6 +287,7 @@ impl Apps {
                 authority: Authority::new(),
                 authority_at: None,
                 render_node: None,
+                windows_display: Arc::default(),
                 software: false,
                 launches: None,
                 links: None,
@@ -315,6 +319,7 @@ impl Apps {
         session_bus: Option<String>,
     ) {
         let mut state = self.state.borrow_mut();
+        state.windows_display.bound(socket.clone());
         state.environment.wayland_socket = Some(socket);
         state.x11 = x11;
         state.environment.session_bus = session_bus;
@@ -324,7 +329,19 @@ impl Apps {
     /// pinned to it, as it is pinned to the same driver, instead of choosing whichever GPU wgpu
     /// offers it.
     pub fn set_render_node(&self, node: Option<PathBuf>) {
-        self.state.borrow_mut().render_node = node;
+        let mut state = self.state.borrow_mut();
+        state.windows_display.drawn_on(node.clone());
+        state.render_node = node;
+    }
+
+    /// The display and GPU a Windows program is given, kept current as the compositor binds them.
+    pub(crate) fn windows_display(&self) -> Arc<crate::windows_compat::Display> {
+        Arc::clone(&self.state.borrow().windows_display)
+    }
+
+    /// The `tilo-launcher` every app starts through, when one is installed.
+    pub(crate) fn launcher(&self) -> Option<PathBuf> {
+        self.state.borrow().launcher.clone()
     }
 
     /// Take the compositor's render node once it has one: its backend names the GPU clients
@@ -344,6 +361,8 @@ impl Apps {
             return;
         }
         state.render_node = node();
+        let node = state.render_node.clone();
+        state.windows_display.drawn_on(node);
         if state.render_node.is_none() && drawn {
             state.software = true;
             #[cfg(target_os = "linux")]
