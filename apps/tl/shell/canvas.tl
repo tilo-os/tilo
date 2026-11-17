@@ -92,7 +92,10 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
                 name: "Caret",
                 x: (pointed.at(0) ?? 0) + caret_inset(pointed),
                 y: (pointed.at(1) ?? 0) + caret_inset(pointed),
-                width: caret_room(pointed.at(2) ?? 0),
+                width: caret_room(
+                    pointed.at(2) ?? 0,
+                    (seen.at(0) ?? 0) + (seen.at(2) ?? 0) - (pointed.at(0) ?? 0),
+                ),
                 height: caret_line(),
             ) {
                 ui.TextInput(
@@ -140,9 +143,13 @@ action asked_on_canvas(s: Shell) (label: "Asked on the canvas") {
 }
 
 /// How wide the caret's line stands, in canvas pixels: the rectangle's width when the person
-/// dragged one narrower than a line, and a line's measure otherwise.
-fn caret_room(width: Int) -> Int {
-    if width > 0 and width < 444 { width - 2 * caret_step() } else { 420 }
+/// dragged one narrower than a line, and a line's measure otherwise, no wider than the room `room`
+/// from the point to the edge of what the person sees, so a click near the edge puts the whole
+/// field in view. The caret never moves the camera: it stands where the person pointed.
+fn caret_room(width: Int, room: Int) -> Int {
+    let most = if width > 0 and width < 444 { width - 2 * caret_step() } else { 420 }
+    let fits = room - caret_step()
+    if fits >= 120 and fits < most { fits } else { most }
 }
 
 /// How tall the caret's line stands, in canvas pixels: one line of text and its field's room. The
