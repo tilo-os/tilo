@@ -24,7 +24,7 @@ pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// One synced source tree per host worktree for in-VM builds; each one's `target/` is
 /// evictable.

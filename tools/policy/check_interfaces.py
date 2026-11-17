@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """One version number per interface, bumped whenever the interface breaks.
 
-Tilo has six interfaces between separately updated parts: app and shell
+Tilo has eight interfaces between separately updated parts: app and shell
 (``shell-ui``), app and runtime (``runtime``), app and app host
 (``app-host``, the few apps handed it), app and messaging service
-(``messaging``), device and device (``peer``) and the store's package
+(``messaging``), device and device (``peer``), session and app keeper
+(``app-keeper``), host CLI and guest daemon (``vm``) and the store's package
 formats (``package``). Each one has a single version
 number in the code and a committed schema, ``interface.toml`` in the crate
 that owns the number, written from the code the way ``tilo-app surface``
