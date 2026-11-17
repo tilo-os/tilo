@@ -392,7 +392,7 @@ pub async fn start_server_lending(
                 None,
                 lent.feedback_reviewer,
                 Some(std::sync::Arc::clone(&shells)),
-                browsers,
+                browsers.clone(),
             )
             .await
             .context("start the server serving its workspaces' records")?;
@@ -417,6 +417,7 @@ pub async fn start_server_lending(
                 .with_coding(shells)
                 .with_events(events)
                 .with_initiative(initiative)
+                .placing(browsers)
                 .run(),
             )
         });
