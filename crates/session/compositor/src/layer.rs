@@ -438,10 +438,18 @@ impl State {
         if shown && self.layers.places.contains_key(namespace) {
             // A surface the session places fits itself: the person sees the frame its app draws
             // once it is shown, not one drawn while it was hidden and never answered. Hold it
-            // back until that frame is the size it asked for.
-            // Only a show that names the commit it waits for can find its frame already drawn; one
-            // that names none waits for the next, as it always has.
-            if !after.is_some_and(|after| self.layer_drew_after(namespace, after)) {
+            // back until that frame is the size it asked for — and, when the show names the commit
+            // it waits for, until that frame is drawn after it.
+            // A surface that already holds a frame at the size it asks for is shown at once: a
+            // panel the session keeps running between openings stops drawing while it is hidden,
+            // so waiting for one more commit would keep the person looking at nothing until the
+            // wait gave up. A frame drawn before the app resized to its place is not at that size,
+            // and still holds the show back.
+            let drawn = match after {
+                Some(after) => self.layer_drew_after(namespace, after),
+                None => self.layer_drew_after(namespace, 0),
+            };
+            if !drawn {
                 let after = after.unwrap_or(0);
                 self.layers
                     .settling
