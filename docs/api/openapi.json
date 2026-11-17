@@ -10038,6 +10038,24 @@
         ],
         "description": ""
       },
+      "chat.agent.set-agent-instruction.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
       "chat.agent.set-agent-bound.Arguments": {
         "type": "object",
         "properties": {
@@ -28240,6 +28258,12 @@
       "resource": "chat.agent",
       "action": "set-agent-model",
       "arguments": "#/components/schemas/chat.agent.set-agent-model.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "set-agent-instruction",
+      "arguments": "#/components/schemas/chat.agent.set-agent-instruction.Arguments"
     },
     {
       "app": "so.tilo.chat",

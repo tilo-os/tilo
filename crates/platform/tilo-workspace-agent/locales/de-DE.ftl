@@ -8,5 +8,6 @@ chat-agent-set-agent-colour = Agentenfarbe festlegen
 chat-agent-rename-agent = Agent umbenennen
 chat-agent-set-agent-model = Agentenmodell wählen
 chat-agent-set-agent-on-host = Wählen, wo ein Agent läuft
+chat-agent-set-agent-instruction = Dem Agenten sagen, wie er arbeitet
 chat-agent-set-agent-bound = Grenzen festlegen
 chat-agent-retire-agent = Agent außer Dienst stellen

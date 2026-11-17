@@ -140,6 +140,7 @@ __all__ = [
     "SetAgentColourArgs",
     "RenameAgentArgs",
     "SetAgentModelArgs",
+    "SetAgentInstructionArgs",
     "SetAgentBoundArgs",
     "RetireAgentArgs",
 ]
@@ -500,6 +501,7 @@ class Agent(TypedDict):
     spent: Spent | None
     state: AgentState
     created_at: int
+    instruction: str | None
 
 AgentState = Literal["active", "retired"]
 
@@ -838,6 +840,12 @@ SetAgentModelArgs = TypedDict("SetAgentModelArgs", {
 })
 """The arguments of `set-agent-model`."""
 
+SetAgentInstructionArgs = TypedDict("SetAgentInstructionArgs", {
+    "agent": "str",
+    "instruction": NotRequired["str | None"],
+})
+"""The arguments of `set-agent-instruction`."""
+
 SetAgentBoundArgs = TypedDict("SetAgentBoundArgs", {
     "agent": "str",
     "bound": "list[Bound]",
@@ -851,7 +859,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@3771147eecba8e0f"
+    __surface__ = "so.tilo.chat@936a822ab04182d5"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -1201,7 +1209,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@3771147eecba8e0f"
+    __surface__ = "so.tilo.chat@936a822ab04182d5"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -1480,7 +1488,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@3771147eecba8e0f"
+    __surface__ = "so.tilo.chat@936a822ab04182d5"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -1494,7 +1502,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@3771147eecba8e0f"
+    __surface__ = "so.tilo.chat@936a822ab04182d5"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1528,7 +1536,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@3771147eecba8e0f"
+    __surface__ = "so.tilo.chat@936a822ab04182d5"
     agents: list[Agent]
 
     def create_agent(self,
@@ -1627,6 +1635,22 @@ class ChatAgent(Resource):
     def set_agent_model_many(self, items: list[SetAgentModelArgs]) -> list[dict[str, Any]]:
         """Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-agent-model", items)
+
+    def set_agent_instruction(self,
+        *,
+        agent: str,
+        instruction: str | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if instruction is not None:
+            args["instruction"] = instruction
+        return self.action("set-agent-instruction", **args)
+
+    def set_agent_instruction_many(self, items: list[SetAgentInstructionArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-instruction", items)
 
     def set_agent_bound(self,
         *,

@@ -1213,6 +1213,7 @@ fields = [
   { path = "agents.*.spent.cost_micros", type = "int" },
   { path = "agents.*.state", type = { named = "AgentState" } },
   { path = "agents.*.created_at", type = "int" },
+  { path = "agents.*.instruction", type = { option = "text" } },
 ]
 
 [[resources.verbs]]
@@ -1269,6 +1270,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-agent-instruction"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "instruction", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "set-agent-bound"
 kind = "undoable"
 params = [
@@ -1297,6 +1306,7 @@ fields = [
   { name = "spent", type = { option = { named = "Spent" } } },
   { name = "state", type = { named = "AgentState" } },
   { name = "created_at", type = "int" },
+  { name = "instruction", type = { option = "text" } },
 ]
 
 [[resources.types]]

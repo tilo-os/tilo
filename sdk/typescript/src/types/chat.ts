@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@3771147eecba8e0f";
+export const SURFACE = "so.tilo.chat@936a822ab04182d5";
 
 export interface Category {
   name: string;
@@ -435,6 +435,7 @@ export interface Agent {
   spent: Spent | null;
   state: AgentState;
   created_at: number;
+  instruction: string | null;
 }
 
 /** One of "active", "retired". */
@@ -775,6 +776,12 @@ export interface RenameAgentArgs {
 export interface SetAgentModelArgs {
   agent: string;
   model?: string;
+}
+
+/** The arguments of `set-agent-instruction`. */
+export interface SetAgentInstructionArgs {
+  agent: string;
+  instruction?: string;
 }
 
 /** The arguments of `set-agent-bound`. */
@@ -1174,6 +1181,12 @@ export interface ChatAgent extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setAgentModelMany(items: SetAgentModelArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAgentInstruction(args: {
+    agent: string;
+    instruction?: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAgentInstructionMany(items: SetAgentInstructionArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentBound(args: {
     agent: string;
     bound: Bound[];
