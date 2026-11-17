@@ -61,7 +61,7 @@ cp -r os/usr/lib/systemd/system/. "$context/os/usr/lib/systemd/system/"
 cp docs/recovery.md "$context/docs/"
 cp docs/app-model/environments.md "$context/docs/app-model/"
 cp keys/cosign.pub "$context/keys/"
-cp keys/release/ "$context/keys/release/"
+cp -r keys/release/. "$context/keys/release/"
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
   --platform linux/amd64 \
   --build-context "github-assets=$assets" \
