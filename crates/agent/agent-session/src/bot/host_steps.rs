@@ -472,6 +472,7 @@ pub(crate) fn rows() -> Vec<CatalogueRow> {
                 action: Some(descriptor),
                 has_children: false,
                 visibility: None,
+                surface: None,
             }
         })
         .collect()
@@ -553,6 +554,7 @@ pub(crate) fn kept_rows(installation: &str) -> Vec<CatalogueRow> {
             }),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     })
     .collect()
