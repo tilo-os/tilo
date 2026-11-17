@@ -33,9 +33,11 @@
 //! A turn anybody else started with the same agent, the keeper's own turn in a conversation
 //! another person takes part in, and every turn of a sub-agent are told nothing of the list,
 //! are offered none of it, and are answered what an unknown action is. A sub-agent knows the
-//! one skill it was started with and no other, and only in a turn that is its keeper's. So a
-//! skill of one person never reaches a turn another person started, or an agent another
-//! person keeps.
+//! one skill it was started with and no other, and only in a turn that is its keeper's. That
+//! one it hands on to a sub-agent of its own ([`handed_on`]): which skill it is, is read from
+//! its keeper's store on this server and never from what the workspace's list keeps of it, so
+//! no text in an entry gives a sub-agent a skill. So a skill of one person never reaches a
+//! turn another person started, or an agent another person keeps.
 //!
 //! What its keeper bounds an agent to holds here too ([`lets`]). Each of the list's verbs,
 //! the read among them, is decided where Chat's own verb of that name on the person's list
@@ -113,7 +115,8 @@ const TOLD_HOW: &str = " You keep skills for this person: how kinds of work are 
 /// request.
 const HANDED: &str = "\n\nYou work by a skill your person keeps: how this kind of work is \
      done for them. Do the job the way it says. The skill is theirs alone: quote nothing of it \
-     in what you write, and say what came of the job.";
+     in what you write, and say what came of the job. If you start a sub-agent of your own for \
+     a part of the job, give `skill` this skill's name: it is told the skill as you are.";
 
 /// What a turn that is told no skills is answered when it asks for a sub-agent to be handed
 /// one.
@@ -131,6 +134,21 @@ pub(super) const NOT_TO_CODING: &str = "No skill is handed to a coding program: 
 /// skill it asks to hand on.
 const NOT_READ: &str = "what your person lets you do here does not let you read that skill, so \
      it is not handed on: start the sub-agent without `skill`";
+
+/// What a sub-agent that was handed no skill is answered when it asks for one to be handed on.
+const NONE_TO_HAND: &str = "You were handed no skill, so there is none to hand on. Start the \
+     sub-agent without `skill`.";
+
+/// What a sub-agent is answered when it names another skill than the one it works by. Like
+/// every answer to a sub-agent it names no skill and says nothing of one: what a sub-agent
+/// answers is kept in the workspace's messages.
+const NOT_ITS_OWN: &str = "You hand on the one skill you work by and no other. Give `skill` \
+     that skill's name, or start the sub-agent without one.";
+
+/// What a sub-agent is answered when the skill it works by names a model its person no longer
+/// links.
+const MODEL_GONE: &str = "The skill you work by names a model your person no longer links, so \
+     it is not handed on. Start the sub-agent without `skill`.";
 
 /// The keeper whose skills `turn` is told, and hands to a sub-agent it starts, in
 /// `workspace`: its agent's keeper, where the turn is the keeper's own in their own
@@ -202,7 +220,7 @@ pub(super) async fn told_turn(workspaces: &Workspaces, workspace: &str, turn: &T
 /// conversation, which is the keeper's alone with it. `None` for every other turn: one
 /// another member started, one anywhere but in that conversation, and one a coding program in
 /// the workspace's machine works.
-fn works_by(turn: &Turn) -> Option<[u8; 32]> {
+pub(super) fn works_by(turn: &Turn) -> Option<[u8; 32]> {
     let sub = turn.agent.sub.as_ref()?;
     if sub.coding.is_some() {
         return None;
@@ -417,6 +435,67 @@ pub(super) async fn for_sub_agent(
                         skill.name
                     )
                 })?;
+        }
+        Ok(Handed {
+            keeper,
+            skill: id.to_string(),
+            model: skill.model.clone(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Whether `named` names the skill `kept` holds as `own`: by that id, or by what the skill is
+/// called.
+fn is_named(kept: &Skills, named: &str, own: &str) -> bool {
+    kept.named(named).is_some_and(|(id, _)| id.as_str() == own)
+}
+
+/// What a sub-agent `lead` starts is handed where `lead` names the skill `named` for it: the
+/// one skill `lead` works by itself, as this server kept it in its keeper's own store when
+/// `lead` was started ([`Workspaces::skill_handed`]), and as that skill is now. Nothing the
+/// list of the workspace's agents keeps of `lead` decides it, so no text in an entry gives a
+/// sub-agent a skill, and `lead` learns nothing here of a skill it was not handed. `above` is
+/// the person's own agent its line of starters ends at: what its keeper bounds that agent to
+/// holds for the skill handed on, as it held when `lead` was handed it.
+///
+/// # Errors
+/// `lead` was handed no skill or the skill was forgotten since, `named` names another, what
+/// its keeper bounds `above` to keeps it from the skill, or the skill names a model its keeper
+/// no longer links: in words the turn that asked is told, which name no skill.
+pub(super) async fn handed_on(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (lead, above, keeper): (&Agent, &Agent, &[u8; 32]),
+    named: &str,
+) -> Result<Handed, String> {
+    let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
+    let (lead, above) = (lead.clone(), above.clone());
+    let (keeper, named) = (*keeper, named.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let own = workspaces
+            .skill_handed(&keeper, &workspace, &lead.id.0)
+            .filter(|handed| handed.is_for(lead.created_at))
+            .ok_or_else(|| NONE_TO_HAND.to_owned())?;
+        let kept = workspaces
+            .skills_of(&keeper, &workspace)
+            .unwrap_or_default();
+        let (id, skill) = kept
+            .skills
+            .iter()
+            .find(|(id, _)| id.as_str() == own.skill)
+            .ok_or_else(|| NONE_TO_HAND.to_owned())?;
+        if !is_named(&kept, &named, id.as_str()) {
+            return Err(NOT_ITS_OWN.to_owned());
+        }
+        if !lets(&above, &workspace, person_skills::READ, Some(id.as_str())) {
+            return Err(NOT_READ.to_owned());
+        }
+        if let Some(model) = &skill.model
+            && workspaces.person_links_model(&keeper, model).is_err()
+        {
+            return Err(MODEL_GONE.to_owned());
         }
         Ok(Handed {
             keeper,
@@ -1050,6 +1129,20 @@ mod tests {
             offered[0].action.as_ref().unwrap().contract.kind,
             ActionKind::Read
         );
+    }
+
+    /// A sub-agent names the skill it works by with that skill's id or with what it is called,
+    /// whatever the case; another skill's name, a name nothing is kept under and no name at
+    /// all name it not.
+    #[test]
+    fn a_skill_is_named_by_its_id_or_its_name_and_by_no_other() {
+        let kept = kept();
+        let (own, _) = kept.named("Market analysis").unwrap();
+        assert!(is_named(&kept, " market ANALYSIS ", own.as_str()));
+        assert!(is_named(&kept, own.as_str(), own.as_str()));
+        assert!(!is_named(&kept, "Weekly report", own.as_str()));
+        assert!(!is_named(&kept, "No such skill", own.as_str()));
+        assert!(!is_named(&kept, "", own.as_str()));
     }
 
     /// The agent `scout` one person keeps, bounded to `rules`.
