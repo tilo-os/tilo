@@ -47,7 +47,7 @@ pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
-pub use crate::wake::{Services as WakeIo, WakeInterfaces};
+pub use crate::wake::{WakeInterfaces, WakeIo};
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 

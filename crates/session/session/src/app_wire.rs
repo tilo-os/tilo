@@ -41,7 +41,7 @@ use tilo_workspace_keys::KeyProvider;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
-use crate::broker_services::{Service, Services};
+use crate::broker_services::{BrokerService, BrokerServices};
 use crate::launches::Launches;
 use crate::lists::Lists;
 
@@ -2125,7 +2125,7 @@ mod tests {
                     || file.display().to_string(),
                     |app| app.as_os_str().to_string_lossy().into_owned(),
                 );
-            for &(marker, service) in crate::broker_services::CALLED_BOUNDARIES {
+            for &(marker, service) in crate::broker_services::CALLED_SERVICES {
                 if text.contains(marker) {
                     called.entry(service).or_default().insert(app.clone());
                 }
@@ -2218,7 +2218,7 @@ mod tests {
                 .iter()
                 .map(|(service, _)| *service)
                 .collect::<Vec<_>>(),
-            tilo_action_broker::services::HostServices::BOUNDARIES,
+            tilo_action_broker::services::HostServices::NAMES,
             "the broker's services, each decided in its order"
         );
         let mut names = std::collections::BTreeSet::new();
