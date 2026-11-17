@@ -109,6 +109,11 @@ pub(crate) enum Hit {
     },
     /// Open the window a message shares, as a window of this person's own.
     OpenShare(Id),
+    /// Grow the window a message shares, to work in it where the
+    /// conversation shows it.
+    GrowShare(Id),
+    /// Make the window a message shares a miniature again.
+    ShrinkShare(Id),
     /// Stop sharing the window a message of yours shares.
     StopShare(Id),
     /// Let the others do this with the window a message of yours shares.
@@ -194,6 +199,8 @@ impl Hit {
                 format!("chat.open-resource:{msg}:{attachment}")
             }
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
+            Self::GrowShare(id) => format!("chat.grow-share:{id}"),
+            Self::ShrinkShare(id) => format!("chat.shrink-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
             Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
             Self::ShareWindowPanel => "chat.share-window".into(),
@@ -488,6 +495,30 @@ impl ChatApp {
                                     ),
                                     ("name", self.user_name(&m.author).into()),
                                 ],
+                            )
+                        })),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::GrowShare(message) => (
+                        content(
+                            self.message(message)
+                                .map_or_else(String::new, |m| self.grow_share_label(m)),
+                        ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::ShrinkShare(message) => (
+                        content(self.message(message).map_or_else(String::new, |m| {
+                            crate::i18n::t_args(
+                                "chat-share-make-smaller",
+                                &[(
+                                    "title",
+                                    m.resource()
+                                        .map(|at| at.reference.label.clone())
+                                        .unwrap_or_default()
+                                        .into(),
+                                )],
                             )
                         })),
                         Role::Button,

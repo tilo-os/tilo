@@ -670,7 +670,13 @@ impl CollaborationLaunchpad {
 /// The launchpad's heading, its cards and its footer, as a page shows them.
 impl CollaborationLaunchpad {
     /// The heading: what these cards are for, and who sees the work.
-    fn compose_heading(&self, cx: &mut ui::composition::HtmlCx<'_>, left: f64, width: f64, top: f64) {
+    fn compose_heading(
+        &self,
+        cx: &mut ui::composition::HtmlCx<'_>,
+        left: f64,
+        width: f64,
+        top: f64,
+    ) {
         let theme = cx.theme();
         let ink = theme.tokens.colors.text_primary;
         let heading_style = theme.text(TextRole::Display);
@@ -709,7 +715,12 @@ impl CollaborationLaunchpad {
         let base_style = theme.text(TextRole::Body);
         let caption_style = theme.text(TextRole::Caption);
         let base_h = f64::from(base_style.line_height_px());
-        for (action, rect) in self.cards.iter().copied().zip(self.card_rects.iter().copied()) {
+        for (action, rect) in self
+            .cards
+            .iter()
+            .copied()
+            .zip(self.card_rects.iter().copied())
+        {
             let key = format!("card:{}", action.slug());
             let card = cx.part(&key, "LaunchpadCard", rect);
             card.tag = Some("button");
@@ -737,7 +748,12 @@ impl CollaborationLaunchpad {
             let detail = cx.part(
                 &format!("{key}:detail"),
                 "LaunchpadCardDetail",
-                Rect::new(rect.x0 + 56.0, rect.y0 + 47.0, rect.x1 - 16.0, rect.y1 - 6.0),
+                Rect::new(
+                    rect.x0 + 56.0,
+                    rect.y0 + 47.0,
+                    rect.x1 - 16.0,
+                    rect.y1 - 6.0,
+                ),
             );
             detail.own = Some(ui::composition::Own::Text(
                 ui::composition::TextLook::new(
@@ -775,8 +791,12 @@ impl CollaborationLaunchpad {
         part.own = Some(ui::composition::Own::Face(ui::composition::Face {
             icon: None,
             label: Some(
-                ui::composition::TextLook::new(t("launchpad-open-app"), &base_style, Some(face_ink))
-                    .with_max_lines(Some(1)),
+                ui::composition::TextLook::new(
+                    t("launchpad-open-app"),
+                    &base_style,
+                    Some(face_ink),
+                )
+                .with_max_lines(Some(1)),
             ),
             detail: None,
             trailing: None,
@@ -1287,10 +1307,9 @@ mod tests {
         let details = collect(&composition.root, "LaunchpadCardDetail");
         assert_eq!(details.len(), LaunchpadAction::ALL.len());
         assert!(
-            details.iter().all(|detail| matches!(
-                &detail.own,
-                Some(ui::composition::Own::Text(_))
-            )),
+            details
+                .iter()
+                .all(|detail| matches!(&detail.own, Some(ui::composition::Own::Text(_)))),
             "each card says what its verb does"
         );
 

@@ -437,6 +437,15 @@ impl<R: Resource> ResourceEnv<R> {
         self.run.private
     }
 
+    /// Whether this is a view another app's window embeds
+    /// ([`ui_core::window_share`]) and not a window of its own: it stands
+    /// inside that window, which has the bar, so it shows the one thing it
+    /// was opened on and nothing to move elsewhere from (no list of the
+    /// record's other items, no title of its own).
+    pub fn is_embedded(&self) -> bool {
+        self.run.embedded
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).

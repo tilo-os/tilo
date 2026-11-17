@@ -2,7 +2,8 @@
 //! says which windows there are to share. A message that shares a window shows the
 //! window's resource as it is now — not a picture of the sharer's screen: every reader's
 //! shell runs the resource's own app on its own copy of the record and draws that app's
-//! view, scaled down, where the message asked for it.
+//! view where the message asked for it: scaled down as a miniature, or, where the app asks for a
+//! view to work in ([`Embed::working`]), at the place's own size, taking the person's input there.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -45,6 +46,37 @@ pub struct Embed {
     pub view: ResourceView,
     pub rect: Rect,
     pub clip: Rect,
+    /// Whether the person works in the view where it stands: the shell lays the view's app out
+    /// at `rect`'s own size and hands it the pointer, the keyboard and text input there, as it
+    /// does a window. Otherwise the view is a miniature: laid out at a window's size, drawn
+    /// scaled into `rect`, taking no input.
+    pub working: bool,
+    /// What the embedding app calls what the view shows (a document's title): a screen reader
+    /// reads it before what a view to work in holds. Empty for a miniature.
+    pub label: String,
+}
+
+impl Embed {
+    /// A miniature of `view` in `rect`, showing what of it falls in `clip`.
+    #[must_use]
+    pub fn miniature(key: impl Into<String>, view: ResourceView, rect: Rect, clip: Rect) -> Self {
+        Self {
+            key: key.into(),
+            view,
+            rect,
+            clip,
+            working: false,
+            label: String::new(),
+        }
+    }
+
+    /// The same place as one the person works in, called `label`.
+    #[must_use]
+    pub fn to_work_in(mut self, label: impl Into<String>) -> Self {
+        self.working = true;
+        self.label = label.into();
+        self
+    }
 }
 
 /// How an embed is coming along, as its host reports it.
@@ -112,6 +144,12 @@ pub struct DeclaredEmbed {
     pub view: ResourceView,
     pub rect: [f64; 4],
     pub clip: [f64; 4],
+    /// [`Embed::working`]. Absent from apps that only ask for miniatures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub working: bool,
+    /// [`Embed::label`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 impl From<&Embed> for DeclaredEmbed {
@@ -122,6 +160,8 @@ impl From<&Embed> for DeclaredEmbed {
             view: embed.view.clone(),
             rect: array(embed.rect),
             clip: array(embed.clip),
+            working: embed.working,
+            label: embed.label.clone(),
         }
     }
 }
@@ -140,6 +180,8 @@ impl DeclaredEmbed {
             view: self.view.bounded(),
             rect: rect(self.rect)?,
             clip: rect(self.clip)?,
+            working: self.working,
+            label: bounded(&self.label),
         })
     }
 }
@@ -408,16 +450,35 @@ mod tests {
     use crate::hosted_window::HostedWindow;
 
     fn embed(key: &str) -> Embed {
-        Embed {
-            key: key.into(),
-            view: ResourceView {
+        Embed::miniature(
+            key,
+            ResourceView {
                 app: "so.tilo.notes".into(),
                 record: "plan".into(),
                 resource: "plan".into(),
             },
-            rect: Rect::new(10.0, 20.0, 330.0, 220.0),
-            clip: Rect::new(0.0, 0.0, 400.0, 400.0),
-        }
+            Rect::new(10.0, 20.0, 330.0, 220.0),
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+        )
+    }
+
+    #[test]
+    fn a_view_to_work_in_crosses_the_connection_and_a_miniature_stays_as_it_was() {
+        let miniature = DeclaredEmbed::from(&embed("m1"));
+        let wire = serde_json::to_value(&miniature).expect("json");
+        assert!(
+            wire.get("working").is_none() && wire.get("label").is_none(),
+            "an app that asks for miniatures says what it always said: {wire}"
+        );
+        let older: DeclaredEmbed = serde_json::from_value(wire).expect("an older app's embed");
+        assert_eq!(older.embed(), Some(embed("m1")));
+
+        let working = embed("m2").to_work_in("Plan");
+        let wire = serde_json::to_value(DeclaredEmbed::from(&working)).expect("json");
+        assert_eq!(wire["working"], true);
+        assert_eq!(wire["label"], "Plan");
+        let back: DeclaredEmbed = serde_json::from_value(wire).expect("json");
+        assert_eq!(back.embed(), Some(working));
     }
 
     #[test]

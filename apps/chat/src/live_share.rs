@@ -6,9 +6,14 @@
 //! own proportions. The miniature is not a picture the sharer sends: Chat
 //! asks its desktop to draw the resource's own app there
 //! ([`ui::window_share`]), from this device's copy of the record, so it
-//! follows the sharer's work as the record syncs. Pressing the card opens
-//! the resource as a window of the reader's own, with the access the sharer
-//! gave. A share its sharer stopped turns into a neutral card that says so.
+//! follows the sharer's work as the record syncs. Pressing the card grows
+//! the miniature in place to a size to work at: the desktop then runs the
+//! resource's app there on this device's copy, taking the reader's pointer,
+//! keys and text input beside whoever else is in the record, with the access
+//! the workspace gives them. The card's head makes it smaller again, or opens
+//! the resource as a window of the reader's own. On a desktop that draws no
+//! views a press opens the window. A share its sharer stopped turns into a
+//! neutral card that says so.
 //!
 //! The sharer shares from the attach menu's "Share a window" or from a
 //! window's own menu ([`ui::window_share::Ask`]), choosing what the others
@@ -17,7 +22,7 @@
 //! keeps the message saying whether the window is still open.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -39,10 +44,23 @@ use crate::record::ShareAccess;
 /// The miniature's proportions: a window's, wider than tall.
 pub(crate) const ASPECT: f64 = 16.0 / 10.0;
 
-/// The widest a card grows: as wide as a picture in a message, so a
-/// miniature stays a glance and not a second window in the conversation.
+/// The widest a miniature's card grows: as wide as a picture in a message,
+/// so a miniature stays a glance and not a second window in the conversation.
 pub(crate) fn max_card_width(theme: &ui::theme::Theme) -> f64 {
     2.0 * MediaSize::Regular.extent(theme)
+}
+
+/// How much of the window's height a view to work in may take: the
+/// conversation it stands in, and the message field, stay in reach.
+const WORKING_SHARE_OF_WINDOW: f64 = 0.62;
+/// The least height worth working in.
+const MIN_WORKING_HEIGHT: f64 = 280.0;
+
+/// The height of a view to work in that is `width` wide, in a window
+/// `window` high: a window's proportions, within what the window leaves.
+pub(crate) fn working_height(width: f64, window: f64) -> f64 {
+    let most = (window * WORKING_SHARE_OF_WINDOW).max(MIN_WORKING_HEIGHT);
+    (width / ASPECT).clamp(MIN_WORKING_HEIGHT, most)
 }
 
 /// What Chat keeps of the windows shared into the workspace.
@@ -57,6 +75,9 @@ pub(crate) struct LiveShares {
     seen_open: HashMap<String, bool>,
     /// What the shares grant, and what the workspace lets this person do.
     pub(crate) grants: crate::share_grants::ShareGrants,
+    /// The shares this person works in where the conversation shows them,
+    /// by message: how this window presents them, never part of the record.
+    pub(crate) grown: HashSet<String>,
 }
 
 /// The "Share a window" panel: the window chosen and what the others may
@@ -85,6 +106,10 @@ struct CardParts {
     /// The sharer's controls under the card: what the others may do,
     /// switched in place, and "Stop sharing".
     controls: Option<SharerControls>,
+    /// At the head's end on a desktop that draws the view: open the resource
+    /// as a window, and, while the view is grown, make it smaller again.
+    open: Option<Rect>,
+    smaller: Option<Rect>,
 }
 
 /// The sharer's row under a live share's card.
@@ -104,6 +129,24 @@ impl ChatApp {
     /// Whether `m` is a live share of this person's.
     pub(crate) fn is_my_live_share(&self, m: &Message) -> bool {
         m.share.as_ref().is_some_and(|share| !share.ended) && self.is_me(&m.author)
+    }
+
+    /// Whether this person works in `m`'s share where the conversation
+    /// shows it: they grew it, it is live, and this desktop draws views.
+    pub(crate) fn share_grown(&self, m: &Message) -> bool {
+        m.share.as_ref().is_some_and(|share| !share.ended)
+            && self.live_shares.grown.contains(&m.id)
+            && ui::window_share::drawn()
+    }
+
+    /// Whether this person may change what `m` shares: it is theirs, its
+    /// sharer lets the others edit, or the workspace lets them anyway.
+    fn may_edit_share(&self, m: &Message) -> bool {
+        self.is_me(&m.author)
+            || m.share
+                .as_ref()
+                .is_some_and(|share| share.access == ShareAccess::Edit)
+            || self.can_already_edit(&m.id)
     }
 
     /// The height of `m`'s share card in a column `width` wide, the gap
@@ -136,7 +179,13 @@ impl ChatApp {
     ) -> CardParts {
         let sp = &theme.tokens.spacing;
         let pad = f64::from(sp.s3);
-        let w = width.clamp(0.0, max_card_width(theme));
+        let grown = self.share_grown(m);
+        // A view to work in takes the column; a miniature stays a glance.
+        let w = if grown {
+            width.max(0.0)
+        } else {
+            width.clamp(0.0, max_card_width(theme))
+        };
         let top = origin.y + f64::from(sp.s2);
         let title = line_of(tr, &theme.text(TextRole::Body).strong());
         let caption = line_of(tr, &theme.text(TextRole::Caption));
@@ -145,13 +194,28 @@ impl ChatApp {
         let header = Rect::new(origin.x, top, origin.x + w, top + header_h);
         let view = (!ended).then(|| {
             let inner = w - 2.0 * f64::from(sp.s1);
+            let height = if grown {
+                working_height(inner, self.rect.height())
+            } else {
+                inner / ASPECT
+            };
             Rect::new(
                 origin.x + f64::from(sp.s1),
                 header.y1,
                 origin.x + f64::from(sp.s1) + inner,
-                header.y1 + inner / ASPECT,
+                header.y1 + height,
             )
         });
+        // The head's own controls, from its end: the window, then smaller.
+        let side = ButtonFace::height(ControlSize::Small, theme);
+        let control = |nth: f64| {
+            let x1 = header.x1 - pad - nth * (side + f64::from(sp.s1));
+            let cy = header.center().y;
+            Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0)
+        };
+        let drawn = !ended && ui::window_share::drawn();
+        let open = drawn.then(|| control(0.0));
+        let smaller = grown.then(|| control(1.0));
         let card = Rect::new(
             origin.x,
             top,
@@ -198,6 +262,8 @@ impl ChatApp {
             header,
             view,
             controls,
+            open,
+            smaller,
         }
     }
 
@@ -219,22 +285,43 @@ impl ChatApp {
         let shared = m.resource();
         let label = shared.map_or("", |at| at.reference.label.as_str());
         let app = shared.map_or_else(String::new, |at| at.app.clone());
-        let hovered = !share.ended && self.hovered(parts.card);
+        let grown = self.share_grown(m);
+        // A grown view is worked in, not pressed: its card is no button.
+        let pressable = !share.ended && !grown;
+        let hovered = pressable && self.hovered(parts.card);
         let mut face = CardFace::new();
-        if !share.ended {
+        if pressable {
             face = face.pressable().interaction(ui::widget::Interaction {
                 hovered,
                 ..ui::widget::Interaction::default()
             });
         }
         face.paint(&mut paint, parts.card);
-        self.draw_share_header(&mut paint, m, &share, (label, &app), parts.header);
+        let head_end = parts
+            .smaller
+            .or(parts.open)
+            .map(|control| control.x0 - f64::from(theme.tokens.spacing.s2));
+        self.draw_share_header(
+            &mut paint,
+            m,
+            &share,
+            (label, &app),
+            (parts.header, head_end),
+        );
         if let Some(view) = parts.view {
-            self.draw_share_view(&mut paint, m, &app, view, clip);
+            self.draw_share_view(&mut paint, m, (&app, label), view, clip);
         }
-        if !share.ended {
-            ChatApp::push_hit(hits, parts.card, Hit::OpenShare(m.id.clone()));
+        if pressable {
+            // Where the desktop draws the view, a press grows it to work in;
+            // elsewhere it opens the resource as a window.
+            let press = if ui::window_share::drawn() {
+                Hit::GrowShare(m.id.clone())
+            } else {
+                Hit::OpenShare(m.id.clone())
+            };
+            ChatApp::push_hit(hits, parts.card, press);
         }
+        self.draw_share_head_controls(&mut paint, m, label, (parts.open, parts.smaller), hits);
         if let Some(controls) = &parts.controls {
             for (access, rect) in controls.access {
                 let label = access_label(access);
@@ -270,6 +357,55 @@ impl ChatApp {
             + f64::from(theme.tokens.spacing.s2);
     }
 
+    /// The head's own controls on a desktop that draws the view: open the
+    /// resource as a window, and, while the view is grown, make it smaller.
+    fn draw_share_head_controls(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        m: &Message,
+        label: &str,
+        (open, smaller): (Option<Rect>, Option<Rect>),
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let theme = paint.theme;
+        let head_controls = [
+            (
+                open,
+                Icon::ExternalLink,
+                Hit::OpenShare(m.id.clone()),
+                crate::i18n::t_args(
+                    "chat-share-open-window",
+                    &[("title", label.to_owned().into())],
+                ),
+            ),
+            (
+                smaller,
+                Icon::Minimize2,
+                Hit::ShrinkShare(m.id.clone()),
+                crate::i18n::t_args(
+                    "chat-share-make-smaller",
+                    &[("title", label.to_owned().into())],
+                ),
+            ),
+        ];
+        for (rect, icon, hit, name) in head_controls {
+            let Some(rect) = rect else {
+                continue;
+            };
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                theme,
+                &ButtonFace::icon_only(rect, icon, &name)
+                    .control_size(ControlSize::Small)
+                    .role(ButtonRole::Secondary)
+                    .hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, hit);
+        }
+    }
+
     /// The card's head: the app's mark, the title, what the others may do,
     /// and the sharer's face with whether it is live; or, ended, that it
     /// is no longer shared.
@@ -279,16 +415,17 @@ impl ChatApp {
         m: &Message,
         share: &crate::record::WindowShare,
         (label, app): (&str, &str),
-        header: Rect,
+        (header, end): (Rect, Option<f64>),
     ) {
         let theme = paint.theme;
         let sp = &theme.tokens.spacing;
         let mark = Self::draw_share_mark(paint, share, app, header);
         let text_x = mark.x1 + f64::from(sp.s3);
+        let end = end.unwrap_or_else(|| header.x1 - f64::from(sp.s3));
         let text_end = if share.ended {
-            header.x1 - f64::from(sp.s3)
+            end
         } else {
-            self.draw_share_presence(paint, m, share, header)
+            self.draw_share_presence(paint, m, share, (header, end))
         };
         let title_style = theme.text(TextRole::Body).strong();
         let caption_style = theme.text(TextRole::Caption);
@@ -364,21 +501,20 @@ impl ChatApp {
         mark
     }
 
-    /// The sharer's face at the head's end and, while they have the window
-    /// open and are here, the live mark before it. Returns where the text
-    /// before them ends.
+    /// The sharer's face before `end` in the head and, while they have the
+    /// window open and are here, the live mark before it. Returns where the
+    /// text before them ends.
     fn draw_share_presence(
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
         share: &crate::record::WindowShare,
-        header: Rect,
+        (header, end): (Rect, f64),
     ) -> f64 {
         let theme = paint.theme;
         let sp = &theme.tokens.spacing;
         let gap = f64::from(sp.s2);
         let face = AvatarSize::Small.side(theme);
-        let end = header.x1 - f64::from(sp.s3);
         let cy = header.center().y;
         let face_rect = Rect::new(end - face, cy - face / 2.0, end, cy + face / 2.0);
         let name = self.user_name(&m.author);
@@ -401,13 +537,14 @@ impl ChatApp {
         x0 - gap
     }
 
-    /// The miniature: what this device's desktop draws of the resource's
-    /// own app, or, while it cannot, a quiet stand-in that says why.
+    /// The view: what this device's desktop draws of the resource's own
+    /// app, as a miniature or grown to work in, or, while it cannot, a quiet
+    /// stand-in that says why.
     fn draw_share_view(
         &self,
         paint: &mut PaintCtx<'_>,
         m: &Message,
-        app: &str,
+        (app, label): (&str, &str),
         view: Rect,
         clip: Rect,
     ) {
@@ -425,7 +562,7 @@ impl ChatApp {
             detail: None,
         });
         MediaCardFace::new(MediaArt::Kind(ui::icons::app_glyph(app, None)))
-            .aspect(MediaAspect::Ratio(ASPECT))
+            .aspect(MediaAspect::Ratio(view.width() / view.height().max(1.0)))
             .badges(badges.as_slice())
             .paint(paint, view);
         let shown = view.intersect(clip);
@@ -433,16 +570,24 @@ impl ChatApp {
             && shown.width() > 0.0
             && shown.height() > 0.0
         {
-            self.live_shares.embeds.borrow_mut().push(Embed {
-                key: m.id.clone(),
-                view: ResourceView {
+            let embed = Embed::miniature(
+                m.id.clone(),
+                ResourceView {
                     app: at.app.clone(),
                     record: at.record.clone().unwrap_or_default(),
                     resource: at.reference.id.clone(),
                 },
-                rect: view,
+                view,
                 clip,
-            });
+            );
+            self.live_shares
+                .embeds
+                .borrow_mut()
+                .push(if self.share_grown(m) {
+                    embed.to_work_in(label)
+                } else {
+                    embed
+                });
         }
     }
 
@@ -453,8 +598,10 @@ impl ChatApp {
             .is_some_and(|user| user.status != crate::model::Presence::Offline)
     }
 
-    /// Ask the desktop for the miniatures this frame drew, unless a
-    /// popover covers the conversation they are in.
+    /// Ask the desktop for the views this frame drew. While a popover covers
+    /// the conversation they are in, no miniature is asked for, and a view
+    /// the person works in is kept running with nothing of it shown, so the
+    /// place they were at in it is still theirs when the popover closes.
     pub(crate) fn declare_share_embeds(&self) {
         let mut embeds = std::mem::take(&mut *self.live_shares.embeds.borrow_mut());
         let covered = self.menu.is_some()
@@ -465,9 +612,58 @@ impl ChatApp {
             || self.channel_sheet.is_some()
             || (self.call.active && self.call.expanded);
         if covered {
-            embeds.clear();
+            embeds.retain(|embed| embed.working);
+            for embed in &mut embeds {
+                embed.clip = Rect::ZERO;
+            }
         }
         ui::window_share::declare(embeds);
+    }
+
+    /// Grow what `message` shares to work in it where the conversation
+    /// shows it.
+    pub(crate) fn grow_share(&mut self, message: &str) {
+        if self
+            .message(message)
+            .and_then(|m| m.share.as_ref())
+            .is_some_and(|share| !share.ended)
+            && self.live_shares.grown.insert(message.to_owned())
+        {
+            // What the workspace lets this person do there may have changed
+            // since the card was drawn.
+            self.live_shares.grants.ask_again(message);
+            self.request_relayout();
+        }
+    }
+
+    /// Make what `message` shares a miniature again.
+    pub(crate) fn shrink_share(&mut self, message: &str) {
+        if self.live_shares.grown.remove(message) {
+            self.request_relayout();
+        }
+    }
+
+    /// What the card of `m`'s share is called where a press grows it: what
+    /// this person can do in it there.
+    pub(crate) fn grow_share_label(&self, m: &Message) -> String {
+        let key = if self.may_edit_share(m) {
+            "chat-share-work-here"
+        } else {
+            "chat-share-read-here"
+        };
+        crate::i18n::t_args(
+            key,
+            &[
+                (
+                    "title",
+                    m.resource()
+                        .map(|at| at.reference.label.clone())
+                        .unwrap_or_default()
+                        .into(),
+                ),
+                ("name", self.user_name(&m.author).into()),
+            ],
+        )
     }
 
     /// Open the window `message` shares, as a window of this person's own.
@@ -522,6 +718,7 @@ impl ChatApp {
             }),
         );
         self.live_shares.seen_open.remove(message);
+        self.live_shares.grown.remove(message);
         self.request_relayout();
     }
 
@@ -621,6 +818,24 @@ impl ChatApp {
     /// windows Chat shares, for the desktop to mark.
     pub(crate) fn follow_window_shares(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.follow_share_grants();
+        // A share that ended, or whose message is gone, is no longer grown.
+        if !self.live_shares.grown.is_empty() {
+            let live: HashSet<String> = self
+                .live_shares
+                .grown
+                .iter()
+                .filter(|id| {
+                    self.message(id)
+                        .and_then(|m| m.share.as_ref())
+                        .is_some_and(|share| !share.ended)
+                })
+                .cloned()
+                .collect();
+            if live.len() != self.live_shares.grown.len() {
+                self.live_shares.grown = live;
+                self.request_relayout();
+            }
+        }
         while let Some(ask) = ui::window_share::take_ask() {
             match ask {
                 ui::window_share::Ask::Share(window) => self.open_share_panel(Some(window.tab)),

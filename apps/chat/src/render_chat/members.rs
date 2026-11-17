@@ -175,8 +175,7 @@ impl ChatApp {
                 .secondary(&m.text)
                 .two_line_secondary()
                 .leading(RowLeading::Avatar(
-                    AvatarFace::new(&name, m.author.id())
-                        .presence(self.identity_colour(&m.author)),
+                    AvatarFace::new(&name, m.author.id()).presence(self.identity_colour(&m.author)),
                 ));
             let row_h = face.height(ctx.text, theme);
             let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);

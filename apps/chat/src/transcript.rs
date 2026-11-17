@@ -41,10 +41,10 @@ pub fn shown_author(
     message: &Message,
     name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
 ) -> String {
-    message.appearance.as_ref().map_or_else(
-        || name(&message.author),
-        |shown| shown.name.clone(),
-    )
+    message
+        .appearance
+        .as_ref()
+        .map_or_else(|| name(&message.author), |shown| shown.name.clone())
 }
 
 /// `ts` (Unix seconds) as RFC 3339 in UTC.

@@ -68,6 +68,8 @@ pub(crate) struct Run {
     pub(crate) launched: Rc<Launched>,
     /// A private window: a profile thrown away with the process.
     pub(crate) private: bool,
+    /// A view another app's window embeds, not a window of its own.
+    pub(crate) embedded: bool,
     /// The file whose history History shows beside the resource's, for an
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
     /// and the History scope the root witnesses it under.
@@ -149,6 +151,7 @@ impl Run {
             }),
             launched: Rc::default(),
             private: false,
+            embedded: false,
             file_history: None,
             folder_history: None,
             people: super::People::new(None),
@@ -161,6 +164,12 @@ impl Run {
     /// This run in a private window, when `private`.
     pub(crate) fn in_private(mut self, private: bool) -> Self {
         self.private = private;
+        self
+    }
+
+    /// This run as a view another app's window embeds, when `embedded`.
+    pub(crate) fn in_embedded(mut self, embedded: bool) -> Self {
+        self.embedded = embedded;
         self
     }
 
@@ -191,6 +200,7 @@ impl Run {
             fixtures: Rc::default(),
             launched: Rc::default(),
             private: false,
+            embedded: false,
             file_history: None,
             folder_history: None,
             people: super::People::new(None),
@@ -500,6 +510,7 @@ fn capture_run(fixtures: Fixtures) -> Run {
         fixtures: Rc::new(fixtures),
         launched: Rc::default(),
         private: false,
+        embedded: false,
         file_history: None,
         folder_history: None,
         people: super::People::new(None),

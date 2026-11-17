@@ -10,6 +10,10 @@ use crate::time::{Duration, Instant};
 use crate::window_parts::{TabId, WindowParts};
 use crate::window_toolbar::ToolbarAction;
 
+#[path = "window_share_stage.rs"]
+mod stage;
+pub use stage::{Asking, Shown, Stage};
+
 /// The size an embedded view is laid out at before it is scaled into its place: about a
 /// window's, so the app lays it out as its sharer sees it.
 pub const VIEW: (f64, f64) = (1000.0, 625.0);
@@ -242,6 +246,14 @@ impl<H: LiveView> Views<H> {
     }
 
     /// What runs `view`, while it runs.
+    #[must_use]
+    pub fn get(&self, view: &ResourceView) -> Option<&H> {
+        self.views
+            .get(view)
+            .and_then(|view| view.host.as_ref().ok())
+    }
+
+    /// What runs `view`, while it runs, to drive.
     pub fn get_mut(&mut self, view: &ResourceView) -> Option<&mut H> {
         self.views
             .get_mut(view)
@@ -410,12 +422,12 @@ mod tests {
 
     #[test]
     fn an_embed_lands_where_its_window_shows_and_scales_into_its_place() {
-        let embed = Embed {
-            key: "m1".into(),
-            view: view("plan"),
-            rect: Rect::new(10.0, 20.0, 510.0, 332.5),
-            clip: Rect::new(0.0, 0.0, 400.0, 300.0),
-        };
+        let embed = Embed::miniature(
+            "m1",
+            view("plan"),
+            Rect::new(10.0, 20.0, 510.0, 332.5),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
         let (rect, clip) = placed(
             &embed,
             Vec2::new(100.0, 50.0),

@@ -343,11 +343,8 @@ impl Widget for HungApps {
                         (t("hung-app-force-quit"), ButtonRole::Destructive, "quit")
                     }
                 };
-                let (fill, edge, ink) = ui::widget::face_colors(
-                    &theme,
-                    role,
-                    ui::widget::Interaction::default(),
-                );
+                let (fill, edge, ink) =
+                    ui::widget::face_colors(&theme, role, ui::widget::Interaction::default());
                 let part = cx.part(
                     &format!("hung:{}:{key}", painted.tab),
                     "HungAppChoice",
@@ -603,8 +600,8 @@ mod tests {
     use super::super::tests::collect;
     use super::*;
     use crate::DesktopHandle;
-    use ui::composition::Own;
     use tilo_desktop_model::{IdMinter, Tab};
+    use ui::composition::Own;
     use ui::widget::TileHost;
 
     struct Notices;
@@ -755,7 +752,9 @@ mod tests {
         frame.poll_frame().expect("a frame draws the card");
         let composition = frame.composition();
         let cards = collect(&composition.root, "HungAppCard");
-        let card = cards.first().unwrap_or_else(|| panic!("a card: {composition:#?}"));
+        let card = cards
+            .first()
+            .unwrap_or_else(|| panic!("a card: {composition:#?}"));
         assert_eq!(card.tag, Some("section"));
         let Some(Own::Text(look)) = &card.own else {
             panic!("the card is words: {card:#?}");
