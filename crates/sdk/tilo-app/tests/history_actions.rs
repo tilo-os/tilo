@@ -622,12 +622,12 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         app.invoke(Board::RENAME.with("Filled")).unwrap();
         let reviewer = || {
-            tilo_actions::ActionInvoker::person("person:reviewer")
+            tilo_actions::ActionInvoker::person("reviewer")
                 .with_presence(tilo_actions::PresenceId::new("reviewer").unwrap())
         };
         let before = history(&mut app)["now"].clone();
         app.invoke(Board::RENAME.with("Reviewed")).unwrap();
-        for invoker in [tilo_actions::ActionInvoker::person("person:reviewer"), reviewer()] {
+        for invoker in [tilo_actions::ActionInvoker::person("reviewer"), reviewer()] {
             let listed = app
                 .call_by(invoker, "test.board", "history", json!({"last": 50}))
                 .expect("another member reads the history")

@@ -778,10 +778,13 @@ mod tests {
                     })
                 };
                 let mut msgs = vec![
-                    msg("a", "bot:bridge", 0, None),
-                    msg("b", "bot:bridge", 10, None),
-                    msg("c", "bot:bridge", 20, None),
+                    msg("a", "u1", 0, None),
+                    msg("b", "u1", 10, None),
+                    msg("c", "u1", 20, None),
                 ];
+                for message in &mut msgs {
+                    message.author = MemberId::bot("bridge");
+                }
                 msgs[0].appearance = shown("kim");
                 msgs[1].appearance = shown("kim");
                 msgs[2].appearance = shown("rae");
