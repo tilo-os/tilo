@@ -4454,6 +4454,19 @@ fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
     (bytes.get(index + 1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
+/// The package manifest of the app in `app_dir`: its `tilo-app.toml`, or the `tilo-runtime.toml`
+/// of a runtime whose binary runs the apps that name it (the tilolang runtime), which a web
+/// bundle carries as an app carries its own.
+pub(crate) fn package_manifest_path(app_dir: &Path) -> PathBuf {
+    let app = app_dir.join("tilo-app.toml");
+    let runtime = app_dir.join("tilo-runtime.toml");
+    if !app.is_file() && runtime.is_file() {
+        runtime
+    } else {
+        app
+    }
+}
+
 pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
     let start = if start.is_file() {
         start.parent().unwrap_or(start)

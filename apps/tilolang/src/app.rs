@@ -138,7 +138,22 @@ impl ResourceApp for TlApp {
             }
             cx.surface(window)
         }
-        #[cfg(not(target_os = "linux"))]
+        // A page runs the package's instance itself.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(bundle) = crate::installed_bundle_shared() else {
+                return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
+                    "tilolang-open-failed",
+                )));
+            };
+            let me = cx
+                .me()
+                .map(ui::tilo_resource::MemberId::id)
+                .unwrap_or_default()
+                .to_owned();
+            cx.surface(crate::page::PageWindow::new(&me, bundle))
+        }
+        #[cfg(not(any(target_os = "linux", target_arch = "wasm32")))]
         {
             let _ = cx;
             Box::new(ui::widget::EmptyState::new(crate::i18n::t(

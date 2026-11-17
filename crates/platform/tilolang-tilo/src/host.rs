@@ -1728,8 +1728,8 @@ impl Host {
 /// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.
 #[must_use]
 pub fn system_time() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = tilo_clock::wall()
+        .duration_since(tilo_clock::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     iso_utc(secs)
 }

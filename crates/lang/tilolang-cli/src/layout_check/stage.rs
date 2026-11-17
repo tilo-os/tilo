@@ -6,13 +6,12 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use serde_json::Value as Json;
 use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
+use tilolang_tilo::instance::memory::MemoryRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::tilolang::Compiled;
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
@@ -263,9 +262,9 @@ impl Staged {
             names,
             Box::new(app_end),
         );
-        let mut record = staging.record.unwrap_or_default();
+        let mut record = MemoryRecord::new(staging.record.unwrap_or_default(), me);
 
-        instance.sync(Some(&record));
+        instance.sync(Some(record.doc()));
         // The window is laid out for a still picture: no frame comes to take in the indexes its
         // load builds off the frame, so they are waited for, as a host without frames waits for
         // them.
@@ -295,7 +294,7 @@ impl Staged {
             }
         }
         instance.set_origin(true);
-        settle(&mut instance, &mut record, &me, None)?;
+        record.take_in(&mut instance, None)?;
         if let Some(host) = instance.host() {
             for state in &staging.states {
                 let (name, text) = state.split_once('=').ok_or_else(|| {
@@ -310,7 +309,7 @@ impl Staged {
         // A scenario's sample data is what it writes without a
         // time of its own; what it dates is the story it tells.
         let now = packages.now();
-        settle(&mut instance, &mut record, &me, Some(&now))?;
+        record.take_in(&mut instance, Some(&now))?;
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
@@ -797,150 +796,6 @@ impl Staged {
         self.window()
             .map(|window| window.broken_components())
             .unwrap_or_default()
-    }
-}
-
-/// The moment a second before `at` (an RFC 3339 time), written as the record writes one.
-fn second_before(at: &str) -> String {
-    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(at) else {
-        return at.to_owned();
-    };
-    let Some(earlier) = parsed.checked_sub_signed(chrono::Duration::seconds(1)) else {
-        return at.to_owned();
-    };
-    earlier
-        .to_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-/// The capture has no action API over the workspace, so it stands where the API stands: it takes each
-/// step the instance hands over, writes it down and answers it, as a session's API does.
-fn settle(
-    instance: &mut Instance,
-    record: &mut ui::automerge::AutoCommit,
-    person: &str,
-    sample_at: Option<&str>,
-) -> Result<(), String> {
-    instance.sync(Some(record));
-    instance.commit_planned();
-    let Some(host) = instance.host() else {
-        return Ok(());
-    };
-    let mut steps = Vec::new();
-    while let Some((invocation, _)) = instance.take_invocation() {
-        let address = invocation.address.clone();
-        if address.resource == HOST_RESOURCE && address.action == COMMIT {
-            let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
-            if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
-                steps.push((address, action));
-                continue;
-            }
-        }
-        instance.answered(&address, None);
-    }
-    let earliest = sample_at.and_then(|sample_at| {
-        steps
-            .iter()
-            .filter_map(|(_, action)| action.authorship.at.as_deref())
-            .filter(|at| *at < sample_at)
-            .min()
-            .map(second_before)
-    });
-    for (address, mut action) in steps {
-        if let Some(sample_at) = sample_at
-            && action.authorship.at.as_deref() == Some(sample_at)
-            && let Some(earliest) = earliest.as_deref()
-        {
-            action.authorship.at = Some(earliest.to_owned());
-        }
-        commit(&host, person, record, &action)?;
-        instance.answered(&address, None);
-    }
-    // The steps are in the record now: the marks and catch-ups that read them read the record
-    // as it stands after the scenario ran.
-    instance.sync(Some(record));
-    Ok(())
-}
-
-/// Apply `action` to `record` as the action API applies one for a session: encoded, as the person's step,
-/// with the context a step on the record carries, so what the store tells of the change — who made
-/// it, when, and the version it is of each resource — reads as a session's.
-fn commit(
-    host: &Host,
-    person: &str,
-    record: &mut ui::automerge::AutoCommit,
-    action: &tilolang_tilo::action::DynAction,
-) -> Result<(), String> {
-    use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
-    // A resource its origin derives — the shell's own record and layout, a session's record — lives in
-    // the store's unsaved layer and is never the workspace record's to have, so its steps stay
-    // there: what the store holds of it, the window is laid out with.
-    let Some(action) = only_the_record(action, host) else {
-        return Ok(());
-    };
-    // The step is its author's, the person the scenario ran it as, and the change commits under
-    // their actor: a gesture's continuation is written as the actor's, so a step of another
-    // person's committed under this one would be read as a continuation of their gesture, and its
-    // versions, which marks and history draw, would not be written down.
-    let author = action.authorship.invoker.clone().unwrap_or_else(|| {
-        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(person))
-    });
-    let invoker = ActionInvoker::admitted(&author.clone().into());
-    let context = ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("workspace"),
-        &action.kind,
-        &action.kind,
-    )
-    .with_invoker(invoker);
-    let encoded = action.encode().map_err(|error| error.to_string())?;
-    let actor = author.actor_bytes();
-    host.with_schemas(|| apply_local_with_context(record, &action, encoded, Some(&actor), context))
-        .map_err(|error| error.to_string())?;
-    record.commit();
-    Ok(())
-}
-
-/// The step `action` as the workspace record takes it: its
-/// edits of the resources the record holds, `None` when it has
-/// none.
-fn only_the_record(
-    action: &tilolang_tilo::action::DynAction,
-    host: &Host,
-) -> Option<tilolang_tilo::action::DynAction> {
-    let edits: Vec<_> = action
-        .edits
-        .iter()
-        .filter(|edit| !host.store().derives(resource_of(edit)))
-        .cloned()
-        .collect();
-    if edits.is_empty() {
-        return None;
-    }
-    let mut kept = action.clone();
-    kept.edits = edits;
-    Some(kept)
-}
-
-/// The resource `edit` writes.
-fn resource_of(edit: &tilolang_tilo::action::DynEdit) -> &str {
-    use tilolang_tilo::action::DynEdit;
-    match edit {
-        DynEdit::Create { id, .. }
-        | DynEdit::Edit { id, .. }
-        | DynEdit::Insert { id, .. }
-        | DynEdit::Place { id, .. }
-        | DynEdit::Remove { id }
-        | DynEdit::OutboxPush { id, .. }
-        | DynEdit::OutboxSettle { id, .. }
-        | DynEdit::OutboxMark { id, .. }
-        | DynEdit::Migrated { id, .. }
-        | DynEdit::TriggerRan { id, .. }
-        | DynEdit::RemoveItem { id, .. } => id,
-        // A run of a collection counts against the record
-        // it is a field of, which names no record of its
-        // own.
-        DynEdit::RunChunk { holder, .. } => holder,
-        DynEdit::In { edit, .. } | DynEdit::Chunk { edit, .. } => resource_of(edit),
     }
 }
 

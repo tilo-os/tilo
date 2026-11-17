@@ -42,7 +42,10 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # A `RichText` field is the platform's rich-text field: tilo-doc's rich text, edited by its actions.
 tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
-tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# The wall clock, which also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# The interpreter alone in a browser page, where the compiled tier cannot run.
+tilolang-runtime = { path = "../../lang/tilolang-runtime", default-features = false }
 # The collab client an instance commits to its workspace through, without the toolkit, and the
 # history verbs every record answers (`history`).
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
@@ -113,3 +116,5 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# The compiled tier, on every device that can run it.
+tilolang-runtime = { path = "../../lang/tilolang-runtime", features = ["wasmtime"] }

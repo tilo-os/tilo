@@ -19,3 +19,23 @@ provides = "tilolang/0.1.0+tilolang"
 [entrypoint]
 type = "cli"
 bin  = "bin/tilolang-app"
+
+# The packer (`tools/apps/pack-runtime-package.sh`) writes the signed manifest with the
+# publisher's identity; these complete this file as the package manifest a web bundle of the
+# runtime carries (`tilo-app build --target web --bundle app apps/tilolang`).
+# What the runtime's code uses on a device: its records, later builds `tilolang dev` publishes,
+# and the threads that wait on its window's connection.
+[capabilities]
+optional = ["app-files", "files.paths", "threads"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"

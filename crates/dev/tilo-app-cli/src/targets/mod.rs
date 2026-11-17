@@ -126,7 +126,7 @@ impl Project {
             .and_then(toml::Value::as_str)
             .unwrap_or(&package)
             .to_owned();
-        let manifest_path = app_dir.join("tilo-app.toml");
+        let manifest_path = crate::package_manifest_path(&app_dir);
         let manifest_source = std::fs::read_to_string(&manifest_path)
             .with_context(|| format!("reading {}", manifest_path.display()))?;
         let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)

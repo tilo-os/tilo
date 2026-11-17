@@ -1,0 +1,413 @@
+//! A tilolang app on a web page: the package and its window side by side in the page.
+//!
+//! On a device the launcher starts the runtime with the package's payload (`TILO_APP_MODULE`), and
+//! the window's instance runs in a tilolang host. A page has neither: it installs the package
+//! from the address its payload is served at ([`install_package`], `installTilolangPackage` to
+//! the page), which registers the app with the page's runtime under the package's own id, and
+//! the window runs the package's instance itself ([`PageWindow`]), over a workspace record the
+//! page keeps in memory, sending the UI host's half of the window ([`AppWindow`]) the same
+//! component patches a host sends over its socket.
+
+// A page runs on one thread: what it awaits never moves to another.
+#![allow(
+    clippy::future_not_send,
+    reason = "a page's futures run on its one thread"
+)]
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use tilo_render_protocol::patch::local;
+use tilo_ui_host::AppWindow;
+use tilolang_tilo::bundle::{Bundle, IDS_FILE, IMPORTS_DIR, WASM_FILE};
+use tilolang_tilo::host::{Host, RootView};
+use tilolang_tilo::instance::memory::MemoryRecord;
+use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
+use wasm_bindgen::JsCast as _;
+use wasm_bindgen::prelude::*;
+
+/// Install the package whose payload is served under `base` (a URL ending in `/`): its module,
+/// its ids lock and the modules of the packages it uses (`imports/<app>.wasm`), as a `.tapp`'s
+/// payload holds them. Registers the app with the page's runtime and answers its id, which the
+/// page mounts. Its window opens with `scenarios` staged in its record, in order (names separated
+/// by commas, or `all` for every scenario the package declares), as a capture stages one.
+///
+/// # Errors
+/// A file could not be fetched, the payload is not a tilolang package, or a package is already
+/// installed in the page.
+#[wasm_bindgen(js_name = installTilolangPackage)]
+pub async fn install_package(base: String, scenarios: Option<String>) -> Result<String, JsValue> {
+    let base = if base.ends_with('/') {
+        base
+    } else {
+        format!("{base}/")
+    };
+    let wasm = fetch(&format!("{base}{WASM_FILE}")).await?.ok_or_else(|| {
+        JsValue::from_str(&format!("{base}{WASM_FILE}: no tilolang module there"))
+    })?;
+    let ids = fetch(&format!("{base}{IDS_FILE}"))
+        .await?
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    let imports = imports(&base, &wasm).await?;
+    let bundle = Bundle::from_parts(wasm, ids, &imports).map_err(|error| error.to_string())?;
+    let app = bundle.meta.app.clone();
+    let staged: Vec<String> = match scenarios.as_deref().map(str::trim) {
+        None | Some("") => Vec::new(),
+        Some("all") => bundle
+            .meta
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.name.clone())
+            .collect(),
+        Some(names) => names
+            .split(',')
+            .map(|name| name.trim().to_owned())
+            .collect(),
+    };
+    STAGED.with(|held| *held.borrow_mut() = staged);
+    crate::install(bundle).map_err(|error| error.to_string())?;
+    ui::application::registry::register(crate::definition());
+    Ok(app)
+}
+
+/// The modules of the packages the module `wasm` uses, and of those they use, each before those
+/// that use it. A package the payload carries no module of (a native app's, whose actions run at
+/// its own API) is not one.
+async fn imports(base: &str, wasm: &[u8]) -> Result<Vec<Vec<u8>>, JsValue> {
+    let mut wanted: Vec<String> = uses(wasm);
+    let mut seen: Vec<String> = Vec::new();
+    let mut fetched: Vec<Vec<u8>> = Vec::new();
+    while let Some(app) = wanted.pop() {
+        if seen.contains(&app) {
+            continue;
+        }
+        seen.push(app.clone());
+        if let Some(module) = fetch(&format!("{base}{IMPORTS_DIR}/{app}.wasm")).await? {
+            wanted.extend(uses(&module));
+            fetched.push(module);
+        }
+    }
+    // Found from the app outward: the packages used last come first.
+    fetched.reverse();
+    Ok(fetched)
+}
+
+fn uses(wasm: &[u8]) -> Vec<String> {
+    tilolang_tilo::tilolang::PackageMeta::from_wasm(wasm).map_or_else(Vec::new, |meta| meta.uses)
+}
+
+thread_local! {
+    /// The scenarios the page asked its first window to open with.
+    static STAGED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The bytes at `url`; `None` when the server has nothing there.
+async fn fetch(url: &str) -> Result<Option<Vec<u8>>, JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let response: web_sys::Response =
+        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+            .await?
+            .dyn_into()?;
+    if response.status() == 404 {
+        return Ok(None);
+    }
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!("{url}: {}", response.status())));
+    }
+    let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer()?).await?;
+    Ok(Some(js_sys::Uint8Array::new(&buffer).to_vec()))
+}
+
+/// What the instance asks of the page: the installed package, the platform's words, and the
+/// person's clock, as the window reads them.
+struct PagePlatform {
+    bundle: Arc<Bundle>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl Platform for PagePlatform {
+    fn load(&self, host: &Host) -> u64 {
+        if let Err(error) = host.load_bundle_using(&self.bundle, |_| false) {
+            tracing::error!(app = self.bundle.meta.app, %error, "the package did not load");
+        }
+        0
+    }
+
+    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        let args: Vec<(&str, ui::i18n::ArgValue)> = args
+            .iter()
+            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
+            .collect();
+        tilo_ui_host::i18n::t_args(id, &args)
+    }
+
+    /// The package's words, and the one language its window speaks: the person's when the
+    /// package ships it, the package's source language otherwise.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            ui::i18n::speak_window_language(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
+    }
+
+    fn now(&self) -> String {
+        ui::clock::local_now()
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    fn zone(&self) -> i64 {
+        i64::from(ui::clock::local_now().offset().local_minus_utc())
+    }
+
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
+    fn shown(&self, kind: &str, value: &str) -> String {
+        tilo_ui_host::date::shown_text(kind, value)
+    }
+
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
+    fn waker(&self) -> tilolang_tilo::background::Waker {
+        let wake = self.wake.clone();
+        Arc::new(move || wake.wake())
+    }
+}
+
+/// How often the window and its instance answer each other in one frame before the frame is
+/// drawn: what the person did, the change it planned written down, and the views it moved.
+const EXCHANGES: usize = 8;
+
+/// The window of the installed package, running its instance in the page. See the module docs.
+pub struct PageWindow {
+    view: AppWindow,
+    instance: Instance,
+    record: MemoryRecord,
+    /// The instance asked for the window to come forward.
+    activation: Cell<bool>,
+}
+
+impl PageWindow {
+    /// The window of `bundle` for the person `me`, over a workspace record of its own.
+    #[must_use]
+    pub fn new(me: &str, bundle: Arc<Bundle>) -> Self {
+        let app = bundle.meta.app.clone();
+        let (app_end, window_end) = local::pair();
+        let platform = Rc::new(PagePlatform {
+            bundle,
+            wake: ui::wake::WakeHandle::new(),
+        });
+        let mut instance = Instance::new(
+            Config {
+                app: app.clone(),
+                me: me.to_owned(),
+                mode: Mode::Live,
+                device: None,
+                index_dir: None,
+                record_loader: None,
+                root: RootView::default(),
+                // What the app hands outside (a post, a mail) stays in the page: it has no
+                // development log to write, and no connector to reach.
+                sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+            },
+            platform,
+            Rc::new(tilolang_tilo::names::Unnamed),
+            Box::new(app_end),
+        );
+        let record = MemoryRecord::new(ui::automerge::AutoCommit::new(), me);
+        instance.sync(Some(record.doc()));
+        // The page is the record's only replica, and so its origin: the package's roots are made
+        // and its migrations run here.
+        if let Some(host) = instance.host() {
+            let roots: Vec<String> = host
+                .package(&app)
+                .map(|package| {
+                    package
+                        .meta
+                        .roots
+                        .iter()
+                        .cloned()
+                        .chain(package.meta.named_roots.iter().map(|root| root.ty.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for ty in roots {
+                if let Err(error) = host.root_record(&app, &ty) {
+                    tracing::error!(%error, "a root of the package could not be made");
+                }
+            }
+        }
+        instance.set_origin(true);
+        let mut window = Self {
+            view: AppWindow::new(Box::new(window_end), Vec::new()),
+            instance,
+            record,
+            activation: Cell::new(false),
+        };
+        window.exchange();
+        for scenario in STAGED.with(|held| std::mem::take(&mut *held.borrow_mut())) {
+            window.instance.stage(Some(&scenario));
+            window.exchange();
+            if let Some(why) = window.instance.take_stage_failure() {
+                tracing::error!(%why, "a scenario the page asked for did not stage");
+            }
+        }
+        window
+    }
+
+    /// Let the window and its instance answer each other until neither has more to say. Whether
+    /// anything moved.
+    fn exchange(&mut self) -> bool {
+        let mut moved = false;
+        for _ in 0..EXCHANGES {
+            self.view.flush();
+            let mut changed = self.instance.update();
+            match self.record.take_in(&mut self.instance, None) {
+                Ok(wrote) => changed |= wrote,
+                Err(error) => tracing::error!(%error, "the record refused a step"),
+            }
+            changed |= self.view.receive();
+            if self.view.take_activation() {
+                self.activation.set(true);
+            }
+            if !changed {
+                break;
+            }
+            moved = true;
+        }
+        moved
+    }
+}
+
+/// The window is the framework's surface of the app: what a capture stages runs in its instance.
+impl ui::framework::ResourceSurface<crate::resource::Workspace> for PageWindow {
+    fn present(&mut self, _state: &Rc<crate::resource::WorkspaceState>) {}
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.instance.stage(scenario);
+        self.exchange();
+    }
+}
+
+impl ui::component_lifecycle::WindowActivation for PageWindow {
+    fn take_window_activation_intent(&self) -> bool {
+        self.activation.replace(false)
+    }
+}
+
+/// The window is named by what it shows, as the UI host's window names it.
+impl ui::component_lifecycle::WindowTitle for PageWindow {
+    fn window_title(&self) -> Option<&str> {
+        self.view.title()
+    }
+}
+
+/// The window stands for the UI host's window in the layout and in every walk of the widgets.
+impl ui::widget::Decorator for PageWindow {
+    type Inner = dyn Widget;
+
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
+            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
+            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
+            return;
+        }
+        Widget::provide(&self.view, request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
+            request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
+            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
+            return;
+        }
+        Widget::provide_mut(&mut self.view, request);
+    }
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        &self.view
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        &mut self.view
+    }
+
+    fn name(&self) -> &'static str {
+        "TilolangPageWindow"
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.view.receive();
+        Widget::sync(&mut self.view, state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // What the person did runs before what it shows is read.
+        let moved = self.exchange();
+        let child = Widget::update(&mut self.view, state, path);
+        moved || child
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        Widget::handle_event(&mut self.view, event, ctx);
+        // What the person did goes to the instance at once, not on the next frame.
+        self.view.flush();
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: ui::kurbo::Affine,
+        text: &mut ui::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.view
+            .draw_child(scene, transform, text, theme, presence);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.instance.owes_a_frame() || Widget::needs_idle_sync(&self.view)
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.instance.owes_a_frame() || Widget::has_pending_visual_work(&self.view)
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let instance = self
+            .instance
+            .wakes_in()
+            .and_then(|wait| ui::time::now().checked_add(wait));
+        match (instance, Widget::next_wake_deadline(&self.view)) {
+            (Some(instance), Some(view)) => Some(instance.min(view)),
+            (instance, view) => instance.or(view),
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        Widget::take_structure_dirty(&mut self.view)
+    }
+
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        Widget::take_structure_change(&mut self.view)
+    }
+}

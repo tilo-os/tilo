@@ -15,15 +15,21 @@
 <script type="module">
 // One app of the bundle (`?app=`) mounted alone, shown as HTML (`?render=dom`,
 // the default) or on the WebGPU canvas (`?render=gpu`), for comparing the two.
+// `?package=tl/<app-id>/` installs that tilolang package first, from the
+// payload served there, and mounts its app (build-tilolang-web.sh), its
+// record staged with `&scenario=` (names separated by commas, or `all`).
 const params = new URLSearchParams(location.search);
 const dom = params.get('render') !== 'gpu';
 // `&sync=0` draws an input's frame in the task after it instead of in the
 // input's own task, to compare the two.
 if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
 const marks = window.renderMarks = {navigationStart: 0, presented: [], reports: []};
-const {mountDesktop} = await import('./host.mjs');
+const {mountDesktop, loadRuntime} = await import('./host.mjs');
+const installed = params.get('package')
+  ? await (await loadRuntime()).installTilolangPackage(params.get('package'), params.get('scenario') ?? undefined)
+  : undefined;
 window.mount = await mountDesktop(document.getElementById('app'), {
-  app: params.get('app') ?? 'so.tilo.notes',
+  app: installed ?? params.get('app') ?? 'so.tilo.notes',
   profile: params.get('profile') ?? 'html-renderer',
   device: 'browser',
   dom,

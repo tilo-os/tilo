@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::abi;
 use crate::ids::ModuleHash;
@@ -387,7 +387,7 @@ fn import(
     args: &[Wasm],
 ) -> Result<Option<Wasm>, HostFail> {
     let cx = cx.ok_or_else(|| HostFail::Trap("import called outside a host call".into()))?;
-    let started = cx.profile.as_ref().map(|_| Instant::now());
+    let started = cx.profile.as_ref().map(|_| tilo_clock::now());
     let result = cx.host.import(id, memory, args);
     if let (Some(profile), Some(started)) = (&cx.profile, started) {
         let mut p = profile.get();
@@ -407,7 +407,7 @@ fn guest_import(
     args: &[Wasm],
 ) -> Result<GuestAnswer, HostFail> {
     let cx = cx.ok_or_else(|| HostFail::Trap("import called outside a host call".into()))?;
-    let started = cx.profile.as_ref().map(|_| Instant::now());
+    let started = cx.profile.as_ref().map(|_| tilo_clock::now());
     let result = cx.host.guest_import(module, name, memory, args);
     if let (Some(profile), Some(started)) = (&cx.profile, started) {
         let mut p = profile.get();
@@ -672,7 +672,7 @@ impl<B: Backend> Pools<B> {
         let module = if let Some(module) = self.compiler.known(hash) {
             module
         } else {
-            let started = Instant::now();
+            let started = tilo_clock::now();
             let module = self
                 .compiler
                 .backend
@@ -802,7 +802,7 @@ impl TieredPools {
         }
         // Compiled earlier, in this process or (from the disk cache) in an earlier one: it
         // starts compiled.
-        let started = Instant::now();
+        let started = tilo_clock::now();
         if let Some(module) = self.tiering.ready(hash) {
             let adopted = self.top.adopt(hash, module, limits);
             compiled_in(started.elapsed());
@@ -1049,7 +1049,7 @@ impl Engine {
         host: Rc<dyn Host>,
     ) -> Result<Option<Wasm>, CallError> {
         let profile = self.profile.borrow().clone();
-        let started = profile.as_ref().map(|_| Instant::now());
+        let started = profile.as_ref().map(|_| tilo_clock::now());
         let costs = self
             .costs
             .borrow()

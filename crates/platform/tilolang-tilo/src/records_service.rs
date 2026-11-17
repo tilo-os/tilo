@@ -433,6 +433,7 @@ impl RecordService {
     /// The connector is the process the session started for the app in the sandbox its
     /// manifest declares for the origin: this service asks through it, never holding the
     /// network or the credentials itself.
+    #[cfg(unix)]
     pub fn connect_origin(
         &mut self,
         origin: &str,
@@ -1262,6 +1263,7 @@ impl Service for RecordService {
         connectors
     }
 
+    #[cfg(unix)]
     fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
         self.connect_origin(origin, connection)
     }

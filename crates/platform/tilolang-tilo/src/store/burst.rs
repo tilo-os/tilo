@@ -27,7 +27,7 @@
 //! A trial run ([`Inner::trials`]) neither joins nor ends a burst: planning an action writes the
 //! mirror and is taken back, and what a person is typing is no part of that.
 
-use std::time::Instant;
+use tilo_clock::time::Instant;
 
 use tilo_actions::ActionId;
 use tilo_resource::EditOp;
@@ -123,7 +123,7 @@ impl Inner {
         self.burst = Some(Burst {
             what,
             gesture,
-            at: Instant::now(),
+            at: tilo_clock::now(),
         });
         Some(gesture)
     }

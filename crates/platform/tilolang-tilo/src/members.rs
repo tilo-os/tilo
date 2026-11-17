@@ -134,7 +134,7 @@ fn reads_node(standing: &Standing, me: &str, who: &Actor, node: &TreePath) -> bo
         None => return false,
     };
     let earlier = crate::schema::earlier_ids();
-    let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
+    let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
     Policy::person(party)
         .decide(node, ActionKind::Read, &cx)
         .answer

@@ -44,10 +44,15 @@ pub struct SettleReport {
 fn process_token() -> &'static str {
     static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     TOKEN.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let nanos = tilo_clock::wall()
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
-        format!("{}-{nanos:x}", std::process::id())
+        // A page is one process, with no id of its own.
+        #[cfg(target_arch = "wasm32")]
+        let process = 0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let process = std::process::id();
+        format!("{process}-{nanos:x}")
     })
 }
 

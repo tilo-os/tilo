@@ -148,15 +148,18 @@ pub fn uses_origin(meta: &Meta, origin: &str) -> bool {
 /// keeps a package's records (a session's [`crate::records_service::RecordService`], a tilolang
 /// host's instance) reaches a connector without naming the origin's crate or the service it
 /// speaks.
+#[cfg(unix)]
 pub type Remote =
     dyn Fn(std::os::unix::net::UnixStream, Waker) -> Result<SharedOrigin, String> + Send + Sync;
 
+#[cfg(unix)]
 static REMOTES: std::sync::Mutex<Vec<(&'static str, &'static Remote)>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Have the origin `name` reached over `remote` from now on: its crate's client of the
 /// connector the session runs for it. A crate registers its own at its start (a `OnceLock`,
 /// so its client lives as long as the process).
+#[cfg(unix)]
 pub fn register_remote(name: &'static str, remote: &'static Remote) {
     let mut remotes = REMOTES
         .lock()
@@ -167,6 +170,7 @@ pub fn register_remote(name: &'static str, remote: &'static Remote) {
 
 /// The origin `name`'s client of the connector at the far end of `stream`, when a crate
 /// registered one here.
+#[cfg(unix)]
 pub fn remote(
     name: &str,
     stream: std::os::unix::net::UnixStream,
@@ -193,6 +197,13 @@ pub fn remote(
 /// derives, `session.layout`): what writes them runs in the session's own process.
 #[must_use]
 pub fn served(name: &str) -> bool {
+    // A page reaches no connector process: no origin is served there.
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        false
+    }
+    #[cfg(unix)]
     REMOTES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

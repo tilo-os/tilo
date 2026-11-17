@@ -30,18 +30,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-startup-metrics" }
-# Waiting on the hosted window's patch connection.
-libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
-# The directory protocol a running app takes later builds of its package through (`src/updates.rs`).
-tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-module" }
-# The mail origin: in the window's process outside a host, and the connector process the
-# system runs for a hosted Mail.
-tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
-# YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
-# keeps them in step with it, in native code with the network.
-tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
@@ -81,3 +70,21 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 # Later builds `tilolang dev` publishes are watched (`src/updates.rs`).
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
+tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-startup-metrics" }
+# Waiting on the hosted window's patch connection.
+libc.workspace = true
+# The directory protocol a running app takes later builds of its package through (`src/updates.rs`).
+tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-module" }
+# The mail origin: in the window's process outside a host, and the connector process the
+# system runs for a hosted Mail.
+tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
+# YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
+# keeps them in step with it, in native code with the network.
+tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A web page installs a package by its address (`src/page.rs`): its files are fetched there.
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+web-sys = { version = "=0.3.85", features = ["Response", "Window"] }

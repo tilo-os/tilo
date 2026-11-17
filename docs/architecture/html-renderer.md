@@ -132,3 +132,19 @@ tools/web/html-renderer/build-notes-web.sh   # the release Notes bundle with app
 
 `app.html` mounts one app of the bundle as HTML; `?render=gpu` mounts it on
 the WebGPU canvas to compare.
+
+A tilolang app runs on the web through the same mount: the page installs the
+package from the address its payload is served at (`?package=tl/<app-id>/`,
+`installTilolangPackage`), and the window runs the package's instance in the
+page. One command builds the gallery on the build machine, fetches it and
+serves it here, printing the page that shows the canvas and the HTML side by
+side (or one at a time, in light or dark):
+
+```sh
+tools/web/html-renderer/tilolang-web.sh            # apps/tl/gallery
+tools/web/html-renderer/tilolang-web.sh apps/tl/tasks --search apps/tl
+```
+
+`tilolang-check.mjs` works the same page in headless Chromium on the build
+machine: a screenshot of each renderer in light and dark, then a field typed
+into and a control pressed in each.

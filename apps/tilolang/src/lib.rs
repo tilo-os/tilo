@@ -18,8 +18,11 @@ pub mod app;
 #[cfg(target_os = "linux")]
 pub mod hosted;
 pub mod i18n;
+#[cfg(target_arch = "wasm32")]
+pub mod page;
 
 pub mod resource;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod updates;
 
 use std::sync::{Arc, OnceLock};
@@ -127,6 +130,11 @@ pub fn definition() -> &'static ApplicationDefinition {
     });
     ui::framework::definition::<app::TlApp>()
 }
+
+/// A page registers no app as the runtime starts: it installs a package by its address
+/// (`installTilolangPackage`, [`page::install_package`]), which registers the package's app.
+#[cfg(target_arch = "wasm32")]
+pub fn register_on_page() {}
 
 /// How the runtime launches: the live window, or a capture of one of the package's scenarios.
 pub fn launch_spec() -> ui::launch::LaunchSpec {

@@ -344,7 +344,7 @@ impl Authority for TiloAuthority {
                 Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
             });
         }
-        let mut cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
+        let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
         if let Some((record, person)) = &own_record {
             cx = cx.with_own_record(record, person);
         }

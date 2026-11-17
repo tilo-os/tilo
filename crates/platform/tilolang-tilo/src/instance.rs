@@ -23,6 +23,7 @@
 
 mod convert;
 pub mod form;
+pub mod memory;
 mod person_state;
 #[cfg(feature = "record")]
 pub mod record;

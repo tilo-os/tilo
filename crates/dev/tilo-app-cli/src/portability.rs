@@ -464,9 +464,9 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     ))
 }
 
-/// The app's `tilo-app.toml`.
+/// The app's package manifest ([`crate::package_manifest_path`]).
 fn app_manifest(app_dir: &Path) -> Result<tilo_app_package::Manifest> {
-    let manifest_path = app_dir.join("tilo-app.toml");
+    let manifest_path = crate::package_manifest_path(app_dir);
     let manifest_source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
     tilo_app_package::Manifest::from_toml_str(&manifest_source)

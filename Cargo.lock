@@ -23404,6 +23404,7 @@ dependencies = [
  "chrono",
  "collab-types",
  "collaboration",
+ "js-sys",
  "libc",
  "mail",
  "runtime-dylib",
@@ -23427,6 +23428,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "workspace-hack",
 ]
 
@@ -23557,6 +23561,7 @@ dependencies = [
  "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-recurrence",
@@ -23593,6 +23598,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-content",
  "tilo-desktop-search",
  "tilo-doc",

@@ -3,10 +3,14 @@
 //! process keeps; a frame after their end takes the result in.
 
 use std::any::Any;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 /// What a host passes to have a frame scheduled when background work ends: the window's
@@ -14,6 +18,7 @@ use std::time::Duration;
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// How many threads read off the frame at once.
+#[cfg(not(target_arch = "wasm32"))]
 const WORKERS: usize = 2;
 
 /// How often work whose worker ended without a result is queued again before the frame it is
@@ -30,6 +35,7 @@ type Work<T> = Arc<Mutex<Box<dyn Fn() -> T + Send>>>;
 type Job = Box<dyn FnOnce() + Send>;
 
 /// The threads that read off the frame, and the jobs queued for them.
+#[cfg(not(target_arch = "wasm32"))]
 struct Workers {
     queue: Mutex<VecDeque<Job>>,
     queued: Condvar,
@@ -37,6 +43,7 @@ struct Workers {
     started: AtomicUsize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn workers() -> &'static Workers {
     static POOL: OnceLock<Workers> = OnceLock::new();
     POOL.get_or_init(|| Workers {
@@ -50,7 +57,15 @@ fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Run `job` where it is queued: a browser page has no worker threads, so what reads off the
+/// frame elsewhere reads on it there, and its answer is ready when [`Pending::start`] returns.
+#[cfg(target_arch = "wasm32")]
+fn submit(job: Job) {
+    job();
+}
+
 /// Queue `job` for a worker, starting the workers not running yet.
+#[cfg(not(target_arch = "wasm32"))]
 fn submit(job: Job) {
     let workers = workers();
     // The queue lives as long as the process: what is queued is taken by a worker, never lost.
@@ -60,6 +75,7 @@ fn submit(job: Job) {
 }
 
 /// The next job queued, waiting for one.
+#[cfg(not(target_arch = "wasm32"))]
 fn next_job(workers: &Workers) -> Job {
     let mut queue = lock(&workers.queue);
     loop {
@@ -75,7 +91,13 @@ fn next_job(workers: &Workers) -> Job {
 }
 
 /// Start the workers not running yet: one the process could not start is started by the next job
+/// queued, or by the frame that waits for one. A page has none to start.
+#[cfg(target_arch = "wasm32")]
+fn start_workers() {}
+
+/// Start the workers not running yet: one the process could not start is started by the next job
 /// queued, or by the frame that waits for one.
+#[cfg(not(target_arch = "wasm32"))]
 fn start_workers() {
     let workers = workers();
     while workers.started.load(Ordering::Acquire) < WORKERS {
