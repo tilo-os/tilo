@@ -3,7 +3,7 @@
 //! A test that drives a window and a Shortcut that a person replays are the
 //! same shape: ordered steps, each one an action the app publishes (invoked
 //! through the one action API), a few steps that touch the surface itself, and
-//! assertions on what the run left behind. Defining them here, over the same
+//! assertions on what the invocation left behind. Defining them here, over the same
 //! [`Shortcut`], is what keeps them one vocabulary: a saved Shortcut runs as a
 //! scenario and a scenario's action steps are the Shortcut's own
 //! [`StepKind::Invoke`], never a second copy that drifts from it.
@@ -78,12 +78,12 @@ pub struct Scenario {
     /// refuses any other, so an old golden file never reads as a new format's.
     #[serde(default = "format_version")]
     pub format: u32,
-    /// Stable id: what a report names, and what a Shortcut's run id is
+    /// Stable id: what a report names, and what a Shortcut's invocation id is
     /// derived from when a saved shortcut runs as a scenario.
     pub id: String,
     /// What the scenario is called in a report.
     pub name: String,
-    /// What a run is started with, in the same typed vocabulary actions use.
+    /// What an invocation is started with, in the same typed vocabulary actions use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ActionParam>,
     pub steps: Vec<ScenarioStep>,
@@ -98,7 +98,7 @@ impl Scenario {
     /// inputs and its `Invoke` steps are the scenario's action steps.
     ///
     /// `None` for a Shortcut that is not only action steps. A plan, a loop, a
-    /// value the run asks a person for or the agent transforms is a program
+    /// value the invocation asks a person for or the agent transforms is a program
     /// with branches; a scenario is a fixed sequence, and saying so is the
     /// point — it either runs exactly as written or fails. The caller says
     /// which of its steps it could not take.
@@ -146,11 +146,11 @@ impl Scenario {
         })
     }
 
-    /// The steps a whole `Shortcut` holds, flattened: the scenario the run
+    /// The steps a whole `Shortcut` holds, flattened: the scenario the invocation
     /// interpreter's report describes, which it can assert on.
     ///
     /// A nested program keeps its Shortcut id and name, so the scenario says
-    /// where it came from. A run's own loops and branches run once per step
+    /// where it came from. An invocation's own loops and branches run once per step
     /// of the program as written: see [`Self::from_shortcut`] for the
     /// narrower promise a scenario makes of itself.
     #[must_use]
@@ -393,10 +393,10 @@ pub enum Assert {
         /// What it holds.
         holds: Holds,
     },
-    /// What the run so far did: the steps it ran, how each ended, and what
+    /// What the invocation so far did: the steps it ran, how each ended, and what
     /// they answered.
     Run {
-        /// Whether the run is there, which is to say it ran and finished.
+        /// Whether the invocation is there, which is to say it ran and finished.
         #[serde(flatten)]
         state: StateQuery,
         /// What it did.
@@ -408,7 +408,7 @@ pub enum Assert {
     Error { code: String },
 }
 
-/// What a resource, or a run, holds.
+/// What a resource, or an invocation, holds.
 ///
 /// The fields sit under their own key beside the state they are read at
 /// (`{"present":null,"holds":{"title":"Trip"}}`): flattening them into the
@@ -457,7 +457,7 @@ impl Holds {
     }
 }
 
-/// Whether a resource, or a run, is there.
+/// Whether a resource, or an invocation, is there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateQuery {

@@ -610,7 +610,7 @@ fn step(replica: &mut Replica, again: bool) {
     } else {
         HistoryEdit::Undo {
             steps: None,
-            run: None,
+            invocation: None,
             by: None,
             to: None,
             step: None,

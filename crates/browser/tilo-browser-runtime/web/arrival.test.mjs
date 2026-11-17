@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, refusalCopy, fill,
-  FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
+  FIRST_VISIT_SECONDS, entryLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
   STEP_NOTES, stoppedInside} from './arrival.mjs';
 
@@ -313,13 +313,24 @@ test('an entry taking people by invitation is the host’s own answer', () => {
   assert.ok(refusedByHost(entry));
 });
 
-test('a pasted invite link opens as itself; anything else is not one', () => {
+test('a pasted invite or pairing link opens as itself; anything else is not one', () => {
   const base = 'https://tilo.sh/';
   const link = 'https://tilo.sh/#/desktop/workspace/abc?invite=XYZ';
-  assert.equal(inviteLinkTarget(`  ${link}\n`, base), link);
-  assert.equal(inviteLinkTarget('https://tilo.sh/?invite=XYZ', base), 'https://tilo.sh/?invite=XYZ');
-  for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/workspace/abc', 'javascript:alert(1)?invite=1', null]) {
-    assert.equal(inviteLinkTarget(text, base), null, String(text));
+  assert.equal(entryLinkTarget(`  ${link}\n`, base), link);
+  assert.equal(entryLinkTarget('https://tilo.sh/?invite=XYZ', base), 'https://tilo.sh/?invite=XYZ');
+  // The link "Pair a new device" makes: all a person with no identity on a
+  // new device holds at the entry.
+  const pairing = `https://tilo.sh/#/@workspaces.example/w/abc?pair=${'aa'.repeat(32)}${'0f'.repeat(16)}`;
+  assert.equal(entryLinkTarget(pairing, base), pairing);
+  assert.equal(entryLinkTarget(`${pairing} `, 'https://tilo.sh/#/'), pairing);
+  // The short link a site keeps a sealed invitation under: the one the invite
+  // sheet hands over.
+  const sealed = `https://tilo.sh/i/${'AbCdEfGhIjKlMnOp'}#${'k'.repeat(43)}`;
+  assert.equal(entryLinkTarget(sealed, base), sealed);
+  for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/workspace/abc', 'javascript:alert(1)?invite=1',
+    'javascript:alert(1)?pair=1', 'https://tilo.sh/i/AbCdEfGhIjKlMnOp', `https://tilo.sh/i/AbCdEfGhIjKlMnOp#${'k'.repeat(42)}`,
+    `https://tilo.sh/elsewhere#${'k'.repeat(43)}`, null]) {
+    assert.equal(entryLinkTarget(text, base), null, String(text));
   }
 });
 
@@ -341,7 +352,7 @@ test('the entry apologises and asks for an email where there is a wait list, els
     body: 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.',
   });
   assert.deepEqual(refusalCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
-    body: 'Ask someone in it for an invite link, then paste it here.'});
+    body: 'Ask someone in it for an invite link, then paste it here. If you are in it on another device, paste the link “Pair a new device” makes there.'});
   assert.equal(refusalCopy().heading, 'This workspace is invite-only for now');
   const german = refusalCopy({waitList: true, messages: locale('de-DE')});
   assert.match(german.heading, /Einladung/);

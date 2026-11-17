@@ -1,15 +1,17 @@
-//! Taking back one run: exactly the changes a run of this session made, in every record it
-//! changed, and nothing anyone else did.
+//! Taking back one invocation: exactly the changes this session's call made, in
+//! every record it changed, and nothing anyone else did.
 //!
-//! A run is an invocation this session started, or, when the call named a run of the client's
-//! (`_meta` run), every call of that run: the client chose that as one thing to take back, and
-//! they share one undo step. Each record it changed lists its changes in its own `history`, each
-//! with the undo step it is part of (as recorded under its run) and, where the host kept it, the
-//! invocation that made it, so the run's changes are found there by those and taken back with
-//! the record's own `undo` of exactly that step (`step`), never of whatever the record's last
-//! step happens to be. A change someone else made on top of the run's in a record refuses the whole
-//! undo before anything is taken back: undoing under their work would change what they see
-//! without their say.
+//! An invocation is one call of this session, or, when the call named a group of
+//! the client's (`_meta` invocation), every call of that group: the client chose
+//! that as one thing to take back, and they share one undo step. Each record it
+//! changed lists its changes in its own `history`, each with the undo step it is
+//! part of (as recorded under its group) and, where the host kept it, the
+//! invocation that made it, so the group's changes are found there by those and
+//! taken back with the record's own `undo` of exactly that step (`step`), never
+//! of whatever the record's last step happens to be. A change someone else made
+//! on top of the group's in a record refuses the whole undo before anything is
+//! taken back: undoing under their work would change what they see without their
+//! say.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -18,12 +20,12 @@ use super::watch::history_entries;
 use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, Value, json};
 use tilo_lock::MutexRecover as _;
 
-/// How many of a record's changes are read to find a run's.
+/// How many of a record's changes are read to find a group's.
 const HISTORY_READ: u64 = 200;
 /// How long a record has to answer its history or its undo.
 const RECORD_WAIT_MS: u64 = 10_000;
-/// The most steps one record's share of a run is taken back in: a run's changes in a record are
-/// one step unless someone else's changes fell between them.
+/// The most steps one record's share of a group is taken back in: its changes in
+/// a record are one step unless someone else's changes fell between them.
 const MOST_STEPS: usize = 16;
 
 /// How many invocations' changes a session keeps to take back.
@@ -41,33 +43,34 @@ pub(crate) struct Undoable {
     pub(crate) app: String,
     /// The resource there that offers the record's history verbs.
     pub(crate) history: String,
-    /// The undo step the call joined: its own, or the one every call of a run the client
-    /// named shares.
+    /// The undo step the call joined: its own, or the one every call of a group the
+    /// client named shares.
     pub(crate) step: tilo_actions::ActionId,
 }
 
-/// One record a run changed.
+/// One record an invocation changed.
 struct Target {
     /// What a caller names it by.
     path: String,
     changed: Undoable,
 }
 
-/// The run being taken back: its undo step, and the invocations of it.
-pub(crate) struct Run {
+/// The invocation group being taken back: its undo step, and the calls of it.
+pub(crate) struct UndoInvocation {
     step: tilo_actions::ActionId,
     invocations: BTreeSet<String>,
 }
 
-impl Run {
-    /// Whether the history `entry` lists is one of this run's changes: of its undo step, as
-    /// recorded under the run the entry names, or made by one of its invocations.
+impl UndoInvocation {
+    /// Whether the history `entry` lists is one of this group's changes: of its
+    /// undo step, as recorded under the group the entry names, or made by one of
+    /// its calls.
     fn made(&self, entry: &Value) -> bool {
         let field = |key: &str| entry.get(key).and_then(Value::as_str);
         let invoked = field("invocation").is_some_and(|id| self.invocations.contains(id));
         let stepped = field("step").is_some_and(|step| {
-            let run = field("run_kind").zip(field("run_id"));
-            tilo_actions::context::recorded_gesture(self.step, run)
+            let group = field("group_kind").zip(field("group"));
+            tilo_actions::context::recorded_gesture(self.step, group)
                 .0
                 .to_string()
                 == step
@@ -76,28 +79,28 @@ impl Run {
     }
 }
 
-/// What a record's history says of a run.
+/// What a record's history says of an invocation group.
 struct Standing {
-    /// The run's changes still in effect, oldest first.
+    /// The group's changes still in effect, oldest first.
     changes: Vec<String>,
-    /// Someone else's change made after the run's last, in effect: why it is not taken back.
+    /// Someone else's change made after the group's last, in effect: why it is not taken back.
     over: Option<Value>,
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// Take back the run invocation `invocation` of this session is (a step of): every change it
-    /// made, in every record it changed, or nothing when someone else's change stands on one of
-    /// them.
-    pub(super) async fn undo_run(
+    /// Take back the invocation `invocation` this session started (or a step of):
+    /// every change it made, in every record it changed, or nothing when someone
+    /// else's change stands on one of them.
+    pub(super) async fn undo_invocation(
         &self,
         invocation: &str,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        let (run, targets) = self.run_targets(invocation)?;
+        let (group, targets) = self.invocation_targets(invocation)?;
         let mut plans = Vec::new();
         let mut refusals = Vec::new();
         for target in targets {
-            let standing = self.standing(&target, &run).await?;
+            let standing = self.standing(&target, &group).await?;
             if let Some(over) = &standing.over {
                 refusals.push(refusal(&target.path, over));
             } else if !standing.changes.is_empty() {
@@ -106,7 +109,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         if !refusals.is_empty() {
             return Err(format!(
-                "run {invocation} is not taken back: {}. Ask whoever made those changes, or take \
+                "invocation {invocation} is not taken back: {}. Ask whoever made those changes, or take \
                  back that record's step alone with `<path>#undo {{\"step\": <change>}}`, which \
                  keeps their work",
                 refusals.join("; ")
@@ -115,7 +118,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         if plans.is_empty() {
             return Err(format!(
-                "run {invocation} has nothing left to take back: what it changed is undone"
+                "invocation {invocation} has nothing left to take back: what it changed is undone"
             )
             .into());
         }
@@ -129,7 +132,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 };
                 self.undo_step(&target, &first).await?;
                 taken.push(first);
-                let left = self.standing(&target, &run).await?.changes;
+                let left = self.standing(&target, &group).await?.changes;
                 // A step its undo did not take is left as it is, never asked again.
                 changes = left
                     .into_iter()
@@ -162,10 +165,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Note what the call answered `value` changed: the record `provider` of `app` answers
-    /// for, at `path`, whose history verbs `history` offers. A call naming the run it is a step
-    /// of makes that run's step too, which `undo task` takes back in every app it changed, as it
+    /// for, at `path`, whose history verbs `history` offers. A call naming the group it is a step
+    /// of makes that group's step too, which `undo task` takes back in every app it changed, as it
     /// takes back a program's. A call that names no invocation, or a record with no history to
-    /// take it back in, leaves nothing for [`Self::undo_run`] to take back.
+    /// take it back in, leaves nothing for [`Self::undo_invocation`] to take back.
     pub(super) fn note_change(
         &self,
         value: &Value,
@@ -173,10 +176,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         (provider, app): (&str, &str),
         history: Option<String>,
     ) {
-        if let Some((gesture, label)) = Self::grouped_run() {
+        if let Some((gesture, label)) = Self::grouped_invocation() {
             self.programs
                 .lock_recover()
-                .note_run(gesture, &label, app, history.clone());
+                .note_invocation(gesture, &label, app, history.clone());
         }
         let (Some(invocation), Some(history), Some(step)) = (
             value.get("invocation_id").and_then(Value::as_str),
@@ -200,22 +203,25 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         drop(kept);
     }
 
-    /// The invocations of the run `invocation` is a step of, and the records they changed, each
-    /// once.
-    fn run_targets(&self, invocation: &str) -> Result<(Run, Vec<Target>), String> {
+    /// The invocations of the group `invocation` is a step of, and the records
+    /// they changed, each once.
+    fn invocation_targets(
+        &self,
+        invocation: &str,
+    ) -> Result<(UndoInvocation, Vec<Target>), String> {
         let kept = self.undoable.lock_recover();
         let step = kept
             .iter()
             .find(|changed| changed.invocation == invocation)
             .ok_or_else(|| {
                 format!(
-                    "run {invocation} changed nothing this connection can take back: a run is \
+                    "invocation {invocation} changed nothing this connection can take back: one is \
                      taken back by the connection that started it, once it changed a record"
                 )
             })?
             .step;
         let members: Vec<&Undoable> = kept.iter().filter(|changed| changed.step == step).collect();
-        let run = Run {
+        let group = UndoInvocation {
             step,
             invocations: members
                 .iter()
@@ -236,17 +242,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             });
         }
         drop(kept);
-        Ok((run, targets))
+        Ok((group, targets))
     }
 
-    /// What `target`'s history says of the run whose invocations are `invocations`.
-    async fn standing(&self, target: &Target, run: &Run) -> Result<Standing, String> {
+    /// What `target`'s history says of the group whose calls are `invocations`.
+    async fn standing(&self, target: &Target, group: &UndoInvocation) -> Result<Standing, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("last".into(), json!(HISTORY_READ));
         let value = self.on_resource(target, "history", arguments).await?;
         let entries = history_entries(&value)
-            .ok_or_else(|| format!("{} answered no history to find the run in", target.path))?;
-        Ok(standing(&entries, |entry| run.made(entry)))
+            .ok_or_else(|| format!("{} answered no history to find the group in", target.path))?;
+        Ok(standing(&entries, |entry| group.made(entry)))
     }
 
     /// Take back the step of `target`'s record that the change `change` is part of.
@@ -289,15 +295,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// What a record's history `entries` (oldest first, each whole) say of the run whose changes
-/// `of_run` tells: its changes still in effect, and a change someone else made after its last
+/// What a record's history `entries` (oldest first, each whole) say of the group whose changes
+/// `of_invocation` tells: its changes still in effect, and a change someone else made after its last
 /// one that is still in effect.
-fn standing(entries: &[Value], of_run: impl Fn(&Value) -> bool) -> Standing {
+fn standing(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Standing {
     let in_effect = |entry: &&Value| entry.get("undone").and_then(Value::as_bool) != Some(true);
     let changes: Vec<String> = entries
         .iter()
         .filter(in_effect)
-        .filter(|entry| of_run(entry))
+        .filter(|entry| of_invocation(entry))
         .filter_map(|entry| {
             entry
                 .get("change")
@@ -307,24 +313,25 @@ fn standing(entries: &[Value], of_run: impl Fn(&Value) -> bool) -> Standing {
         .collect();
     let last = entries
         .iter()
-        .rposition(|entry| of_run(entry) && in_effect(&entry));
+        .rposition(|entry| of_invocation(entry) && in_effect(&entry));
     let over = last.and_then(|last| {
         entries
             .iter()
             .skip(last.saturating_add(1))
             .filter(in_effect)
-            // Housekeeping (naming a checkpoint) changes nothing the run wrote.
+            // Housekeeping (naming a checkpoint) changes nothing the group wrote.
             .filter(|entry| entry.get("change_kind").is_none())
-            .find(|entry| !of_run(entry))
+            .find(|entry| !of_invocation(entry))
             .cloned()
     });
     Standing { changes, over }
 }
 
-/// Why the run is not taken back in the record at `path`: `over`, the change standing on it.
+/// Why the group is not taken back in the record at `path`: `over`, the change
+/// standing on it.
 fn refusal(path: &str, over: &Value) -> String {
     let who = over
-        .get("run")
+        .get("title")
         .or_else(|| over.get("by"))
         .or_else(|| over.pointer("/actor/name"))
         .and_then(Value::as_str)
@@ -349,7 +356,7 @@ mod tests {
         json!({"change": change, "invocation": invocation, "sentence": "Added a paragraph", "by": "Ada"})
     }
 
-    fn run(invocations: &[&str]) -> impl Fn(&Value) -> bool {
+    fn named(invocations: &[&str]) -> impl Fn(&Value) -> bool {
         let invocations: BTreeSet<String> = invocations.iter().map(|id| (*id).to_owned()).collect();
         move |entry: &Value| {
             entry
@@ -360,9 +367,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_run_takes_back_only_its_own_standing_changes;
+        fn an_invocation_takes_back_only_its_own_standing_changes;
 
-        phase a_run_finds_its_own_changes_in_effect;
+        phase an_invocation_finds_its_own_changes_in_effect;
         {
             let entries = [
                 entry("a1", "before"),
@@ -370,57 +377,60 @@ mod tests {
                 json!({"change": "b2", "invocation": "run", "undone": true}),
                 entry("b3", "run"),
             ];
-            let standing = standing(&entries, run(&["run"]));
+            let standing = standing(&entries, named(&["run"]));
             assert_eq!(standing.changes, ["b1", "b3"]);
             assert!(standing.over.is_none());
         }
 
-        phase someone_elses_change_on_top_holds_the_run;
+        phase someone_elses_change_on_top_holds_the_invocation;
         {
             let entries = [entry("b1", "run"), entry("c1", "theirs")];
-            let held = standing(&entries, run(&["run"]));
+            let held = standing(&entries, named(&["run"]));
             assert_eq!(held.over.as_ref().unwrap()["change"], "c1");
             assert_eq!(
                 refusal("word-processor", held.over.as_ref().unwrap()),
                 "in word-processor, Ada Added a paragraph (c1) after it"
             );
-            // What they made before the run, what they took back since, and housekeeping
-            // stand on nothing of the run's.
+            // What they made before the invocation, what they took back since, and
+            // housekeeping stand on nothing of its.
             let entries = [
                 entry("a1", "theirs"),
                 entry("b1", "run"),
                 json!({"change": "c1", "invocation": "theirs", "undone": true}),
                 json!({"change": "c2", "change_kind": "housekeeping"}),
             ];
-            assert!(standing(&entries, run(&["run"])).over.is_none());
+            assert!(standing(&entries, named(&["run"])).over.is_none());
         }
 
-        phase every_call_of_a_named_run_is_its_own;
+        phase every_call_of_a_named_invocation_is_its_own;
         {
             let entries = [entry("b1", "open"), entry("b2", "append")];
-            let standing = standing(&entries, run(&["open", "append"]));
+            let standing = standing(&entries, named(&["open", "append"]));
             assert_eq!(standing.changes, ["b1", "b2"]);
             assert!(standing.over.is_none());
         }
 
-        phase a_change_is_the_runs_by_its_recorded_step;
-        // A change is the run's by the undo step history recorded for it under the run it names,
-        // where the host kept no invocation: never by a step recorded under another run.
+        phase a_change_is_the_groups_by_its_recorded_step;
+        // A change is the group's by the undo step history recorded for it under
+        // the group it names, where the host kept no invocation: never by a step
+        // recorded under another group.
         {
             let step = tilo_actions::ActionId::new();
-            let run = Run {
+            let group = UndoInvocation {
                 step,
                 invocations: BTreeSet::new(),
             };
-            let recorded =
-                tilo_actions::context::recorded_gesture(step, Some(("agent-session", "agent-session:1")));
+            let recorded = tilo_actions::context::recorded_gesture(
+                step,
+                Some(("agent-session", "agent-session:1")),
+            );
             let ours = json!({"change": "b1", "step": recorded.0.to_string(),
-                              "run_kind": "agent-session", "run_id": "agent-session:1"});
-            assert!(run.made(&ours));
+                              "group_kind": "agent-session", "group": "agent-session:1"});
+            assert!(group.made(&ours));
             let elsewhere = json!({"change": "b1", "step": recorded.0.to_string(),
-                                   "run_kind": "agent-session", "run_id": "agent-session:2"});
-            assert!(!run.made(&elsewhere));
-            assert!(!run.made(&json!({"change": "c1"})));
+                                   "group_kind": "agent-session", "group": "agent-session:2"});
+            assert!(!group.made(&elsewhere));
+            assert!(!group.made(&json!({"change": "c1"})));
         }
     }
 }

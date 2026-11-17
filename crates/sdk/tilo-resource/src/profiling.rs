@@ -69,10 +69,12 @@ pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
 }
 
 /// Start observing this thread's scopes until [`take_live`]; the web build
-/// records none.
+/// records none, so it never starts one.
 #[cfg(target_arch = "wasm32")]
 #[inline]
-pub fn begin_live() {}
+pub const fn begin_live() -> bool {
+    false
+}
 
 /// What this thread's scopes did since [`begin_live`]; the web build
 /// records none.
@@ -196,15 +198,19 @@ mod recorder {
     }
 
     /// Start observing this thread's scopes, across events and frames,
-    /// until [`take_live`]: a running app's record of one key's journey.
-    /// An observation already active (a test's) is left as it is.
-    pub fn begin_live() {
+    /// until [`take_live`]: a running app's record of one key's journey, or
+    /// of one slow event. An observation already active (a test's, another
+    /// record's) is left as it is. Answers whether this call started one,
+    /// so only its starter takes it.
+    pub fn begin_live() -> bool {
         RECORDS.with(|records| {
             let mut records = records.borrow_mut();
-            if records.is_none() {
-                *records = Some(Capture::default());
+            if records.is_some() {
+                return false;
             }
-        });
+            *records = Some(Capture::default());
+            true
+        })
     }
 
     /// Every scope that ran since [`begin_live`], by name, ending the

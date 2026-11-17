@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Table` is the app's `so.tilo.poker.table` at `poker/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Award",
@@ -132,7 +132,7 @@ class Table(Resource):
         return self.action("sit", seat=seat)
 
     def sit_many(self, items: list[SitArgs]) -> list[dict[str, Any]]:
-        """Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("sit", items)
 
     def leave(self) -> None:
@@ -140,7 +140,7 @@ class Table(Resource):
         return self.action("leave")
 
     def leave_many(self, items: list[LeaveArgs]) -> list[dict[str, Any]]:
-        """Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("leave", items)
 
     def deal(self) -> None:
@@ -148,7 +148,7 @@ class Table(Resource):
         return self.action("deal")
 
     def deal_many(self, items: list[DealArgs]) -> list[dict[str, Any]]:
-        """Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("deal", items)
 
     def fold(self) -> None:
@@ -156,7 +156,7 @@ class Table(Resource):
         return self.action("fold")
 
     def fold_many(self, items: list[FoldArgs]) -> list[dict[str, Any]]:
-        """Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("fold", items)
 
     def call(self) -> None:
@@ -164,7 +164,7 @@ class Table(Resource):
         return self.action("call")
 
     def call_many(self, items: list[CallArgs]) -> list[dict[str, Any]]:
-        """Runs `call` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `call` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("call", items)
 
     def raise_(self, *, to: float) -> None:
@@ -172,7 +172,7 @@ class Table(Resource):
         return self.action("raise", to=to)
 
     def raise_many(self, items: list[RaiseArgs]) -> list[dict[str, Any]]:
-        """Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("raise", items)
 
     def all_in(self) -> None:
@@ -180,7 +180,7 @@ class Table(Resource):
         return self.action("all-in")
 
     def all_in_many(self, items: list[AllInArgs]) -> list[dict[str, Any]]:
-        """Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("all-in", items)
 
     def show(self) -> None:
@@ -188,7 +188,7 @@ class Table(Resource):
         return self.action("show")
 
     def show_many(self, items: list[ShowArgs]) -> list[dict[str, Any]]:
-        """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show", items)
 
     def skip(self) -> None:
@@ -196,7 +196,7 @@ class Table(Resource):
         return self.action("skip")
 
     def skip_many(self, items: list[SkipArgs]) -> list[dict[str, Any]]:
-        """Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("skip", items)
 
     def rebuy(self) -> None:
@@ -204,7 +204,7 @@ class Table(Resource):
         return self.action("rebuy")
 
     def rebuy_many(self, items: list[RebuyArgs]) -> list[dict[str, Any]]:
-        """Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rebuy", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

@@ -866,17 +866,17 @@ impl AttachedView {
     /// Record one instruction that changed several records as one run in
     /// this record's history: a marker, no content. Leaves with
     /// [`Self::take_changes`]; whether anything was recorded.
-    pub fn record_run(
+    pub fn record_invocation(
         &mut self,
         label: &str,
         issued_by: Option<&str>,
         decision: Option<&str>,
-        steps: &[ui_core::RunStep],
+        steps: &[ui_core::InvocationStep],
     ) -> bool {
         self.records
             .with(&self.checkout.id, |doc| {
                 let by = doc.get_actor().to_hex_string();
-                let recorded = ui_core::record_run_with_details(
+                let recorded = ui_core::record_invocation_with_details(
                     doc,
                     label,
                     Some(&by),

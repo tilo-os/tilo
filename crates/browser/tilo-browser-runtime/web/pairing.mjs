@@ -16,10 +16,45 @@
 
 /** How long a pairing link works. */
 export const INVITE_TTL_MS = 10 * 60 * 1000;
-/** Said on the new device when the host no longer takes its link. */
-export const PAIRING_EXPIRED = 'This link expired or was used already. Make a new one on your other device.';
+/** Said on the new device when its link was answered before: a link works once. */
+export const PAIRING_USED = 'This link was used already. Make a new one on your other device.';
+/** Said on the new device when none of the person's devices answered while
+ * it waited: the link ran out, or nobody looked. */
+export const PAIRING_UNANSWERED = 'No device of yours approved this one in time. Make a new link on your other device, then approve this device there.';
 /** Said on the new device when the person declined it. */
 export const PAIRING_DECLINED = 'Your other device declined. Make a new link to try again.';
+/** Said on the new device when the host would not take a request dated by
+ * this device's clock. Hosts allow a minute between the two clocks
+ * (`CERTIFICATION_CLOCK_ALLOWANCE_NS`, tilo-user-identity). The link is not
+ * spent: it works once the clock is right. */
+export const PAIRING_CLOCK = 'The clock of this device and the clock of your workspace’s host differ by more than a minute. Check the date and time on this device, then open the link again.';
+/** Said in a browser that opens a pairing link for the person it already
+ * is (`pairViaHost`, workspaces.mjs): a link opened in the browser that
+ * made it. No host was asked, so the link still works on the device it was
+ * made for. */
+export const PAIRING_SAME_PERSON = 'This browser is already signed in as you, so nothing was paired. Open the link on the device you want to add.';
+
+/**
+ * What a device that opened a pairing link shows around its code while it
+ * waits: where the person approves it, and what to do when nothing asks them
+ * there. Only the page that made a link asks about the device that answers
+ * it, and only while that link is open (`forInvites`), so that page's device
+ * is where the person is sent. "Pair a new device" is named with where it is
+ * found: on the person's own card and in the desktop's search (`PAIR`,
+ * identity-actions.mjs).
+ */
+export const PAIRING_WAIT = Object.freeze({
+  heading: 'Waiting for approval on your other device…',
+  where: 'The device that made this link now asks you about this one. Approve there if it shows this code:',
+  then: 'This page goes on by itself once you approve.',
+  otherwise: 'Nothing asking there? Its link was made more than 10 minutes ago, or its page was closed. On a device where you are signed in, choose “Pair a new device” on your own card (your picture, at the top right) or in search, and open the new link here.',
+});
+
+/** What a tab says while it waits to become a new device of the person its
+ * browser is paired to, having opened no link: its request names no invite,
+ * so no page asks about it by itself, and a new link opened in the tab is
+ * what gets it approved. */
+export const pairingStatus = code => `Pairing code ${code}. This tab is a new device of yours and waits for your approval. On a device where you are signed in, approve ${code} where it asks. If nothing asks, choose “Pair a new device” there on your own card (your picture, at the top right) or in search, and open its link in this tab.`;
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
@@ -125,10 +160,20 @@ export function whenRequested(requestedAtMs, {now = Date.now(), locale} = {}) {
 }
 
 /** What to tell the new device when pairing failed with `error`, or `null`
- * when it is not the host's answer to the pairing (a network failure). */
+ * when it is neither the host's answer to the pairing nor this browser's
+ * own (a network failure). Each refusal is said as what happened, never as
+ * another. */
 export function pairingFailure(error) {
+  // This browser's own answer, before any host was asked.
+  if (error?.code === 'same-person') return PAIRING_SAME_PERSON;
   const text = String(error?.message ?? error ?? '');
   if (/declined/i.test(text)) return PAIRING_DECLINED;
-  if (/used already|no approv\w* (device )?answered|expired/i.test(text)) return PAIRING_EXPIRED;
+  if (/used already/i.test(text)) return PAIRING_USED;
+  // The new device dates its request and the host reads it a moment later.
+  // One the host calls dated ahead, or expired as it arrives, was dated by a
+  // clock that differs from the host's: the link itself has no date the host
+  // reads. Hosts before the allowance said "expired or not yet valid" of both.
+  if (/certification request (is|has) [^:]*(dated|expired|not yet valid)/i.test(text)) return PAIRING_CLOCK;
+  if (/no approv\w* (device )?answered/i.test(text)) return PAIRING_UNANSWERED;
   return null;
 }

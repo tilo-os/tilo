@@ -1140,7 +1140,7 @@ tilo_test_env::scenario! {
             .conversation_rows(
                 &MemberId::person(ADA),
                 &crate::messages::Messages::default(),
-                &crate::projection::AgentNames::new(),
+                (&crate::projection::AgentNames::new(), &crate::projection::PeopleNames::new()),
             )
             .into_iter()
             .find(|row| row.id == with_bo.to_string())
@@ -1151,7 +1151,7 @@ tilo_test_env::scenario! {
             .conversation_rows(
                 &MemberId::person(BO),
                 &crate::messages::Messages::default(),
-                &crate::projection::AgentNames::new(),
+                (&crate::projection::AgentNames::new(), &crate::projection::PeopleNames::new()),
             )
             .into_iter()
             .find(|row| row.id == with_bo.to_string())

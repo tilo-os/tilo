@@ -1,8 +1,8 @@
-//! The runs of a workspace a host keeps, newest first, in the records the
-//! caller may read: what a key that reaches the workspace reads to see what
-//! ran there, what waits for the person, and what can still be taken back.
-//! Of each run the host answers only what lies in records the caller may
-//! read now, and a run with nothing left for them is neither listed nor
+//! The invocations of a workspace a host keeps, newest first, in the records the
+//! caller may read: what a key that reaches the workspace reads to see what was
+//! invoked there, what waits for the person, and what can still be taken back.
+//! Of each invocation the host answers only what lies in records the caller may
+//! read now, and an invocation with nothing left for them is neither listed nor
 //! counted.
 //!
 //! A device lists a workspace's agent sessions from its own history index
@@ -11,12 +11,12 @@
 //!
 //! - **The records.** Every change an action makes is kept in its record's
 //!   history with the undo step it is part of, who made it and when
-//!   ([`super::changes`]). A run is its step: one call, or every call of a
-//!   run its client named. What the records say of it holds across the
-//!   host's restarts.
+//!   ([`super::changes`]). An invocation is its step: one call, or every call of a
+//!   group its client named. What the records say of it holds across the host's
+//!   restarts.
 //! - **The calls the host remembers.** The host keeps the invocations it
 //!   was asked for in memory, each with its id, who asked, and how it
-//!   stands: queued, waiting for the person, running, ended. A run that
+//!   stands: queued, waiting for the person, running, ended. An invocation that
 //!   changed no record (one refused, one still waiting) is known from them
 //!   alone, and only until the host restarts or lets go of it.
 //!
@@ -28,16 +28,16 @@ use serde::{Deserialize, Serialize};
 use super::RemoteActionTarget;
 use crate::api::ActionAddress;
 
-/// The provider a host answers its workspace's runs under.
+/// The provider a host answers its workspace's invocations under.
 pub const PROVIDER: &str = "tilo.invocations";
 /// The resource the listing is an action of: the workspace.
 pub const RESOURCE: &str = "workspace";
-/// List the workspace's runs, newest first.
+/// List the workspace's invocations, newest first.
 pub const LIST: &str = "list";
 
-/// How many runs a page holds when the query asks for no number.
+/// How many invocations a page holds when the query asks for no number.
 pub const PAGE: usize = 50;
-/// The most runs one page holds.
+/// The most invocations one page holds.
 pub const MOST: usize = 200;
 
 /// What [`LIST`] is invoked on.
@@ -57,7 +57,7 @@ pub fn is_listing(target: &RemoteActionTarget) -> bool {
         && target.address.action == LIST
 }
 
-/// One page of a workspace's runs.
+/// One page of a workspace's invocations.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InvocationsQuery {
@@ -75,7 +75,7 @@ pub struct InvocationsQuery {
 }
 
 impl InvocationsQuery {
-    /// How many runs the page holds.
+    /// How many invocations the page holds.
     #[must_use]
     pub fn page(&self) -> usize {
         if self.limit == 0 {
@@ -86,7 +86,7 @@ impl InvocationsQuery {
     }
 }
 
-/// Who ran a run.
+/// Who ran an invocation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InvocationBy {
@@ -103,7 +103,7 @@ pub struct InvocationBy {
     pub id: Option<String>,
 }
 
-/// How a run stands.
+/// How an invocation stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationStatus {
@@ -122,7 +122,7 @@ pub enum InvocationStatus {
     Undone,
 }
 
-/// A record a run changed.
+/// A record an invocation changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InvocationChange {
@@ -135,13 +135,13 @@ pub struct InvocationChange {
     pub record: String,
 }
 
-/// One run of a workspace.
+/// One invocation of a workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Invocation {
     /// What reading, stopping and taking it back name it by: the invocation
-    /// id of its newest call (taking back one call of a run takes back the
-    /// whole run). `None` for a run known only from the records, whose calls
+    /// id of its newest call (taking back one call of an invocation takes back the
+    /// whole of it). `None` for one known only from the records, whose calls
     /// the host no longer remembers (it restarted since).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -195,16 +195,16 @@ pub struct Invocation {
     pub remembered: bool,
 }
 
-/// A page of a workspace's runs, newest first.
+/// A page of a workspace's invocations, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Invocations {
     pub items: Vec<Invocation>,
-    /// Invocations the workspace holds, of which [`Self::runs`] is a page.
+    /// Invocations the workspace holds, of which [`Self::items`] is a page.
     pub total: usize,
-    /// Of those, the runs waiting for the person.
+    /// Of those, the invocations waiting for the person.
     pub waiting: usize,
-    /// Some record could not be read yet: runs that changed only it are
+    /// Some record could not be read yet: invocations that changed only it are
     /// missing until it can.
     pub pending: bool,
     /// Passed back as [`InvocationsQuery::cursor`] for the next page; `None` on the

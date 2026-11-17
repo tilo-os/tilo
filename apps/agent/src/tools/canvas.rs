@@ -32,6 +32,93 @@ const PLACE_PREFIX: &str = "shell:place:";
 /// The prefix of a tilolang app's resources and kinds.
 const TILOLANG_PREFIX: &str = "tl:";
 
+/// The tool that shows a resource on the canvas: the canvas' place as a step of its own, so a
+/// call to show something names what it shows and nothing else. Most of what a person asks on
+/// the canvas is answered by showing, and `invoke` for it was the call models got wrong most,
+/// writing the place's parameters as the call (`{"resource": …}`) with no operation.
+pub const SHOW: &str = "show";
+
+/// The [`SHOW`] tool's definition. Byte-stable across turns and tasks, like every loop tool.
+#[must_use]
+pub fn show_definition() -> agent_provider_config::protocol::ToolDefinition {
+    agent_provider_config::protocol::ToolDefinition {
+        name: SHOW.into(),
+        description: ("Show a resource on the canvas, as a person places it there: beside \
+             this conversation, or, with `beside`, next to the place already showing another \
+             resource. The place already showing it comes forward instead. `resource` is an id \
+             the canvas lists under \"What there is to show\", or one a program answered: \
+             {\"resource\": \"tl:so.tilo.lang.mail:root-su4h67i5\"} shows the inbox; \
+             {\"resource\": \"tl:so.tilo.lang.notes:root-v7cub7aw\", \"beside\": \
+             \"tl:so.tilo.lang.mail:root-su4h67i5\"} puts the notes next to it. Put your reply \
+             on it to finish in the same response.")
+            .into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "resource": {
+                    "type": "string",
+                    "description": "Required: the id of what to show."
+                },
+                "beside": {
+                    "type": "string",
+                    "description": "The id of a resource already shown, or of its place: this \
+                        one stands next to it."
+                },
+                "view": {
+                    "type": "string",
+                    "description": "Which of its views, when it has several."
+                },
+                super::INVOKE_REPLY: {
+                    "type": "string",
+                    "description": "Your short reply to the person, shown once it is shown; \
+                        it finishes the task with no turn after it."
+                }
+            },
+            "required": ["resource"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+/// The id the canvas' place is published under, when the session publishes a canvas.
+#[must_use]
+pub fn place_id(catalogue: &Catalogue) -> Option<String> {
+    catalogue
+        .offers
+        .iter()
+        .find(|offer| offer.address().resource == LAYOUT && offer.address().action == PLACE)
+        .map(Offer::id)
+}
+
+/// A [`SHOW`] call's input as the `invoke` of the canvas' place it is: the place by `place`, its
+/// id ([`place_id`]; by its address when the session publishes no canvas, which the invoke then
+/// names as no listed operation), with the call's resource, view and beside as its parameters and
+/// its reply as the invoke's.
+#[must_use]
+pub fn show_as_invoke(input: &serde_json::Value, place: Option<&str>) -> serde_json::Value {
+    let mut parameters = serde_json::Map::new();
+    for key in ["resource", "view", "beside"] {
+        if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
+            parameters.insert(key.to_owned(), value.clone());
+        }
+    }
+    let mut invoke = serde_json::Map::new();
+    invoke.insert(
+        "operation".to_owned(),
+        place
+            .map_or_else(|| format!("{LAYOUT}#{PLACE}"), str::to_owned)
+            .into(),
+    );
+    invoke.insert(super::INVOKE_PARAMETERS.to_owned(), parameters.into());
+    if let Some(reply) = input
+        .get(super::INVOKE_REPLY)
+        .filter(|reply| reply.is_string())
+    {
+        invoke.insert(super::INVOKE_REPLY.to_owned(), reply.clone());
+    }
+    invoke.into()
+}
+
 /// Whether `offer` is a host (non-Tilo) application's: the open the desktop
 /// publishes for each installed host program. Opening one is all an agent
 /// could do there — its window publishes nothing — so such opens are not
@@ -134,12 +221,10 @@ pub fn canvas_section(
     revealed.reveal(place.id());
     let _ = writeln!(
         s,
-        "Show a resource: `invoke` with `\"operation\": \"{}\"` and `\"parameters\": \
-         {{\"resource\": …}}` (an id below, or one a program answered; add `\"view\"` beside it \
-         when it has several). Without `x` and `y` it stands beside this conversation, or the \
-         place already showing it comes forward; `\"beside\": <id>` stands it next to the place \
-         showing that resource instead (\"put my notes next to the inbox\").",
-        place.id()
+        "Show a resource: `{SHOW}` with `\"resource\": …` (an id below, or one a program \
+         answered; add `\"view\"` when it has several). It stands beside this conversation, or \
+         the place already showing it comes forward; `\"beside\": <id>` stands it next to the \
+         place showing that resource instead (\"put my notes next to the inbox\")."
     );
 
     // The layout steps on the layout itself and on how it is shown,

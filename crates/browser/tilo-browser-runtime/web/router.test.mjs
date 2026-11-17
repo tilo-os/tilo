@@ -17,7 +17,7 @@ function fakeWindow(href) {
   const entries = [{url: href, state: null}];
   let index = 0;
   const window = {
-    location: {get href() { return entries[index].url; }, reload() { window.reloaded = true; }},
+    location: {get href() { return entries[index].url; }, get hash() { return new URL(entries[index].url).hash; }, reload() { window.reloaded = true; }},
     history: {
       pushState(state, _title, url) { entries.splice(index + 1); entries.push({url, state}); index += 1; window.writes.push(['push', url]); },
       replaceState(state, _title, url) { entries[index] = {url, state}; window.writes.push(['replace', url]); },
@@ -306,4 +306,21 @@ test('a window binding its record names it in the entry it opened, not a new one
   assert.equal(window.entries.length, 2, 'the open is one step');
   assert.deepEqual(link.parse(window.entries[1].url).target, {scope, app: 'so.tilo.notes', record: 'uuid:plan'});
   router.stop();
+});
+
+test('an address edited to name no route loads the bare site, as opening that address does', async () => {
+  // Nothing after the site, `#` or `#/`: where that goes (the workspace last
+  // chosen, the site's home, the person's own desktop) is decided as the page
+  // loads. The grammar reads `#/` as a route with an empty part, so the page
+  // said that and stayed where it was.
+  for (const bare of [`${BASE}#/`, `${BASE}#`, BASE]) {
+    const window = fakeWindow(link.format({mode: 'desktop', target: chat}));
+    const errors = [];
+    const router = startRouter({window, link, initial: {mode: 'desktop', target: chat},
+      show: async () => assert.fail('nothing is shown in place: the bare site is loaded'), onError: error => errors.push(error)});
+    await window.edit(bare);
+    assert.deepEqual(errors, [], `nothing is refused at "${bare}"`);
+    assert.equal(window.reloaded, true, bare);
+    router.stop();
+  }
 });

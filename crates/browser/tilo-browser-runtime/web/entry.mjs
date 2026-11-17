@@ -23,7 +23,7 @@ import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {followDisplayMode} from './app-window.mjs';
 import {createLeaveGuard} from './leave-guard.mjs';
-import {startRouter} from './router.mjs';
+import {bareEntry, startRouter} from './router.mjs';
 import {createTabAttention} from './tab-attention.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {nameSiteHost} from './site-host.mjs';
@@ -176,10 +176,15 @@ export function grammar(runtime, entry) {
   };
 }
 
+/** A bare entry's address (`bareEntry`, router.mjs) as the grammar reads one:
+ * without its empty fragment, since `#/` alone reads there as a route with an
+ * empty part. */
+const bareHref = location => location.href.replace(/#\/?$/, '');
+
 /** A bare entry under a web host's home workspace: its route, read without
  * the runtime's grammar; `null` for any other link. */
 export function homeRoute({location, mode, home = null}) {
-  const bare = location.hash === '' || location.hash === '#';
+  const bare = bareEntry(location);
   if (!bare || !home) return null;
   const scope = {kind: 'workspace', host: new URL(home.host.origin).origin, workspace: home.workspace ?? null};
   // `home.app` is the app in front: on the desktop among the workspace's
@@ -192,7 +197,7 @@ export function homeRoute({location, mode, home = null}) {
  * last chose another of their workspaces (`chosen`, `{origin, workspace}`):
  * that workspace's route; `null` otherwise, and always in an embed. */
 export function chosenRoute({location, mode, home = null, chosen = null}) {
-  const bare = location.hash === '' || location.hash === '#';
+  const bare = bareEntry(location);
   if (!bare || !home || mode !== 'desktop' || !chosen?.workspace) return null;
   return {mode, target: {scope: {kind: 'workspace', host: new URL(chosen.origin).origin, workspace: chosen.workspace}}};
 }
@@ -211,16 +216,16 @@ function sameScope(a, b) {
 export function initialRoute({link, location, mode, home = null}) {
   const toHome = homeRoute({location, mode, home});
   if (toHome) return toHome;
-  const bare = location.hash === '' || location.hash === '#';
+  const bare = bareEntry(location);
   if (bare && mode === 'desktop') {
     try {
-      return link.parse(location.href);
+      return link.parse(bareHref(location));
     } catch (error) {
       if (error?.code === 'no-route') return {mode, target: {scope: {kind: 'own'}}};
       throw error;
     }
   }
-  return link.parse(location.href);
+  return link.parse(bare ? bareHref(location) : location.href);
 }
 
 /** How long a link to an app's workspace document waits for it before the

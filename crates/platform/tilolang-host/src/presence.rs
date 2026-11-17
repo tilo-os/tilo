@@ -123,7 +123,19 @@ impl Presence {
                 .keys()
                 .map(|user| (user.clone(), self.heard.display_name(user)))
                 .collect();
-            instance.name_people(me, others);
+            // Everyone the member list named, the person included, in the colour it paints them:
+            // a byline in a view wears the colour of their face on the bar.
+            let hues = self
+                .heard
+                .names
+                .keys()
+                .chain(self.heard.self_id())
+                .map(|member| {
+                    let slot = self.heard.hue_for(member).slot();
+                    (member.clone(), u8::try_from(slot).unwrap_or_default())
+                })
+                .collect();
+            instance.name_people(me, others, hues);
         }
         let now = ui::time::now();
         self.heard.prune_composing(now);

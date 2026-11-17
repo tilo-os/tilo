@@ -326,15 +326,17 @@ impl HostedVm {
     }
 
     /// Look at the running VM: is it alive, what runs in it. Suspends it
-    /// once it has been idle for the limit: the browser session counts as
-    /// running until its own idle limit ends it.
-    pub fn poll(&mut self) -> Result<(), VmError> {
+    /// once it has been idle for the limit. `sessions` is how many sessions the
+    /// host started in it that are still running (a browser's, the apps'): they
+    /// count as running until their own idle limits end them, so a VM holding
+    /// one is never taken for idle between the commands run in it.
+    pub fn poll(&mut self, sessions: u32) -> Result<(), VmError> {
         if !self.reap() || self.life.phase() != Phase::Running {
             return Ok(());
         }
         let now = (self.clock)();
         let running = match self.agent(&HostMessage::Health) {
-            Ok(GuestMessage::Health(health)) => health.running,
+            Ok(GuestMessage::Health(health)) => health.running.saturating_add(sessions),
             _ => return Ok(()),
         };
         self.meter.seen(now);

@@ -1058,14 +1058,14 @@ fn a_pinned_path_names_only_a_canonical_workspace() {
 fn the_run_is_named_for_the_person() {
     let params = json!({"clientInfo":{"name":"claude-code"}});
     assert_eq!(
-        session::run_label("Claude Code", &params, 1),
+        session::agent_session_label("Claude Code", &params, 1),
         "Claude Code #1"
     );
     assert_eq!(
-        session::run_label("MCP agent", &params, 3),
+        session::agent_session_label("MCP agent", &params, 3),
         "claude-code #3"
     );
-    assert_eq!(session::run_label("", &json!({}), 2), "Agent #2");
+    assert_eq!(session::agent_session_label("", &json!({}), 2), "Agent #2");
 }
 
 /// A site on loopback whose every page answers `status`, counting asks.

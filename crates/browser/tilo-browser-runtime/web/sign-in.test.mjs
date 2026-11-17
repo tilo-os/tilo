@@ -453,6 +453,18 @@ test('a passkey that opens no identity says so and keeps the ways in', async () 
   assert.equal(elements.passkey.disabled, false);
 });
 
+test('a place that cannot use passkeys says where the person can answer instead', async () => {
+  // A web view inside an app that may not use this site's passkeys: refused before anything
+  // was shown, which no second try changes.
+  const {elements, shown, mounted} = page({search: link_(), kept: null,
+    signIn: async () => { throw Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}); }});
+  await mounted;
+  await elements.passkey.fire('click');
+  assert.equal(shown().state, 'signed-out');
+  assert.equal(shown().message, 'Passkeys can’t be used here. Open this page in the browser where you use Tilo.');
+  assert.equal(elements.passkey.disabled, false);
+});
+
 test('signing in from another tab brings the card on to the question', async () => {
   const {window, store, shown, mounted} = page({search: link_(), kept: null});
   await mounted;

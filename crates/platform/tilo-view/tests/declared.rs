@@ -73,6 +73,7 @@ fn cx() -> ViewCx {
         tilo_view::Actor {
             id: tilo_actions::MemberId::person("Pat").into(),
             name: "Pat".to_owned(),
+            hue: None,
         },
         std::collections::BTreeMap::new(),
     )

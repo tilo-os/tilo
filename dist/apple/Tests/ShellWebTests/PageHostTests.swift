@@ -328,7 +328,7 @@ final class OneAppTests: PageCase {
 @MainActor
 class PageCase: XCTestCase {
     var host: PageHost!
-    fileprivate var seen: Seen!
+    var seen: Seen!
 
     func run(_ script: String) async throws {
         _ = try await host.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
@@ -363,8 +363,9 @@ private final class Addresses {
 }
 
 @MainActor
-private final class Seen: PageHostDelegate {
+final class Seen: PageHostDelegate {
     var notices: [PageNotice] = []
+    var ways: [WayIn] = []
     var withdrawn: [String] = []
     var asked = 0
     var inserted = 0
@@ -380,6 +381,7 @@ private final class Seen: PageHostDelegate {
         case .withdraw(let id): withdrawn.append(id)
         case .askPermission: asked += 1
         case .entry(let entry): self.entry = entry
+        case .wayIn(let way): ways.append(way)
         case .wordsInserted: inserted += 1
         }
     }

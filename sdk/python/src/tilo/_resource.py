@@ -273,10 +273,11 @@ class Resource:
         endpoint = await self._workspace._endpoint()
         if endpoint.group() is not None:
             return await self._grouped(endpoint, members)
-        # The chunks are one run, as `async with ws.run(...)` would make them one.
-        from ._workspace import RunOpening
+        # The chunks are one invocation group, as `async with ws.invocation(...)`
+        # would make them one.
+        from ._workspace import InvocationOpening
 
-        async with RunOpening(self._workspace, f"{action} ({len(members)})"):
+        async with InvocationOpening(self._workspace, f"{action} ({len(members)})"):
             return await self._grouped(endpoint, members)
 
     async def _grouped(self, endpoint: Any, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -293,8 +294,8 @@ class Resource:
             # Names the run on the workspace's record; a person's ask is raised here.
             endpoint.follow(answer, f"{self.path}#group")
             if answer.get("status") == "pending":
-                run = answer.get("run")
-                if isinstance(run, str) and run:
+                invocation = answer.get("invocation")
+                if isinstance(invocation, str) and invocation:
                     answer = dict(await endpoint.wait(run))
             answers.append(dict(answer))
         return answers

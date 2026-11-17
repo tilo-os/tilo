@@ -8,12 +8,12 @@
  * resource's path (`feeds/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -131,35 +131,35 @@ export interface Library extends tilo.Resource {
     url: string;
     folder?: string;
   }): Promise<void>;
-  /** Runs `add-subscription` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-subscription` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addSubscriptionMany(items: AddSubscriptionArgs[]): Promise<tilo.ActionAnswer[]>;
   unsubscribe(args: {
     feed: string;
   }): Promise<void>;
-  /** Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unsubscribeMany(items: UnsubscribeArgs[]): Promise<tilo.ActionAnswer[]>;
   markFeedRead(args: {
     feed: string;
   }): Promise<void>;
-  /** Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markFeedReadMany(items: MarkFeedReadArgs[]): Promise<tilo.ActionAnswer[]>;
   markEverythingRead(): Promise<void>;
-  /** Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markEverythingReadMany(items: MarkEverythingReadArgs[]): Promise<tilo.ActionAnswer[]>;
   newFolder(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newFolderMany(items: NewFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteFolder(args: {
     folder: string;
   }): Promise<void>;
-  /** Runs `delete-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteFolderMany(items: DeleteFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   importSubscriptions(args: {
     outlines: Outline[];
   }): Promise<void>;
-  /** Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importSubscriptionsMany(items: ImportSubscriptionsArgs[]): Promise<tilo.ActionAnswer[]>;
   refreshed(args: {
     articles: Fetched[];
@@ -167,7 +167,7 @@ export interface Library extends tilo.Resource {
     title?: string;
     certificate_pin?: string;
   }): Promise<void>;
-  /** Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   refreshedMany(items: RefreshedArgs[]): Promise<tilo.ActionAnswer[]>;
   exportOpml(): Promise<void>;
   readerTextLarger(): Promise<void>;

@@ -306,7 +306,8 @@ class ResourceImpl {
    * Run `action` for each of `items`, a few calls at most. Each call applies
    * up to 500 items (and about 4 MiB of JSON) as one all-or-nothing step, so
    * if any one of them refuses none of that call applies. Every call is the
-   * same run: History lists it once and one undo takes it back. An empty list
+   * same invocation group: History lists it once and one undo takes it back.
+   * An empty list
    * sends nothing. Answers each call's answer.
    */
   async many(action: string, items: Record<string, unknown>[]): Promise<ActionAnswer[]> {
@@ -323,12 +324,12 @@ class ResourceImpl {
       }
       return answers;
     };
-    // The chunks are one run, as `ws.run(...)` would make them one; calls
-    // already inside a run join that one instead.
+    // The chunks are one invocation group, as `ws.invocation(...)` would make
+    // them one; calls already inside a group join that one instead.
     if (currentGroup() !== null) {
       return send();
     }
-    return this.workspace.run(`${action} (${members.length})`, send);
+    return this.workspace.invocation(`${action} (${members.length})`, send);
   }
 
   async edit(steps: Step[], value: unknown, op = "set"): Promise<unknown> {

@@ -8,12 +8,12 @@
  * resource's path (`scratchpad/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";

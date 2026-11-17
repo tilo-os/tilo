@@ -493,6 +493,46 @@ pub trait Fields: Model {
         None
     }
 
+    /// The item of the collection field `field` that `reference` names: its
+    /// id, an address it is published under, or its label
+    /// ([`crate::table::item_named`]).
+    ///
+    /// # Errors
+    /// Refuses a reference that names none of the collection's items, saying
+    /// which there are.
+    fn item_named(&self, field: &str, reference: &str) -> Result<crate::Id, crate::Refusal> {
+        let _ = (field, reference);
+        Err(crate::Refusal::new("this record keeps no such items"))
+    }
+
+    /// [`item_named`](Self::item_named) in the words `what` names the items
+    /// by, where the collection's own field name is not what the app calls
+    /// them.
+    ///
+    /// # Errors
+    /// As [`item_named`](Self::item_named).
+    fn item_named_as(
+        &self,
+        field: &str,
+        _what: (&str, &str),
+        reference: &str,
+    ) -> Result<crate::Id, crate::Refusal> {
+        self.item_named(field, reference)
+    }
+
+    /// Whether the collection field `field` holds the item `id`
+    /// ([`crate::table::item_holds`]).
+    fn item_holds(&self, field: &str, id: &str) -> bool {
+        let _ = (field, id);
+        false
+    }
+
+    /// Whether `reference` is the id of an item of any of the record's
+    /// collections ([`crate::table::item_id_any`]).
+    fn item_id_any(&self, reference: &str) -> bool {
+        let _ = reference;
+        false
+    }
     /// Every item of the collection fields whose type has a
     /// `#[model(label)]`, with its text: what search indexes by default.
     fn item_search(&self) -> Vec<crate::items::ItemText> {

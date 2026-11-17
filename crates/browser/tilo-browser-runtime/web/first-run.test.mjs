@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, codeWait, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
   manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
-  signInPrompt, startFirstRun, stepLines, minutesLeft} from './first-run.mjs';
+  signInPrompt, startFirstRun, stepLines, minutesLeft, signInFailure} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const CODE = 'K7Q-MX2P';
@@ -538,6 +538,26 @@ test('back returns to the start, with the next prompt shown, and forgets the cod
   assert.deepEqual(names().slice(-2), ['start', 'offer']);
   assert.deepEqual(last('offer')[2].code, NEXT);
   assert.equal(state.ticks, null);
+});
+
+test('a passkey sign-in that fails is said, with what works where passkeys cannot be used, and a closed prompt is said by nothing', async () => {
+  const {run, names, last} = fixture();
+  const answered = error => { run.offerSignIn(async () => { throw error; }); return run.passkey(); };
+  const count = () => names().filter(name => name === 'signInFailed').length;
+  // A web view inside an app that may not use this site's passkeys: refused before anything showed.
+  await answered(Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}));
+  assert.equal(count(), 1);
+  assert.equal(signInFailure(last('signInFailed')[1]),
+    'Passkeys can’t be used here. Sign in with your agent, or pair this device from one where you are signed in.');
+  // A passkey of another site's, or a host that keeps no such person.
+  await answered(Object.assign(new Error('none'), {code: 'no-envelope'}));
+  assert.equal(count(), 2);
+  assert.equal(signInFailure(last('signInFailed')[1]), 'That passkey did not sign you in. Try another, or sign in with your agent.');
+  // The person closed the prompt: their own answer.
+  await answered(Object.assign(new Error('closed'), {name: 'NotAllowedError'}));
+  await answered(Object.assign(new Error('none used'), {code: 'passkey-cancelled'}));
+  assert.equal(count(), 2);
+  assert.deepEqual(last('signingIn'), ['signingIn', false], 'and the button is no longer busy');
 });
 
 test('a passkey clicked before the page can ask waits for it, busy, then asks; a page that never can says so', async () => {

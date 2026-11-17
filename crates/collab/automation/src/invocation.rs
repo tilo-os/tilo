@@ -1,13 +1,13 @@
 //! Running a shortcut through an [`ActionHost`].
 //!
 //! The interpreter never acts in its own name. Every step is an invocation by
-//! the [`Caller`] who started the run, so the host applies that person's own
+//! the [`Caller`] who started the invocation, so the host applies that person's own
 //! authority; before each one the interpreter also requires the action to lie
-//! inside the shortcut's [`grant`](Shortcut::grant). The run can therefore do
+//! inside the shortcut's [`grant`](Shortcut::grant). The invocation can therefore do
 //! no more than the person could and no more than the shortcut was allowed.
 //!
-//! Each invocation id is derived from the run id and the step's path
-//! (including the loop iteration), so running the same [`InvocationId`] again — a
+//! Each invocation id is derived from the invocation id and the step's path
+//! (including the loop iteration), so running the same [`AutomationInvocationId`] again — a
 //! retry after a crash or a lost reply — first observes what the host already
 //! did and reuses the same id for anything it re-sends, instead of acting
 //! twice.
@@ -56,10 +56,10 @@ use tilo_action_policy::{ActionKind, Answer};
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
 
-/// What a secret looks like in a run report or a confirmation prompt.
+/// What a secret looks like in a invocation report or a confirmation prompt.
 const REDACTED: &str = "[redacted]";
 
-/// Every [`StepFailure::code`] the run itself gives a failed step, in the
+/// Every [`StepFailure::code`] the invocation itself gives a failed step, in the
 /// order a person reads them. A failure of an action carries the action's
 /// own code instead; these are the rest.
 pub const STEP_FAILURE_CODES: &[&str] = &[
@@ -96,29 +96,32 @@ pub const MAX_BACKOFF_MS: u64 = 600_000;
 /// whole step's patience, at most, so a retry never outlasts it.
 pub const DEFAULT_BACKOFF_MS: u64 = 60_000;
 
-/// Identity of one run. Reusing it reuses every invocation id the run
+/// Identity of one invocation. Reusing it reuses every invocation id the invocation
 /// derives, which is what makes re-running it safe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct InvocationId(pub Uuid);
+pub struct AutomationInvocationId(pub Uuid);
 
-impl InvocationId {
+impl AutomationInvocationId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 }
 
-impl Default for InvocationId {
+impl Default for AutomationInvocationId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// The facet naming the step path of a run's change.
+/// The facet naming the step path of an invocation's change.
 pub const STEP_FACET: &str = "step";
 
 #[must_use]
-pub fn step_invocation_id(invocation: InvocationId, path: &StepPath) -> ActionInvocationId {
+pub fn step_invocation_id(
+    invocation: AutomationInvocationId,
+    path: &StepPath,
+) -> ActionInvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.automation.invocation\0");
     hasher.update(invocation.0.as_bytes());
@@ -138,11 +141,11 @@ pub enum InvocationMode {
     /// Started by a person who can confirm actions and answer questions.
     Interactive,
     /// Started by a trigger. An action that needs confirmation, or a step
-    /// that asks, stops the run instead.
+    /// that asks, stops the invocation instead.
     Unattended,
 }
 
-/// What started a run.
+/// What started an invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InvocationTrigger {
     /// A person ran it.
@@ -160,51 +163,51 @@ impl InvocationTrigger {
     }
 }
 
-/// Everything one run starts from.
+/// Everything one invocation starts from.
 #[derive(Clone, Debug)]
 pub struct InvocationRequest<'a> {
     pub shortcut: &'a Shortcut,
-    pub invocation: InvocationId,
-    /// The authenticated actor who started the run; every step is
+    pub invocation: AutomationInvocationId,
+    /// The authenticated actor who started the invocation; every step is
     /// invoked as them.
     pub caller: Caller,
     pub mode: InvocationMode,
     pub trigger: InvocationTrigger,
     /// Values for the shortcut's declared inputs.
     pub inputs: Map<String, Value>,
-    /// The bot run this run continues, recorded on every change it makes.
+    /// The bot session this invocation continues, recorded on every change it makes.
     pub caused_by: Option<tilo_actions::context::Cause>,
-    /// The steps an earlier run recorded, when this run continues that one.
+    /// The steps an earlier invocation recorded, when this invocation continues that one.
     /// See [`resumed`].
     pub resume: Option<&'a InvocationReport>,
-    /// The step the run continues from, when it continues an earlier one.
+    /// The step the invocation continues from, when it continues an earlier one.
     pub from: Option<StepPath>,
-    /// The work unit this run belongs to when something else asked for it (a
+    /// The work unit this invocation belongs to when something else asked for it (a
     /// task that called the shortcut), named by its own group. Every step is
-    /// stamped with it instead of this run's own group, so the run reads as
+    /// stamped with it instead of this invocation's own group, so the invocation reads as
     /// part of what asked for it and is undone with it.
     pub parent: Option<tilo_actions::context::WorkGroup>,
     /// The shortcuts already running above this one, outermost first: its own
-    /// id when it is a triggered run, or the other shortcuts that called it.
+    /// id when it is a triggered invocation, or the other shortcuts that called it.
     /// A step that would run one of them is not run, so two shortcuts that
     /// call each other spin once and stop.
     pub chain: Vec<String>,
 }
 
-/// Which run a run goes on from, and from where: what a person or an agent
+/// Which earlier invocation this one goes on from, and from where: what a person or an agent
 /// asks for when they fix a step of a shortcut that failed and run it again
 /// without repeating the steps before it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Continuation {
-    /// The run that happened.
-    pub invocation: InvocationId,
+    /// The invocation that happened.
+    pub invocation: AutomationInvocationId,
     /// The step to go on from: it runs again, and so does everything after
     /// it. The steps before it are taken from the record as they happened.
     pub from: StepPath,
 }
 
-/// The steps a continued run takes from the record instead of producing
-/// again: the recorded steps of the run it continues that come before
+/// The steps a continued invocation takes from the record instead of producing
+/// again: the recorded steps of the invocation it continues that come before
 /// `from`, and nothing else.
 ///
 /// A report records its steps in the order they ran, so the steps before
@@ -214,7 +217,7 @@ pub struct Continuation {
 /// itself and everything after it are not in this set: they run again from
 /// the shortcut as it is now, which is how a fixed step takes effect.
 ///
-/// A run with no origin replays nothing.
+/// An invocation with no origin replays nothing.
 fn resumed<'r>(
     origin: Option<&'r InvocationReport>,
     from: Option<&StepPath>,
@@ -249,45 +252,45 @@ pub struct AskRequest {
     pub param: ActionParam,
 }
 
-/// How a run reaches its caller while it is running.
+/// How an invocation reaches its caller while it is running.
 pub trait InvocationHooks: Sync {
     /// Ask the person to confirm an action; `None` declines it. Only called
-    /// in an [`Interactive`](InvocationMode::Interactive) run.
+    /// in an [`Interactive`](InvocationMode::Interactive) invocation.
     fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>>;
 
     /// Ask the person for a value; `None` declines. Only called in an
-    /// [`Interactive`](InvocationMode::Interactive) run.
+    /// [`Interactive`](InvocationMode::Interactive) invocation.
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>>;
 
     /// Resolve when the running invocation `invocation` is worth observing
     /// again — after a poll interval. Only called for a host whose
     /// [`ActionHost::next_change`]
     /// cannot tell when the invocation changes. Abandoning the answer stops
-    /// the run.
+    /// the invocation.
     fn settle(&self, invocation: ActionInvocationId) -> Pending<()>;
 
-    /// Resolve once `what` has been asked, and every run in this process has
-    /// stopped (`Err`), so the run stops too.
+    /// Resolve once `what` has been asked, and every invocation in this process has
+    /// stopped (`Err`), so the invocation stops too.
     ///
     /// The interpreter holds a step that is waiting; it is called before the
     /// step runs and before every look at a running invocation, so a stop
     /// takes effect before the next step is started, while an action already
     /// under way finishes and its effect is recorded as it is. A hook whose
-    /// runs cannot be stopped outside their own questions need not answer;
+    /// invocations cannot be stopped outside their own questions need not answer;
     /// the default never stops one.
     fn stopped(&self, _what: StopWatch<'_>) -> Pending<Result<(), String>> {
         Pending::ready(Ok(()))
     }
 }
 
-/// What a run was doing when [`InvocationHooks::stopped`] was asked: the step it is
+/// What an invocation was doing when [`InvocationHooks::stopped`] was asked: the step it is
 /// at, and when it got there.
 #[derive(Clone, Copy, Debug)]
 pub struct StopWatch<'a> {
     /// Where the step is; [`StepPath::root`] before the first one and at the
     /// shortcut's output binding.
     pub path: &'a StepPath,
-    /// When the run reached this step.
+    /// When the invocation reached this step.
     pub since: tilo_clock::time::Instant,
 }
 
@@ -300,11 +303,11 @@ impl StopWatch<'_> {
 }
 
 /// Why a step did not complete. A step's [`StepPolicy`] decides what the
-/// run does about it; with none, the run stops at the step.
+/// invocation does about it; with none, it stops at the step.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "failure", rename_all = "snake_case")]
 pub enum StepFailure {
-    #[error("the run's inputs are invalid: {reason}")]
+    #[error("the invocation's inputs are invalid: {reason}")]
     Inputs { reason: String },
     #[error("{reason}")]
     Binding { reason: String },
@@ -344,19 +347,19 @@ pub enum StepFailure {
     Contract { reason: String },
     #[error("the answer never came")]
     Abandoned,
-    #[error("the run was stopped: {reason}")]
+    #[error("the invocation was stopped: {reason}")]
     Stopped { reason: String },
     #[error("the step did not finish within {seconds} s")]
     TimedOut { seconds: u64 },
 }
 
 impl StepFailure {
-    /// Whether a run may go on past the step at all. A question nobody is
+    /// Whether an invocation may go on past the step at all. A question nobody is
     /// there to answer, or a person's refusal, is not a step that fell
     /// short: passing it over would decide something for them. Everything
-    /// else a run can carry on past, visibly, when the shortcut says how.
+    /// else an invocation can carry on past, visibly, when the shortcut says how.
     #[must_use]
-    pub const fn ends_run(&self) -> bool {
+    pub const fn ends_invocation(&self) -> bool {
         matches!(
             self,
             Self::NeedsPerson
@@ -419,7 +422,7 @@ pub enum StepStatus {
         output: Option<Value>,
     },
     /// The step did not succeed. Every failure says which try it was and
-    /// why; the run may have carried on from here, and `recovered` says how.
+    /// why; the invocation may have carried on from here, and `recovered` says how.
     Failed {
         failure: StepFailure,
         /// 1 for the first try; more when the step was retried.
@@ -444,25 +447,25 @@ fn is_first_attempt(attempt: &u32) -> bool {
     *attempt == 1
 }
 
-/// What the run did about a step that failed. Only [`Recovered::Stopped`]
-/// leaves the run to end there.
+/// What the invocation did about a step that failed. Only [`Recovered::Stopped`]
+/// leaves the invocation to end there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "recovered", rename_all = "snake_case")]
 pub enum Recovered {
-    /// The run stopped at the step.
+    /// The invocation stopped at the step.
     #[default]
     Stopped,
     /// The next try succeeded.
     Retried,
     /// A fallback ran in the step's place.
     Fallback,
-    /// The step's declared default stood in for its output. The run is
+    /// The step's declared default stood in for its output. The invocation is
     /// degraded: what it produced rests on a value the step did not.
     Default,
 }
 
 impl Recovered {
-    /// Whether the run ends at the step.
+    /// Whether the invocation ends at the step.
     #[must_use]
     pub const fn is_stopped(&self) -> bool {
         matches!(self, Self::Stopped)
@@ -475,7 +478,7 @@ impl StepStatus {
         matches!(self, Self::Succeeded { .. })
     }
 
-    /// Why the step failed, the try it was and what the run did about it.
+    /// Why the step failed, the try it was and what the invocation did about it.
     #[must_use]
     pub fn failure(&self) -> Option<(&StepFailure, u32, &Recovered)> {
         match self {
@@ -501,7 +504,7 @@ pub struct StepEntry {
     /// entry for a step that was not retried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attempts: Vec<ActionInvocationId>,
-    /// A step that did not succeed, with what the run did about it.
+    /// A step that did not succeed, with what the invocation did about it.
     #[serde(default, skip_serializing_if = "StepOutcome::is_none")]
     pub degraded: StepOutcome,
     #[serde(flatten)]
@@ -509,7 +512,7 @@ pub struct StepEntry {
 }
 
 impl StepEntry {
-    /// This step as a continued run takes it: what it did happened once, so
+    /// This step as a continued invocation takes it: what it did happened once, so
     /// the invocation is the one it ran under and what it produced is what
     /// the record shows.
     ///
@@ -533,7 +536,7 @@ impl StepEntry {
 
 /// How a step left the invocation: not at all, or short of what it promised.
 ///
-/// A step the run carried on past is here whether it failed and was
+/// A step the invocation carried on past is here whether it failed and was
 /// retried, ran a fallback, or stood on its declared default value — a
 /// failure is never skipped quietly.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -542,7 +545,7 @@ pub enum StepOutcome {
     /// The step did what it was there for.
     #[default]
     None,
-    /// The step failed, and the run went on: [`Recovered`] says how.
+    /// The step failed, and the invocation went on: [`Recovered`] says how.
     Degraded {
         failure: StepFailure,
         #[serde(default = "one", skip_serializing_if = "is_first_attempt")]
@@ -586,21 +589,21 @@ pub enum InvocationOutcome {
         path: StepPath,
         failure: StepFailure,
     },
-    /// The run was stopped before the step at `at`: what it had already done
-    /// stands, and can be undone as one step like a completed run's.
+    /// The invocation was stopped before the step at `at`: what it had already done
+    /// stands, and can be undone as one step like a completed invocation's.
     Cancelled {
         at: StepPath,
     },
 }
 
-/// The history entry of one run.
+/// The history entry of one invocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InvocationReport {
-    pub invocation: InvocationId,
+    pub invocation: AutomationInvocationId,
     pub shortcut: String,
     /// BLAKE3 hex of the version of the shortcut that ran
     /// ([`program_hash`](crate::program::program_hash)), so the record of a
-    /// run says which program produced it after the shortcut is edited.
+    /// invocation says which program produced it after the shortcut is edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// The trigger kind (`manual`, `schedule`, …).
@@ -609,8 +612,8 @@ pub struct InvocationReport {
     pub steps: Vec<StepEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
-    /// The steps that fell short and what the run did about them, in run
-    /// order. A run with any is degraded: what it reports may rest on a
+    /// The steps that fell short and what the invocation did about them, in step
+    /// order. An invocation with any is degraded: what it reports may rest on a
     /// value some step did not produce.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub degraded: Vec<StepOutcome>,
@@ -619,10 +622,10 @@ pub struct InvocationReport {
 }
 
 impl InvocationReport {
-    /// What the run reports, with a note saying which of its steps fell
-    /// short when any did. A degraded run really did finish, so its caller
+    /// What the invocation reports, with a note saying which of its steps fell
+    /// short when any did. A degraded invocation really did finish, so its caller
     /// needs both: the value it produced and the fact that value may rest on
-    /// something a step did not deliver. A run that finished as intended
+    /// something a step did not deliver. An invocation that finished as intended
     /// reports its value as it is.
     #[must_use]
     pub fn reported_value(&self) -> Option<Value> {
@@ -637,7 +640,7 @@ impl InvocationReport {
         Some(Value::Object(reported))
     }
 
-    /// Every invocation id the run used, in order.
+    /// Every invocation id the invocation used, in order.
     #[must_use]
     pub fn invocations(&self) -> Vec<ActionInvocationId> {
         self.steps
@@ -646,7 +649,7 @@ impl InvocationReport {
             .collect()
     }
 
-    /// Every invocation id the run sent, retries included, in order.
+    /// Every invocation id the invocation sent, retries included, in order.
     #[must_use]
     pub fn sent(&self) -> Vec<ActionInvocationId> {
         self.steps
@@ -661,13 +664,13 @@ impl InvocationReport {
             .collect()
     }
 
-    /// Whether any step fell short and the run went on anyway.
+    /// Whether any step fell short and the invocation went on anyway.
     #[must_use]
     pub fn is_degraded(&self) -> bool {
         !self.degraded.is_empty()
     }
 
-    /// What to say about a degraded run, or `None` when nothing fell short.
+    /// What to say about a degraded invocation, or `None` when nothing fell short.
     #[must_use]
     pub fn degraded_summary(&self) -> Option<String> {
         let (_, first) = self.degraded.first()?.described();
@@ -778,7 +781,7 @@ pub async fn run<H: ActionHost + Sync, K: InvocationHooks>(
     report
 }
 
-/// How long a step may run before the run stops waiting for it, when the
+/// How long a step may run before the invocation stops waiting for it, when the
 /// shortcut names no [`Shortcut::step_timeout_secs`].
 pub const DEFAULT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -789,7 +792,7 @@ struct Runner<'a, H, K> {
     host: &'a H,
     hooks: &'a K,
     shortcut: &'a Shortcut,
-    invocation: InvocationId,
+    invocation: AutomationInvocationId,
     caller: Caller,
     mode: InvocationMode,
     trigger: String,
@@ -798,18 +801,18 @@ struct Runner<'a, H, K> {
     secret_vars: BTreeSet<String>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepEntry>,
-    /// The steps an earlier run recorded, when this run continues it: their
+    /// The steps an earlier invocation recorded, when this invocation continues it: their
     /// output is taken as it was instead of being produced again.
     resumed: Vec<&'a StepEntry>,
     caused_by: Option<tilo_actions::context::Cause>,
     parent: Option<tilo_actions::context::WorkGroup>,
     /// The shortcuts running above this one (see [`InvocationRequest::chain`]).
     chain: Vec<String>,
-    /// How long each step of the run may take.
+    /// How long each step of the invocation may take.
     timeout: std::time::Duration,
-    /// The steps that failed and the run carried on past, with why.
+    /// The steps that failed and the invocation carried on past, with why.
     degraded: Vec<StepOutcome>,
-    /// The step the run was told to stop at, when it was.
+    /// The step the invocation was told to stop at, when it was.
     stopped: Option<StepPath>,
     /// The steps that already failed, by id, and whether their output can
     /// stand as no value. A later step reading one of them is not skipped
@@ -828,7 +831,7 @@ struct FailedStep {
     /// `false`: its effect stands, and a later step resting on it would be
     /// resting on a change nobody asked for.
     output_is_none: bool,
-    /// The recovery the run already took for it, so a dependent step can
+    /// The recovery the invocation already took for it, so a dependent step can
     /// repeat it.
     recovered: Recovered,
 }
@@ -973,7 +976,7 @@ fn collect_condition_reads(condition: &Condition, out: &mut Vec<String>) {
 enum Wait {
     /// The host said the invocation may have moved.
     Moved(Result<(), StepFailure>),
-    /// The caller stopped the run.
+    /// The caller stopped the invocation.
     Stopped(String),
     /// The step outstayed its patience.
     TimedOut,
@@ -1014,7 +1017,7 @@ where
                     // Nothing stopped the invocation: only the move is left to wait
                     // for, and the clock bounds it.
                     Poll::Ready(Some(Ok(()))) | Poll::Pending => {}
-                    // The hook gave no answer: it cannot stop this run.
+                    // The hook gave no answer: it cannot stop this invocation.
                     Poll::Ready(None) => stopped_done = true,
                 }
             }
@@ -1069,8 +1072,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         })
     }
 
-    /// The step at `path` as an earlier run that already took it left it:
-    /// what it did happened once, and this run goes on from what it left.
+    /// The step at `path` as an earlier invocation that already took it left it:
+    /// what it did happened once, and this invocation goes on from what it left.
     /// Only a completed step is taken as it was — a failed one is the step
     /// the person came to fix, and runs again.
     fn continues(&self, path: &StepPath, id: &str) -> Option<Done> {
@@ -1085,7 +1088,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             .map(StepEntry::taken)
     }
 
-    /// A loop an earlier run already ran: walk the iterations it recorded,
+    /// A loop an earlier invocation already ran: walk the iterations it recorded,
     /// so each iteration's body is taken from the record exactly as
     /// [`Runner::step`] reads a step, and a body the record has nothing for
     /// runs again. `items` is evaluated only when an iteration is replayed,
@@ -1134,7 +1137,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         Ok(())
     }
 
-    /// The iterations of the loop at `path` an earlier run recorded, oldest
+    /// The iterations of the loop at `path` an earlier invocation recorded, oldest
     /// first.
     fn replayed_iterations(&self, path: &StepPath) -> Vec<usize> {
         // The record spells an iteration `1.each[0].0`: the loop's own path,
@@ -1156,7 +1159,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             .collect()
     }
 
-    /// Take the step at `path` from the earlier run that recorded it, and go
+    /// Take the step at `path` from the earlier invocation that recorded it, and go
     /// on from its own outcome: a loop from the iterations it made, a branch
     /// from the one it took, and a step below either from what it produced.
     async fn replay_step(
@@ -1196,7 +1199,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 match branch {
                     Some((steps, at)) => self.block(steps, at).await,
                     // An answer of some other shape names no branch: nothing
-                    // below it is taken as run.
+                    // below it is taken as already done.
                     None => Ok(()),
                 }
             }
@@ -1221,13 +1224,13 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             return self.record(step, &path, done, Recovered::Retried);
         }
         let failure = failed.unwrap_or(StepFailure::Abandoned);
-        if failure.ends_run() {
+        if failure.ends_invocation() {
             self.push_record(step, &path, done, Recovered::Stopped);
             return Err((path, failure));
         }
         match &step.on_error {
             // The step's own effect, if it had one, stands: a fallback adds
-            // to the run, it does not take back what happened.
+            // to the invocation, it does not take back what happened.
             StepPolicy::Fallback { steps } => {
                 self.record(step, &path, done, Recovered::Fallback)?;
                 self.note_failed(step, failure, false, Recovered::Fallback);
@@ -1290,7 +1293,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         Ok((made, done.result.as_ref().err().cloned()))
     }
 
-    /// Wait before trying a step again, unless the run was told to stop
+    /// Wait before trying a step again, unless the invocation was told to stop
     /// first. Returns whether it is still going.
     async fn wait_before(&self, policy: &StepPolicy, attempt: u32, path: &StepPath) -> bool {
         let wait = policy.wait_before(attempt);
@@ -1335,8 +1338,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         );
     }
 
-    /// Append the record of a finished step, saying what the run did about
-    /// it when it failed, and stop the run when `recovered` says it did not
+    /// Append the record of a finished step, saying what the invocation did about
+    /// it when it failed, and stop the invocation when `recovered` says it did not
     /// carry on.
     fn record(
         &mut self,
@@ -1357,8 +1360,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         self.push_record(step, path, done, Recovered::Stopped);
     }
 
-    /// Append a step's record, with what the run did about it when it did
-    /// not succeed, and answer the failure that ends the run here when the
+    /// Append a step's record, with what the invocation did about it when it did
+    /// not succeed, and answer the failure that ends the invocation here when the
     /// step was not carried on from.
     fn push_record(
         &mut self,
@@ -1367,9 +1370,9 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         done: Done,
         recovered: Recovered,
     ) -> Option<StepFailure> {
-        // A run that was stopped ends as cancelled: it did not fail at the
+        // An invocation that was stopped ends as cancelled: it did not fail at the
         // step, it was told to stop there, and what it did until then
-        // stands. The record says which step, so a resumed run can say where
+        // stands. The record says which step, so a resumed invocation can say where
         // it stopped.
         if matches!(done.result, Err(StepFailure::Stopped { .. })) {
             self.stopped = Some(path.clone());
@@ -1400,8 +1403,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 (window, degraded, halt)
             }
         };
-        // A run that stopped at the step is a failed run, not a degraded
-        // one: the step's record says what happened, and the run's outcome
+        // An invocation that stopped at the step is a failed one, not a degraded
+        // one: the step's record says what happened, and the invocation's outcome
         // says it ended there.
         if !degraded.is_none() && !recovered.is_stopped() {
             self.degraded.push(degraded.clone());
@@ -1434,7 +1437,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         path: &StepPath,
         sent: &mut Vec<ActionInvocationId>,
     ) -> Result<Done, Stop> {
-        // A step an earlier run already took is taken as it was: this run
+        // A step an earlier invocation already took is taken as it was: this invocation
         // goes on from what that step left instead of doing it again.
         //
         // That step's own block is walked here too (a loop's iterations, a
@@ -1446,7 +1449,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 .await
                 .map(|()| Done::recorded());
         }
-        // A step that would invoke something is not begun once the run is
+        // A step that would invoke something is not begun once the invocation is
         // stopped: nothing it could do is left to take back. A question or an
         // assignment is only ever recorded as not taken.
         if invokes(&step.kind)
@@ -1482,7 +1485,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             };
             // A step that was passed over with its default stands in for
             // itself: a later step reads that value, and the reason it is
-            // there at all is the run's degraded note, not a second failure.
+            // there at all is the invocation's degraded note, not a second failure.
             let stands_in = failed.recovered == Recovered::Default && !failed.output_is_none;
             if stands_in && self.outputs.contains_key(&name) {
                 continue;
@@ -1601,8 +1604,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
     }
 
-    /// Read `record` of `app` (joined, its chain of parts; named from the run,
-    /// with placeholders) through the host's record API, as the run's caller
+    /// Read `record` of `app` (joined, its chain of parts; named from the invocation,
+    /// with placeholders) through the host's record API, as the invocation's caller
     /// reads it, inside the shortcut's grant.
     fn read(&self, app: &str, record: &str, joined: bool) -> Result<Option<Value>, StepFailure> {
         let record = match crate::shortcut::read_record_binding(record) {
@@ -1999,7 +2002,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
         if self.mode == InvocationMode::Unattended {
             // Only a rule that names this exact action consents in advance
-            // for a run nobody is present at, and nothing does for one that
+            // for an invocation nobody is present at, and nothing does for one that
             // needs its person attending.
             if !granted.names_action || descriptor.contract.is_attended() {
                 return Err(StepFailure::ConfirmationRequired);
@@ -2063,8 +2066,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             .with_facet(ActionFacet::new("kind", "shortcut"))
             .with_facet(ActionFacet::new("trigger", self.trigger.clone()))
             .with_facet(ActionFacet::new("shortcut", self.shortcut.id.clone()))
-            // With the run's group, names the step a change was: a host that
-            // restarted mid-run finds the steps already taken in history.
+            // With the invocation's group, names the step a change was: a host that
+            // restarted mid-invocation finds the steps already taken in history.
             .with_facet(ActionFacet::new(STEP_FACET, path.as_str()))
             .with_caused_by(self.caused_by.clone())
             .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
@@ -2078,7 +2081,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the
-    /// run acts on what the person is offered at this moment. An exact
+    /// invocation acts on what the person is offered at this moment. An exact
     /// resource is resolved where it stands; a kind is looked for as the
     /// catalogue lists it, a level at a time, from the top down into each
     /// resource that holds more.
@@ -2147,9 +2150,9 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }))
     }
 
-    /// Invoke — or, when this run already did, pick up the earlier
+    /// Invoke — or, when this invocation already did, pick up the earlier
     /// invocation — and wait for its outcome, or give up waiting when the
-    /// caller stops the run or the step outstays its patience. Giving up
+    /// caller stops the invocation or the step outstays its patience. Giving up
     /// never cancels the action itself: an effect that still lands is the
     /// host's to record like any other.
     async fn complete(
@@ -2234,8 +2237,8 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
     }
 
-    /// Ask the caller whether the run must stop, naming the step it is at.
-    /// A hook that gives no answer never stops a run.
+    /// Ask the caller whether the invocation must stop, naming the step it is at.
+    /// A hook that gives no answer never stops an invocation.
     async fn stopped(&self, path: &StepPath) -> Result<(), String> {
         self.hooks
             .stopped(StopWatch {
@@ -2291,7 +2294,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         })
     }
 
-    /// The value of `binding` now; `None` for an optional input the run was
+    /// The value of `binding` now; `None` for an optional input the invocation was
     /// not given, which leaves the argument it feeds unset.
     fn evaluate(&self, binding: &Binding) -> Result<Option<Value>, StepFailure> {
         let missing = |reason: String| StepFailure::Binding { reason };
@@ -2329,9 +2332,9 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
             Binding::StepOutput { step, pointer } => {
                 let produced = match self.outputs.get(step) {
                     Some(value) => value.clone(),
-                    // A step this run took from an earlier one is read from
-                    // that run's invocation: the value that ran is the one a
-                    // later step is given, never a second run of it.
+                    // A step this invocation took from an earlier one is read from
+                    // that invocation's invocation: the value that ran is the one a
+                    // later step is given, never a second invocation of it.
                     None => match self.replayed_value(step) {
                         Some(value) => value,
                         None => {
@@ -2381,7 +2384,7 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
     }
 
     /// What step `step` produced, looked up on the host at the invocation the
-    /// earlier run recorded it under.
+    /// earlier invocation recorded it under.
     fn replayed_value(&self, step: &str) -> Option<Value> {
         let record = self
             .records

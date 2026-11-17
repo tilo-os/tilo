@@ -236,6 +236,10 @@ impl NameHost for SharedNames {
     fn name(&self, who: &Actor) -> String {
         self.0.name(who)
     }
+
+    fn hue(&self, who: &Actor) -> Option<u8> {
+        self.0.hue(who)
+    }
 }
 
 /// How the platform reads a day or a time of day in a sentence, as the runtime asks for it.
@@ -2457,10 +2461,15 @@ impl Instance {
         true
     }
 
-    /// What the workspace calls the person `me` and each of `others` by id now, as its member
-    /// list says: the views show people by these.
-    pub fn name_people(&mut self, me: String, others: Vec<(MemberId, String)>) {
-        if self.told.tell(me, others) {
+    /// What the workspace calls the person `me` and each of `others` by id now, and the colour
+    /// it paints each member in (`hues`), as its member list says: the views show people by these.
+    pub fn name_people(
+        &mut self,
+        me: String,
+        others: Vec<(MemberId, String)>,
+        hues: Vec<(MemberId, u8)>,
+    ) {
+        if self.told.tell(me, others, hues) {
             self.person_changed = true;
         }
     }

@@ -7,6 +7,10 @@
 //! itself, keeps it a governed member and runs it, and when a request is
 //! taken back it stops the bot and uninstalls it. Bots the operator named
 //! when starting the workspace are the operator's and are left alone.
+//!
+//! A host governs many workspaces ([`Following`]): the one the operator
+//! started and the ones people keep of their own, and a bot asked for in any
+//! of them runs here, beside the workspace, whichever it is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -99,7 +103,7 @@ pub fn plan(
     plan
 }
 
-/// What the host keeps to follow a workspace's requests.
+/// What the host keeps to follow one governed workspace's requests.
 pub struct Follower {
     /// The workspaces this host governs.
     pub workspaces: Workspaces,
@@ -109,9 +113,11 @@ pub struct Follower {
     pub host: DeviceCert,
     /// The workspace root the host signs its bots' devices and delegations with.
     pub root: SigningKey,
-    /// The host's state directory; each requested bot keeps its
-    /// installation under `requested-bots/<entry>`.
+    /// The host's state directory; each requested bot keeps its installation
+    /// under `requested-bots/<workspace>/<entry>`.
     pub state: PathBuf,
+    /// The entries the operator named when starting the workspace: the
+    /// operator's bots, never started or stopped by a request.
     pub operator: BTreeSet<String>,
     /// The connectors this host can run for a requested bot (the Discord
     /// bridge); `None` where it runs none.
@@ -234,7 +240,7 @@ impl Follower {
     }
 
     fn dir(&self, entry: &str) -> PathBuf {
-        bot_dir(&self.state, entry)
+        bot_dir(&self.state, &self.workspace, entry)
     }
 
     async fn start(&self, request: &RequestedBot) -> Result<Running, String> {
@@ -348,7 +354,17 @@ impl Follower {
             settings.insert(app.clone(), env);
         }
         let blobs = host.blobs(&self.workspace)?;
-        installed::start_connectors(&wanted, &self.state, &host.workers, &settings, &blobs).await
+        // Connectors keep their state and their metrics under the workspace
+        // that asked for them, as the bots do: two workspaces bridging their
+        // own servers never share one worker's directory.
+        installed::start_connectors(
+            &wanted,
+            &workspace_dir(&self.state, &self.workspace),
+            &host.workers,
+            &settings,
+            &blobs,
+        )
+        .await
     }
 
     async fn stop(&self, entry: &str, bot: Running) {
@@ -378,11 +394,10 @@ impl Follower {
     }
 }
 
-/// Where requested bot `entry` keeps its installation under `state`.
-#[must_use]
-pub fn bot_dir(state: &Path, entry: &str) -> PathBuf {
-    let slug: String = entry
-        .chars()
+/// A file name for a workspace or a directory entry: its name, with anything
+/// a path would not carry kept as `_`.
+fn slug(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
                 c
@@ -390,11 +405,94 @@ pub fn bot_dir(state: &Path, entry: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    state.join("requested-bots").join(slug)
+        .collect()
 }
 
-/// Keep `follower` running beside the workspace, for as long as the host runs.
+/// Where everything a governed workspace's requested bots keep under `state`
+/// lives: their installations, their progress and their connectors'.
+#[must_use]
+pub fn workspace_dir(state: &Path, workspace: &str) -> PathBuf {
+    state.join("requested-bots").join(slug(workspace))
+}
+
+/// Where requested bot `entry` of `workspace` keeps its installation under
+/// `state`.
+#[must_use]
+pub fn bot_dir(state: &Path, workspace: &str, entry: &str) -> PathBuf {
+    workspace_dir(state, workspace).join(slug(entry))
+}
+
+/// A host's followers: one for each workspace it governs, so a bot any of
+/// them asks for runs beside it, never only in the workspace the operator
+/// started.
+pub struct Following {
+    /// The workspaces this host governs.
+    pub workspaces: Workspaces,
+    /// The host's device in those workspaces, which governs the bots it installs.
+    pub host: DeviceCert,
+    /// The workspace root the host signs its bots' devices and delegations with.
+    pub root: SigningKey,
+    /// The host's state directory; see [`Follower::state`].
+    pub state: PathBuf,
+    /// The entries the operator named, by workspace: the operator's own bots,
+    /// never started or stopped by a request. A workspace absent here has none.
+    pub operator: BTreeMap<String, BTreeSet<String>>,
+    /// The connectors this host can run for a requested bot (the Discord
+    /// bridge); `None` where it runs none.
+    pub connectors: Option<installed::ConnectorHost>,
+}
+
+impl Following {
+    /// Follow every governed workspace's requests for as long as the host
+    /// runs: each follower answers a workspace's governance change at once,
+    /// and the workspaces the host governs are looked over again every so
+    /// often, so one made or released meanwhile is followed or let go.
+    pub async fn run(self) {
+        let mut running: BTreeMap<String, tokio::task::JoinHandle<()>> = BTreeMap::new();
+        loop {
+            self.refresh(&mut running).await;
+            tokio::time::sleep(FOLLOW).await;
+        }
+    }
+
+    /// Start a follower in every workspace this host governs that has none,
+    /// and stop following the workspaces it governs no more.
+    pub async fn refresh(&self, running: &mut BTreeMap<String, tokio::task::JoinHandle<()>>) {
+        let governed: BTreeSet<String> = self
+            .workspaces
+            .list()
+            .await
+            .into_iter()
+            .map(|summary| summary.workspace)
+            .collect();
+        running.retain(|workspace, task| {
+            let still = governed.contains(workspace);
+            if !still {
+                // The runners a follower started stop with it.
+                task.abort();
+            }
+            still
+        });
+        for workspace in governed {
+            if running.contains_key(&workspace) {
+                continue;
+            }
+            let follower = Follower {
+                workspaces: self.workspaces.clone(),
+                workspace: workspace.clone(),
+                host: self.host.clone(),
+                root: self.root.clone(),
+                state: self.state.clone(),
+                operator: self.operator.get(&workspace).cloned().unwrap_or_default(),
+                connectors: self.connectors.clone(),
+            };
+            tracing::info!(%workspace, "the host follows this workspace's bot requests");
+            running.insert(workspace, spawn(follower));
+        }
+    }
+}
+
+/// Keep `follower` running beside its workspace, for as long as the host runs.
 #[must_use]
 pub fn spawn(follower: Follower) -> tokio::task::JoinHandle<()> {
     tokio::spawn(follower.run())
@@ -496,12 +594,18 @@ mod tests {
         {
             let state = Path::new("/var/lib/workspace");
             assert_eq!(
-                bot_dir(state, "so.tilo.bots.standup"),
-                Path::new("/var/lib/workspace/requested-bots/so.tilo.bots.standup")
+                bot_dir(state, "plaza", "so.tilo.bots.standup"),
+                Path::new("/var/lib/workspace/requested-bots/plaza/so.tilo.bots.standup")
             );
             assert_ne!(
-                bot_dir(state, "so.tilo.bots.standup"),
-                bot_dir(state, "so.tilo.bots.digest")
+                bot_dir(state, "plaza", "so.tilo.bots.standup"),
+                bot_dir(state, "plaza", "so.tilo.bots.digest")
+            );
+            // Two workspaces asking for the same bot keep their installs apart:
+            // each bot reads up through its own workspace's records.
+            assert_ne!(
+                bot_dir(state, "plaza", "so.tilo.bots.standup"),
+                bot_dir(state, "annex", "so.tilo.bots.standup")
             );
         }
     }

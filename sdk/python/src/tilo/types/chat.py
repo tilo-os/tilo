@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workspace` is the app's `chat.workspace` at `chat/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Category",
@@ -953,7 +953,7 @@ class Workspace(Resource):
         return self.action("begin-chat", name=name, initials=initials, color=color)
 
     def begin_chat_many(self, items: list[BeginChatArgs]) -> list[dict[str, Any]]:
-        """Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("begin-chat", items)
 
     def introduce(self,
@@ -966,7 +966,7 @@ class Workspace(Resource):
         return self.action("introduce", name=name, initials=initials, color=color)
 
     def introduce_many(self, items: list[IntroduceArgs]) -> list[dict[str, Any]]:
-        """Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("introduce", items)
 
     def create_category(self, *, name: str) -> None:
@@ -974,7 +974,7 @@ class Workspace(Resource):
         return self.action("create-category", name=name)
 
     def create_category_many(self, items: list[CreateCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-category", items)
 
     def create_channel(self,
@@ -996,7 +996,7 @@ class Workspace(Resource):
         return self.action("create-channel", **args)
 
     def create_channel_many(self, items: list[CreateChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-channel", items)
 
     def create_channel_with_id(self,
@@ -1023,7 +1023,7 @@ class Workspace(Resource):
         return self.action("create-channel-with-id", **args)
 
     def create_channel_with_id_many(self, items: list[CreateChannelWithIdArgs]) -> list[dict[str, Any]]:
-        """Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-channel-with-id", items)
 
     def delete_category(self, *, category: str) -> None:
@@ -1031,7 +1031,7 @@ class Workspace(Resource):
         return self.action("delete-category", category=category)
 
     def delete_category_many(self, items: list[DeleteCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-category", items)
 
     def move_channel(self,
@@ -1043,7 +1043,7 @@ class Workspace(Resource):
         return self.action("move-channel", channel=channel, up=up)
 
     def move_channel_many(self, items: list[MoveChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-channel", items)
 
     def move_category(self,
@@ -1055,7 +1055,7 @@ class Workspace(Resource):
         return self.action("move-category", category=category, up=up)
 
     def move_category_many(self, items: list[MoveCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-category", items)
 
     def arrange_channels(self,
@@ -1067,7 +1067,7 @@ class Workspace(Resource):
         return self.action("arrange-channels", categories=categories, channels=channels)
 
     def arrange_channels_many(self, items: list[ArrangeChannelsArgs]) -> list[dict[str, Any]]:
-        """Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("arrange-channels", items)
 
     def set_channel_category(self,
@@ -1083,7 +1083,7 @@ class Workspace(Resource):
         return self.action("set-channel-category", **args)
 
     def set_channel_category_many(self, items: list[SetChannelCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-channel-category", items)
 
     def rename_channel(self,
@@ -1095,7 +1095,7 @@ class Workspace(Resource):
         return self.action("rename-channel", channel=channel, name=name)
 
     def rename_channel_many(self, items: list[RenameChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-channel", items)
 
     def set_channel_topic(self,
@@ -1107,7 +1107,7 @@ class Workspace(Resource):
         return self.action("set-channel-topic", channel=channel, topic=topic)
 
     def set_channel_topic_many(self, items: list[SetChannelTopicArgs]) -> list[dict[str, Any]]:
-        """Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-channel-topic", items)
 
     def archive_channel(self,
@@ -1119,7 +1119,7 @@ class Workspace(Resource):
         return self.action("archive-channel", channel=channel, archived=archived)
 
     def archive_channel_many(self, items: list[ArchiveChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("archive-channel", items)
 
     def rename_category(self,
@@ -1131,7 +1131,7 @@ class Workspace(Resource):
         return self.action("rename-category", category=category, name=name)
 
     def rename_category_many(self, items: list[RenameCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-category", items)
 
     def delete_channel(self, *, channel: str) -> None:
@@ -1139,7 +1139,7 @@ class Workspace(Resource):
         return self.action("delete-channel", channel=channel)
 
     def delete_channel_many(self, items: list[DeleteChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-channel", items)
 
     def report_message(self,
@@ -1152,7 +1152,7 @@ class Workspace(Resource):
         return self.action("report-message", message=message, author=author, reason=reason)
 
     def report_message_many(self, items: list[ReportMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("report-message", items)
 
     def report_person(self,
@@ -1164,7 +1164,7 @@ class Workspace(Resource):
         return self.action("report-person", person=person, reason=reason)
 
     def report_person_many(self, items: list[ReportPersonArgs]) -> list[dict[str, Any]]:
-        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("report-person", items)
 
     def decide_reports(self,
@@ -1178,7 +1178,7 @@ class Workspace(Resource):
         return self.action("decide-reports", id=id, person=person, reports=reports, ruling=ruling)
 
     def decide_reports_many(self, items: list[DecideReportsArgs]) -> list[dict[str, Any]]:
-        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("decide-reports", items)
 
     def overturn_decision(self,
@@ -1190,7 +1190,7 @@ class Workspace(Resource):
         return self.action("overturn-decision", decision=decision, note=note)
 
     def overturn_decision_many(self, items: list[OverturnDecisionArgs]) -> list[dict[str, Any]]:
-        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("overturn-decision", items)
 
     def mark_read(self,
@@ -1203,7 +1203,7 @@ class Workspace(Resource):
         return self.action("mark-read", channel=channel, part=part, seen=seen)
 
     def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mark-read", items)
 
     def submit_feedback(self,
@@ -1215,7 +1215,7 @@ class Workspace(Resource):
         return self.action("submit-feedback", channel=channel, submission=submission)
 
     def submit_feedback_many(self, items: list[SubmitFeedbackArgs]) -> list[dict[str, Any]]:
-        """Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("submit-feedback", items)
 
     def triage(self,
@@ -1227,7 +1227,7 @@ class Workspace(Resource):
         return self.action("triage", report=report, update=update)
 
     def triage_many(self, items: list[TriageArgs]) -> list[dict[str, Any]]:
-        """Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("triage", items)
 
     def export_content(self,
@@ -1304,7 +1304,7 @@ class Messages(Resource):
         return self.action("post", **args)
 
     def post_many(self, items: list[PostArgs]) -> list[dict[str, Any]]:
-        """Runs `post` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `post` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("post", items)
 
     def post_file(self,
@@ -1330,7 +1330,7 @@ class Messages(Resource):
         return self.action("post-file", **args)
 
     def post_file_many(self, items: list[PostFileArgs]) -> list[dict[str, Any]]:
-        """Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("post-file", items)
 
     def share_resource(self,
@@ -1351,7 +1351,7 @@ class Messages(Resource):
         return self.action("share-resource", **args)
 
     def share_resource_many(self, items: list[ShareResourceArgs]) -> list[dict[str, Any]]:
-        """Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("share-resource", items)
 
     def share_window(self,
@@ -1375,7 +1375,7 @@ class Messages(Resource):
         return self.action("share-window", **args)
 
     def share_window_many(self, items: list[ShareWindowArgs]) -> list[dict[str, Any]]:
-        """Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("share-window", items)
 
     def stop_sharing(self, *, message: str) -> None:
@@ -1383,7 +1383,7 @@ class Messages(Resource):
         return self.action("stop-sharing", message=message)
 
     def stop_sharing_many(self, items: list[StopSharingArgs]) -> list[dict[str, Any]]:
-        """Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop-sharing", items)
 
     def set_share_access(self,
@@ -1395,7 +1395,7 @@ class Messages(Resource):
         return self.action("set-share-access", message=message, access=access)
 
     def set_share_access_many(self, items: list[SetShareAccessArgs]) -> list[dict[str, Any]]:
-        """Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-share-access", items)
 
     def share_open(self,
@@ -1407,7 +1407,7 @@ class Messages(Resource):
         return self.action("share-open", message=message, open=open)
 
     def share_open_many(self, items: list[ShareOpenArgs]) -> list[dict[str, Any]]:
-        """Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("share-open", items)
 
     def deliver_message(self,
@@ -1427,7 +1427,7 @@ class Messages(Resource):
         return self.action("deliver-message", **args)
 
     def deliver_message_many(self, items: list[DeliverMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("deliver-message", items)
 
     def edit_message(self,
@@ -1448,7 +1448,7 @@ class Messages(Resource):
         return self.action("edit-message", **args)
 
     def edit_message_many(self, items: list[EditMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit-message", items)
 
     def delete_message(self, *, message: str) -> None:
@@ -1456,7 +1456,7 @@ class Messages(Resource):
         return self.action("delete-message", message=message)
 
     def delete_message_many(self, items: list[DeleteMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-message", items)
 
     def remove_message(self, *, message: str) -> None:
@@ -1464,7 +1464,7 @@ class Messages(Resource):
         return self.action("remove-message", message=message)
 
     def remove_message_many(self, items: list[RemoveMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-message", items)
 
     def pin(self,
@@ -1476,7 +1476,7 @@ class Messages(Resource):
         return self.action("pin", message=message, pinned=pinned)
 
     def pin_many(self, items: list[PinArgs]) -> list[dict[str, Any]]:
-        """Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pin", items)
 
     def retry(self,
@@ -1488,7 +1488,7 @@ class Messages(Resource):
         return self.action("retry", message=message, reply=reply)
 
     def retry_many(self, items: list[RetryArgs]) -> list[dict[str, Any]]:
-        """Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("retry", items)
 
     def record_work(self,
@@ -1506,7 +1506,7 @@ class Messages(Resource):
         return self.action("record-work", **args)
 
     def record_work_many(self, items: list[RecordWorkArgs]) -> list[dict[str, Any]]:
-        """Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-work", items)
 
     def ask(self,
@@ -1533,7 +1533,7 @@ class Messages(Resource):
         return self.action("ask", **args)
 
     def ask_many(self, items: list[AskArgs]) -> list[dict[str, Any]]:
-        """Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("ask", items)
 
     def answer_question(self,
@@ -1554,7 +1554,7 @@ class Messages(Resource):
         return self.action("answer-question", **args)
 
     def answer_question_many(self, items: list[AnswerQuestionArgs]) -> list[dict[str, Any]]:
-        """Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("answer-question", items)
 
     def withdraw_question(self,
@@ -1570,7 +1570,7 @@ class Messages(Resource):
         return self.action("withdraw-question", **args)
 
     def withdraw_question_many(self, items: list[WithdrawQuestionArgs]) -> list[dict[str, Any]]:
-        """Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("withdraw-question", items)
 
     def settle_question(self,
@@ -1588,7 +1588,7 @@ class Messages(Resource):
         return self.action("settle-question", **args)
 
     def settle_question_many(self, items: list[SettleQuestionArgs]) -> list[dict[str, Any]]:
-        """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("settle-question", items)
 
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> None:
@@ -1596,7 +1596,7 @@ class Messages(Resource):
         return self.action("carry-counts", earlier=earlier)
 
     def carry_counts_many(self, items: list[CarryCountsArgs]) -> list[dict[str, Any]]:
-        """Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("carry-counts", items)
 
     def stream_output(self,
@@ -1616,7 +1616,7 @@ class Messages(Resource):
         return self.action("stream-output", **args)
 
     def stream_output_many(self, items: list[StreamOutputArgs]) -> list[dict[str, Any]]:
-        """Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stream-output", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1634,7 +1634,7 @@ class Drafts(Resource):
         return self.action("start-draft", key=key)
 
     def start_draft_many(self, items: list[StartDraftArgs]) -> list[dict[str, Any]]:
-        """Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start-draft", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1656,7 +1656,7 @@ class WorkspaceEmoji(Resource):
         return self.action("add-emoji", name=name, image=image)
 
     def add_emoji_many(self, items: list[AddEmojiArgs]) -> list[dict[str, Any]]:
-        """Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-emoji", items)
 
     def remove_emoji(self, *, name: str) -> None:
@@ -1664,7 +1664,7 @@ class WorkspaceEmoji(Resource):
         return self.action("remove-emoji", name=name)
 
     def remove_emoji_many(self, items: list[RemoveEmojiArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-emoji", items)
 
     def remove_any_emoji(self, *, name: str) -> None:
@@ -1672,7 +1672,7 @@ class WorkspaceEmoji(Resource):
         return self.action("remove-any-emoji", name=name)
 
     def remove_any_emoji_many(self, items: list[RemoveAnyEmojiArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-any-emoji", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1710,7 +1710,7 @@ class ChatAgent(Resource):
         return self.action("create-agent", **args)
 
     def create_agent_many(self, items: list[CreateAgentArgs]) -> list[dict[str, Any]]:
-        """Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-agent", items)
 
     def set_agent_spend_limit(self,
@@ -1726,7 +1726,7 @@ class ChatAgent(Resource):
         return self.action("set-agent-spend-limit", **args)
 
     def set_agent_spend_limit_many(self, items: list[SetAgentSpendLimitArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-spend-limit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-agent-spend-limit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-spend-limit", items)
 
     def record_agent_spend(self,
@@ -1739,7 +1739,7 @@ class ChatAgent(Resource):
         return self.action("record-agent-spend", agent=agent, day=day, cost_micros=cost_micros)
 
     def record_agent_spend_many(self, items: list[RecordAgentSpendArgs]) -> list[dict[str, Any]]:
-        """Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-agent-spend", items)
 
     def set_agent_on_host(self,
@@ -1751,7 +1751,7 @@ class ChatAgent(Resource):
         return self.action("set-agent-on-host", agent=agent, on_host=on_host)
 
     def set_agent_on_host_many(self, items: list[SetAgentOnHostArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-on-host", items)
 
     def set_agent_colour(self,
@@ -1763,7 +1763,7 @@ class ChatAgent(Resource):
         return self.action("set-agent-colour", agent=agent, colour=colour)
 
     def set_agent_colour_many(self, items: list[SetAgentColourArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-colour", items)
 
     def rename_agent(self,
@@ -1775,7 +1775,7 @@ class ChatAgent(Resource):
         return self.action("rename-agent", agent=agent, name=name)
 
     def rename_agent_many(self, items: list[RenameAgentArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-agent", items)
 
     def set_agent_model(self,
@@ -1791,7 +1791,7 @@ class ChatAgent(Resource):
         return self.action("set-agent-model", **args)
 
     def set_agent_model_many(self, items: list[SetAgentModelArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-model", items)
 
     def set_agent_bound(self,
@@ -1803,7 +1803,7 @@ class ChatAgent(Resource):
         return self.action("set-agent-bound", agent=agent, bound=bound)
 
     def set_agent_bound_many(self, items: list[SetAgentBoundArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-bound", items)
 
     def retire_agent(self, *, agent: str) -> None:
@@ -1811,7 +1811,7 @@ class ChatAgent(Resource):
         return self.action("retire-agent", agent=agent)
 
     def retire_agent_many(self, items: list[RetireAgentArgs]) -> list[dict[str, Any]]:
-        """Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("retire-agent", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

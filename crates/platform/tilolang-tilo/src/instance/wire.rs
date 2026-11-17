@@ -188,6 +188,7 @@ impl Convert<'_> {
             Value::Actor(who) => wire::Value::Actor(wire::Actor {
                 id: who.clone(),
                 name: self.names.name(who),
+                hue: self.names.hue(who),
             }),
             Value::Error(text) => wire::Value::Error(text.clone()),
             Value::Map(entries) => wire::Value::Map(

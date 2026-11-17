@@ -7,7 +7,7 @@ use tilo_actions::params::ParamType;
 
 use super::event::{ConnectorEvent, Event};
 use super::{Cause, MAX_CHAIN_DEPTH};
-use crate::InvocationId;
+use crate::AutomationInvocationId;
 use crate::shortcut::{ActorFilter, EVENT_INPUT, Shortcut, TriggerSpec};
 
 /// Who a firing runs as.
@@ -44,9 +44,9 @@ pub struct Firing {
     pub firer: String,
     pub trigger_index: usize,
     pub trigger: TriggerSpec,
-    pub invocation: InvocationId,
+    pub invocation: AutomationInvocationId,
     pub inputs: Map<String, Value>,
-    /// What the run records on each change it makes (bots only).
+    /// What the invocation records on each change it makes (bots only).
     pub cause: Option<Cause>,
     /// The event's identity ([`Event::identity`]).
     pub event: String,
@@ -56,11 +56,11 @@ pub struct Firing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Skipped {
     SelfTriggered,
-    /// The run would have been this deep.
+    /// The invocation would have been this deep.
     TooDeep {
         depth: u8,
     },
-    /// The change was a run's, and the shortcut that made it would fire on
+    /// The change was an invocation's, and the shortcut that made it would fire on
     /// its own work: these two shortcuts would run each other forever.
     Loop {
         /// The shortcut whose run made the change, which this one would run.
@@ -105,7 +105,7 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
                 firer: key,
                 trigger_index: index,
                 trigger: trigger.clone(),
-                invocation: run_id(&armed.firer, index, event),
+                invocation: invocation_id(&armed.firer, index, event),
                 inputs: inputs(armed.shortcut, event),
                 cause,
                 event: event.identity(),
@@ -115,11 +115,15 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
     out
 }
 
-/// The run a firing starts, derived from the firer, the trigger and the
+/// The invocation a firing starts, derived from the firer, the trigger and the
 /// event, so the same event firing twice (a restart, a redelivery) reuses
 /// every invocation id and acts once.
 #[must_use]
-pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> InvocationId {
+pub fn invocation_id(
+    firer: &Firer<'_>,
+    trigger_index: usize,
+    event: Event<'_>,
+) -> AutomationInvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.automation.invocation\0");
     hasher.update(firer.key().as_bytes());
@@ -135,7 +139,7 @@ pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> Invo
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
         *byte = *digested;
     }
-    InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
+    AutomationInvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
 fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<'_>) -> bool {
@@ -219,7 +223,7 @@ fn actor_counts(filter: ActorFilter, actor: &Acting) -> bool {
 }
 
 /// A bot never fires on a change it made, and a person's Shortcut never
-/// on a change one of its runs made.
+/// on a change one of its invocations made.
 fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
     let Event::Record(change) = event else {
         return false;
@@ -232,9 +236,9 @@ fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
 
 /// The shortcut a change came from when firing on it would run this
 /// shortcut into that one's run and back: the change a shortcut made is
-/// not one its own run is watching for. Only a shortcut's own save-time
+/// not one its own invocation is watching for. Only a shortcut's own save-time
 /// check sees a chain between shortcuts it can look up; a shortcut calling
-/// another, or a bot's own loop, is caught here, at the run.
+/// another, or a bot's own loop, is caught here, at the invocation.
 fn looped(firer: &Firer<'_>, event: Event<'_>) -> Option<String> {
     match (firer, event) {
         (Firer::Shortcut { shortcut, .. }, Event::Record(change)) => change

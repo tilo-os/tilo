@@ -344,11 +344,11 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
 /// A visa backend's agent asking to submit what it filled in for its
 /// customer, as a reviewer is asked before it goes out: the page it leaves
 /// from, and the filled page as a picture.
-fn visa_question(run: &str, handle: &str) -> Dialog {
+fn visa_question(title: &str, handle: &str) -> Dialog {
     let argument = |label: &str, value: &str| (label.to_owned(), value.to_owned());
     super::AgentQuestion {
         agent: "Jane Doe’s agent".to_owned(),
-        run: run.to_owned(),
+        title: title.to_owned(),
         action: "Send the form to https://consulate.example (POST)".to_owned(),
         resource: "Schengen visa: Jane Doe".to_owned(),
         arguments: vec![

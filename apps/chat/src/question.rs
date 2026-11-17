@@ -25,6 +25,7 @@
 //! |---|---|---|---|
 //! | [`CHOICE`] | the asker's own, each with its label | none | the label is posted as the person's own message |
 //! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
+//! | [`SECRET`] | none of its own: [`FILLED`], or [`DECLINED`] | what is asked for: its `kind`, the places it `belongsTo` and, when known, the `username` | the person's device hands what they typed into the protected field to their vault, and the answer's detail carries the vault item's `reference`, never the secret |
 //!
 //! To add a kind: give it a name here, say what its detail holds and what
 //! its answers mean in this table, draw its card where the others are drawn
@@ -42,6 +43,16 @@ use ui::tilo_resource::{self, ActionCx, Atom, JsonSchema, Model, Refusal};
 pub const CHOICE: &str = "choice";
 /// The kind that asks about one action its person's grants leave to them.
 pub const ACTION: &str = "action";
+/// The kind that asks its person for a secret, typed into a protected field
+/// on a device of theirs and kept in their vault: whoever asked is answered
+/// with the vault item's reference, never the secret.
+pub const SECRET: &str = "secret";
+
+/// The answer of a [`SECRET`] question whose secret its person's vault now
+/// keeps.
+pub const FILLED: &str = "filled";
+/// The answer of a [`SECRET`] question whose secret its person does not give.
+pub const DECLINED: &str = "declined";
 
 /// The answer that runs the one action an [`ACTION`] question shows.
 pub const ALLOW: &str = "allow";

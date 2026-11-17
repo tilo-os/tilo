@@ -20,13 +20,14 @@ allow runs once.
 
 ## How a call waits
 
-A call that needs a person answers **pending**, not failed: it has not run, and it answers the run it
+A call that needs a person answers **pending**, not failed: it has not run, and it answers the invocation it
 waits under and what the person is being asked. Both SDKs raise that as `AskPending`, carrying the question
-and the run.
+and the invocation.
 
-Nothing has happened yet. The run answers its question as it stands, and the same action asked again under
+Nothing has happened yet. The invocation answers its question as it stands, and the same action asked again
+under
 the same idempotency key puts the question to the person again rather than running it twice. When they
-allow it, the run answers `ok`. When they refuse, it answers `failed`, and nothing ran.
+allow it, the invocation answers `ok`. When they refuse, it answers `failed`, and nothing ran.
 
 A person answers on their own device: their Tilo asks them, with what the action would do.
 
@@ -89,7 +90,8 @@ What stays as it was:
   command, everywhere.
 - Every other action that asks still asks: running a recorded command again, Browser submissions, uploads
   and passwords, mail, opening a Linux app, asking for a key.
-- A command that runs unasked is in [History](runs-and-history.md) as the key's run, as an asked one is,
+- A command that runs unasked is in [History](invocations-and-history.md) as the key's invocation, as an
+  asked one is,
   and undone the same way. A workspace whose plan does not cover its machine still refuses the command.
 
 A workspace's listing says `unattended` while it is on.
@@ -156,5 +158,5 @@ The whole flow, with the person answering, is in [the hosted Browser](hosted-bro
 
 ## Where next
 
-- [Runs and history](runs-and-history.md): what the approved action recorded.
+- [Invocations and history](invocations-and-history.md): what the approved action recorded.
 - [Errors](errors.md): `AskPending` among the rest.

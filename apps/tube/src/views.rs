@@ -242,6 +242,7 @@ mod tests {
             tilo_view::Actor {
                 id: ::ui::MemberId::person("Pat").into(),
                 name: "Pat".to_owned(),
+                hue: None,
             },
             std::collections::BTreeMap::new(),
         );

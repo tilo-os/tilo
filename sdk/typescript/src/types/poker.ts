@@ -8,12 +8,12 @@
  * resource's path (`poker/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -119,36 +119,36 @@ export interface Table extends tilo.Resource {
   sit(args: {
     seat: number;
   }): Promise<void>;
-  /** Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   sitMany(items: SitArgs[]): Promise<tilo.ActionAnswer[]>;
   leave(): Promise<void>;
-  /** Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   leaveMany(items: LeaveArgs[]): Promise<tilo.ActionAnswer[]>;
   deal(): Promise<void>;
-  /** Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   dealMany(items: DealArgs[]): Promise<tilo.ActionAnswer[]>;
   fold(): Promise<void>;
-  /** Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   foldMany(items: FoldArgs[]): Promise<tilo.ActionAnswer[]>;
   call(): Promise<void>;
-  /** Runs `call` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `call` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   callMany(items: CallArgs[]): Promise<tilo.ActionAnswer[]>;
   raise(args: {
     to: number;
   }): Promise<void>;
-  /** Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   raiseMany(items: RaiseArgs[]): Promise<tilo.ActionAnswer[]>;
   allIn(): Promise<void>;
-  /** Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   allInMany(items: AllInArgs[]): Promise<tilo.ActionAnswer[]>;
   show(): Promise<void>;
-  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
   skip(): Promise<void>;
-  /** Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   skipMany(items: SkipArgs[]): Promise<tilo.ActionAnswer[]>;
   rebuy(): Promise<void>;
-  /** Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rebuyMany(items: RebuyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

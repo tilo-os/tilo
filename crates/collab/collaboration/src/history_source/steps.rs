@@ -9,7 +9,7 @@
 //! it. Every verb writes forward: the step being undone keeps its author,
 //! and the undo is itself a step that can be undone.
 //!
-//! A step belongs to a [`Scope`]: an agent run (every invocation of one
+//! A step belongs to a [`Scope`]: an agent session (every invocation of one
 //! agent connection), else the invoking actor, else the writing actor.
 //! What a scope has undone is recorded at [`UNDONE_KEY`] root keys, one per
 //! undone change. Ordinary undo writes completion in that same change;
@@ -55,7 +55,7 @@ pub fn names_a_session(kind: &str) -> bool {
 pub enum Scope {
     /// One agent session, by its group id: every invocation of one connection.
     Session(String),
-    /// Who invoked, outside any agent run.
+    /// Who invoked, outside any agent session.
     Invoker(tilo_actions::Actor),
     /// The actor that wrote, for an invocation that names nobody.
     Actor(String),
@@ -92,7 +92,7 @@ impl Scope {
             .and_then(|context| context.group.as_ref())
             .filter(|group| names_a_session(&group.kind));
         match self {
-            // The person's own scopes below leave every agent run out.
+            // The person's own scopes below leave every agent session out.
             Self::Session(id) => context
                 .and_then(|context| context.group.as_ref())
                 .is_some_and(|group| names_a_session(&group.kind) && &group.id == id),
@@ -107,11 +107,11 @@ impl Scope {
     }
 
     /// Who has nothing to undo or redo, as a sentence starts: the caller's
-    /// own scope, or the agent run it named.
+    /// own scope, or the agent session it named.
     fn subject(&self, own: bool) -> String {
         match self {
-            Self::Session(id) if own => format!("This agent run ({id:?}) has"),
-            Self::Session(id) => format!("Agent run {id:?} has"),
+            Self::Session(id) if own => format!("This agent session ({id:?}) has"),
+            Self::Session(id) => format!("Agent session {id:?} has"),
             Self::Invoker(author) if !own => format!("Author {author} has"),
             Self::Invoker(_) | Self::Actor(_) => "You have".into(),
         }
@@ -119,23 +119,23 @@ impl Scope {
 }
 
 /// How many of the most recent versions a refusal looks through for the
-/// agent runs whose steps are still in effect.
+/// agent sessions whose steps are still in effect.
 const RUNS_LOOKED_AT: usize = 2000;
 /// How many such runs a refusal names.
 const RUNS_NAMED: usize = 3;
 /// The most steps a refusal counts of one run.
 const RUN_STEPS_COUNTED: usize = 50;
 
-/// An agent run whose steps are in effect, as a refusal names it.
-struct RunInEffect {
+/// An agent session whose steps are in effect, as a refusal names it.
+struct InvocationInEffect {
     id: String,
     label: String,
     steps: usize,
 }
 
-/// The agent runs other than `scope` with steps still in effect, the most
+/// The agent sessions other than `scope` with steps still in effect, the most
 /// recently active first: what the caller may have meant to undo.
-fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
+fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<InvocationInEffect> {
     let versions = tilo_resource::history::versions(doc);
     let mut candidates: Vec<(String, String)> = Vec::new();
     for version in versions.iter().rev().take(RUNS_LOOKED_AT) {
@@ -158,26 +158,26 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
         .into_iter()
         .filter_map(|(id, label)| {
             let steps = undo_targets(doc, &Scope::Session(id.clone()), RUN_STEPS_COUNTED).len();
-            (steps > 0).then_some(RunInEffect { id, label, steps })
+            (steps > 0).then_some(InvocationInEffect { id, label, steps })
         })
         .take(RUNS_NAMED)
         .collect()
 }
 
-/// Why `scope` has nothing to undo, and the undo that takes back each run
-/// whose steps are in effect: an agent whose earlier connection was a run of
-/// its own copies the call.
+/// Why `scope` has nothing to undo, and the undo that takes back each group
+/// whose steps are in effect: an agent whose earlier connection was an
+/// invocation of its own copies the call.
 fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
     let own = *scope == Scope::invoking(doc);
     let mut message = format!("{} nothing in effect to undo.", scope.subject(own));
     if own && matches!(scope, Scope::Session(_)) {
         message.push_str(
-            " An agent's earlier connection is a run of its own, unless it connected again naming that run.",
+            " An agent's earlier connection is an invocation of its own, unless it connected again naming that group.",
         );
     }
     let runs = runs_in_effect(doc, scope);
     if runs.is_empty() {
-        message.push_str(" history lists every step and its run_id.");
+        message.push_str(" history lists every step and its group.");
         return message;
     }
     let named: Vec<String> = runs
@@ -190,13 +190,13 @@ fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
             };
             let noun = if run.steps == 1 { "step" } else { "steps" };
             format!(
-                "{:?} by {} ({}{more} {noun}): undo {{\"run\": {:?}, \"steps\": {}}}",
+                "{:?} by {} ({}{more} {noun}): undo {{\"invocation\": {:?}, \"steps\": {}}}",
                 run.id, run.label, run.steps, run.id, run.steps
             )
         })
         .collect();
     format!(
-        "{message} Agent runs with steps in effect, most recent first: {}. history lists every step and its run_id.",
+        "{message} Agent invocations with steps in effect, most recent first: {}. history lists every step and its group.",
         named.join("; ")
     )
 }

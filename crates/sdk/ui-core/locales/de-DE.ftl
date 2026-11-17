@@ -585,7 +585,7 @@ relative-compact-months = { $count } Mon.
 relative-compact-years = { $count } J.
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
-history-run-step-separator = {", "}
+history-invocation-step-separator = {", "}
 member-agent = { $name } · Agent
 member-shortcut = { $name } · Kurzbefehl
 member-bot = { $name } · Bot

@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
                     .map_or("11111111-1111-4111-8111-111111111111", String::as_str);
                 let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
                     "protocolVersion":"2025-06-18","clientInfo":{"name":"Same name","version":"1"},
-                    "capabilities":{"experimental":{"so.tilo.mcp":{"run":history,"execution_id":forged_execution}}}
+                    "capabilities":{"experimental":{"so.tilo.mcp":{"session":history,"execution_id":forged_execution}}}
                 }});
                 let first = server.handle(init.clone()).await.unwrap();
                 let again = server.handle(init).await.unwrap();
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
                 .unwrap();
-            let run_id = answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"]
+            let run_id = answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["session"]
                 .as_str()
                 .unwrap()
                 .to_owned();
@@ -271,11 +271,11 @@ tilo_test_env::scenario! {
 
             let again = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let answer = again
-                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"session":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
                 .unwrap();
             assert_eq!(
-                answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"],
+                answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["session"],
                 json!(run_id)
             );
             tool(
@@ -288,7 +288,7 @@ tilo_test_env::scenario! {
             // A third connection continues the same run too.
             let third = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             third
-                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"session":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
                 .unwrap();
             tool(
@@ -301,14 +301,14 @@ tilo_test_env::scenario! {
 
             let bad = crate::McpServer::new(host, "workspace".into(), "owner".into());
             let refused = bad
-                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":"two words"}}}}}))
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"session":"two words"}}}}}))
                 .await
                 .unwrap();
             assert!(
                 refused["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .contains("run must be"),
+                    .contains("session must be"),
                 "{refused}"
             );
         });

@@ -69,7 +69,12 @@ impl ChatApp {
         self.workspace_agent_names
             .get(agent)
             .cloned()
-            .or_else(|| self.workspace_names.get(&id).cloned())
+            .or_else(|| {
+                self.workspace_names
+                    .get(&id)
+                    .filter(|name| !name.trim().is_empty())
+                    .cloned()
+            })
             .or_else(|| {
                 self.users
                     .iter()

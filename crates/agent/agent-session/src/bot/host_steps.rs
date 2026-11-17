@@ -37,7 +37,7 @@ use tilo_automation::{
     AGENT_TRANSFORM_KIND, AGENT_TRANSFORM_RESOURCE, SHORTCUT_RESOURCE_KIND, SHORTCUTS_APP_ID,
 };
 
-use super::api::RunStep;
+use super::api::AutomationStep;
 use super::kept::NoteChange;
 
 /// The provider the host's own steps are offered under.
@@ -195,7 +195,7 @@ pub trait Keeps: Send + Sync {
     /// # Errors
     /// [`HostStepError`]: the count cannot be kept now, or it is one too
     /// many.
-    fn count(&self, step: &RunStep, name: &str) -> Result<u64, HostStepError>;
+    fn count(&self, step: &AutomationStep, name: &str) -> Result<u64, HostStepError>;
 
     /// Make `change` to the program's note.
     ///
@@ -219,7 +219,7 @@ pub(crate) struct AskedFor<'a> {
     pub workspace: &'a str,
     pub cause: StepCause,
     /// Which step of which run asks, as its context says.
-    pub step: Option<RunStep>,
+    pub step: Option<AutomationStep>,
     /// The program's note as it stands; null when it keeps none.
     pub note: Value,
     /// The permissions the program carries; none when it keeps none.
@@ -235,7 +235,7 @@ pub(crate) enum Asked {
     Count {
         name: String,
         every: Option<u64>,
-        step: RunStep,
+        step: AutomationStep,
     },
     Keep(NoteChange),
 }
@@ -404,7 +404,7 @@ fn judgement(
 }
 
 /// The count a step advances, for the step of the run that asks.
-fn count(arguments: &Arguments<'_>, step: Option<RunStep>) -> Result<Asked, String> {
+fn count(arguments: &Arguments<'_>, step: Option<AutomationStep>) -> Result<Asked, String> {
     let step = step.ok_or("a count is advanced by a step of a run")?;
     let every = match arguments.given("every") {
         None => None,

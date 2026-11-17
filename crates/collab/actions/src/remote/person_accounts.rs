@@ -59,6 +59,20 @@ pub const SEND: &str = "send";
 /// Tell one account's server what changed about a message ([`MarkMail`]):
 /// read, starred, moved or removed.
 pub const MARK: &str = "mark";
+/// Read one message whole ([`ReadMail`]), answering it as a
+/// [`FetchedMessage`].
+pub const READ: &str = "read";
+/// Search one account on its server ([`SearchMail`]), answering what it
+/// found as a [`FoundMail`].
+pub const SEARCH: &str = "search";
+/// Keep the message begun under an id ([`SendId`]) in the account's Drafts
+/// folder instead of sending it. Answers nothing.
+pub const SAVE_DRAFT: &str = "save-draft";
+/// What arrived in the person's inboxes after a place in their arrival log
+/// ([`ArrivedAfter`]), answering a [`MailArrivals`]. Asking is listening:
+/// from the first time it is asked, the host watches the person's inboxes
+/// for as long as it runs, with no window open anywhere.
+pub const ARRIVED: &str = "arrived";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -219,6 +233,11 @@ pub struct FetchedMessage {
     pub minutes: i64,
     pub read: bool,
     pub starred: bool,
+    /// Whether this carries only the start of the message's words, because
+    /// the whole would not fit the answer it came in. [`READ`] answers the
+    /// message whole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// What the reader did to a message the server no longer reports as such.
@@ -246,6 +265,12 @@ pub struct FetchMail {
     pub known_uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_uid_validity: Option<u32>,
+    /// The oldest `UID` the reader holds of this folder, when it asks for
+    /// the page before that one instead of for what arrived: a reader
+    /// scrolling past the oldest message it holds. Read under
+    /// `known_uid_validity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_uid: Option<u32>,
 }
 
 /// A folder as its server answered it.
@@ -269,6 +294,169 @@ pub struct FetchedMail {
     /// the server reports differently.
     #[serde(default)]
     pub flags: Vec<MailFlag>,
+}
+
+/// Ask for one message, by where its server holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folder's key, as [`FetchMail`] names one.
+    pub folder: String,
+    pub uid: u32,
+    /// The validity the `UID` was read under.
+    pub uid_validity: u32,
+}
+
+/// The most messages a search answers of one folder.
+pub const MAX_FOUND: u32 = 25;
+
+/// Ask an account's server which messages it holds that match. Every part
+/// that is given has to match; at least one is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folders to look in, by their keys. The inbox and the archive
+    /// when none is named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// Words the message holds anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A name or address it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// A name or address it went to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Words of its subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// The most messages answered of each folder, newest first:
+    /// [`MAX_FOUND`] when absent or larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// What a search found, folder by folder.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoundMail {
+    pub folders: Vec<FoundFolder>,
+}
+
+/// The messages a search found in one folder, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoundFolder {
+    /// The folder's key, as the search named it.
+    pub folder: String,
+    pub uid_validity: u32,
+    pub messages: Vec<FetchedMessage>,
+}
+
+/// One message that reached an inbox while the person's host watched it:
+/// what it is about, and where its server holds it. The message itself
+/// stays on its server, and [`READ`] answers it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailArrival {
+    /// Its place in the person's arrival log, which only grows.
+    pub seq: u64,
+    /// What names this arrival for good: the same for the same message of
+    /// the same account however often it is told.
+    pub id: String,
+    /// When the host saw it, in milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folder's key: `inbox`.
+    pub folder: String,
+    pub uid: u32,
+    pub uid_validity: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    pub from: MailAddress,
+    #[serde(default)]
+    pub to: Vec<MailAddress>,
+    #[serde(default)]
+    pub cc: Vec<MailAddress>,
+    pub subject: String,
+    /// The start of what it says, as plain text.
+    pub excerpt: String,
+    #[serde(default)]
+    pub attachments: Vec<MailAttachment>,
+    /// When it was sent, in minutes since the Unix epoch.
+    pub minutes: i64,
+}
+
+impl MailArrival {
+    /// The arrival as plain facts, each under one name, for whoever
+    /// compares them: a trigger's filter, a step's input. `id`, `account`,
+    /// `folder`, `uid`, `uidValidity`, `from` (the address), `fromName`,
+    /// `to` (the addresses, comma-separated), `subject`, `excerpt`,
+    /// `messageId`, `inReplyTo`, `hasAttachments`, `attachments` (their
+    /// names), `atMs` and `minutes`.
+    #[must_use]
+    pub fn facts(&self) -> serde_json::Map<String, serde_json::Value> {
+        let addresses = |list: &[MailAddress]| {
+            list.iter()
+                .map(|address| address.email.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let facts = serde_json::json!({
+            "id": self.id,
+            "account": self.account,
+            "folder": self.folder,
+            "uid": self.uid,
+            "uidValidity": self.uid_validity,
+            "from": self.from.email,
+            "fromName": self.from.name.clone().unwrap_or_default(),
+            "to": addresses(&self.to),
+            "cc": addresses(&self.cc),
+            "subject": self.subject,
+            "excerpt": self.excerpt,
+            "messageId": self.message_id.clone().unwrap_or_default(),
+            "inReplyTo": self.in_reply_to.clone().unwrap_or_default(),
+            "hasAttachments": !self.attachments.is_empty(),
+            "attachments": self
+                .attachments
+                .iter()
+                .map(|attachment| attachment.filename.as_str())
+                .collect::<Vec<_>>(),
+            "atMs": self.at_ms,
+            "minutes": self.minutes,
+        });
+        match facts {
+            serde_json::Value::Object(facts) => facts,
+            _ => serde_json::Map::new(),
+        }
+    }
+}
+
+/// Ask what arrived after a place in the person's arrival log: everything
+/// the log still keeps when no place is named.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArrivedAfter {
+    #[serde(default)]
+    pub after: u64,
+}
+
+/// What arrived, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailArrivals {
+    pub arrivals: Vec<MailArrival>,
+    /// The newest place the log has given out: what the next ask names as
+    /// `after` to be answered only what arrives from now.
+    pub newest: u64,
 }
 
 /// A message to send through one of the person's accounts. The host writes

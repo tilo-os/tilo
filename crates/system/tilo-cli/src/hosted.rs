@@ -478,11 +478,11 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
     })
 }
 
-/// `tilo runs -w <workspace>`: the workspace's runs in records the key may
-/// read, newest first, as
-/// `tilo_read workspace/runs` lists them: `limit` to a page, and the `cursor`
-/// a page ended with for the older ones.
-pub fn runs(
+/// `tilo invocations -w <workspace>`: the workspace's invocations in records
+/// the key may read, newest first, as `tilo_read workspace/invocations` lists
+/// them: `limit` to a page, and the `cursor` a page ended with for the older
+/// ones.
+pub fn invocations(
     reach: Reach<'_>,
     workspace: &str,
     limit: Option<u32>,
@@ -498,25 +498,25 @@ pub fn runs(
         if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
             query.push(format!("cursor={}", api::encode_query(cursor)));
         }
-        let mut route = format!("/v1/workspaces/{workspace}/runs");
+        let mut route = format!("/v1/workspaces/{workspace}/invocations");
         if !query.is_empty() {
             let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        Ok(show(reach.json, &listed, &runs_text(&listed)))
+        Ok(show(reach.json, &listed, &invocations_text(&listed)))
     })
 }
 
-/// A workspace's runs as a person reads them: the lines the host wrote, and
-/// the command that reads on.
-fn runs_text(listed: &Value) -> String {
+/// A workspace's invocations as a person reads them: the lines the host
+/// wrote, and the command that reads on.
+fn invocations_text(listed: &Value) -> String {
     let mut said = text(listed, "text").to_owned();
     if said.is_empty() {
         let total = listed.get("total").and_then(Value::as_u64).unwrap_or(0);
-        said = format!("{total} runs");
+        said = format!("{total} invocations");
     }
     if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
-        let _ = write!(said, "\nolder: tilo runs --cursor {cursor}");
+        let _ = write!(said, "\nolder: tilo invocations --cursor {cursor}");
     }
     said
 }
@@ -1658,12 +1658,12 @@ mod tests {
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
             }
-            ("GET", route) if route.contains("/runs") => json_reply(
+            ("GET", route) if route.contains("/invocations") => json_reply(
                 200,
-                json!({"runs": [{"id": "run-2", "status": "waiting",
+                json!({"items": [{"id": "run-2", "status": "waiting",
                     "by": {"name": "Jane Doe's agent", "kind": "agent"}}],
                     "total": 2, "waiting": 1, "next_cursor": "17:s1",
-                    "text": "2 runs, newest first; 1 waiting for the person\n\
+                    "text": "2 invocations, newest first; 1 waiting for the person\n\
                              run-2 waiting by Jane Doe's agent (agent): 0 changes"}),
             ),
             ("GET", route) if route.contains("/resources?path=") => json_reply(
@@ -1918,9 +1918,9 @@ mod tests {
             );
         }
 
-        phase a_workspaces_runs_are_listed_page_by_page;
-        // `tilo runs` is `GET …/runs`, its limit and cursor the query's, and
-        // says how to read on.
+        phase a_workspaces_invocations_are_listed_page_by_page;
+        // `tilo invocations` is `GET …/invocations`, its limit and cursor the
+        // query's, and says how to read on.
         {
             let _key = keyed();
             let api_server = fake_api();
@@ -1931,7 +1931,7 @@ mod tests {
                 json: false,
             };
             assert_eq!(
-                runs(reach, "applicant-jane-doe", Some(1), Some("17:s0")),
+                invocations(reach, "applicant-jane-doe", Some(1), Some("17:s0")),
                 ExitCode::SUCCESS
             );
             let listed = api_server.drain_requests();
@@ -1939,14 +1939,20 @@ mod tests {
             assert_eq!(listing.method, "GET");
             assert_eq!(
                 listing.target,
-                format!("/v1/workspaces/{WORKSPACE}/runs?limit=1&cursor=17%3As0")
+                format!("/v1/workspaces/{WORKSPACE}/invocations?limit=1&cursor=17%3As0")
             );
-            let said = runs_text(&json!({
-                "runs": [], "total": 2, "waiting": 1, "next_cursor": "17:s1",
-                "text": "2 runs, newest first; 1 waiting for the person",
+            let said = invocations_text(&json!({
+                "items": [], "total": 2, "waiting": 1, "next_cursor": "17:s1",
+                "text": "2 invocations, newest first; 1 waiting for the person",
             }));
-            assert!(said.starts_with("2 runs, newest first; 1 waiting"), "{said}");
-            assert!(said.ends_with("\nolder: tilo runs --cursor 17:s1"), "{said}");
+            assert!(
+                said.starts_with("2 invocations, newest first; 1 waiting"),
+                "{said}"
+            );
+            assert!(
+                said.ends_with("\nolder: tilo invocations --cursor 17:s1"),
+                "{said}"
+            );
         }
 
         phase a_busy_host_is_asked_again_under_the_same_idempotency_key;

@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Library` is the app's `feeds.library` at `feeds/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Article",
@@ -149,7 +149,7 @@ class Library(Resource):
         return self.action("add-subscription", **args)
 
     def add_subscription_many(self, items: list[AddSubscriptionArgs]) -> list[dict[str, Any]]:
-        """Runs `add-subscription` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-subscription` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-subscription", items)
 
     def unsubscribe(self, *, feed: str) -> None:
@@ -157,7 +157,7 @@ class Library(Resource):
         return self.action("unsubscribe", feed=feed)
 
     def unsubscribe_many(self, items: list[UnsubscribeArgs]) -> list[dict[str, Any]]:
-        """Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unsubscribe", items)
 
     def mark_feed_read(self, *, feed: str) -> None:
@@ -165,7 +165,7 @@ class Library(Resource):
         return self.action("mark-feed-read", feed=feed)
 
     def mark_feed_read_many(self, items: list[MarkFeedReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mark-feed-read", items)
 
     def mark_everything_read(self) -> None:
@@ -173,7 +173,7 @@ class Library(Resource):
         return self.action("mark-everything-read")
 
     def mark_everything_read_many(self, items: list[MarkEverythingReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mark-everything-read", items)
 
     def new_folder(self, *, name: str) -> None:
@@ -181,7 +181,7 @@ class Library(Resource):
         return self.action("new-folder", name=name)
 
     def new_folder_many(self, items: list[NewFolderArgs]) -> list[dict[str, Any]]:
-        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-folder", items)
 
     def delete_folder(self, *, folder: str) -> None:
@@ -189,7 +189,7 @@ class Library(Resource):
         return self.action("delete-folder", folder=folder)
 
     def delete_folder_many(self, items: list[DeleteFolderArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-folder", items)
 
     def import_subscriptions(self, *, outlines: list[Outline]) -> None:
@@ -197,7 +197,7 @@ class Library(Resource):
         return self.action("import-subscriptions", outlines=outlines)
 
     def import_subscriptions_many(self, items: list[ImportSubscriptionsArgs]) -> list[dict[str, Any]]:
-        """Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-subscriptions", items)
 
     def refreshed(self,
@@ -218,7 +218,7 @@ class Library(Resource):
         return self.action("refreshed", **args)
 
     def refreshed_many(self, items: list[RefreshedArgs]) -> list[dict[str, Any]]:
-        """Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("refreshed", items)
 
     def export_opml(self) -> None:

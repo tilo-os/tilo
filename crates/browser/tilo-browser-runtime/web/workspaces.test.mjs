@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
+import {PAIRING_SAME_PERSON} from './pairing.mjs';
+import {unmarkOwnPairing} from './workspaces.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -953,4 +955,67 @@ test('the workspace an entry admits into: the one its listing names, else the on
   assert.equal(entryWorkspace({host: {origin: 'https://h.example'}, admission: 'https://h.example/peer/v1/directory/w2/'}), 'w2');
   assert.equal(entryWorkspace({admission: 'https://h.example/peer/v1/admission'}), null);
   assert.equal(entryWorkspace(null), null);
+});
+
+test('a browser is not paired to the person it already is: the link is refused in plain words and nothing changes', async () => {
+  // A pairing link opened in the browser that made it. Its new tab asked the
+  // host, the first tab approved, and the browser was kept as a device paired
+  // to its own person: from then on it left the root it holds unused, and
+  // offered to pair no further device.
+  const person = identity(0x22);
+  const joined = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey};
+  const {calls, options, store} = harness({person, membership: joined});
+  const before = store.get(KEY);
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey, invite: '0f'.repeat(16), listed: commons,
+    memberships: options.memberships, onPairingCode: () => assert.fail('no code is shown: no host was asked'),
+    pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
+  const refused = await pairViaHost({...link, holds: person.userPublicKey}).then(() => null, error => error);
+  assert.equal(store.get(KEY), before, 'what this browser keeps of the host is as it was: it is not marked paired');
+  assert.deepEqual(calls.paired, [], 'the host is asked nothing, so the link is not spent and nobody is asked to approve');
+  assert.equal(refused?.name, 'HostAdmissionError');
+  assert.equal(refused?.code, 'same-person');
+  assert.equal(refused?.message, PAIRING_SAME_PERSON);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), joined);
+
+  // The same link in a browser that holds another person, or none, pairs it.
+  for (const holds of [identity(0x44).userPublicKey, null]) {
+    store.delete(KEY);
+    calls.paired.length = 0;
+    await pairViaHost({...link, holds, onPairingCode: () => {}});
+    assert.equal(calls.paired.length, 1, String(holds));
+    assert.equal(keptMembership(commons, {getItem: key => store.get(key)}).paired, true, String(holds));
+  }
+});
+
+test('a browser that was paired to its own person is its own person again; a device paired to someone else stays paired', async () => {
+  const person = identity(0x22).userPublicKey;
+  const other = identity(0x33).userPublicKey;
+  const hosts = {
+    'https://workspaces.example': {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, paired: true},
+    'https://elsewhere.example': {origin: 'https://elsewhere.example', workspace: 'W2', userPublicKey: other, paired: true},
+    'https://own.example': {origin: 'https://own.example', workspace: 'W3', userPublicKey: person, owner: true},
+  };
+  const store = new Map([[KEY, JSON.stringify(hosts)]]);
+  const memberships = {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value)};
+  let asked = 0;
+  const keeps = root => async () => { asked += 1; return root ? {rootPublicKey: root} : null; };
+
+  // A device that keeps no person, or another one, stays paired.
+  for (const root of [null, identity(0x44).userPublicKey]) {
+    assert.deepEqual(await unmarkOwnPairing(keeps(root), memberships), []);
+    assert.deepEqual(JSON.parse(store.get(KEY)), hosts, String(root));
+  }
+  // The browser that keeps that person's root is them at that host again,
+  // and nothing else it keeps changes.
+  assert.deepEqual(await unmarkOwnPairing(keeps(person), memberships), ['https://workspaces.example']);
+  const {paired: _, ...joined} = hosts['https://workspaces.example'];
+  assert.deepEqual(JSON.parse(store.get(KEY)), {...hosts, 'https://workspaces.example': joined});
+  assert.deepEqual(keptMembership(commons, memberships), joined);
+
+  // A browser with no paired host is not asked whom it keeps, and writes nothing.
+  const plain = JSON.stringify({'https://own.example': hosts['https://own.example']});
+  asked = 0;
+  assert.deepEqual(await unmarkOwnPairing(keeps(person),
+    {getItem: () => plain, setItem: () => assert.fail('nothing to change')}), []);
+  assert.equal(asked, 0);
 });

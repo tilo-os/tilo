@@ -34,7 +34,7 @@ pub(super) struct Entry {
     /// ([`super::bounded::About`]).
     pub(super) about: Option<Box<super::bounded::About>>,
     /// The workspace it was asked in, once admitted there: what a listing of
-    /// that workspace's runs reads it by ([`super::runs`]).
+    /// that workspace's invocations reads it by ([`super::invocations`]).
     pub(super) workspace: Option<tilo_relay_protocol::WorkspaceId>,
     /// When it was asked for, in milliseconds since the Unix epoch.
     pub(super) started_ms: i64,
@@ -42,7 +42,7 @@ pub(super) struct Entry {
     pub(super) ended_ms: Option<i64>,
     /// The changes it handed to the session, each by its record's app, the
     /// record's id and the change's short hash as History lists it: what its
-    /// changes are found by where its step is not known ([`super::runs`]).
+    /// changes are found by where its step is not known ([`super::invocations`]).
     pub(super) written: Vec<(String, String, String)>,
 }
 
@@ -100,7 +100,7 @@ impl Ledger {
     }
 
     /// Note, of every invocation that ended since the last look, that it
-    /// ended now: what a listing of runs says it ended at.
+    /// ended now: what a listing of invocations says it ended at.
     pub(super) fn stamp_ended(&mut self) {
         let now = now_ms();
         for entry in self.entries.values_mut() {

@@ -413,6 +413,13 @@ impl OverSheet for PageWorkspaceSettings {
         changed
     }
 
+    fn put_away(&self) {
+        let presentation = self.state.presentation();
+        if !presentation.is_open() {
+            presentation.gone();
+        }
+    }
+
     fn drawn(&self) -> bool {
         self.state.presentation().is_drawn()
     }

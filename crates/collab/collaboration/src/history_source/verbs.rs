@@ -3,13 +3,13 @@
 //! compare and take back through the same action API they edit through:
 //!
 //! - `undo` / `redo`: the caller's own last steps (an agent's are those of
-//!   its run), or a named agent run's;
+//!   its invocation), or a named group of them;
 //! - `restore`: a past version, whole or only some items, as a new step;
 //! - `review-restore` / `restore-reviewed`: pin a causal review and restore
 //!   exact differing paths only if the live frontier still matches;
 //! - `checkpoint`: name the current version;
 //! - `history`: every step with what it was given, who made it, in which
-//!   run, and which are undone or checkpointed;
+//!   group, and which are undone or checkpointed;
 //! - `diff`: the items that differ between two versions.
 //!
 //! Versions are change ids from `history` or checkpoint names. The verbs
@@ -55,8 +55,8 @@ const MAX_LISTED: i64 = 500;
 pub enum HistoryEdit {
     Undo {
         steps: Option<u32>,
-        run: Option<String>,
-        /// An author from history, for steps outside a run.
+        invocation: Option<String>,
+        /// An author from history, for steps outside one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<tilo_actions::Actor>,
         /// Every step after this version instead.
@@ -117,7 +117,7 @@ impl HistoryEdit {
         let (op, steps) = match self {
             Self::Undo {
                 steps,
-                run: None,
+                invocation: None,
                 to: None,
                 step: None,
                 ..
@@ -130,7 +130,7 @@ impl HistoryEdit {
         };
         let of = match self {
             Self::Undo {
-                run: None,
+                invocation: None,
                 to: None,
                 by,
                 ..
@@ -420,15 +420,15 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
         edit(
             "undo",
             "Undo",
-            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
+            "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
             vec![
                 steps("How many steps, newest first"),
-                ActionParam::optional("run", ParamType::Text, "An agent run id from history")
+                ActionParam::optional("invocation", ParamType::Text, "A group id from history")
                     .nullable(),
                 ActionParam::optional(
                     "by",
                     ParamType::Object,
-                    "The actor's `by` of a history entry, for steps outside a run",
+                    "The actor's `by` of a history entry, for steps outside an invocation",
                 )
                 .nullable(),
                 ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
@@ -448,7 +448,7 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 if step.is_some()
                     && (to.is_some()
                         || args.integer("steps").is_some()
-                        || args.text("run").is_some())
+                        || args.text("invocation").is_some())
                 {
                     return Err("give step alone".into());
                 }
@@ -457,13 +457,13 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                     .map(|by| serde_json::from_value::<tilo_actions::Actor>(by.to_json()))
                     .transpose()
                     .map_err(|_| "by is an author object from history".to_owned())?;
-                if by.is_some() && args.text("run").is_some() {
-                    return Err("choose an author or a run, not both".into());
+                if by.is_some() && args.text("invocation").is_some() {
+                    return Err("choose an author or an invocation, not both".into());
                 }
                 Ok(HistoryEdit::Undo {
                     by,
                     steps: steps_arg(args)?,
-                    run: args.text("run").map(str::to_owned),
+                    invocation: args.text("invocation").map(str::to_owned),
                     to,
                     step,
                 })
@@ -525,7 +525,7 @@ fn view_specs() -> Vec<ActionSpec> {
         view(
             "history",
             "History",
-            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
+            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, checkpoints.",
             vec![
                 ActionParam::optional(
                     "last",
@@ -589,8 +589,8 @@ fn by(version: &Version) -> String {
 /// What a change's entry records, as data: what was done (`what`, with
 /// field paths, values and verb arguments), to which `item`, by which
 /// `actor` (the acting tree, and for an agent with a name the `name` and
-/// `colour` it shows by), in which `run`, through which
-/// `invocation` of the action API, as part of which undo `step` (its
+/// `colour` it shows by), in which `group` (`title` and `group_kind`), through
+/// which `invocation` of the action API, as part of which undo `step` (its
 /// gesture), and what kind of action and change it was. The invocation and
 /// the step are what a caller that ran an action finds its own changes by,
 /// to take exactly those back (`undo` with `step`).
@@ -603,9 +603,9 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     }
     if let Some(invoker) = &context.invoker {
         let mut actor = json!(invoker.acting);
-        // The run the agent said this change is a step of, by the id it gave
-        // it: how an agent or a script finds its own run's steps again, where
-        // `run_id` is the host's run of the whole connection.
+        // The group the agent said this change is a step of, by the id it gave
+        // it: how an agent or a script finds its own invocation's steps again,
+        // where `group` is the host's group of the whole connection.
         if let (Some(run), Some(fields)) = (
             context
                 .group
@@ -613,7 +613,7 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
                 .and_then(|group| group.declared_id.as_ref()),
             actor.as_object_mut(),
         ) {
-            fields.insert("run_id".into(), run.clone().into());
+            fields.insert("declared".into(), run.clone().into());
         }
         if let (Some(name), Some(fields)) = (&invoker.name, actor.as_object_mut()) {
             let hue = invoker.acting.member_id().map_or_else(
@@ -630,9 +630,9 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         out.insert("actor".into(), actor);
     }
     if let Some(group) = &context.group {
-        out.insert("run".into(), group.label.clone().into());
-        out.insert("run_id".into(), group.id.clone().into());
-        out.insert("run_kind".into(), group.kind.clone().into());
+        out.insert("title".into(), group.label.clone().into());
+        out.insert("group".into(), group.id.clone().into());
+        out.insert("group_kind".into(), group.kind.clone().into());
     }
     if let Some(kind) = context.kind {
         out.insert("kind".into(), json!(kind));
@@ -716,11 +716,11 @@ pub struct HistoryVersion {
     pub action: String,
     /// The entry the change recorded: who did it, for whom, and what.
     pub entry: Option<tilo_actions::ActionContext>,
-    /// Who did it: the person's handle, or the agent run's label.
+    /// Who did it: the person's handle, or the agent invocation's label.
     pub author: String,
-    /// The agent run that made it, when an agent did: what `undo` takes as
-    /// `run` to take the whole run back.
-    pub run: Option<String>,
+    /// The group that made it, when an agent did: what `undo` takes as
+    /// `invocation` to take the whole of it back.
+    pub invocation: Option<String>,
     /// Milliseconds since the Unix epoch; 0 when unknown.
     pub time_ms: i64,
     /// Taken back by an undo.
@@ -750,8 +750,8 @@ pub fn recent(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Vec<Hi
                 change: steps::short(&version.hash),
                 action: sentence(version, words),
                 entry: version.context.clone(),
-                author: run.map_or_else(|| by(version), |run| run.label.clone()),
-                run: run.map(|run| run.id.clone()),
+                author: run.map_or_else(|| by(version), |group| group.label.clone()),
+                invocation: run.map(|group| group.id.clone()),
                 time_ms: version.time_ms,
                 undone: undone.contains(&version.hash.to_string()),
                 checkpoints: checkpoints
@@ -766,21 +766,21 @@ pub fn recent(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Vec<Hi
 }
 
 /// Leaves out of each version the author and time it shares with the one
-/// before: a run of forty steps names its run once, not forty times.
+/// before: forty steps of one group name it once, not forty times.
 fn carry_over(listed: &mut [Value]) {
     let mut before = serde_json::Map::new();
     for entry in listed {
         let Value::Object(fields) = entry else {
             continue;
         };
-        // One connection's run may go by a new title from one call to the
+        // One connection's group may go by a new title from one call to the
         // next: a version under another title names it again.
-        let same_author = ["run_id", "by"].iter().any(|key| {
+        let same_author = ["group", "by"].iter().any(|key| {
             fields
                 .get(*key)
                 .is_some_and(|value| before.get(*key) == Some(value))
-        }) && fields.get("run") == before.get("run");
-        let author: Vec<&str> = ["run", "run_id", "by"]
+        }) && fields.get("title") == before.get("title");
+        let author: Vec<&str> = ["title", "group", "by"]
             .into_iter()
             .filter(|key| fields.contains_key(*key))
             .collect();
@@ -820,7 +820,7 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
     carry_over(&mut listed);
     json!({
         "versions": listed,
-        "carried": "run, run_id, by and time_ms, where absent, are the version before's",
+        "carried": "title, group, by and time_ms, where absent, are the version before's",
         "total": total,
         "now": version_name(&doc.base_heads()),
         "checkpoints": checkpoints.iter().map(|checkpoint| json!({
@@ -1032,13 +1032,13 @@ impl HistoryEdit {
         match self {
             Self::Undo {
                 steps,
-                run,
+                invocation,
                 by,
                 to,
                 step,
             } => {
-                let (scope, default) = match run {
-                    Some(run) => (Scope::Session(run.clone()), usize::MAX),
+                let (scope, default) = match invocation {
+                    Some(invocation) => (Scope::Session(invocation.clone()), usize::MAX),
                     None => (
                         by.as_ref().map_or_else(
                             || Scope::invoking(doc),

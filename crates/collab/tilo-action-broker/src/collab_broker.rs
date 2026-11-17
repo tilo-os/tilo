@@ -754,7 +754,7 @@ impl AppActionBroker {
         workspace: &str,
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
-        invocation: tilo_automation::InvocationId,
+        invocation: tilo_automation::AutomationInvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state

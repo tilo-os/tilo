@@ -1,4 +1,4 @@
-//! The least authority a shortcut needs, and how a run's step is decided
+//! The least authority a shortcut needs, and how an invocation's step is decided
 //! against its grant.
 //!
 //! A shortcut's grant is a set of rules over the published tree, the same
@@ -18,8 +18,8 @@ use crate::{
     AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,
 };
 
-/// The node a step's action has in the tree: the workspace the run acts in
-/// (or any workspace, for a run confined to none), the app, the resource
+/// The node a step's action has in the tree: the workspace the invocation acts in
+/// (or any workspace, for an invocation confined to none), the app, the resource
 /// kind, the resource and the action.
 #[must_use]
 pub fn step_node(
@@ -42,8 +42,8 @@ pub fn step_node(
 pub const READ_STEP: &str = "read";
 
 /// The node a read of `record` of `app` is decided at, as the workspace
-/// decides any reader's read of it: the record, in the workspace the run reads
-/// in (or any workspace, for a run confined to none).
+/// decides any reader's read of it: the record, in the workspace the invocation reads
+/// in (or any workspace, for an invocation confined to none).
 #[must_use]
 pub fn read_node(workspace: Option<&str>, app_id: &str, record: &str) -> TreePath {
     let base = match workspace {
@@ -190,7 +190,7 @@ fn edit_steps(edit: &Binding) -> Option<Vec<EditStep>> {
 
 /// Where below its resource a field edit bound as `edit` acts, as the
 /// workspace decides it (`[item ›] field… `, the collection holding an item
-/// not a node of its own); an item or map key the program leaves to the run
+/// not a node of its own); an item or map key the program leaves to the invocation
 /// is any item or key. `None` when a field it changes is not named in the
 /// program: then only a grant over every field edit of the resource
 /// covers it.
@@ -272,7 +272,7 @@ pub fn advance_consents(grant: &[Rule]) -> Vec<(String, String)> {
 pub struct StepGrant {
     pub answer: Answer,
     /// The deciding rule names this very action (not an app or a kind of
-    /// resource above it): an advance consent an unattended run may use in
+    /// resource above it): an advance consent an unattended invocation may use in
     /// place of a person's confirmation.
     pub names_action: bool,
 }
@@ -1025,7 +1025,7 @@ mod tests {
                 ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
             );
 
-            // The workspace decides a run's edit at its concrete path.
+            // The workspace decides an invocation's edit at its concrete path.
             let decided = |path: serde_json::Value| {
                 let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
                     .expect("a literal path names its fields");

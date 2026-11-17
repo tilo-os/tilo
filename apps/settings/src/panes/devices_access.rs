@@ -83,11 +83,15 @@ pub enum DevicesAccessEffect {
         #[param("The name it should read by, such as “Claude Code on the laptop 2”")]
         name: String,
     },
+    // The two below ask the session's shell for a sheet of its own and answer
+    // when it has, so they are jobs: a view answers at once. `own_device`
+    // keeps who runs them what it was for a view: the person at this device
+    // and those acting for them, needing no more of a workspace than reading.
     /// Show how an agent or another computer connects as the person.
-    #[effect(view, label = "settings-access-connect")]
+    #[effect(job, own_device, idempotent, label = "settings-access-connect")]
     ShowConnect,
     /// Show the link another of your own devices joins with, as a code its camera reads.
-    #[effect(view, label = "settings-access-add-device")]
+    #[effect(job, own_device, idempotent, label = "settings-access-add-device")]
     ShowPairDevice,
 }
 

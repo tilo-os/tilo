@@ -395,7 +395,7 @@ fn tool(id: u64, name: &str, arguments: &Value) -> Value {
 fn tool_in_run(id: u64, run: &str, title: &str, name: &str, arguments: &Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
         "name":name,"arguments":arguments,
-        "_meta":{"so.tilo.mcp":{"run":{"id":run,"title":title}}}}})
+        "_meta":{"so.tilo.mcp":{"invocation":{"id":run,"title":title}}}}})
 }
 
 #[test]
@@ -695,7 +695,7 @@ fn history(session: &mut Session, book: &str) -> Vec<Value> {
         .iter()
         .map(|version| {
             let mut version = version.as_object().cloned().unwrap_or_default();
-            for key in ["run", "run_id", "by"] {
+            for key in ["title", "group", "by"] {
                 match version.get(key) {
                     Some(value) => {
                         carried.insert(key.to_owned(), value.clone());
@@ -727,7 +727,7 @@ fn run_of_retitle(session: &mut Session, book: &str, title: &str) -> (String, St
             .unwrap_or_else(|| panic!("the retitle to {title} is a run's step: {step}"))
             .to_owned()
     };
-    (named("run"), named("run_id"))
+    (named("group"), named("title"))
 }
 
 /// A grant for an agent the person's root certified: reaching all their workspaces, ending in an

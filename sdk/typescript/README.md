@@ -1,7 +1,7 @@
 # tilo-sdk
 
 Drive Tilo workspaces from JavaScript and TypeScript: the same resources,
-actions, runs, undo and attribution a person clicking or an agent gets. No
+actions, invocations, undo and attribution a person clicking or an agent gets. No
 second API: every call is one route of Tilo's `/v1` JSON API
 ([the API](../../docs/developers/api.md)), with your key.
 
@@ -23,7 +23,7 @@ await ws.do("pdf-viewer#import-pdf-content", { content: application, name: "visa
 const key = await ws.keys.mint("jane's agent");    // a key that reaches this one workspace
 console.log(key.mcpUrl, key.token);                // hand it to the applicant's agent
 
-await ws.run("Fill Jane's application", async () => {
+await ws.invocation("Fill Jane's application", async () => {
   const document = await ws.read("pdf-viewer/visa-form.pdf");
   (document.formValues as Record<string, unknown>).surname = "Doe";
   await document.flush();                          // assignments are sent at once; this waits
@@ -31,8 +31,8 @@ await ws.run("Fill Jane's application", async () => {
 
 for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   if (event.kind !== "change") continue;
-  console.log(event.sentence, "by", event.by ?? event.run);   // a change, as it lands
-  if (event.run !== null) break;                   // one the applicant's agent made
+  console.log(event.sentence, "by", event.by ?? event.invocation);   // a change, as it lands
+  if (event.invocation !== null) break;             // one the applicant's agent made
 }
 ```
 
@@ -43,15 +43,15 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   every call as `Authorization: Bearer`.
 - **One API.** Every call is a `/v1` route: `/v1/workspaces`,
   `/v1/workspaces/{workspace}/resources/{path}`, `…/actions/{action}`,
-  `…/runs/{run}`, `…/events`. Nothing else is spoken.
+  `…/invocations/{invocation}`, `…/events`. Nothing else is spoken.
 - **A host in process.** `await Tilo.host(origin, { keyFile })` (or
   `{ key, cert }`) serves the same routes from a Tilo host directly, through
   the `tilo-sdk-native` addon: `bun add tilo-sdk-native`, or point a client at
   an API server instead.
 - **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
-  { text: "Buy milk" })` answers the result, or a `Run` if the host has not
-  finished: `await run.result()`, `run.output()`, `await run.cancel()`,
-  `await run.undo()`.
+  { text: "Buy milk" })` answers the result, or an `Invocation` if the host
+  has not finished: `await invocation.result()`, `invocation.output()`,
+  `await invocation.cancel()`, `await invocation.undo()`.
 - **A refusal throws.** `Refused(code, message, nextSteps)` says what the host
   said and which calls would work; a call that waits for the person throws
   `AskPending(url, invocationId)` and `await ask.wait()` answers once they
@@ -60,15 +60,18 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
   `Idempotency-Key`, and a retry carries the same one: a call the host is busy
   with (`RateLimited`, `retry_after_ms`) or one that never arrived is asked
   again until the client's retry deadline, and the host runs it once.
-- **Runs group calls.** `await ws.run("Fill Jane's application", async (run) =>
-  …)` puts every call inside into one run: one undo step per app, named in
+- **Invocations group calls.** `await ws.invocation("Fill Jane's application",
+  async (invocation) => …)` puts every call inside into one group: one undo step
+  per app, named in
   history.
-- **Links for people.** A run keeps the link to each record its calls changed:
-  `run.links`, and `run.link` when it changed one record. `await ws.link(path)`
+- **Links for people.** An invocation keeps the link to each record its calls
+  changed: `invocation.links`, and `invocation.link` when it changed one record.
+  `await ws.link(path)`
   answers the link to anything a path names. It opens the record in its app
   for the workspace's members and carries no secret.
 - **Reads are snapshots, watches are live.** `await ws.read(path)` is a
-  snapshot; `for await (const event of ws.watch(path))` follows changes, runs
+  snapshot; `for await (const event of ws.watch(path))` follows changes,
+  invocations
   and presence as they happen, its cursor kept (`Last-Event-ID`).
 
 ## Resources as objects

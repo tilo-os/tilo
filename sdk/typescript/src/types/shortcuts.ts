@@ -8,12 +8,12 @@
  * resource's path (`shortcuts/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -176,42 +176,42 @@ export interface Workbench extends tilo.Resource {
   draftProposal(args: {
     shortcut: unknown;
   }): Promise<void>;
-  /** Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   draftProposalMany(items: DraftProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   ignoreProposal(args: {
     key: string;
   }): Promise<void>;
-  /** Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   ignoreProposalMany(items: IgnoreProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   allowProposal(args: {
     key: string;
   }): Promise<void>;
-  /** Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   allowProposalMany(items: AllowProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   newDraft(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newDraftMany(items: NewDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateDraft(args: {
     draft: string;
   }): Promise<void>;
-  /** Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateDraftMany(items: DuplicateDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   draftShortcut(args: {
     shortcut: unknown;
   }): Promise<void>;
-  /** Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   draftShortcutMany(items: DraftShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   openShortcut(args: {
     shortcut: unknown;
   }): Promise<void>;
-  /** Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   openShortcutMany(items: OpenShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateShortcut(args: {
     shortcut: unknown;
   }): Promise<void>;
-  /** Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateShortcutMany(items: DuplicateShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   setSchedule(args: {
     draft: string;
@@ -219,26 +219,26 @@ export interface Workbench extends tilo.Resource {
     hour: number;
     minute: number;
   }): Promise<void>;
-  /** Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setScheduleMany(items: SetScheduleArgs[]): Promise<tilo.ActionAnswer[]>;
   discard(args: {
     draft: string;
   }): Promise<void>;
-  /** Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   discardMany(items: DiscardArgs[]): Promise<tilo.ActionAnswer[]>;
   addStep(args: {
     draft: string;
     block: string;
     step: unknown;
   }): Promise<void>;
-  /** Runs `add-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addStepMany(items: AddStepArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceStep(args: {
     draft: string;
     path: string;
     step: unknown;
   }): Promise<void>;
-  /** Runs `replace-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `replace-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replaceStepMany(items: ReplaceStepArgs[]): Promise<tilo.ActionAnswer[]>;
   bindArgument(args: {
     draft: string;
@@ -246,27 +246,27 @@ export interface Workbench extends tilo.Resource {
     param: string;
     binding: string;
   }): Promise<void>;
-  /** Runs `bind-argument` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `bind-argument` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   bindArgumentMany(items: BindArgumentArgs[]): Promise<tilo.ActionAnswer[]>;
   removeStep(args: {
     draft: string;
     path: string;
   }): Promise<void>;
-  /** Runs `remove-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeStepMany(items: RemoveStepArgs[]): Promise<tilo.ActionAnswer[]>;
   moveStep(args: {
     draft: string;
     path: string;
     earlier: boolean;
   }): Promise<void>;
-  /** Runs `move-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-step` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveStepMany(items: MoveStepArgs[]): Promise<tilo.ActionAnswer[]>;
   setStepPolicy(args: {
     draft: string;
     path: string;
     policy: string;
   }): Promise<void>;
-  /** Runs `set-step-policy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-step-policy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setStepPolicyMany(items: SetStepPolicyArgs[]): Promise<tilo.ActionAnswer[]>;
   setNested(args: {
     draft: string;
@@ -274,26 +274,26 @@ export interface Workbench extends tilo.Resource {
     block: string;
     index: number;
   }): Promise<void>;
-  /** Runs `set-nested` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-nested` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setNestedMany(items: SetNestedArgs[]): Promise<tilo.ActionAnswer[]>;
   setOutput(args: {
     draft: string;
     binding: string;
   }): Promise<void>;
-  /** Runs `set-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setOutputMany(items: SetOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   addInput(args: {
     draft: string;
     name: string;
     kind: string;
   }): Promise<void>;
-  /** Runs `add-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addInputMany(items: AddInputArgs[]): Promise<tilo.ActionAnswer[]>;
   removeInput(args: {
     draft: string;
     name: string;
   }): Promise<void>;
-  /** Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeInputMany(items: RemoveInputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

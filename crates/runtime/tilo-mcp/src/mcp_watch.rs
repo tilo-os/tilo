@@ -1,5 +1,5 @@
 //! `tilo_watch`: what happened since the caller last asked — changes to a
-//! resource, or to every record of the workspace, this session's runs
+//! resource, or to every record of the workspace, this session's invocations
 //! starting and finishing, and who is in the workspace — held open until
 //! something did, so a program follows the workspace without polling a
 //! second endpoint.
@@ -7,21 +7,21 @@
 //! The sources are the ones the desktop and the browser read: the resource's
 //! own history verb for a change and who made it (the host's feed of every
 //! record's changes, [`tilo_actions::remote::ChangeFeed`], for a watch of no
-//! path), the host's observation of an invocation for a run, and the host's
-//! roster for presence.
+//! path), the host's observation of an invocation, and the host's roster for
+//! presence.
 use super::*;
-use crate::step::DeclaredRun;
+use crate::step::DeclaredInvocation;
 use tilo_actions::remote::WatchScope;
 
 /// One invocation of this session, as `tilo_watch` follows it: what it ran,
-/// the run it is a step of, and how it stands.
+/// the group it is a step of, and how it stands.
 #[derive(Clone, Debug)]
-pub(crate) struct Run {
+pub(crate) struct WatchedInvocation {
     pub(crate) invocation: String,
     /// The path the call named, when it named one.
     pub(crate) path: String,
-    /// The run it is a step of, as people read it, and its id.
-    pub(crate) name: String,
+    /// The group it is a step of, as people read it, and its id.
+    pub(crate) title: String,
     pub(crate) group: String,
     pub(crate) started_ms: u64,
     /// Its phase as last told, and the sequence number it was told at: a
@@ -33,7 +33,7 @@ pub(crate) struct Run {
 /// The invocations a session keeps for its watches and `tilo_status`, at most: one that runs
 /// thousands of actions (a migration does, over one connection) keeps its latest ones rather
 /// than every one it ever ran.
-const RUNS_KEPT: usize = 1024;
+const INVOCATIONS_KEPT: usize = 1024;
 
 /// How long a watch with no `wait_ms` holds before it answers with what it
 /// has.
@@ -58,9 +58,9 @@ pub(super) struct WatchArgs {
 /// path. Opaque to the caller, which hands it back as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Cursor {
-    /// The sequence number of the last run event answered.
+    /// The sequence number of the last invocation event answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    run: Option<u64>,
+    invocation: Option<u64>,
     /// The roster's fingerprint when presence was last answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     here: Option<String>,
@@ -110,46 +110,49 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Note that `invocation` started, as a watch of this session follows it.
-    pub(super) fn watch_run_started(&self, invocation: &str, path: &str) {
-        let (name, run_id) = self.run_named();
-        let mut runs = self.runs.lock_recover();
-        let seq = next_seq(&runs);
-        runs.push(Run {
+    pub(super) fn watch_invocation_started(&self, invocation: &str, path: &str) {
+        let (title, group) = self.group_named();
+        let mut invocations = self.invocations.lock_recover();
+        let seq = next_seq(&invocations);
+        invocations.push(WatchedInvocation {
             invocation: invocation.to_owned(),
             path: path.to_owned(),
-            name,
-            group: run_id,
+            title,
+            group,
             started_ms: tilo_clock::unix_now_ms(),
             phase: "started".to_owned(),
             seq,
         });
-        keep_latest(&mut runs);
-        drop(runs);
+        keep_latest(&mut invocations);
+        drop(invocations);
         self.runs_moved();
     }
 
     /// Note that `invocation` reached `phase`, which is terminal.
-    pub(super) fn watch_run_ended(&self, invocation: &str, phase: &str) {
-        ended(&mut self.runs.lock_recover(), invocation, phase);
+    pub(super) fn watch_invocation_ended(&self, invocation: &str, phase: &str) {
+        ended(&mut self.invocations.lock_recover(), invocation, phase);
         self.runs_moved();
     }
 
     /// Note that `invocation` is held for the person, who allows it or not in their tab.
-    pub(super) fn watch_run_held(&self, invocation: &str) {
-        held(&mut self.runs.lock_recover(), invocation);
+    pub(super) fn watch_invocation_held(&self, invocation: &str) {
+        held(&mut self.invocations.lock_recover(), invocation);
         self.runs_moved();
     }
 
-    /// The run a watch attributes this session's calls to: the title a call
-    /// grouped under, else the connection's own run.
-    fn run_named(&self) -> (String, String) {
-        let run = self.agent_session();
-        let id = run.as_ref().map(|run| run.id.clone()).unwrap_or_default();
-        let label = match DeclaredRun::current().map(|run| run.title) {
+    /// The group a watch attributes this session's calls to: the title a
+    /// call named, else the connection's own agent session.
+    fn group_named(&self) -> (String, String) {
+        let session = self.agent_session();
+        let id = session
+            .as_ref()
+            .map(|session| session.id.clone())
+            .unwrap_or_default();
+        let title = match DeclaredInvocation::current().map(|invocation| invocation.title) {
             Some(title) if !title.is_empty() => title,
-            _ => run.map_or_else(String::new, |run| run.label),
+            _ => session.map_or_else(String::new, |session| session.label),
         };
-        (label, id)
+        (title, id)
     }
 
     /// [`WatchArgs`] as one answer: what happened since `cursor`, or nothing
@@ -171,7 +174,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         loop {
             let mut events = Vec::new();
             self.watch_states(&mut cursor, &mut events);
-            self.watch_runs(&mut cursor, &mut events).await;
+            self.watch_invocations(&mut cursor, &mut events).await;
             self.watch_here(&mut cursor, &mut events);
             self.watch_changes(path, &mut cursor, &mut events).await?;
             if !events.is_empty() || std::time::Instant::now() >= deadline {
@@ -214,7 +217,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Every source this watch follows, listened for before anything is read so that a change
     /// between a read and the wait still wakes it: where the workspace and this device's writes
     /// stand, the workspace's records, who is in it, each of this session's runs still going, and
-    /// the runs of this session itself. A host that cannot tell of a source leaves it out, and
+    /// the invocations of this session itself. A host that cannot tell of a source leaves it out, and
     /// that source then costs the watch the rest of its wait.
     fn watch_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
         let caller = self.caller();
@@ -223,11 +226,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         changed.extend(self.host.changed(&caller, WatchScope::Records));
         changed.extend(self.host.changed(&caller, WatchScope::Here));
         let going: Vec<String> = self
-            .runs
+            .invocations
             .lock_recover()
             .iter()
-            .filter(|run| !is_terminal(&run.phase))
-            .map(|run| run.invocation.clone())
+            .filter(|invocation| !is_terminal(&invocation.phase))
+            .map(|invocation| invocation.invocation.clone())
             .collect();
         for invocation in going {
             let Ok(id) = invocation_id(&invocation) else {
@@ -286,13 +289,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The cursor a caller with none starts from: nothing that has happened
     /// yet is news to it.
     async fn watch_now(&self, path: Option<&str>) -> Result<Cursor, String> {
-        let run = self.runs.lock_recover().iter().map(|run| run.seq).max();
+        let invocation = self
+            .invocations
+            .lock_recover()
+            .iter()
+            .map(|invocation| invocation.seq)
+            .max();
         let feed = match path_named(path) {
             Some(_) => None,
             None => self.feed_page(None).await?.map(|page| page.cursor),
         };
         Ok(Cursor {
-            run,
+            invocation,
             here: self.here_now().map(|(fingerprint, _)| fingerprint),
             change: last_change(
                 self.history_page(path)
@@ -305,19 +313,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })
     }
 
-    /// The runs this session started since the cursor, as the host says they
-    /// stand now.
-    async fn watch_runs(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
-        let seen = cursor.run.unwrap_or_default();
+    /// The invocations this session started since the cursor, as the host
+    /// says they stand now.
+    async fn watch_invocations(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
+        let seen = cursor.invocation.unwrap_or_default();
 
-        // How the runs still going stand: an invocation that finished after
-        // its call answered is reported finished here.
+        // How the invocations still going stand: one that finished after its
+        // call answered is reported finished here.
         let going: Vec<String> = self
-            .runs
+            .invocations
             .lock_recover()
             .iter()
-            .filter(|run| !is_terminal(&run.phase))
-            .map(|run| run.invocation.clone())
+            .filter(|invocation| !is_terminal(&invocation.phase))
+            .map(|invocation| invocation.invocation.clone())
             .collect();
         let mut moved: Vec<(String, String)> = Vec::new();
         for invocation in going {
@@ -335,26 +343,30 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 moved.push((invocation, state.to_owned()));
             }
         }
-        let announced: Vec<Run> = {
-            let mut runs = self.runs.lock_recover();
+        let announced: Vec<WatchedInvocation> = {
+            let mut invocations = self.invocations.lock_recover();
             for (invocation, phase) in moved {
-                ended(&mut runs, &invocation, &phase);
+                ended(&mut invocations, &invocation, &phase);
             }
-            let last = runs.iter().map(|run| run.seq).max();
+            let last = invocations.iter().map(|invocation| invocation.seq).max();
             if let Some(last) = last {
-                cursor.run = Some(cursor.run.unwrap_or_default().max(last));
+                cursor.invocation = Some(cursor.invocation.unwrap_or_default().max(last));
             }
-            runs.iter().filter(|run| run.seq > seen).cloned().collect()
+            invocations
+                .iter()
+                .filter(|invocation| invocation.seq > seen)
+                .cloned()
+                .collect()
         };
-        for run in announced {
+        for invocation in announced {
             events.push(json!({
-                "kind": "run",
-                "phase": run.phase,
-                "invocation_id": run.invocation,
-                "path": run.path,
-                "run": run.name,
-                "run_id": run.group,
-                "time_ms": run.started_ms,
+                "kind": "invocation",
+                "phase": invocation.phase,
+                "invocation_id": invocation.invocation,
+                "path": invocation.path,
+                "title": invocation.title,
+                "group": invocation.group,
+                "time_ms": invocation.started_ms,
             }));
         }
     }
@@ -404,7 +416,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 continue;
             }
             let mut event = change_event(path.unwrap_or_default(), Some(&app), None, entry);
-            event["change"] = json!(change);
+            if let Some(event) = event.as_object_mut() {
+                event.insert("change".to_owned(), json!(change));
+            }
             events.push(event);
         }
         cursor.change = last_change(Some(&page)).or(seen);
@@ -443,8 +457,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         match feed.since(&self.caller(), after).await {
             Some(Ok(page)) => Ok(Some(page)),
-            // A host that keeps no feed says so; a watch still reports runs
-            // and presence.
+            // A host that keeps no feed says so; a watch still reports
+            // invocations and presence.
             Some(Err(tilo_actions::remote::ActionHostError::Unavailable { reason }))
                 if reason == tilo_actions::remote::CHANGE_FEED_UNAVAILABLE =>
             {
@@ -598,7 +612,7 @@ fn actor_of(entry: &serde_json::Map<String, Value>) -> Option<Value> {
 
 /// The entries of a `history` verb's answer `value`, oldest first: its
 /// `versions`, as the history verbs answer, each whole — what `history`
-/// leaves out of an entry as the one before's (`run`, `run_id`, `by`,
+/// leaves out of an entry as the one before's (`title`, `group`, `by`,
 /// `time_ms`) put back.
 pub(super) fn history_entries(value: &Value) -> Option<Vec<Value>> {
     let output = value.pointer("/update/output/value")?;
@@ -614,7 +628,7 @@ pub(super) fn history_entries(value: &Value) -> Option<Vec<Value>> {
             .map(|entry| {
                 let mut entry = entry.clone();
                 if let Some(fields) = entry.as_object_mut() {
-                    for key in ["run", "run_id", "by", "time_ms"] {
+                    for key in ["title", "group", "by", "time_ms"] {
                         match fields.get(key) {
                             Some(value) => {
                                 carried.insert(key.to_owned(), value.clone());
@@ -633,52 +647,57 @@ pub(super) fn history_entries(value: &Value) -> Option<Vec<Value>> {
     )
 }
 
-/// Note that `invocation` reached the terminal `phase`, as one run event: a
-/// run already told an end is not told it again, however many sources (its
-/// call's answer, a watch's look at the host) say so.
-fn ended(runs: &mut [Run], invocation: &str, phase: &str) {
-    let seq = next_seq(runs);
-    if let Some(run) = runs
+/// Note that `invocation` reached the terminal `phase`, as one invocation
+/// event: one already told an end is not told it again, however many sources
+/// (its call's answer, a watch's look at the host) say so.
+fn ended(invocations: &mut [WatchedInvocation], invocation: &str, phase: &str) {
+    let seq = next_seq(invocations);
+    if let Some(watched) = invocations
         .iter_mut()
         .rev()
-        .find(|run| run.invocation == invocation)
-        && !is_terminal(&run.phase)
+        .find(|watched| watched.invocation == invocation)
+        && !is_terminal(&watched.phase)
     {
-        phase.clone_into(&mut run.phase);
-        run.seq = seq;
+        phase.clone_into(&mut watched.phase);
+        watched.seq = seq;
     }
 }
 
-/// Note that `invocation` is held for its person, as one run event: it moves on to how it
-/// ended once they answered.
-fn held(runs: &mut [Run], invocation: &str) {
-    let seq = next_seq(runs);
-    if let Some(run) = runs
+/// Note that `invocation` is held for its person, as one invocation event: it
+/// moves on to how it ended once they answered.
+fn held(invocations: &mut [WatchedInvocation], invocation: &str) {
+    let seq = next_seq(invocations);
+    if let Some(watched) = invocations
         .iter_mut()
         .rev()
-        .find(|run| run.invocation == invocation)
-        && !is_terminal(&run.phase)
-        && run.phase != HELD
+        .find(|watched| watched.invocation == invocation)
+        && !is_terminal(&watched.phase)
+        && watched.phase != HELD
     {
-        HELD.clone_into(&mut run.phase);
-        run.seq = seq;
+        HELD.clone_into(&mut watched.phase);
+        watched.seq = seq;
     }
 }
 
-/// The phase of a run held for its person.
+/// The phase of an invocation held for its person.
 const HELD: &str = "held_for_person";
 
-/// Let go of the oldest of `runs` past [`RUNS_KEPT`], those that ended first. The one told
-/// last stays: the next sequence number counts on from it, so a cursor never sees a number twice.
-fn keep_latest(runs: &mut Vec<Run>) {
-    while runs.len() > RUNS_KEPT {
-        let last = runs.iter().map(|run| run.seq).max();
-        let oldest = runs
+/// Let go of the oldest of `invocations` past [`INVOCATIONS_KEPT`], those that
+/// ended first. The one told last stays: the next sequence number counts on
+/// from it, so a cursor never sees a number twice.
+fn keep_latest(invocations: &mut Vec<WatchedInvocation>) {
+    while invocations.len() > INVOCATIONS_KEPT {
+        let last = invocations.iter().map(|watched| watched.seq).max();
+        let oldest = invocations
             .iter()
-            .position(|run| is_terminal(&run.phase) && Some(run.seq) != last)
-            .or_else(|| runs.iter().position(|run| Some(run.seq) != last));
+            .position(|watched| is_terminal(&watched.phase) && Some(watched.seq) != last)
+            .or_else(|| {
+                invocations
+                    .iter()
+                    .position(|watched| Some(watched.seq) != last)
+            });
         let Some(oldest) = oldest else { return };
-        runs.remove(oldest);
+        invocations.remove(oldest);
     }
 }
 
@@ -691,10 +710,11 @@ fn last_change(page: Option<&[Value]>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The sequence number the next run event takes.
-fn next_seq(runs: &[Run]) -> u64 {
-    runs.iter()
-        .map(|run| run.seq)
+/// The sequence number the next invocation event takes.
+fn next_seq(invocations: &[WatchedInvocation]) -> u64 {
+    invocations
+        .iter()
+        .map(|invocation| invocation.seq)
         .max()
         .unwrap_or_default()
         .saturating_add(1)
@@ -709,95 +729,114 @@ fn is_terminal(phase: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn started(invocation: &str, seq: u64) -> Run {
-        Run {
+    fn started(invocation: &str, seq: u64) -> WatchedInvocation {
+        WatchedInvocation {
             invocation: invocation.to_owned(),
             path: "word-processor#append-paragraph".to_owned(),
-            name: "Write the letter".to_owned(),
-            group: "run".to_owned(),
+            title: "Write the letter".to_owned(),
+            group: "letter".to_owned(),
             started_ms: 0,
             phase: "started".to_owned(),
             seq,
         }
     }
 
-    /// A session that runs thousands of actions keeps its latest ones: what it holds stays
-    /// bounded however long the connection lives, and the sequence a watch reads by still
-    /// counts on.
+    /// A session that runs thousands of actions keeps its latest ones: what
+    /// it holds stays bounded however long the connection lives, and the
+    /// sequence a watch reads by still counts on.
     #[test]
     fn a_long_session_keeps_its_latest_invocations() {
-        let mut runs = Vec::new();
+        let mut invocations = Vec::new();
         let mut told = 0;
         let mut newest = String::new();
-        for n in 0..RUNS_KEPT * 4 {
+        for n in 0..INVOCATIONS_KEPT * 4 {
             newest = n.to_string();
-            let seq = next_seq(&runs);
+            let seq = next_seq(&invocations);
             assert!(seq > told, "sequence {seq} after {told}");
-            runs.push(started(&n.to_string(), seq));
-            keep_latest(&mut runs);
+            invocations.push(started(&n.to_string(), seq));
+            keep_latest(&mut invocations);
             told = seq;
-            ended(&mut runs, &n.to_string(), "succeeded");
-            told = told.max(runs.iter().map(|run| run.seq).max().unwrap_or_default());
+            ended(&mut invocations, &n.to_string(), "succeeded");
+            told = told.max(
+                invocations
+                    .iter()
+                    .map(|watched| watched.seq)
+                    .max()
+                    .unwrap_or_default(),
+            );
         }
-        assert_eq!(runs.len(), RUNS_KEPT);
-        assert_eq!(runs.last().map(|run| &run.invocation), Some(&newest));
+        assert_eq!(invocations.len(), INVOCATIONS_KEPT);
+        assert_eq!(
+            invocations.last().map(|watched| &watched.invocation),
+            Some(&newest)
+        );
         // One still running outlasts those that ended.
-        let mut runs = vec![started("going", 1)];
-        for n in 0..RUNS_KEPT * 2 {
-            let seq = next_seq(&runs);
-            runs.push(started(&n.to_string(), seq));
-            ended(&mut runs, &n.to_string(), "succeeded");
-            keep_latest(&mut runs);
+        let mut invocations = vec![started("going", 1)];
+        for n in 0..INVOCATIONS_KEPT * 2 {
+            let seq = next_seq(&invocations);
+            invocations.push(started(&n.to_string(), seq));
+            ended(&mut invocations, &n.to_string(), "succeeded");
+            keep_latest(&mut invocations);
         }
-        assert_eq!(runs.len(), RUNS_KEPT);
-        assert_eq!(runs[0].invocation, "going");
+        assert_eq!(invocations.len(), INVOCATIONS_KEPT);
+        assert_eq!(invocations[0].invocation, "going");
     }
 
     tilo_test_env::scenario! {
-        fn a_watch_tells_a_runs_end_once_and_reads_history_whole;
+        fn a_watch_tells_an_invocations_end_once_and_reads_history_whole;
 
-        phase a_run_is_told_its_end_once;
-        // A run's end is one event however many sources report it: its call's
-        // answer and a watch's look at the host both say it succeeded, and the
-        // second moves nothing a cursor already passed.
+        phase an_invocation_is_told_its_end_once;
+        // An invocation's end is one event however many sources report it:
+        // its call's answer and a watch's look at the host both say it
+        // succeeded, and the second moves nothing a cursor already passed.
         {
-            let mut runs = vec![started("a", 1)];
-            ended(&mut runs, "a", "succeeded");
-            assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
-            ended(&mut runs, "a", "succeeded");
-            ended(&mut runs, "a", "failed");
-            assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
+            let mut invocations = vec![started("a", 1)];
+            ended(&mut invocations, "a", "succeeded");
+            assert_eq!(
+                (invocations[0].phase.as_str(), invocations[0].seq),
+                ("succeeded", 2)
+            );
+            ended(&mut invocations, "a", "succeeded");
+            ended(&mut invocations, "a", "failed");
+            assert_eq!(
+                (invocations[0].phase.as_str(), invocations[0].seq),
+                ("succeeded", 2)
+            );
         }
 
-        phase a_run_held_for_its_person_is_told_then_how_it_ended;
-        // A run the person is asked about is told as held, once; their answer
-        // moves it on to how it ended, and a refused call ends it.
+        phase an_invocation_held_for_its_person_is_told_then_how_it_ended;
+        // An invocation the person is asked about is told as held, once;
+        // their answer moves it on to how it ended, and a refused call ends
+        // it.
         {
-            let mut runs = vec![started("a", 1), started("b", 2)];
-            held(&mut runs, "a");
-            assert_eq!((runs[0].phase.as_str(), runs[0].seq), (HELD, 3));
-            held(&mut runs, "a");
-            assert_eq!(runs[0].seq, 3, "held is told once");
+            let mut invocations = vec![started("a", 1), started("b", 2)];
+            held(&mut invocations, "a");
+            assert_eq!((invocations[0].phase.as_str(), invocations[0].seq), (HELD, 3));
+            held(&mut invocations, "a");
+            assert_eq!(invocations[0].seq, 3, "held is told once");
             assert!(!is_terminal(HELD));
-            ended(&mut runs, "a", "succeeded");
-            assert_eq!(runs[0].phase, "succeeded");
-            ended(&mut runs, "b", "refused");
-            assert!(is_terminal(&runs[1].phase));
-            held(&mut runs, "b");
-            assert_eq!(runs[1].phase, "refused", "an ended run is never held again");
+            ended(&mut invocations, "a", "succeeded");
+            assert_eq!(invocations[0].phase, "succeeded");
+            ended(&mut invocations, "b", "refused");
+            assert!(is_terminal(&invocations[1].phase));
+            held(&mut invocations, "b");
+            assert_eq!(
+                invocations[1].phase, "refused",
+                "an ended invocation is never held again"
+            );
         }
 
         phase history_entries_are_read_whole;
-        // History lists a run's author once for the run of versions it made;
+        // History lists a group's author once for the versions it made;
         // a reader of one version reads it whole.
         {
             let answer = json!({"update": {"output": {"value": {"versions": [
-                {"change": "a", "run": "Letter", "run_id": "r1", "time_ms": 5},
+                {"change": "a", "title": "Letter", "group": "r1", "time_ms": 5},
                 {"change": "b", "invocation": "i2"},
                 {"change": "c", "by": "Ada", "time_ms": 9},
             ]}}}});
             let entries = history_entries(&answer).unwrap();
-            assert_eq!(entries[1]["run_id"], "r1");
+            assert_eq!(entries[1]["group"], "r1");
             assert_eq!(entries[1]["time_ms"], 5);
             assert_eq!(entries[2]["by"], "Ada");
             // A history answered as a bare list still reads.

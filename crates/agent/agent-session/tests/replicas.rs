@@ -512,9 +512,9 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
     assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
     assert_eq!(entry.caused_by.as_ref().unwrap().event, "e1");
     assert_eq!(
-        tilo_agent_session::bot::api::RunStep::of(&entry),
-        Some(tilo_agent_session::bot::api::RunStep {
-            run: "r1".into(),
+        tilo_agent_session::bot::api::AutomationStep::of(&entry),
+        Some(tilo_agent_session::bot::api::AutomationStep {
+            invocation: "r1".into(),
             step: "0".into()
         })
     );

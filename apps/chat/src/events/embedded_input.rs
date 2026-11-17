@@ -43,7 +43,7 @@ pub(crate) fn drive_text_input(
 /// Drive a retained shared control from Chat's immediate-mode event host.
 /// The temporary layout node only satisfies `Widget::handle_event`; menu
 /// geometry is established synchronously by its owner before dispatch.
-pub(super) fn drive_retained_control(
+pub(crate) fn drive_retained_control(
     menu: &mut dyn ui::Widget,
     event: &WindowEvent,
     scale: f64,

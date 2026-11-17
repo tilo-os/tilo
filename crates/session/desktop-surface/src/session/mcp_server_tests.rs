@@ -132,6 +132,41 @@ fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
     assert!(session.observe(&person, &InvocationId::new()).is_none());
 }
 
+/// What a protected field in a window hands the person's vault reaches the
+/// API the host hands the session, asked by the person and by nobody acting
+/// for them: not an agent they run, not an app.
+#[test]
+fn the_persons_vault_is_asked_by_the_person_alone() {
+    use tilo_actions::remote::person_vault;
+
+    let (session, _openings) = super::serve("workspace", Arc::default());
+    let person = Caller::local_person("ada").in_workspace("workspace");
+    let adding = || InvokeRequest {
+        target: person_vault::target(person_vault::ADD),
+        ..ask(mcp_server::STOP)
+    };
+    let early = answer(session.invoke(&person, adding()));
+    assert!(
+        matches!(early, Err(ActionHostError::Unavailable { .. })),
+        "without an API nothing keeps it: {early:?}"
+    );
+
+    let api = Arc::new(Host::default());
+    session.serve_person_api(person_vault::PROVIDER, api.clone());
+    assert!(answer(session.invoke(&person, adding())).is_ok());
+    assert_eq!(api.admitted.lock().unwrap().len(), 1);
+
+    let agent = person.delegated_to("helper");
+    let app = Caller::local_app("so.tilo.chat")
+        .acting_for("ada")
+        .in_workspace("workspace");
+    for other in [agent, app] {
+        let refused = answer(session.invoke(&other, adding()));
+        assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+    }
+    assert_eq!(api.admitted.lock().unwrap().len(), 1);
+}
+
 /// What a window shows its tiles as: a notice, which is all a test needs.
 struct Notices;
 

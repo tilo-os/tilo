@@ -137,11 +137,11 @@ fn parameters() -> Value {
         "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false,
             "description": "Names this attempt: a retry with the same key answers what the first did and runs nothing twice",
             "schema": {"type": "string", "minLength": 1, "maxLength": 255}},
-        "Run": {"name": "Tilo-Run", "in": "header", "required": false,
-            "description": "The run this call is a step of: every call naming it is one undo step per app",
+        "Invocation": {"name": "Tilo-Invocation", "in": "header", "required": false,
+            "description": "The invocation this call is a step of: every call naming it is one undo step per app",
             "schema": {"type": "string"}},
-        "RunTitle": {"name": "Tilo-Run-Title", "in": "header", "required": false,
-            "description": "What History calls the run", "schema": {"type": "string"}},
+        "InvocationTitle": {"name": "Tilo-Invocation-Title", "in": "header", "required": false,
+            "description": "What History calls the invocation", "schema": {"type": "string"}},
     })
 }
 
@@ -161,8 +161,8 @@ const TAGS: &[(&str, &str)] = &[
     ),
     ("Actions", "Running an action on a resource"),
     (
-        "Runs",
-        "An action's run after it answered: awaiting, cancelling, undoing it",
+        "Invocations",
+        "An action's invocation after it answered: awaiting, cancelling, undoing it",
     ),
     ("Events", "What changes in a workspace, as it changes"),
     ("Webhooks", "A workspace's events posted to a URL"),
@@ -181,7 +181,7 @@ fn tag_of(path: &str) -> &'static str {
     };
     match inside.split('/').next() {
         Some("resources") if inside.contains("/actions/") => "Actions",
-        Some("runs") => "Runs",
+        Some("invocations") => "Invocations",
         Some("events") => "Events",
         Some("webhooks") => "Webhooks",
         Some("uploads" | "content") => "Files",
@@ -200,7 +200,7 @@ fn path_parameter(name: &str) -> &'static str {
         "workspace" => "The workspace's id",
         "path" => "A resource path, each segment percent-encoded",
         "action" => "The action's id",
-        "run" => "The run, as an action answered it",
+        "invocation" => "The invocation, as an action answered it",
         "content" => "`tilo.content:<hash>`, as an upload or an action answered it",
         "grant" => "The key's grant, as `GET /v1/keys` lists it",
         "webhook" => "The webhook's id, as its creation answered it",
@@ -230,8 +230,8 @@ fn operation_of(operation: &Operation) -> Value {
         json!({"name": name, "in": "query", "required": false, "schema": {"type": "string"},
                "description": description})
     }));
-    parameters.push(json!({"$ref": "#/components/parameters/Run"}));
-    parameters.push(json!({"$ref": "#/components/parameters/RunTitle"}));
+    parameters.push(json!({"$ref": "#/components/parameters/Invocation"}));
+    parameters.push(json!({"$ref": "#/components/parameters/InvocationTitle"}));
     if operation.mutating {
         parameters.push(json!({"$ref": "#/components/parameters/IdempotencyKey"}));
     }

@@ -26,8 +26,8 @@ export {
 export { Workspace, Files, Members, WorkspaceKeys, type FileBytes } from "./workspace.ts";
 export { resourceProxy, kebab, segments } from "./resource.ts";
 export type { Resource, Step, Surface, Entry } from "./resource.ts";
-export { Run } from "./run.ts";
-export { DEFAULT_URL, Endpoint, RunGroup, VERSION, withinRun, type Reply, type RequestOptions } from "./endpoint.ts";
+export { Invocation } from "./invocation.ts";
+export { DEFAULT_URL, Endpoint, InvocationGroup, VERSION, withinInvocation, type Reply, type RequestOptions } from "./endpoint.ts";
 export {
   AskPending,
   KeyExpired,
@@ -53,8 +53,8 @@ export {
   type Person,
   type ProgramAnswer,
   type Row,
-  type RunInfo,
-  RunList,
+  type InvocationInfo,
+  InvocationList,
   type Upload,
   type Usage,
   type WorkspaceInfo,

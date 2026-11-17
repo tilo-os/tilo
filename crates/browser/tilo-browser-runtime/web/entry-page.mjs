@@ -19,7 +19,7 @@
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
 import {notifyThisBrowser} from './web-push.mjs';
-import {refusalCopy, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
+import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -27,12 +27,12 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
+import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
@@ -46,7 +46,7 @@ import {
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
-  settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
+  settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -411,12 +411,13 @@ function pairingAsk(request, decide) {
 }
 
 /** Said on a new device while the person's other device decides on it:
- * the code that device shows beside its ask. */
+ * which device that is, the code it shows beside its ask, and what to do
+ * when it does not ask (`PAIRING_WAIT`). */
 function pairingWait(code) {
   document.documentElement.dataset.pairingCode = code;
-  const card = pairCard('pair-wait', 'Waiting for approval on your other device…', 'status');
-  card.append(paragraph('Approve there if it shows this code:'), paragraph(code, 'tilo-pair-digits'),
-    paragraph('This page goes on by itself once you approve.', 'tilo-pair-note'));
+  const card = pairCard('pair-wait', PAIRING_WAIT.heading, 'status');
+  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
+    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'));
   document.body.append(card);
   return () => card.remove();
 }
@@ -970,10 +971,22 @@ export async function startEntryPage({mode}) {
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
     document.documentElement.dataset.pairingCode = code;
-    status.textContent = `Pairing code ${code}. On a device where you are already signed in, choose “Pair a new device” and approve ${code}.`;
+    status.textContent = pairingStatus(code);
   };
+  // A browser an earlier page paired to its own person is its own person
+  // again before anything asks who it is here (`unmarkOwnPairing`). Asked now
+  // and awaited with the runtime, which admission waits for anyway, so the
+  // page starts no later for it.
+  const ownAgain = unmarkOwnPairing(keptIdentity).catch(error => {
+    console.warn('pairing: this browser stays marked as paired to its own person', error);
+    return [];
+  });
   const deps = {
-    loadRuntime: async () => (runtime = await loadRuntime()),
+    loadRuntime: async () => {
+      runtime = await loadRuntime();
+      await ownAgain;
+      return runtime;
+    },
     rendererUnavailable: () => renderer,
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,
@@ -1153,10 +1166,14 @@ export async function startEntryPage({mode}) {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
       try {
-        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName,
+        // The person this browser already is, where it keeps one: the one
+        // this tab opened, else the one it keeps (a tab that opens a link
+        // has opened nobody yet). It is told so, never paired to them.
+        const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
+        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
           label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
       } catch (error) {
-        // The host's answer, said as what to do next; anything else as any failure.
+        // The host's answer, or this browser's own, said as what to do next; anything else as any failure.
         const said = pairingFailure(error);
         if (said) throw new AdmissionError('pairing', said);
         throw error;
@@ -1367,6 +1384,14 @@ export async function startEntryPage({mode}) {
         }
       });
     }
+    // A device that came in by pairing is set up. Its person set their Tilo
+    // up where their root is and approved this device there: the first screen
+    // is for someone who has none, and a paired device could do nothing with
+    // it. Nothing else says so for it, since a link's secret never shows that
+    // screen, so the hand-off below would send it to the bare site, which
+    // opens this workspace as this device again, and hands it on again.
+    if (page.peer && readSetup()?.step !== 'done'
+        && remembering(() => keptMembership({host: {origin: page.peer.origin}}))?.paired) setupDone();
     // A link that carries a secret (an invitation, a pairing) never shows the
     // first screen: the person is let in without it. A person who has not been
     // set up here and was let in this way into the site's own home workspace is
@@ -1717,7 +1742,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * `named` and asks for the invite link someone sends. Under either: signing
  * in with an identity the person already has (a passkey, then the page
  * loads again and joins as them, and a member gets in), and the field to
- * paste an invite link into, opened in this tab. Where the person has a
+ * paste an invite or pairing link into, opened in this tab. Where the person has a
  * desktop of their own without an invitation (`ownDesktopAllowed`), it waits
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
@@ -1753,11 +1778,12 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
   }
   if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages});
   offerSignIn({workspace, named, messages, runtime, link});
-  // The invite link: behind a small toggle beside the wait list; shown
-  // where it is the only way in.
-  toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
-  field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
-  field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
+  // The link that lets someone in, an invitation or a pairing from a device
+  // of theirs: behind a small toggle beside the wait list; shown where it is
+  // the only way in.
+  toggle.textContent = say('arrival-invite-toggle', 'Have an invite or pairing link?');
+  field.placeholder = say('arrival-invite-placeholder', 'Paste an invite or pairing link');
+  field.setAttribute('aria-label', say('arrival-invite-link', 'Invite or pairing link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
   form.hidden = waitList;
   toggle.addEventListener('click', () => {
@@ -1767,15 +1793,15 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
-    const target = inviteLinkTarget(field.value);
-    problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite link. Paste the whole link you were sent.');
+    const target = entryLinkTarget(field.value);
+    problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite or pairing link. Paste the whole link.');
     if (target) loadPage(target);
   });
-  // An invite link opened in this tab while it shows the entry (followed
-  // from a mail, or typed into the address bar) changes only the fragment:
-  // the page loads again to follow it.
+  // Such a link opened in this tab while it shows the entry (followed from a
+  // mail, or typed into the address bar) changes only the fragment: the page
+  // loads again to follow it.
   window.addEventListener('hashchange', () => {
-    if (inviteLinkTarget(location.href)) location.reload();
+    if (entryLinkTarget(location.href)) location.reload();
   });
   document.documentElement.dataset.refusal = waitList ? 'wait-list' : 'invite';
 }
@@ -1811,9 +1837,12 @@ function offerWaitList({workspace, contact, mail, messages}) {
  * passkey opens it (its envelope from the hosts that keep it), and the page
  * loads again to join as them, opening a workspace of their own rather than
  * the home workspace's shared desktop. A member gets in; anyone else is told
- * this identity is not in `named` yet, with the wait list still there.
+ * this identity is not in `named` yet, with the wait list still there. Where
+ * the place cannot use passkeys at all (a web view inside an app that may not
+ * use this site's), trying again changes nothing: the entry says the way in
+ * that works there, a device where the person is signed in adding this one.
  */
-function offerSignIn({workspace, named, messages, runtime, link}) {
+export function offerSignIn({workspace, named, messages, runtime, link}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   const row = document.getElementById('arrival-sign-in');
   const agent = document.getElementById('arrival-sign-in-agent');
@@ -1878,6 +1907,12 @@ function offerSignIn({workspace, named, messages, runtime, link}) {
       // Closing the passkey prompt is the person's own answer.
       if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
       note.classList.add('refusal-problem');
+      if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+        // Refused before anything was shown: not the person's answer, and not
+        // something another try changes (`asked` in identity.mjs).
+        note.textContent = say('arrival-sign-in-no-passkeys', 'Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.');
+        return;
+      }
       note.textContent = ['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
         ? say('arrival-sign-in-unknown', 'That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.')
         : say('arrival-sign-in-failed', 'Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.');
@@ -2083,7 +2118,9 @@ function inputPause() {
 function offerFirstRun({page, identityActions, runtime}) {
   firstRun.reveal();
   const peer = page.peer;
-  if (identityActions) firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
+  // Its failure reaches the screen, which says it: the desktop's own action
+  // (`perform`) keeps a failure to itself.
+  if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
   if (!peer?.origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
     if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-workspace'});

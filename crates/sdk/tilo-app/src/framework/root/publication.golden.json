@@ -503,7 +503,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "Undo",
-      "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
+      "description": "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
       "locus": "ClientLocal",
       "kind": "Document",
       "contract": {
@@ -541,15 +541,15 @@
           "nullable": true
         },
         {
-          "name": "run",
+          "name": "invocation",
           "ty": "text",
-          "description": "An agent run id from history",
+          "description": "A group id from history",
           "nullable": true
         },
         {
           "name": "by",
           "ty": "object",
-          "description": "The actor's `by` of a history entry, for steps outside a run",
+          "description": "The actor's `by` of a history entry, for steps outside an invocation",
           "nullable": true
         },
         {
@@ -748,7 +748,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "History",
-      "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
+      "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, checkpoints.",
       "locus": "ClientLocal",
       "kind": "View",
       "contract": {

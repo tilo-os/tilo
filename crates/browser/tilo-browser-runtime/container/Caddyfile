@@ -107,6 +107,27 @@
 		file_server
 	}
 
+	# The Apple apps that may use this site's passkeys, where Apple's systems
+	# ask for them once such an app is installed (TILO_WEB_APPLE_APPS,
+	# entrypoint.sh): a system web view lets a page ask for a passkey only in
+	# an app the site names here. Written at start. It is answered as it is,
+	# as JSON: those systems follow no redirect. A site that names no app has
+	# no such file, and the address is not found, as before.
+	@apple_apps {
+		path /.well-known/apple-app-site-association
+		file {
+			root {$TILO_WEB_RUN:/tmp/tilo-web}
+			try_files /apple-app-site-association
+		}
+	}
+	handle @apple_apps {
+		root * {$TILO_WEB_RUN:/tmp/tilo-web}
+		rewrite * /apple-app-site-association
+		header Content-Type application/json
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	handle /v/* {
 		root * {$TILO_WEB_SITE:/srv/tilo-web}
 		header Cache-Control "public, max-age=31536000, immutable"

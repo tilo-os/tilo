@@ -62,7 +62,7 @@ impl AppBrokerState {
                 workspace,
                 shortcut,
                 automation::InvocationStart {
-                    invocation: tilo_automation::InvocationId(request.invocation.0),
+                    invocation: tilo_automation::AutomationInvocationId(request.invocation.0),
                     trigger: tilo_automation::InvocationTrigger::Manual,
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
@@ -149,7 +149,7 @@ impl AppBrokerState {
             workspace,
             shortcut,
             automation::InvocationStart {
-                invocation: tilo_automation::InvocationId::new(),
+                invocation: tilo_automation::AutomationInvocationId::new(),
                 trigger: tilo_automation::InvocationTrigger::Manual,
                 mode: tilo_automation::InvocationMode::Interactive,
                 inputs,
@@ -203,7 +203,7 @@ impl AppBrokerState {
         workspace: &str,
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
-        invocation: tilo_automation::InvocationId,
+        invocation: tilo_automation::AutomationInvocationId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
@@ -333,7 +333,7 @@ impl AppBrokerState {
         workspace: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::InvocationStart,
-        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::InvocationId) -> K,
+        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::AutomationInvocationId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
         carried: Option<automation::Continued>,
     ) -> Result<u64, ActionHostError>

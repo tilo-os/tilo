@@ -17,6 +17,8 @@ public struct ShellSettings: Equatable, Sendable {
     public static let aloneKey = "TiloAlone"
     /// The site a build that names none opens.
     public static let productionSite = "https://tilo.sh"
+    /// The key of the sites whose passkeys this build may use, in `Info.plist` only.
+    public static let passkeySitesKey = "TiloPasskeySites"
 
     /// Why an address is not a Tilo site.
     public enum Refusal: Error, Equatable, Sendable {
@@ -93,6 +95,24 @@ public struct ShellSettings: Equatable, Sendable {
         guard info?[aloneKey] as? Bool != true else { return }
         if let app = given[appKey] as? String, (try? ShellSettings(site: productionSite, app: app)) != nil {
             defaults.set(app, forKey: appKey)
+        }
+    }
+
+    /// The sites whose passkeys a page in this build may ask for, as host names: the ones the
+    /// build's signature names, which `build.sh` lists in `Info.plist` as it signs. The system
+    /// hands a web view the passkeys of no other site. A name that begins `*.` stands for
+    /// every name under it.
+    public static func passkeySites(info: [String: Any]? = Bundle.main.infoDictionary) -> [String] {
+        (info?[passkeySitesKey] as? [String] ?? []).map { $0.lowercased() }.filter { !$0.isEmpty }
+    }
+
+    /// Whether `sites` names the site these settings open. A page names its own host as the
+    /// site a passkey belongs to, whatever the port, and only a site reached over `https` can
+    /// be named at all.
+    public func isNamed(among sites: [String]) -> Bool {
+        guard site.scheme == "https", let host = site.host()?.lowercased() else { return false }
+        return sites.contains { named in
+            named.hasPrefix("*.") ? host.hasSuffix(String(named.dropFirst())) : host == named
         }
     }
 

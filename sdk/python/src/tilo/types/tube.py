@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Library` is the app's `tube.library` at `tube/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Reply",
@@ -92,7 +92,7 @@ class Library(Resource):
         return self.action("reply-to-comment", comment=comment, text=text)
 
     def reply_to_comment_many(self, items: list[ReplyToCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reply-to-comment", items)
 
     def retract(self, *, reply: str) -> None:
@@ -100,7 +100,7 @@ class Library(Resource):
         return self.action("retract", reply=reply)
 
     def retract_many(self, items: list[RetractArgs]) -> list[dict[str, Any]]:
-        """Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("retract", items)
 
     def open_video(self, *, video: str) -> None:
@@ -187,7 +187,7 @@ class WatchHistory(Resource):
         return self.action("record", video=video, at_ms=at_ms)
 
     def record_many(self, items: list[RecordArgs]) -> list[dict[str, Any]]:
-        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record", items)
 
     def progress(self,
@@ -200,7 +200,7 @@ class WatchHistory(Resource):
         return self.action("progress", video=video, position_ms=position_ms, duration_ms=duration_ms)
 
     def progress_many(self, items: list[ProgressArgs]) -> list[dict[str, Any]]:
-        """Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("progress", items)
 
     def import_(self, *, watched: list[Any]) -> None:
@@ -208,7 +208,7 @@ class WatchHistory(Resource):
         return self.action("import", watched=watched)
 
     def import_many(self, items: list[ImportArgs]) -> list[dict[str, Any]]:
-        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import", items)
 
     def forget(self, *, video: str) -> None:
@@ -216,7 +216,7 @@ class WatchHistory(Resource):
         return self.action("forget", video=video)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget", items)
 
     def clear(self) -> None:
@@ -224,7 +224,7 @@ class WatchHistory(Resource):
         return self.action("clear")
 
     def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
-        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

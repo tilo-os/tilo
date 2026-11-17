@@ -18,7 +18,7 @@ pub(super) struct AgentStatusArgs {
     invocation_id: Option<String>,
     #[serde(default)]
     cancel: bool,
-    /// Take back what the invocation's run changed ([`McpServer::undo_run`]).
+    /// Take back what the invocation changed ([`McpServer::undo_invocation`]).
     #[serde(default)]
     undo: bool,
 }
@@ -39,9 +39,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let invocation = invocation_id(id)?;
         if args.undo {
             if args.cancel {
-                return Err("cancel stops a run and undo takes one back: ask one of them".into());
+                return Err(
+                    "cancel stops an invocation and undo takes one back: ask one of them".into(),
+                );
             }
-            return self.undo_run(id, structured).await;
+            return self.undo_invocation(id, structured).await;
         }
         if args.cancel {
             self.host()
@@ -60,30 +62,30 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// This session's invocations, oldest first, each with the path it ran
     /// and how it stands as last told.
     fn session_invocations(&self, structured: bool) -> Reply {
-        let runs = self.runs.lock_recover().clone();
-        let text = if runs.is_empty() {
+        let invocations = self.invocations.lock_recover().clone();
+        let text = if invocations.is_empty() {
             "this session ran nothing yet; tilo_do runs an action, and tilo_status \
              {invocation_id} says how one went"
                 .to_owned()
         } else {
             let mut text = String::from("this session's invocations, oldest first:");
-            for run in &runs {
-                let path = if run.path.is_empty() {
+            for watched in &invocations {
+                let path = if watched.path.is_empty() {
                     "(calls)"
                 } else {
-                    &run.path
+                    &watched.path
                 };
-                let _ = write!(text, "\n{} {path} {}", run.invocation, run.phase);
+                let _ = write!(text, "\n{} {path} {}", watched.invocation, watched.phase);
             }
             text
         };
         let typed = structured.then(|| {
-            serde_json::json!({"invocations": runs
+            serde_json::json!({"invocations": invocations
                 .iter()
-                .map(|run| serde_json::json!({
-                    "invocation_id": run.invocation,
-                    "path": run.path,
-                    "state": run.phase,
+                .map(|watched| serde_json::json!({
+                    "invocation_id": watched.invocation,
+                    "path": watched.path,
+                    "state": watched.phase,
                 }))
                 .collect::<Vec<_>>()})
         });

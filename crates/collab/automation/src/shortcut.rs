@@ -2,7 +2,7 @@
 //!
 //! Everything here is inert data: it can be stored, synced, diffed and shown
 //! in an editor without a host. Meaning comes from [`check`](fn@crate::check),
-//! which types it against live descriptors, and [`run`](fn@crate::run), which
+//! which types it against live descriptors, and [`run`](fn@crate::invocation::run), which
 //! executes it.
 
 use std::collections::BTreeMap;
@@ -27,24 +27,24 @@ pub struct Shortcut {
     /// The person's name for it. Carried into history as the purpose of every
     /// action the shortcut takes.
     pub name: String,
-    /// What a run is started with, in the same typed vocabulary actions use.
+    /// What an invocation is started with, in the same typed vocabulary actions use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ActionParam>,
     pub steps: Vec<Step>,
-    /// How long one step may take before the run stops waiting for it, in
-    /// seconds. Absent, [`DEFAULT_STEP_TIMEOUT`](crate::run::DEFAULT_STEP_TIMEOUT)
-    /// applies. A run nobody is present at needs a bound: a step whose action
-    /// never answers would otherwise hold the run — and the one on its heels
+    /// How long one step may take before the invocation stops waiting for it, in
+    /// seconds. Absent, [`DEFAULT_STEP_TIMEOUT`](crate::invocation::DEFAULT_STEP_TIMEOUT)
+    /// applies. An invocation nobody is present at needs a bound: a step whose action
+    /// never answers would otherwise hold the invocation — and the one on its heels
     /// — for ever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_timeout_secs: Option<u64>,
-    /// The value a finished run reports back to whoever started it.
+    /// The value a finished invocation reports back to whoever started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
-    /// The most the shortcut may do, shown when it is imported. A run acts
+    /// The most the shortcut may do, shown when it is imported. An invocation acts
     /// with the stricter of this and the authority of the person who started
     /// it: a step outside the grant is refused here, a step outside the
-    /// person's authority is refused by the host. A run nobody is present at
+    /// person's authority is refused by the host. An invocation nobody is present at
     /// refuses what the grant would ask about, and passes a confirmation only
     /// for an action a rule names exactly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -117,8 +117,8 @@ pub enum ShortcutChange {
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
-    /// What the run does when the step does not succeed. Absent, the step
-    /// must succeed and the run stops at it
+    /// What the invocation does when the step does not succeed. Absent, the step
+    /// must succeed and the invocation stops at it
     /// ([`StepPolicy::Fail`]).
     #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
     pub on_error: StepPolicy,
@@ -127,7 +127,7 @@ pub struct Step {
 }
 
 impl Step {
-    /// The step must succeed; when it does not, the run stops at it.
+    /// The step must succeed; when it does not, the invocation stops at it.
     #[must_use]
     pub fn new(id: impl Into<String>, kind: StepKind) -> Self {
         Self {
@@ -145,20 +145,20 @@ impl Step {
     }
 }
 
-/// What a run does with a step that did not succeed.
+/// What an invocation does with a step that did not succeed.
 ///
 /// Whatever the policy, a failure is recorded with the step and shown: a
-/// step that is retried, run into a fallback or passed over is never the
+/// step that is retried, sent into a fallback or passed over is never the
 /// same as one that worked.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "on_error", rename_all = "snake_case")]
 pub enum StepPolicy {
-    /// Stop the run here.
+    /// Stop the invocation here.
     #[default]
     Fail,
     /// Try the step again `attempts` times in all, waiting `backoff_ms`
     /// before the second attempt and doubling the wait each time after it,
-    /// and stop the run if the last one fails too. A retry sends the same
+    /// and stop the invocation if the last one fails too. A retry sends the same
     /// [`InvocationId`](tilo_actions::outcome::InvocationId), so an action is
     /// never applied twice.
     Retry {
@@ -172,7 +172,7 @@ pub enum StepPolicy {
     /// that run here are recorded where they ran.
     Fallback { steps: Vec<Step> },
     /// Carry on with `value` as the step's output, if nothing it changed
-    /// can be taken back by simply not using it, and mark the run degraded.
+    /// can be taken back by simply not using it, and mark the invocation degraded.
     Default { value: Binding },
 }
 
@@ -182,16 +182,16 @@ impl StepPolicy {
         matches!(self, Self::Fail)
     }
 
-    /// How long the run waits before attempt `attempt` (the second one
+    /// How long the invocation waits before attempt `attempt` (the second one
     /// being 2): `backoff_ms`, doubling each time, at most
-    /// [`MAX_BACKOFF_MS`](crate::run::MAX_BACKOFF_MS).
+    /// [`MAX_BACKOFF_MS`](crate::invocation::MAX_BACKOFF_MS).
     #[must_use]
     pub fn wait_before(&self, attempt: u32) -> std::time::Duration {
         match self {
             Self::Retry { backoff_ms, .. } => {
                 let wait = backoff_ms
                     .saturating_mul(1_u64 << attempt.saturating_sub(2).min(32))
-                    .clamp(1, crate::run::MAX_BACKOFF_MS);
+                    .clamp(1, crate::invocation::MAX_BACKOFF_MS);
                 std::time::Duration::from_millis(wait)
             }
             _ => std::time::Duration::ZERO,
@@ -204,7 +204,7 @@ fn one() -> u32 {
 }
 
 const fn default_backoff_ms() -> u64 {
-    crate::run::DEFAULT_BACKOFF_MS
+    crate::invocation::DEFAULT_BACKOFF_MS
 }
 
 /// What a step does.
@@ -243,7 +243,7 @@ pub enum StepKind {
     /// Bind a variable for later steps.
     SetVar { name: String, value: Binding },
     /// Ask the person running the shortcut for one value. The answer is this
-    /// step's output. Unattended runs cannot ask and fail here.
+    /// step's output. Unattended invocations cannot ask and fail here.
     Ask { param: ActionParam },
     /// Answer `prompt` with the agent in one model call, as a value of
     /// `output`. Lowered to an invocation of the agent's `freeform`
@@ -258,13 +258,13 @@ pub enum StepKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<Binding>,
     },
-    /// Start a task with the agent — a model-driven run of the actions the
+    /// Start a task with the agent — a model-driven session of the actions the
     /// person is offered — and wait for its typed summary.
     Task {
         /// What the task is to do, in the person's words.
         instruction: String,
         /// What the person can run it with: each one narrows the task's
-        /// authority below the run's, and never widens it.
+        /// authority below the invocation's, and never widens it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allow: Vec<Rule>,
         /// The JSON Schema the summary must satisfy; absent for text.
@@ -275,10 +275,10 @@ pub enum StepKind {
     /// API every reader reads records through: `record` of `app` (empty for
     /// the app's record of the workspace; a chain's head for its newest
     /// part), or with `joined` the chain of parts whose base it is. `record`
-    /// may name it from the run with `{{...}}` placeholders, as a template
+    /// may name it from the invocation with `{{...}}` placeholders, as a template
     /// does: the record an event changed. The output is the API's answer,
     /// `{revision, records: [{record, value | absent | arriving}]}`. A read
-    /// changes nothing; what the run does with it, it does through actions.
+    /// changes nothing; what the invocation does with it, it does through actions.
     Read {
         app: String,
         #[serde(default)]
@@ -331,7 +331,7 @@ impl StepKind {
 pub enum Selector {
     /// Exactly this stable resource id.
     Fixed(String),
-    /// The resource address a binding evaluates to at run time.
+    /// The resource address a binding evaluates to when the step runs.
     FromBinding(Binding),
     /// The first published resource of this kind (or a sub-kind of it) that
     /// offers the action.
@@ -518,7 +518,7 @@ tilo_resource::value_model!(
 );
 
 /// What may start a shortcut. Data only: the session decides how to watch
-/// for each and starts an unattended run when one fires.
+/// for each and starts an unattended invocation when one fires.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum TriggerSpec {
@@ -641,7 +641,7 @@ pub const EVENT_INPUT: &str = "event";
 static EVENT_PAYLOAD: [ActionParam; 1] = [ActionParam::required(
     EVENT_INPUT,
     ParamType::Object,
-    "What fired the run: the change, the connector event or the fire time",
+    "What fired the invocation: the change, the connector event or the fire time",
 )];
 
 /// [`TriggerSpec::FocusMode`] mode: the person's Do Not Disturb switch.
@@ -684,7 +684,7 @@ static FOCUS_PAYLOAD: [ActionParam; 2] = [
 ];
 
 impl TriggerSpec {
-    /// What a firing of this trigger tells the run it starts. Each value is
+    /// What a firing of this trigger tells the invocation it starts. Each value is
     /// bound to the shortcut's input of the same name, when it declares one
     /// of the same type.
     #[must_use]
@@ -704,7 +704,7 @@ impl TriggerSpec {
         }
     }
 
-    /// Stable name of the trigger's kind, recorded with every run it starts.
+    /// Stable name of the trigger's kind, recorded with every invocation it starts.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {

@@ -13,7 +13,7 @@ usually wants one per job.
 | Files | Bytes an action takes or makes, named by a `tilo.content:` reference ([files](files.md)) |
 | People | You, and anyone you invite, each with a role |
 | Keys | The keys that reach this workspace and nothing else ([keys](identities.md#keys)) |
-| History | Every change, who made it, which run it was part of, and what can be undone |
+| History | Every change, who made it, which group it was part of, and what can be undone |
 
 ## Naming a workspace
 
@@ -222,4 +222,4 @@ comes in through the actions above.
 ## Where next
 
 - [Resources and actions](resources-and-actions.md): what is inside, and how to reach it.
-- [Runs and history](runs-and-history.md): who did what, and taking it back.
+- [Invocations and history](invocations-and-history.md): who did what, and taking it back.

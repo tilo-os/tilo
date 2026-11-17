@@ -1,6 +1,6 @@
 //! Save-time checking of a shortcut against the descriptors it will run on.
 //!
-//! The checker answers "could this run at all?" before anything runs: every
+//! The checker answers whether a shortcut can run at all, before anything runs: every
 //! step names an action the invoking person is offered, every argument is
 //! bound to a value whose type can satisfy the parameter, every step output
 //! pointer exists in the declared result schema where the schema says, every
@@ -8,7 +8,7 @@
 //! back to the one being saved. Errors name the step path they are about.
 //!
 //! What cannot be known at save time (a value typed only as "any", an open
-//! schema) is left to the run, which binds every argument strictly against
+//! schema) is left to the invocation, which binds every argument strictly against
 //! the live descriptor before invoking.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -88,7 +88,7 @@ pub enum CheckErrorKind {
     NotIterable(String),
     #[error("the shortcut's grant does not cover `{action}` on `{app_id}`")]
     OutsideGrant { app_id: String, action: String },
-    #[error("a shortcut run must name the shortcut exactly, so a cycle can be ruled out")]
+    #[error("a step must name the shortcut exactly, so a cycle can be ruled out")]
     UnresolvableShortcut,
     #[error("the shortcut would run itself: {}", chain.join(" → "))]
     Recursion { chain: Vec<String> },
@@ -933,7 +933,7 @@ fn shortcut_calls(steps: &[Step], path: &StepPath, out: &mut Vec<(StepPath, Stri
     }
 }
 
-/// Every chain of shortcut runs, starting at one of `root`'s steps, that
+/// Every chain of shortcut invocations, starting at one of `root`'s steps, that
 /// leads back to `root`.
 fn recursion(root: &Shortcut, resolver: &impl ShortcutResolver) -> Vec<CheckError> {
     let mut direct = Vec::new();

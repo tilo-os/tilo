@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workspace` is the app's `api-tester.workspace` at `api-tester/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "AuthScheme",
@@ -206,7 +206,7 @@ class Workspace(Resource):
         return self.action("new-request")
 
     def new_request_many(self, items: list[NewRequestArgs]) -> list[dict[str, Any]]:
-        """Runs `new-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-request", items)
 
     def new_collection(self, *, name: str) -> None:
@@ -214,7 +214,7 @@ class Workspace(Resource):
         return self.action("new-collection", name=name)
 
     def new_collection_many(self, items: list[NewCollectionArgs]) -> list[dict[str, Any]]:
-        """Runs `new-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-collection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-collection", items)
 
     def delete_collection(self, *, collection: str) -> None:
@@ -222,7 +222,7 @@ class Workspace(Resource):
         return self.action("delete-collection", collection=collection)
 
     def delete_collection_many(self, items: list[DeleteCollectionArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-collection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-collection", items)
 
     def add_request(self,
@@ -234,7 +234,7 @@ class Workspace(Resource):
         return self.action("add-request", collection=collection, name=name)
 
     def add_request_many(self, items: list[AddRequestArgs]) -> list[dict[str, Any]]:
-        """Runs `add-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-request", items)
 
     def save_request(self,
@@ -250,7 +250,7 @@ class Workspace(Resource):
         return self.action("save-request", **args)
 
     def save_request_many(self, items: list[SaveRequestArgs]) -> list[dict[str, Any]]:
-        """Runs `save-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-request", items)
 
     def open_request(self,
@@ -262,7 +262,7 @@ class Workspace(Resource):
         return self.action("open-request", collection=collection, request=request)
 
     def open_request_many(self, items: list[OpenRequestArgs]) -> list[dict[str, Any]]:
-        """Runs `open-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `open-request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open-request", items)
 
     def delete_request(self,
@@ -274,7 +274,7 @@ class Workspace(Resource):
         return self.action("delete-request", collection=collection, request=request)
 
     def delete_request_many(self, items: list[DeleteRequestArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-request", items)
 
     def new_environment(self, *, name: str) -> None:
@@ -282,7 +282,7 @@ class Workspace(Resource):
         return self.action("new-environment", name=name)
 
     def new_environment_many(self, items: list[NewEnvironmentArgs]) -> list[dict[str, Any]]:
-        """Runs `new-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `new-environment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new-environment", items)
 
     def delete_environment(self, *, environment: str) -> None:
@@ -290,7 +290,7 @@ class Workspace(Resource):
         return self.action("delete-environment", environment=environment)
 
     def delete_environment_many(self, items: list[DeleteEnvironmentArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-environment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-environment", items)
 
     def use_environment(self, *, environment: str) -> None:
@@ -298,7 +298,7 @@ class Workspace(Resource):
         return self.action("use-environment", environment=environment)
 
     def use_environment_many(self, items: list[UseEnvironmentArgs]) -> list[dict[str, Any]]:
-        """Runs `use-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `use-environment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("use-environment", items)
 
     def add_variable(self,
@@ -319,7 +319,7 @@ class Workspace(Resource):
         return self.action("add-variable", **args)
 
     def add_variable_many(self, items: list[AddVariableArgs]) -> list[dict[str, Any]]:
-        """Runs `add-variable` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-variable` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-variable", items)
 
     def open_sent(self, *, sent: str) -> None:
@@ -327,7 +327,7 @@ class Workspace(Resource):
         return self.action("open-sent", sent=sent)
 
     def open_sent_many(self, items: list[OpenSentArgs]) -> list[dict[str, Any]]:
-        """Runs `open-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `open-sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open-sent", items)
 
     def save_sent(self,
@@ -345,7 +345,7 @@ class Workspace(Resource):
         return self.action("save-sent", **args)
 
     def save_sent_many(self, items: list[SaveSentArgs]) -> list[dict[str, Any]]:
-        """Runs `save-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-sent", items)
 
     def delete_sent(self, *, sent: str) -> None:
@@ -353,7 +353,7 @@ class Workspace(Resource):
         return self.action("delete-sent", sent=sent)
 
     def delete_sent_many(self, items: list[DeleteSentArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-sent", items)
 
     def record_sent(self,
@@ -367,7 +367,7 @@ class Workspace(Resource):
         return self.action("record-sent", method=method, url=url, status=status, duration_ms=duration_ms)
 
     def record_sent_many(self, items: list[RecordSentArgs]) -> list[dict[str, Any]]:
-        """Runs `record-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-sent", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

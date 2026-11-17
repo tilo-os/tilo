@@ -33,15 +33,15 @@ use collab_types::history::HistoryEntryId;
 
 /// A contiguous run of changes, addressed by its first and last change.
 ///
-/// Both ends are inclusive and content-addressed, so the same `ChangeRun` names
+/// Both ends are inclusive and content-addressed, so the same `ChangeRange` names
 /// the same work on every peer that has those changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChangeRun {
+pub struct ChangeRange {
     pub start: HistoryEntryId,
     pub end: HistoryEntryId,
 }
 
-impl ChangeRun {
+impl ChangeRange {
     pub fn new(start: HistoryEntryId, end: HistoryEntryId) -> Self {
         Self { start, end }
     }
@@ -146,7 +146,7 @@ pub enum RevertError {
 /// [`RevertError::Inverted`] when the run's end precedes its start.
 pub fn run_bounds(
     doc: &mut AutoCommit,
-    run: &ChangeRun,
+    run: &ChangeRange,
 ) -> Result<(Vec<ChangeHash>, Vec<ChangeHash>, usize), RevertError> {
     let versions = tilo_resource::history::versions(doc);
     let mut first = None;
@@ -571,7 +571,7 @@ fn classify(
 /// addressed in `doc`.
 pub fn plan_revert(
     doc: &mut AutoCommit,
-    run: &ChangeRun,
+    run: &ChangeRange,
     by: Option<&str>,
     authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
@@ -617,9 +617,9 @@ fn plan(
 ///
 /// Propagates [`RevertError`] from [`run_bounds`] when `run` cannot be
 /// addressed in `doc`.
-pub fn revert_run(
+pub fn revert_invocation(
     doc: &mut AutoCommit,
-    run: &ChangeRun,
+    run: &ChangeRange,
     by: Option<&str>,
     authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
@@ -638,15 +638,15 @@ pub fn revert_run(
 }
 
 /// Undo one entry's share of a run of work by writing its inverse forward
-/// into `doc`: [`revert_run`] for a run of one change, which is what a step
-/// of an agent's run names (the toolkit's `RunStep`).
+/// into `doc`: [`revert_invocation`] for a run of one change, which is what a step
+/// of an agent's run names (the toolkit's `InvocationStep`).
 ///
 /// This is the step the reader's history takes back, and it is the same one
 /// `undo` publishes: a run undone by an agent's report and one undone by
 /// Ctrl+Z write the same inverse, through the same classification of what a
 /// later writer has since changed.
 ///
-/// The transaction is left **open**, as with [`revert_run`]: the caller
+/// The transaction is left **open**, as with [`revert_invocation`]: the caller
 /// commits.
 ///
 /// # Errors
@@ -659,8 +659,8 @@ pub fn revert_step(
     by: Option<&str>,
     authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
-    let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
-    revert_run(doc, &run, by, authors)
+    let run = ChangeRange::single(entry_id_from_hash(&change.to_string()));
+    revert_invocation(doc, &run, by, authors)
 }
 
 /// Undo several changes, each on its own, into one open transaction:
@@ -669,7 +669,7 @@ pub fn revert_step(
 /// the history closes the open transaction, which would commit the first
 /// revert as a change of its own.
 ///
-/// As with [`revert_run`] the caller commits. Each outcome's
+/// As with [`revert_invocation`] the caller commits. Each outcome's
 /// [`RevertOutcome::kept`] says what somebody else had set since and stays.
 ///
 /// # Errors
@@ -682,7 +682,7 @@ pub fn revert_changes(
 ) -> Result<Vec<RevertOutcome>, RevertError> {
     let mut plans = Vec::with_capacity(changes.len());
     for (hash, actor) in changes {
-        let run = ChangeRun::single(entry_id_from_hash(&hash.to_string()));
+        let run = ChangeRange::single(entry_id_from_hash(&hash.to_string()));
         let (before, after, covered) = run_bounds(doc, &run)?;
         let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
@@ -773,7 +773,7 @@ pub fn changes_of_entries(
 /// a run: the agent commits under one stable actor, so its work is a
 /// maximal run of consecutive changes under that actor, stopping at the
 /// first change by anybody else.
-pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun> {
+pub fn latest_invocation_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRange> {
     let versions = tilo_resource::history::versions(doc);
     // Schema genesis is written by a fixed actor nobody is, so inverting it
     // would take the document's containers with it.
@@ -794,7 +794,7 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
     }
     let start_hash = &versions.get(first)?.hash.to_string();
     let end_hash = &versions.get(last)?.hash.to_string();
-    Some(ChangeRun::new(
+    Some(ChangeRange::new(
         entry_id_from_hash(start_hash),
         entry_id_from_hash(end_hash),
     ))
@@ -826,9 +826,9 @@ mod replay_regressions {
             doc.set_actor(ActorId::from(b"bob".as_slice()));
             doc.put(&protected, "label", "peer edited b").unwrap();
             doc.commit();
-            let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
+            let run = ChangeRange::single(entry_id_from_hash(&change.to_string()));
             let result =
-                revert_run(&mut doc, &run, None, &crate::history_source::TestWords).unwrap();
+                revert_invocation(&mut doc, &run, None, &crate::history_source::TestWords).unwrap();
             assert!(result.wrote);
             assert_eq!(result.kept.len(), 1);
             let labels = (0..doc.length(&list))
@@ -868,9 +868,9 @@ mod replay_regressions {
             .unwrap();
             doc.commit();
             let before = doc.marks(&text).unwrap();
-            let result = revert_run(
+            let result = revert_invocation(
                 &mut doc,
-                &ChangeRun::single(entry_id_from_hash(&change.to_string())),
+                &ChangeRange::single(entry_id_from_hash(&change.to_string())),
                 None,
                 &crate::history_source::TestWords,
             )

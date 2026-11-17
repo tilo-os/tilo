@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Library` is the app's `video-player.library` at `video-player/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Playlist",
@@ -129,7 +129,7 @@ class Library(Resource):
         return self.action("create-playlist", name=name)
 
     def create_playlist_many(self, items: list[CreatePlaylistArgs]) -> list[dict[str, Any]]:
-        """Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-playlist", items)
 
     def delete_playlist(self, *, playlist: str) -> None:
@@ -137,7 +137,7 @@ class Library(Resource):
         return self.action("delete-playlist", playlist=playlist)
 
     def delete_playlist_many(self, items: list[DeletePlaylistArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-playlist", items)
 
     def add_to_playlist(self,
@@ -150,7 +150,7 @@ class Library(Resource):
         return self.action("add-to-playlist", playlist=playlist, media_ref=media_ref, title=title)
 
     def add_to_playlist_many(self, items: list[AddToPlaylistArgs]) -> list[dict[str, Any]]:
-        """Runs `add-to-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-to-playlist` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-to-playlist", items)
 
     def add_to_watch_later(self,
@@ -162,7 +162,7 @@ class Library(Resource):
         return self.action("add-to-watch-later", media_ref=media_ref, title=title)
 
     def add_to_watch_later_many(self, items: list[AddToWatchLaterArgs]) -> list[dict[str, Any]]:
-        """Runs `add-to-watch-later` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-to-watch-later` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-to-watch-later", items)
 
     def add_annotation(self,
@@ -180,7 +180,7 @@ class Library(Resource):
         return self.action("add-annotation", **args)
 
     def add_annotation_many(self, items: list[AddAnnotationArgs]) -> list[dict[str, Any]]:
-        """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-annotation", items)
 
     def delete_annotation(self, *, annotation: str) -> None:
@@ -188,7 +188,7 @@ class Library(Resource):
         return self.action("delete-annotation", annotation=annotation)
 
     def delete_annotation_many(self, items: list[DeleteAnnotationArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-annotation", items)
 
     def set_transport(self,
@@ -203,7 +203,7 @@ class Library(Resource):
         return self.action("set-transport", media_ref=media_ref, playing=playing, position_ms=position_ms, rate=rate, epoch_ms=epoch_ms)
 
     def set_transport_many(self, items: list[SetTransportArgs]) -> list[dict[str, Any]]:
-        """Runs `set-transport` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-transport` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-transport", items)
 
     def open_video(self,
@@ -239,7 +239,7 @@ class Recent(Resource):
         return self.action("keep", device=device, rows=rows)
 
     def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
-        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("keep", items)
 
     def stood(self,
@@ -252,7 +252,7 @@ class Recent(Resource):
         return self.action("stood", device=device, id=id, position_ms=position_ms)
 
     def stood_many(self, items: list[StoodArgs]) -> list[dict[str, Any]]:
-        """Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stood", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

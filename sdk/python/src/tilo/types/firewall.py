@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Config` is the app's `firewall.config` at `firewall/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Action",
@@ -115,7 +115,7 @@ class Config(Resource):
         return self.action("start")
 
     def start_many(self, items: list[StartArgs]) -> list[dict[str, Any]]:
-        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start", items)
 
     def stop(self) -> None:
@@ -123,7 +123,7 @@ class Config(Resource):
         return self.action("stop")
 
     def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
-        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
 
     def enter_panic_mode(self) -> None:
@@ -131,7 +131,7 @@ class Config(Resource):
         return self.action("enter-panic-mode")
 
     def enter_panic_mode_many(self, items: list[EnterPanicModeArgs]) -> list[dict[str, Any]]:
-        """Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("enter-panic-mode", items)
 
     def exit_panic_mode(self) -> None:
@@ -139,7 +139,7 @@ class Config(Resource):
         return self.action("exit-panic-mode")
 
     def exit_panic_mode_many(self, items: list[ExitPanicModeArgs]) -> list[dict[str, Any]]:
-        """Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("exit-panic-mode", items)
 
     def delete_rule(self,
@@ -151,7 +151,7 @@ class Config(Resource):
         return self.action("delete-rule", zone=zone, rule=rule)
 
     def delete_rule_many(self, items: list[DeleteRuleArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-rule", items)
 
     def import_(self, *, config: Any) -> None:
@@ -159,7 +159,7 @@ class Config(Resource):
         return self.action("import", config=config)
 
     def import_many(self, items: list[ImportArgs]) -> list[dict[str, Any]]:
-        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import", items)
 
     def read_blocked(self) -> None:
@@ -185,7 +185,7 @@ class Applied(Resource):
         return self.action("applied", device=device, config=config)
 
     def applied_many(self, items: list[AppliedArgs]) -> list[dict[str, Any]]:
-        """Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("applied", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

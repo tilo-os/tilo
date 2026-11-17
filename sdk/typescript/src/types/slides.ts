@@ -8,12 +8,12 @@
  * resource's path (`slides/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -211,17 +211,17 @@ export interface Deck extends tilo.Resource {
     at: number;
     slide: SlideData;
   }): Promise<void>;
-  /** Runs `insert-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `insert-slide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insertSlideMany(items: InsertSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateSlide(args: {
     slide: string;
   }): Promise<void>;
-  /** Runs `duplicate-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `duplicate-slide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicateSlideMany(items: DuplicateSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSlide(args: {
     slide: string;
   }): Promise<void>;
-  /** Runs `delete-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-slide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteSlideMany(items: DeleteSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   moveSlide(args: {
     slide: string;
@@ -240,25 +240,25 @@ export interface Deck extends tilo.Resource {
     slide: string;
     element: ElementData;
   }): Promise<void>;
-  /** Runs `insert-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `insert-element` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insertElementMany(items: InsertElementArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteElement(args: {
     slide: string;
     element: string;
   }): Promise<void>;
-  /** Runs `delete-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-element` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteElementMany(items: DeleteElementArgs[]): Promise<tilo.ActionAnswer[]>;
   bringToFront(args: {
     slide: string;
     element: string;
   }): Promise<void>;
-  /** Runs `bring-to-front` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `bring-to-front` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   bringToFrontMany(items: BringToFrontArgs[]): Promise<tilo.ActionAnswer[]>;
   sendToBack(args: {
     slide: string;
     element: string;
   }): Promise<void>;
-  /** Runs `send-to-back` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `send-to-back` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   sendToBackMany(items: SendToBackArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceDeck(args: {
     title: string;
@@ -266,7 +266,7 @@ export interface Deck extends tilo.Resource {
     slides: SlideData[];
     look?: DeckLook;
   }): Promise<void>;
-  /** Runs `replace-deck` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `replace-deck` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replaceDeckMany(items: ReplaceDeckArgs[]): Promise<tilo.ActionAnswer[]>;
   readDeck(): Promise<void>;
   exportPptxContent(): Promise<void>;

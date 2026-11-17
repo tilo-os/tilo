@@ -22,7 +22,7 @@ use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{Job, Ledger, Needs, Outcome, Performed, Shared, Worker, is_part};
+use super::{Job, Ledger, Needs, Outcome, Performed, Shared, Worker};
 use tilo_relay_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
@@ -208,7 +208,7 @@ fn log_saved(written: &[Written], outcome: &Result<(), String>) {
 }
 
 /// The changes `mutation` carries, short hashes, for the log: each change of
-/// a run of them, or the heads of a whole record.
+/// an invocation of them, or the heads of a whole record.
 fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
     let hashes = match mutation {
         DocumentMutation::Incremental(bytes) => {
@@ -441,7 +441,8 @@ impl Worker {
     /// Name the record at `route` in its app's index of the workspace,
     /// under what its app calls it now, unless the index already does. A
     /// record of the workspace itself (its layout, its emoji), the index, and
-    /// a part of a record's chain are no records of their own there.
+    /// a record kept in another's tree (a part of its chain, a chunk of it, a
+    /// child of it) are no records of their own there.
     ///
     /// What an app calls a record is read from the whole record, so it is not
     /// read on every write: a record this service has not named yet is named
@@ -450,7 +451,7 @@ impl Worker {
     /// last was, however many writes it took meanwhile.
     pub(super) fn index_document(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()
-            || is_part(&route.record)
+            || in_a_tree(&route.record)
             || collab_types::workspace_document(&route.app_id, &route.record).is_some()
             || self.catalogue.get(&route.app_id).is_none()
         {
@@ -555,6 +556,12 @@ impl Worker {
         // record and the index that names it.
         self.commit(workspace_id, &index_route, &mutation)
     }
+}
+
+/// Whether `record` is kept in another record's tree: a part of its chain, a
+/// chunk of it, a child of it.
+fn in_a_tree(record: &str) -> bool {
+    ui::resource::DocumentId::parse(record).is_some_and(|id| id.tree().is_some())
 }
 
 /// How long after a record's name was read it is read again when the record

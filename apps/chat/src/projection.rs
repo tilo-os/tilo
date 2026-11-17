@@ -15,6 +15,9 @@ use crate::record::{Chat, Conversation};
 /// (`agent:<id>`): the answer of the workspace's own record of its agents.
 pub type AgentNames = HashMap<String, String>;
 
+/// What the workspace's member list calls each of its people.
+pub type PeopleNames = HashMap<MemberId, String>;
+
 /// The published id of the item `id` of the record's `field`
 /// (`channels`, `messages`, …): what a caller addresses its actions to.
 #[must_use]
@@ -81,18 +84,19 @@ impl Chat {
     /// record keeps for an agent among them.
     ///
     /// A conversation with an agent is named by what the workspace calls its agents (`agents`),
-    /// whether or not the agent is working here this moment.
+    /// whether or not the agent is working here this moment, and one with a person by what its
+    /// member list calls them (`people`), whether or not they ever opened Chat.
     #[must_use]
     pub fn conversation_rows(
         &self,
         me: &MemberId,
         messages: &crate::messages::Messages,
-        agents: &AgentNames,
+        (agents, people): (&AgentNames, &PeopleNames),
     ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, members: Vec<MemberId>, recorded: Option<&Conversation>| {
-            let name = self.display_names(id, Some(me), agents);
+            let name = self.display_names(id, Some(me), (agents, people));
             direct.push((
                 name.clone(),
                 Channel {
@@ -166,7 +170,12 @@ impl Chat {
     /// An agent is named by what the workspace's own record calls it (`agents`), the identity
     /// record every app of the workspace reads, not by whether its device happens to be here.
     #[must_use]
-    pub fn display_names(&self, id: &Id, me: Option<&MemberId>, agents: &AgentNames) -> String {
+    pub fn display_names(
+        &self,
+        id: &Id,
+        me: Option<&MemberId>,
+        (agents, people): (&AgentNames, &PeopleNames),
+    ) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.members.is_empty()
             && !conversation.name.trim().is_empty()
@@ -177,15 +186,14 @@ impl Chat {
         let named: Vec<String> = members
             .iter()
             .map(|member| {
-                let agent_name = if member.is_person() {
-                    None
+                let listed = if member.is_person() {
+                    people.get(member)
                 } else {
-                    agents
-                        .get(member.id())
-                        .map(|name| name.trim().to_owned())
-                        .filter(|name| !name.is_empty())
+                    agents.get(member.id())
                 };
-                agent_name
+                listed
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
                     .or_else(|| {
                         self.people
                             .find(&crate::record::member_slot(member))

@@ -700,9 +700,9 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 /// A minted key's agent goes by the name the key was minted with: History
 /// names its changes "Jane Doe's agent", in the colour presence draws it in,
 /// never the key's grant id nor anything the client says of itself. Its run
-/// goes by the title the agent gave it (`_meta` run.title), and by the
+/// goes by the title the agent gave it (`_meta` invocation.title), and by the
 /// agent's name where it gave none, and each of its changes names the run's
-/// id (`_meta` run.id) beside the agent.
+/// id (`_meta` invocation.id) beside the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     let on_relay = api_on_relay(ISSUER).await;
@@ -751,7 +751,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
                                 "arguments": {"path": "word-processor#append-paragraph",
                                               "args": {"text": "I apply for a tourist visa."}},
                                 "_meta": {"so.tilo.mcp": {"structured": true,
-                                                          "run": {"id": "visa-1",
+                                                          "invocation": {"id": "visa-1",
                                                                   "title": title}}}}}))
         .await;
     assert_eq!(status, 200, "{reply}");
@@ -791,7 +791,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     );
     let runs: std::collections::BTreeSet<&str> = by_agent
         .iter()
-        .filter_map(|version| version["run"].as_str())
+        .filter_map(|version| version["title"].as_str())
         .collect();
     assert_eq!(
         runs,
@@ -802,7 +802,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     // tells two runs under one title apart. A call that declared none names none.
     let declared: Vec<Option<&str>> = by_agent
         .iter()
-        .map(|version| version["actor"]["run_id"].as_str())
+        .map(|version| version["actor"]["declared"].as_str())
         .collect();
     assert!(
         declared.contains(&Some("visa-1"))

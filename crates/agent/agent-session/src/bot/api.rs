@@ -75,7 +75,7 @@ pub trait ApiMember: Send {
     /// record.
     fn find_in_history(
         &self,
-        step: &RunStep,
+        step: &AutomationStep,
         actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)>;
     /// The outbox stored at `field` of the record at `route`, in order.
@@ -85,7 +85,7 @@ pub trait ApiMember: Send {
     fn queued_in_history(
         &self,
         route: &DocumentRoute,
-        step: &RunStep,
+        step: &AutomationStep,
         actor: &Actor,
         field: &str,
     ) -> Vec<String>;
@@ -95,13 +95,13 @@ pub trait ApiMember: Send {
 /// `step`, with the change.
 pub(crate) fn step_change(
     doc: &automerge::Automerge,
-    step: &RunStep,
+    step: &AutomationStep,
     actor: &Actor,
 ) -> Option<(automerge::Change, ActionContext)> {
     doc.get_changes(&[]).into_iter().rev().find_map(|change| {
         let context = ActionContext::from_change_message(change.message()?)?;
         let by = context.invoker.as_ref().map(|invoker| &invoker.acting.by);
-        (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
+        (AutomationStep::of(&context).as_ref() == Some(step) && by == Some(actor))
             .then(|| (change.clone(), context))
     })
 }
@@ -111,7 +111,7 @@ pub(crate) fn step_change(
 /// before it.
 pub(crate) fn queued_by_step(
     doc: &automerge::Automerge,
-    step: &RunStep,
+    step: &AutomationStep,
     actor: &Actor,
     field: &str,
 ) -> Vec<String> {
@@ -130,18 +130,18 @@ pub(crate) fn queued_by_step(
         .collect()
 }
 
-/// Which step of which run a change was: the run's group and the step
-/// facet every step's context carries. History keeps both, so a run
+/// Which step of which invocation a change was: the invocation's group and
+/// the step facet every step's context carries. History keeps both, so one
 /// retried after a restart finds the steps it already took.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunStep {
-    /// The run id.
-    pub run: String,
+pub struct AutomationStep {
+    /// The invocation's group id.
+    pub invocation: String,
     /// The step's path.
     pub step: String,
 }
 
-impl RunStep {
+impl AutomationStep {
     #[must_use]
     pub fn of(context: &ActionContext) -> Option<Self> {
         let group = context
@@ -153,7 +153,7 @@ impl RunStep {
             .iter()
             .find(|facet| facet.key == tilo_automation::STEP_FACET)?;
         Some(Self {
-            run: group.id.clone(),
+            invocation: group.id.clone(),
             step: step.value.clone(),
         })
     }
@@ -326,7 +326,7 @@ impl<P: ApiMember> BotApi<P> {
         let route = resource_of(&request.target.provider, member.workspace())
             .filter(|route| member.holds(route))
             .ok_or(ActionHostError::UnknownAction)?;
-        let step = request.context.as_ref().and_then(RunStep::of);
+        let step = request.context.as_ref().and_then(AutomationStep::of);
         if let Some(step) = step.as_ref()
             && let Some((route, done)) = member.find_in_history(step, &self.actor())
         {
@@ -409,7 +409,7 @@ impl<P: ApiMember> BotApi<P> {
                     invocation: request.invocation,
                     event: self.cause().map(|cause| cause.event),
                 },
-                step: request.context.as_ref().and_then(RunStep::of),
+                step: request.context.as_ref().and_then(AutomationStep::of),
                 note: keeps.map_or(Value::Null, |keeps| keeps.note()),
                 permits: keeps.map_or_else(Vec::new, |keeps| keeps.permits()),
             },
@@ -518,7 +518,7 @@ impl<P: ApiMember> BotApi<P> {
         member: std::sync::MutexGuard<'_, P>,
         route: &DocumentRoute,
         address: &ActionAddress,
-        step: &RunStep,
+        step: &AutomationStep,
         done: &ActionContext,
     ) -> Result<ReceiptStatus, ActionHostError> {
         let Some(spec) = self
@@ -697,7 +697,7 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
             return None;
         }
         // Steps taken before a restart are found when the run invokes them
-        // again ([`RunStep`]); the ledger knows this API's own.
+        // again ([`AutomationStep`]); the ledger knows this API's own.
         let status = self.ledger.lock_recover().get(id).cloned()?;
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }

@@ -15,6 +15,7 @@
  * first second, so a fast load never flashes. Steps and their timings go
  * to the console for debugging.
  */
+import {sealedHandle, sealedKey} from './sealed-link.mjs';
 
 /** The steps the bar has, in the order a page goes through them. The page
  * reports them as `data-arrival` (`load` covers the first two, split by
@@ -318,7 +319,7 @@ export function refusalCopy({workspace = null, waitList = false, messages = null
     heading: workspace
       ? say('arrival-refusal-heading', '{ $workspace } is invite-only for now', {workspace})
       : say('arrival-refusal-heading-unnamed', 'This workspace is invite-only for now'),
-    body: say('arrival-refusal-body', 'Ask someone in it for an invite link, then paste it here.'),
+    body: say('arrival-refusal-body', 'Ask someone in it for an invite link, then paste it here. If you are in it on another device, paste the link “Pair a new device” makes there.'),
   };
 }
 
@@ -334,9 +335,16 @@ export function waitListFailure(code, messages = null) {
   }
 }
 
-/** The page to open for `text`, an invite link a person pasted, or `null`
- * when it is not one: a web address carrying an invitation. */
-export function inviteLinkTarget(text, base = globalThis.location?.href) {
+/**
+ * The page to open for `text`, a link a person pasted at the entry, or `null`
+ * when it is not one that lets someone in. Such a link is a web address that
+ * carries an invitation (`invite`), the short link a site keeps a sealed
+ * invitation under (`/i/<handle>#<key>`, sealed-link.mjs), or a pairing
+ * (`pair`): the link "Pair a new device" makes on a device where the person
+ * is signed in, which is all someone with no identity on a new device holds.
+ * Whether the link is still good is for the page it opens to say.
+ */
+export function entryLinkTarget(text, base = globalThis.location?.href) {
   let url;
   try {
     url = new URL(String(text ?? '').trim(), base);
@@ -344,8 +352,12 @@ export function inviteLinkTarget(text, base = globalThis.location?.href) {
     return null;
   }
   if (!['https:', 'http:'].includes(url.protocol)) return null;
-  const carries = part => new URLSearchParams(part.slice(part.indexOf('?') + 1)).has('invite');
-  return (url.hash.includes('?') && carries(url.hash)) || carries(url.search) ? url.href : null;
+  const carries = part => {
+    const secrets = new URLSearchParams(part.slice(part.indexOf('?') + 1));
+    return secrets.has('invite') || secrets.has('pair');
+  };
+  const sealed = sealedHandle(url.pathname) !== null && sealedKey(url.hash.slice(1));
+  return sealed || (url.hash.includes('?') && carries(url.hash)) || carries(url.search) ? url.href : null;
 }
 
 /** Whether a page that stopped had got in: the host let the person in

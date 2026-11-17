@@ -206,7 +206,7 @@ pub fn forget(
     }
     let kept_path = place.path(source, "ids.json");
     if let Some(mut kept) = place.read::<Kept>(&kept_path)? {
-        kept.forget_run(run);
+        kept.forget_invocation(run);
         place.keep(&kept_path, &kept)?;
     }
     Ok(())
@@ -427,7 +427,7 @@ pub struct KeptArea {
 
 impl Kept {
     /// Forget what the run `run` made, after it was taken back.
-    pub fn forget_run(&mut self, run: &str) {
+    pub fn forget_invocation(&mut self, run: &str) {
         let pages: Vec<String> = self
             .issue_runs
             .iter()

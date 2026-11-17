@@ -111,6 +111,10 @@ pub fn rsync_command(
             "--archive",
             "--delete",
             "--compress",
+            // `.gitignore` ignores core dumps (`core`) and keeps directories of that name
+            // (`!core/`). rsync reads the first as "anything named core" and has no negation, so
+            // without this rule ahead of the merge it leaves out every `core/` source directory.
+            "--include=core/",
             "--filter=:- .gitignore",
             "--exclude=/target/",
             "--exclude=.git",
@@ -255,7 +259,13 @@ mod tests {
             let line =
                 rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1").unwrap();
             let text = line.display();
-            assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
+            let filter = line.args.iter().position(|a| a == "--filter=:- .gitignore");
+            let keep_core = line.args.iter().position(|a| a == "--include=core/");
+            assert!(
+                matches!((keep_core, filter), (Some(keep), Some(filter)) if keep < filter),
+                "directories named core are kept ahead of the ignore rules: {:?}",
+                line.args
+            );
             assert!(line.args.contains(&"--exclude=/target/".to_owned()));
             assert!(line.args.contains(&"--delete".to_owned()));
             assert!(

@@ -339,21 +339,21 @@ pub struct Step {
     pub path: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
+    pub invocation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorBody>,
 }
 
-/// An action's answer, and a run's.
+/// An action's answer, and an invocation's.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ActionAnswer {
     /// `ok`, `pending` or `cancelled`. (A failure is the error shape.)
     pub status: String,
-    /// The run: what `…/runs/{run}` follows.
+    /// The invocation: what `…/invocations/{invocation}` follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
+    pub invocation: Option<String>,
     /// The action at the resource it resolved to, `app/resource#action`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -391,7 +391,7 @@ pub struct Hit {
     pub action: Option<String>,
 }
 
-/// Who ran a run.
+/// Who made the invocation.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InvocationBy {
     /// The name it goes by: a key's, as the person named it, an agent's, or a
@@ -402,7 +402,7 @@ pub struct InvocationBy {
     pub kind: String,
 }
 
-/// A record a run changed.
+/// A record an invocation changed.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InvocationChange {
     /// The app, as a path names it (`word-processor`).
@@ -414,17 +414,18 @@ pub struct InvocationChange {
     pub record: String,
 }
 
-/// One run of a workspace, as the listing of its runs answers it.
+/// One invocation of a workspace, as the listing of them answers it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InvocationInfo {
-    /// What `…/runs/{run}`, its `cancel` and its `undo` take: the invocation of
-    /// its newest call (the undo of any call of a run takes back the whole
-    /// run). Absent for a run known only from the workspace's records, whose
-    /// calls the host no longer remembers (it restarted since).
+    /// What `…/invocations/{invocation}`, its `cancel` and its `undo` take:
+    /// the invocation of its newest call (the undo of any call of an
+    /// invocation takes back the whole of it). Absent for one known only from
+    /// the workspace's records, whose calls the host no longer remembers (it
+    /// restarted since).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Every call of it the host remembers, oldest first: one, or each call
-    /// of a run its client named with `Tilo-Run`.
+    /// of an invocation its client named with `Tilo-Invocation`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
     /// The undo step its changes are kept under in each record's history
@@ -433,7 +434,7 @@ pub struct InvocationInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     pub by: InvocationBy,
-    /// What its client called it (`Tilo-Run-Title`), when it named it.
+    /// What its client called it (`Tilo-Invocation-Title`), when it named it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// `waiting` (for the person), `running`, `ended`, `failed`,
@@ -477,25 +478,26 @@ pub struct InvocationInfo {
     pub remembered: bool,
 }
 
-/// `GET /v1/workspaces/{workspace}/runs`: a page of its runs in records the
-/// key may read, newest first: of each run only what lies in those records,
-/// and the totals over them alone.
+/// `GET /v1/workspaces/{workspace}/invocations`: a page of them in records
+/// the key may read, newest first: of each invocation only what lies in those
+/// records, and the totals over them alone.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InvocationList {
     pub items: Vec<InvocationInfo>,
-    /// Runs the workspace holds, of which `runs` is a page.
+    /// Invocations the workspace holds, of which `items` is a page.
     pub total: u64,
-    /// Of those, the runs waiting for the person.
+    /// Of those, the ones waiting for the person.
     pub waiting: u64,
-    /// A record could not be read yet: runs that changed only it are missing
-    /// until it can.
+    /// A record could not be read yet: invocations that changed only it are
+    /// missing until it can.
     #[serde(default)]
     pub pending: bool,
     /// Passed back as `cursor` for the next page; absent on the last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// The page as a person reads it, one line per run: what `tilo runs` and
-    /// an MCP client's `tilo_read workspace/runs` print.
+    /// The page as a person reads it, one line per invocation: what
+    /// `tilo invocations` and an MCP client's `tilo_read workspace/invocations`
+    /// print.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }

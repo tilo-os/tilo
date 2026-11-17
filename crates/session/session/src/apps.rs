@@ -465,25 +465,28 @@ impl Apps {
                     tracing::warn!(%error, %resource, %action, "an app action was not delivered");
                 }
                 if let Some(answered) = answered {
+                    use tilo_actions::remote::{InvocationReceipt, ReceiptStatus};
                     match answer {
-                        Some(Ok(tilo_actions::remote::InvocationReceipt {
-                            status: tilo_actions::remote::ReceiptStatus::Completed { output },
-                            ..
-                        })) => answered(output.value),
-                        // Admitted and running: its answer is read once it settled.
-                        Some(Ok(tilo_actions::remote::InvocationReceipt {
-                            status: tilo_actions::remote::ReceiptStatus::Accepted,
-                            invocation,
-                        })) => {
-                            if let Ok(mut held) = awaited.lock() {
-                                held.push(Awaited {
-                                    invocation,
-                                    caller: asker,
-                                    answered,
-                                });
+                        Some(Ok(InvocationReceipt { status, invocation })) => match status {
+                            ReceiptStatus::Completed { output } => answered(Ok(output.value)),
+                            // Admitted and running: its answer is read once it settled.
+                            ReceiptStatus::Accepted => {
+                                if let Ok(mut held) = awaited.lock() {
+                                    held.push(Awaited {
+                                        invocation,
+                                        caller: asker,
+                                        answered,
+                                    });
+                                }
                             }
-                        }
-                        _ => answered(None),
+                            ReceiptStatus::Failed { error } => answered(Err(error.message)),
+                            ReceiptStatus::Rejected { error } => answered(Err(error.to_string())),
+                            ReceiptStatus::Cancelled { message } => answered(Err(
+                                message.unwrap_or_else(|| "it was cancelled".to_owned())
+                            )),
+                        },
+                        Some(Err(error)) => answered(Err(error.to_string())),
+                        None => answered(Err("the action host never answered".to_owned())),
                     }
                 }
                 if let Some(wake) = &wake {
@@ -2130,13 +2133,17 @@ impl AppActions for Apps {
                 .map(|state| state.update)
             {
                 Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                    (awaited.answered)(output.value);
+                    (awaited.answered)(Ok(output.value));
                 }
-                Some(
-                    tilo_actions::InvocationUpdate::Failed { .. }
-                    | tilo_actions::InvocationUpdate::Cancelled { .. },
-                )
-                | None => (awaited.answered)(None),
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                    (awaited.answered)(Err(error.message));
+                }
+                Some(tilo_actions::InvocationUpdate::Cancelled { message, .. }) => {
+                    (awaited.answered)(Err(
+                        message.unwrap_or_else(|| "it was cancelled".to_owned())
+                    ));
+                }
+                None => (awaited.answered)(Err("the action host forgot it".to_owned())),
                 Some(_) => waiting.push(awaited),
             }
         }

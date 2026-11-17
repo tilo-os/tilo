@@ -674,7 +674,7 @@ fn undo(r: &mut Replica) {
 
     let edit = HistoryEdit::Undo {
         steps: None,
-        run: None,
+        invocation: None,
         by: None,
         to: None,
         step: None,

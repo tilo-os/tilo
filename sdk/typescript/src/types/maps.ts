@@ -8,12 +8,12 @@
  * resource's path (`maps/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -170,15 +170,15 @@ export interface Workspace extends tilo.Resource {
   acceptPlaces(args: {
     places: Place[];
   }): Promise<void>;
-  /** Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   acceptPlacesMany(items: AcceptPlacesArgs[]): Promise<tilo.ActionAnswer[]>;
   commitSearch(args: {
     query: string;
   }): Promise<void>;
-  /** Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   commitSearchMany(items: CommitSearchArgs[]): Promise<tilo.ActionAnswer[]>;
   clearRecents(): Promise<void>;
-  /** Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearRecentsMany(items: ClearRecentsArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptRoute(args: {
     route: Route;
@@ -188,10 +188,10 @@ export interface Workspace extends tilo.Resource {
     origin?: LatLon;
     dest?: LatLon;
   }): Promise<void>;
-  /** Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   acceptRouteMany(items: AcceptRouteArgs[]): Promise<tilo.ActionAnswer[]>;
   clearRoute(): Promise<void>;
-  /** Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearRouteMany(items: ClearRouteArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptTransit(args: {
     transit: TransitJourney[];
@@ -200,10 +200,10 @@ export interface Workspace extends tilo.Resource {
     origin?: LatLon;
     dest?: LatLon;
   }): Promise<void>;
-  /** Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   acceptTransitMany(items: AcceptTransitArgs[]): Promise<tilo.ActionAnswer[]>;
   clearTransit(): Promise<void>;
-  /** Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearTransitMany(items: ClearTransitArgs[]): Promise<tilo.ActionAnswer[]>;
   search(args: {
     query: string;
@@ -248,18 +248,18 @@ export interface OfflineAreas extends tilo.Resource {
     device: string;
     region: DownloadedRegion;
   }): Promise<void>;
-  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     area: string;
   }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clear(args: {
     device: string;
   }): Promise<void>;
-  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

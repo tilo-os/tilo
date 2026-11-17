@@ -24,7 +24,9 @@ tilo-account-probe = { path = "../account-probe" }
 # outbound connection makes them.
 tilo-net = { path = "../tilo-net" }
 rustls.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time"] }
+# The sessions' own runtime has workers of its own: a session kept between
+# two requests lives on it, whichever thread asks.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
 tokio-rustls.workspace = true
 # The vocabulary a page's mail actions carry: what a folder read answers and
 # what a send is told.

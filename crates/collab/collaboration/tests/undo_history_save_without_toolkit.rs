@@ -167,7 +167,7 @@ fn undo_of_a_small_step_costs_the_step_not_the_record() {
 
     let undo = HistoryEdit::Undo {
         steps: None,
-        run: None,
+        invocation: None,
         by: None,
         to: None,
         step: None,

@@ -1,7 +1,8 @@
 /**
  * A server-sent event stream, read as its bytes arrive.
  *
- * `…/events` and `…/runs/{run}/output` answer `text/event-stream`: fields
+ * `…/events` and `…/invocations/{invocation}/output` answer
+ * `text/event-stream`: fields
  * (`id`, `event`, `data`), a blank line between frames, and `: keep-alive`
  * comment lines while nothing happens. An `id` is a cursor: it holds for the
  * frames after it, which is why only the last of a batch carries one.

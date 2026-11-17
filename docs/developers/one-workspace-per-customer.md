@@ -51,7 +51,7 @@ for applicant in ["Jane Doe", "Amir Haddad"]:             # one per customer, no
 jane_key = agents["Jane Doe"]
 agent = Tilo(key=jane_key.token)
 jane = agent.workspace(jane_key.workspace)
-with jane.run("Write the cover letter"):
+with jane.invocation("Write the cover letter"):
     jane.do("word-processor#append-paragraph", text="Dear Visa Officer,")
     jane.do("word-processor#append-paragraph", text="My passport and application form are enclosed.")
     letter = jane.do("word-processor#export-content", format="docx")
@@ -91,7 +91,7 @@ for (const applicant of ["Jane Doe", "Amir Haddad"]) {       // one per customer
 const janeKey = agents["Jane Doe"]!;
 const agent = new Tilo({ key: janeKey.token });
 const jane = agent.workspace(janeKey.workspace);
-const letter = await jane.run("Write the cover letter", async () => {
+const letter = await jane.invocation("Write the cover letter", async () => {
   await jane.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
   await jane.do("word-processor#append-paragraph", {
     text: "My passport and application form are enclosed.",
@@ -134,15 +134,16 @@ for applicant in "Jane Doe" "Amir Haddad"; do               # one per customer, 
   [[ $applicant == "Jane Doe" ]] && jane=$workspace jane_key=$(jq -r .token <<<"$key")
 done
 
-# The customer's agent, with only its own key: it writes the cover letter, as one run.
+# The customer's agent, with only its own key: it writes the cover letter, as
+# one invocation.
 agent="Authorization: Bearer $jane_key"
-run=(-H "Tilo-Run: cover-letter" -H "Tilo-Run-Title: Write the cover letter")
+group=(-H "Tilo-Invocation: cover-letter" -H "Tilo-Invocation-Title: Write the cover letter")
 word=$api/workspaces/$jane/resources/word-processor/actions
 for text in "Dear Visa Officer," "My passport and application form are enclosed."; do
-  curl -sS --fail-with-body "$word/append-paragraph" -H "$agent" -H "$json" "${run[@]}" \
+  curl -sS --fail-with-body "$word/append-paragraph" -H "$agent" -H "$json" "${group[@]}" \
     -d "{\"text\": \"$text\"}" > /dev/null
 done
-letter=$(curl -sS --fail-with-body "$word/export-content" -H "$agent" -H "$json" "${run[@]}" \
+letter=$(curl -sS --fail-with-body "$word/export-content" -H "$agent" -H "$json" "${group[@]}" \
   -d '{"format": "docx"}' | jq -r '[.. | strings | select(startswith("tilo.content:"))][0]')
 
 # The same key cannot reach anyone else, or make a workspace of its own.
@@ -318,8 +319,8 @@ one workspace invites nobody. The reviewer then works with a key of their own: t
 workspace with the role they hold there (`tilo.workspaces.list()`, each row carrying `role`), so they reach
 it by name too.
 
-Each agent session is one run in History, named after its key. Undo a run to take back everything it
-changed ([runs and history](../tilo-sh/runs-and-history.md)). Watch it live from your backend with
+Each agent session is one invocation in History, named after its key. Undo it to take back everything it
+changed ([invocations and history](../tilo-sh/invocations-and-history.md)). Watch it live from your backend with
 `workspace.watch()` ([events](../tilo-sh/events.md)).
 
 ## When a customer leaves

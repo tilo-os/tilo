@@ -20,14 +20,21 @@ pub(super) fn shown_to(
     me: &MemberId,
     later: &[crate::model::Message],
 ) -> Option<QuestionShown> {
-    shown(
+    let mut card = shown(
         question,
         &Reader {
             mine: question.asks(me),
             name: None,
             open: !later.iter().any(|said| question.asks(&said.author)),
         },
-    )
+    )?;
+    // A page describes no protected field yet: the person asked answers a
+    // secret's question in Chat's window, and the page says so.
+    if question.kind.0 == crate::question::SECRET && question.waiting() && question.asks(me) {
+        card.lines
+            .push((crate::i18n::t("chat-secret-answer-in-window"), Line::Status));
+    }
+    Some(card)
 }
 
 /// The card under `message`'s words: its lines, then its answers as buttons.

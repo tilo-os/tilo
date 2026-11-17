@@ -8,8 +8,11 @@
 //! `tilo: SLOW-EVENT window_event MouseInput 412 ms: sync=3 layout=391 draw=12 a11y=0 other=6`
 //!
 //! A person's "every click takes seconds" then names its phase in the next
-//! log instead of needing a profiler on their machine. Outside a slow event
-//! the cost is two clock reads per event and one per marked phase.
+//! log instead of needing a profiler on their machine. The line ends with the
+//! named scopes (`tilo_resource::profiling::Phase`) the event ran, the costliest
+//! first, as `scopes: ui.publish_action_surface=812/3` (milliseconds, then how
+//! many times): what inside a phase took the time. Outside a slow event the
+//! cost is two clock reads per event and per marked phase or scope.
 
 use crate::time::{Duration, Instant};
 use std::cell::RefCell;
@@ -41,6 +44,9 @@ pub(crate) struct Span {
     start: Instant,
     /// Whether this span owns the thread's phase list (the outermost does).
     owner: bool,
+    /// Whether this span started the thread's observation of named scopes,
+    /// so it takes it when it ends.
+    scopes: bool,
 }
 
 impl Span {
@@ -54,11 +60,13 @@ impl Span {
                 true
             }
         });
+        let scopes = owner && tilo_resource::profiling::begin_live();
         Self {
             kind,
             name,
             start: crate::time::now(),
             owner,
+            scopes,
         }
     }
 }
@@ -69,6 +77,11 @@ impl Drop for Span {
             return;
         }
         let phases = ACTIVE.with(|active| active.borrow_mut().take());
+        let scopes = if self.scopes {
+            tilo_resource::profiling::take_live()
+        } else {
+            Vec::new()
+        };
         let total = self.start.elapsed();
         if total < threshold() {
             return;
@@ -90,6 +103,7 @@ impl Drop for Span {
             " other={}",
             total.saturating_sub(named).as_millis()
         ));
+        line.push_str(&scopes_line(scopes));
         crate::diag!(
             "tilo: SLOW-EVENT {} {} {} ms:{line}",
             self.kind,
@@ -122,6 +136,29 @@ impl Drop for Phase {
             }
         });
     }
+}
+
+/// The most named scopes a report lists.
+const MOST_SCOPES: usize = 10;
+
+/// The costliest named scopes an event ran, as the report's tail: each
+/// `name=ms/calls`, the costliest first. Scopes nest, so they do not add up.
+fn scopes_line(mut scopes: Vec<tilo_resource::profiling::Sample>) -> String {
+    scopes.retain(|scope| scope.elapsed_ns >= 1_000_000);
+    if scopes.is_empty() {
+        return String::new();
+    }
+    scopes.sort_by_key(|scope| std::cmp::Reverse(scope.elapsed_ns));
+    let mut line = " scopes:".to_owned();
+    for scope in scopes.iter().take(MOST_SCOPES) {
+        line.push_str(&format!(
+            " {}={}/{}",
+            scope.phase,
+            scope.elapsed_ns / 1_000_000,
+            scope.calls
+        ));
+    }
+    line
 }
 
 /// A short name for an event, for the report.
@@ -169,5 +206,36 @@ mod tests {
             drop(outer);
             assert!(ACTIVE.with(|active| active.borrow().is_none()));
         }
+
+        phase a_span_observes_the_named_scopes_it_runs_and_ends_the_observation;
+        {
+            let span = Span::begin("test", "scoped");
+            assert!(span.scopes, "the owner observes the scopes inside it");
+            drop(tilo_resource::profiling::Phase::start("ui.draw"));
+            drop(span);
+            assert!(
+                tilo_resource::profiling::begin_live(),
+                "the span ended its observation"
+            );
+            drop(tilo_resource::profiling::take_live());
+        }
+    }
+
+    #[test]
+    fn the_report_names_the_costliest_scopes_first() {
+        let scope = |phase, ms: u128, calls| tilo_resource::profiling::Sample {
+            phase,
+            elapsed_ns: ms * 1_000_000,
+            calls,
+        };
+        assert_eq!(
+            scopes_line(vec![
+                scope("ui.draw", 40, 1),
+                scope("cheap", 0, 9),
+                scope("ui.publish_action_surface", 812, 3),
+            ]),
+            " scopes: ui.publish_action_surface=812/3 ui.draw=40/1"
+        );
+        assert_eq!(scopes_line(vec![scope("cheap", 0, 1)]), "");
     }
 }

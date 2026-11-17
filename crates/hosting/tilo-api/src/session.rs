@@ -1,9 +1,9 @@
-//! One agent run through the server: an MCP session of the agent, served here
+//! One agent session through the server: an MCP session of the agent, served here
 //! by the agent surface `tilo mcp` serves ([`tilo_mcp::McpServer`]),
 //! its actions asked of the workspace's relay over the grant's own session
 //! ([`crate::relay`], [`SessionActions`]). Record actions run on the relay's
 //! app workers, and each record the agent makes or changes opens on the
-//! workspace's shell as a window of the person's, naming the run, so whoever
+//! workspace's shell as a window of the person's, naming the session, so whoever
 //! enters the workspace sees what the agent did.
 //!
 //! - **Pinned** (a one-workspace grant): the session serves that one
@@ -16,11 +16,11 @@
 //!   `account/workspaces#create`, `account/keys#mint` and the rest
 //!   ([`crate::account`]).
 //!
-//! The run's name is the person's: the client's name and a number of their
-//! own runs ("Claude Code #2"), which History groups the run's actions under,
-//! and which the workspace's host shows present, doing what it does, while
-//! the session lives: the host is the run's one voice, so the server says
-//! nothing of it itself.
+//! The session's name is the person's: the client's name and a number of
+//! their own sessions ("Claude Code #2"), which History groups the session's
+//! actions under, and which the workspace's host shows present, doing what it
+//! does, while the session lives: the host is the session's one voice, so the
+//! server says nothing of it itself.
 
 pub mod invocations;
 pub mod members;
@@ -68,56 +68,57 @@ impl Reply {
     }
 }
 
-/// The run in one workspace: the agent surface over the grant's session
+/// The session in one workspace: the agent surface over the grant's session
 /// there, and the agent present in it.
 struct Served {
     server: McpServer<SessionActions>,
 }
 
-/// A run in a workspace one of the person's devices hosts, entered at that
-/// device's MCP server: the device serves the whole run, its people and its
-/// windows included, and shows the agent there itself.
+/// A session in a workspace one of the person's devices hosts, entered at
+/// that device's MCP server: the device serves the whole session, its people
+/// and its windows included, and shows the agent there itself.
 struct OnDevice(tilo_mcp::enter::Entered);
 
-/// One workspace's run, once whoever entered it holds it: a lock per
+/// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
 type Entered<Run> = Arc<tokio::sync::Mutex<Option<Arc<Run>>>>;
 
 pub struct Session {
     pub grant: String,
     pub scope: Scope,
-    /// The run's name, as History shows it.
+    /// The session's name, as History shows it.
     pub label: String,
-    /// The run's id, which every invocation of the session belongs to.
-    run: String,
+    /// The session's id, which every invocation of it belongs to.
+    id: String,
     /// The person, as their workspaces name them.
     person: String,
     /// The grant's session with the host the front door forwarded to.
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The runs in workspaces the relay hosts, by workspace, each entered
+    /// The sessions in workspaces the relay hosts, by workspace, each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
-    /// The runs in workspaces the person's devices host, by workspace.
+    /// The sessions in workspaces the person's devices host, by workspace.
     on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
     /// The workspace tools, once a workspace served them.
     tools: Mutex<Option<Vec<Value>>>,
     pub(crate) last_used: Mutex<Instant>,
 }
 
-/// One tool call of a run: what an MCP client's `tools/call` and every route
-/// of the API make ([`Session::call`]).
+/// One tool call of a session: what an MCP client's `tools/call` and every
+/// route of the API make ([`Session::call`]).
 #[derive(Debug)]
 pub struct Call {
     /// The workspace it acts in; `None` for the account, or for the one
-    /// workspace a run for one workspace acts in.
+    /// workspace a session for one workspace acts in.
     pub workspace: Option<String>,
     /// The tool: `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_status`, …
     pub tool: &'static str,
     pub arguments: Value,
-    /// The run it is a step of, `{"id", "title"}`, when the caller names one.
-    pub run: Option<Value>,
+    /// The invocation group it is a step of, `{"id", "title"}`, when the
+    /// caller names one.
+    pub group: Option<Value>,
 }
 
 /// Why a call answered nothing typed: the request itself was refused, before
@@ -196,7 +197,7 @@ fn result(id: &Value, value: &Value) -> Value {
 /// The run's name: the name the client registered under (or declared), and
 /// the person's run number.
 #[must_use]
-pub fn run_label(registered: &str, initialize: &Value, number: u64) -> String {
+pub fn agent_session_label(registered: &str, initialize: &Value, number: u64) -> String {
     let declared = initialize
         .pointer("/clientInfo/title")
         .or_else(|| initialize.pointer("/clientInfo/name"))
@@ -227,7 +228,7 @@ impl Session {
             grant,
             scope,
             label,
-            run: uuid::Uuid::new_v4().simple().to_string(),
+            id: uuid::Uuid::new_v4().simple().to_string(),
             person: hex::encode(connection.key.cert().user_public_key),
             connection,
             server,
@@ -257,7 +258,7 @@ impl Session {
         &self.connection
     }
 
-    /// The run in `workspace`, entering it the first time. Each workspace's
+    /// The session in `workspace`, entering it the first time. Each workspace's
     /// entry has a lock of its own, so entering one does not hold another's
     /// answers.
     async fn served(&self, workspace: &str) -> Result<Arc<Served>, RelayError> {
@@ -288,25 +289,25 @@ impl Session {
         );
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_session(&self.run, self.label.clone())
+            .with_agent_session(&self.id, self.label.clone())
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),
                 Arc::new(catalogue),
             ))));
-        let run = Arc::new(Served { server });
-        *entered = Some(Arc::clone(&run));
+        let held = Arc::new(Served { server });
+        *entered = Some(Arc::clone(&held));
         drop(entered);
-        Ok(run)
+        Ok(held)
     }
 
-    /// Answer `request` in `workspace`'s run, showing the person what a
+    /// Answer `request` in `workspace`'s session, showing the person what a
     /// tool call did beside the agent. The workspace's people
     /// (`workspace/members`) are answered here ([`members`]).
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         match self.on_device(workspace).await {
-            Ok(Some(run)) => {
-                return run
+            Ok(Some(held)) => {
+                return held
                     .0
                     .handle(request)
                     .await
@@ -344,12 +345,12 @@ impl Session {
                     .pointer("/params/_meta/so.tilo.mcp/structured")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                let answered = self.runs(workspace, arguments, structured).await;
+                let answered = self.invocations(workspace, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
         }
         let run = match self.served(workspace).await {
-            Ok(run) => run,
+            Ok(held) => held,
             Err(RelayError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
@@ -363,13 +364,13 @@ impl Session {
             .map_or_else(Reply::accepted, Reply::one)
     }
 
-    /// The run in `workspace` when one of the person's devices hosts it, as
+    /// The session in `workspace` when one of the person's devices hosts it, as
     /// their list says, entering it at that device's MCP server the first
     /// time (and again once the device closed it); `None` for a workspace the
     /// relay keeps. As [`Self::served`], each workspace's entry has a lock of
     /// its own.
     async fn on_device(&self, workspace: &str) -> Result<Option<Arc<OnDevice>>, String> {
-        // A workspace the run already works in on the relay is the relay's.
+        // A workspace the session already works in on the relay is the relay's.
         if self.served.lock().await.contains_key(workspace) {
             return Ok(None);
         }
@@ -398,10 +399,10 @@ impl Session {
             &address,
         )
         .await?;
-        let run = Arc::new(OnDevice(on_device));
-        *entered = Some(Arc::clone(&run));
+        let session = Arc::new(OnDevice(on_device));
+        *entered = Some(Arc::clone(&session));
         drop(entered);
-        Ok(Some(run))
+        Ok(Some(session))
     }
 
     /// Where `workspace` is hosted when one of the person's devices hosts it,
@@ -516,7 +517,7 @@ impl Session {
             .clone()
     }
 
-    /// Learn the workspace tools from `workspace`'s run.
+    /// Learn the workspace tools from `workspace`'s session.
     async fn learn_tools(&self, workspace: &str) -> Option<Vec<Value>> {
         let listed = self
             .serve(
@@ -615,7 +616,7 @@ impl Session {
     /// whether an MCP client's `tools/call` or a route of the API (`crate::v1`).
     ///
     /// # Errors
-    /// The run reaches no such workspace, or the call was malformed.
+    /// The session reaches no such workspace, or the call was malformed.
     pub async fn call(&self, call: Call) -> Result<Value, CallError> {
         let mut arguments = match call.arguments {
             Value::Null => json!({}),
@@ -634,8 +635,8 @@ impl Session {
         }
         let mut meta = Map::new();
         meta.insert("structured".into(), json!(true));
-        if let Some(run) = call.run {
-            meta.insert("run".into(), run);
+        if let Some(group) = call.group {
+            meta.insert("invocation".into(), group);
         }
         let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
             "params": {"name": call.tool, "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
@@ -650,7 +651,7 @@ impl Session {
     }
 
     /// Call the workspace tool `name` with `arguments` in `workspace`, in
-    /// this run: the tool's result, or why there is none.
+    /// this session: the tool's result, or why there is none.
     pub(crate) async fn call_in(
         &self,
         workspace: &str,
@@ -718,8 +719,8 @@ time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}
 to let keys minted for that workspace alone run commands there without asking (and in branches \
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \
-`tilo_read workspace/runs` (with `workspace`) lists a workspace's runs in records this key may read, \
-newest first, whoever ran them (`tilo_ls workspace/runs` with `limit` and `cursor` pages on): who ran \
+`tilo_read workspace/invocations` (with `workspace`) lists a workspace's invocations in records this key may read, \
+newest first, whoever made them (`tilo_ls workspace/invocations` with `limit` and `cursor` pages on): who made \
 it, how it stands \
 (`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), what it changed and \
 whether it can still be taken back; its `id` is the invocation `tilo_status` reads, stops (`cancel`) \

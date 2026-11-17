@@ -27,6 +27,11 @@ pub(crate) trait OverSheet {
     /// Whether anything changed.
     fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool;
 
+    /// The page drew nothing of the sheet: a sheet that is not open has finished leaving, and
+    /// says so, as the shell that drew it out did over its own card. A sheet the page draws out
+    /// itself says nothing here (the default): its own card's exit is its account.
+    fn put_away(&self) {}
+
     /// Whether the sheet is up, taking the keyboard and what it covers.
     fn drawn(&self) -> bool;
 
@@ -44,6 +49,7 @@ pub(crate) trait PageSheet: OverSheet {
 /// workspace directory's store behind both, and the shortcut guide's sheet.
 /// The browser desktop fetches it the first time the person opens one
 /// (`deferred-sheets`).
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
 pub struct SheetsCode {
     directory: MakeDirectory,
@@ -53,15 +59,18 @@ pub struct SheetsCode {
 }
 
 /// Build the shortcut guide's sheet as it stands ([`OverSheet::follow_sheet`]).
+#[cfg(target_arch = "wasm32")]
 pub(crate) type FollowGuide =
     fn(&mut crate::guide::PageGuide, &mut dyn FnMut(Option<Element>), bool) -> bool;
 
+#[cfg(target_arch = "wasm32")]
 type MakeDirectory = fn(
     crate::shell::HostRequests,
     Option<&crate::directory::PageDirectoryConfig>,
     &Wake,
 ) -> Box<dyn PageSheet>;
 
+#[cfg(target_arch = "wasm32")]
 type MakeInvite = fn(
     crate::shell::HostRequests,
     Option<&crate::invite::PageInviteConfig>,
@@ -71,6 +80,7 @@ type MakeInvite = fn(
     &Wake,
 ) -> Box<dyn PageSheet>;
 
+#[cfg(target_arch = "wasm32")]
 type MakeWorkspaceSettings = fn(
     crate::desktop::Shared,
     tilo_desktop::here::Here,
@@ -78,10 +88,12 @@ type MakeWorkspaceSettings = fn(
     Option<crate::workspace_settings::PageRecords>,
 ) -> Box<dyn PageSheet>;
 
+#[cfg(target_arch = "wasm32")]
 type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// The sheets' code where it is linked.
 #[must_use]
+#[cfg(target_arch = "wasm32")]
 pub fn builtin_sheets() -> SheetsCode {
     SheetsCode {
         directory: crate::directory::make,
@@ -91,6 +103,7 @@ pub fn builtin_sheets() -> SheetsCode {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ui::lazy_code! {
     /// The sheets' code.
     pub static SHEETS: SheetsCode = builtin_sheets, feature = "deferred-sheets";
@@ -98,12 +111,14 @@ ui::lazy_code! {
 
 /// A sheet made the first time the person opens it: until its code is in,
 /// the open waits for it.
+#[cfg(target_arch = "wasm32")]
 pub(crate) struct LazySheet {
     make: Box<dyn Fn(SheetsCode) -> Box<dyn PageSheet>>,
     sheet: Option<Box<dyn PageSheet>>,
     asked: std::cell::Cell<bool>,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl LazySheet {
     pub(crate) fn directory(
         requests: crate::shell::HostRequests,
@@ -191,12 +206,19 @@ impl LazySheet {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 impl OverSheet for LazySheet {
     fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool {
         self.take_up();
         self.sheet
             .as_mut()
             .is_some_and(|sheet| sheet.follow_sheet(show, missing))
+    }
+
+    fn put_away(&self) {
+        if let Some(sheet) = self.sheet.as_ref() {
+            sheet.put_away();
+        }
     }
 
     fn drawn(&self) -> bool {
@@ -213,16 +235,19 @@ impl OverSheet for LazySheet {
 /// The sheet an agent's question is drawn on, made once the questions' code
 /// is in: until then the page shows no question, because nothing has asked it
 /// one ([`crate::questions`]).
+#[cfg(target_arch = "wasm32")]
 pub(crate) struct LazyQuestions {
     sheet: Option<Box<dyn OverSheet>>,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl LazyQuestions {
     pub(crate) fn new() -> Self {
         Self { sheet: None }
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 impl OverSheet for LazyQuestions {
     fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool {
         if self.sheet.is_none()
@@ -234,6 +259,12 @@ impl OverSheet for LazyQuestions {
         self.sheet
             .as_mut()
             .is_some_and(|sheet| sheet.follow_sheet(show, missing))
+    }
+
+    fn put_away(&self) {
+        if let Some(sheet) = self.sheet.as_ref() {
+            sheet.put_away();
+        }
     }
 
     fn drawn(&self) -> bool {
@@ -291,6 +322,11 @@ impl<S> OverPage<S> {
             missing,
         );
         *replaced |= rebuilt;
+        // The page put the sheet away: its card is off the page, so its leaving is over. Told
+        // only when nothing of it is shown, a sheet left where it stood stays open.
+        if content.is_none() {
+            sheet.put_away();
+        }
         changed | rebuilt
     }
 }
@@ -408,7 +444,9 @@ impl<S: OverSheet + 'static> Widget for OverPage<S> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.sheet.drawn()
+        // Nothing shown is nothing trapped: a sheet the page put away leaves the keyboard to the
+        // page at once, rather than holding every key on a card the page no longer draws.
+        self.content.is_some() && self.sheet.drawn()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -423,5 +461,81 @@ impl<S: OverSheet + 'static> Widget for OverPage<S> {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_sheets::{Phase, Presentation};
+
+    /// A sheet whose card the page shows while `shown`, over the session's own presentation.
+    struct Stub {
+        presentation: Presentation,
+        shown: std::cell::Cell<bool>,
+    }
+
+    impl Stub {
+        fn new() -> Self {
+            Self {
+                presentation: Presentation::default(),
+                shown: std::cell::Cell::new(false),
+            }
+        }
+    }
+
+    impl OverSheet for Stub {
+        fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), _missing: bool) -> bool {
+            if self.shown.get() {
+                show(Some(Box::new(ui::widget::Spacer::new())));
+            } else {
+                show(None);
+            }
+            false
+        }
+
+        fn put_away(&self) {
+            if !self.presentation.is_open() {
+                self.presentation.gone();
+            }
+        }
+
+        fn drawn(&self) -> bool {
+            self.presentation.is_drawn()
+        }
+
+        fn sheet_name(&self) -> &'static str {
+            "stub"
+        }
+    }
+
+    /// A sheet the page put away holds no key: the page's keyboard is its own again the moment
+    /// nothing of the sheet is drawn, and the sheet's own leaving ends with it. A sheet whose
+    /// card stands still traps the keyboard, as it takes what it covers.
+    #[test]
+    fn a_sheet_the_page_put_away_traps_nothing() {
+        let mut page = OverPage::new(Stub::new());
+        page.sheet.presentation.open(false);
+        page.sheet.shown.set(true);
+        page.follow();
+        assert!(page.content.is_some(), "the card is on the page");
+        assert!(Widget::traps_focus(&page), "a card up takes the keyboard");
+        assert!(page.sheet.presentation.is_open());
+
+        // Closed: the card leaves the page at once, however far its own exit has got.
+        page.sheet.presentation.close();
+        assert_eq!(page.sheet.presentation.phase(), Phase::Leaving);
+        page.sheet.shown.set(false);
+        page.follow();
+        assert!(page.content.is_none(), "the page draws nothing of it");
+        assert!(
+            !Widget::traps_focus(&page),
+            "a sheet not drawn traps nothing"
+        );
+        assert_eq!(
+            page.sheet.presentation.phase(),
+            Phase::Closed,
+            "the page's putting it away ends its leaving"
+        );
     }
 }

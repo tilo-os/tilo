@@ -1,16 +1,17 @@
-//! Undoing an agent's run as one, from the activity.
+//! Undoing an agent's invocation as one, from the activity.
 //!
 //! An agent working a task stamps every change with the task's group, so each document it changed
-//! takes those changes back by naming the task: its history's `undo` with `{"run": task}`. An agent
-//! connection stamps them with its session's group instead, which undo names the same way. That
-//! goes through the document's own history, so edits others made since are kept and a step's
-//! compensation runs. Each document the run changed is asked through the session's action API as
-//! the person at the screen, on a thread of its own, so the activity's request answers at once.
+//! takes those changes back by naming the task: its history's `undo` with
+//! `{"invocation": task}`. An agent connection stamps them with its session's group instead,
+//! which undo names the same way. That goes through the document's own history, so edits others
+//! made since are kept and a step's compensation runs. Each document the invocation changed is
+//! asked through the session's action API as the person at the screen, on a thread of its own, so
+//! the activity's request answers at once.
 //!
 //! Whoever keeps the record answers: the app whose process holds it, or — a record no app's
 //! process holds, which the session's own services keep — the session's provider, at the root of
 //! that app's record there. Which publisher serves a step is read from the same catalogue either
-//! way, so a run undone across both takes the same path in each.
+//! way, so an invocation undone across both takes the same path in each.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -23,15 +24,15 @@ use tilo_actions::remote::{
 use tilo_desktop_surface::activity::TaskRunDocument;
 use tilo_lock::MutexRecover as _;
 
-/// How long one run's undo may take altogether.
+/// How long one invocation's undo may take altogether.
 const UNDO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the API has to answer a request at all.
 const ANSWER: Duration = Duration::from_millis(100);
 
-/// The history verb every document publishes, and the argument naming a run.
+/// The history verb every document publishes, and the argument naming a group.
 const UNDO: &str = "undo";
-const RUN: &str = "run";
+const INVOCATION: &str = "invocation";
 
 /// The provider the session's own services answer at: what keeps a record no app's process holds.
 const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
@@ -86,17 +87,17 @@ fn settled(status: &ReceiptStatus) -> Result<(), String> {
 }
 
 /// Undo the run `run` (a task's id, or an agent connection's group) in each document `steps` names
-/// (its app and record), through `api` as `caller`: one [`TaskRunDocument`] per document the run
-/// changed, in the order `steps` names them, so a record nobody reverted is reported rather than
-/// dropped.
+/// (its app and record), through `api` as `caller`: one [`TaskRunDocument`] per document the
+/// invocation changed, in the order `steps` names them, so a record nobody reverted is reported
+/// rather than dropped.
 ///
 /// # Errors
-/// Nothing was undone: no document the run changed is open, or each refused. A run undone in some
-/// documents but not others answers those that were, with the refusals logged.
+/// Nothing was undone: no document the invocation changed is open, or each refused. One undone
+/// in some documents but not others answers those that were, with the refusals logged.
 pub(crate) fn undo_task_run(
     api: &dyn UndoApi,
     caller: &Caller,
-    run: &str,
+    invocation: &str,
     steps: &[(String, String)],
     timeout: Duration,
 ) -> Result<Vec<TaskRunDocument>, String> {
@@ -124,7 +125,7 @@ pub(crate) fn undo_task_run(
             continue;
         };
         let mut args = serde_json::Map::new();
-        args.insert(RUN.into(), run.into());
+        args.insert(INVOCATION.into(), invocation.into());
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -148,7 +149,11 @@ pub(crate) fn undo_task_run(
         return Err(refused.join("; "));
     }
     if !refused.is_empty() {
-        tracing::warn!(run, refused = %refused.join("; "), "a run was undone only in part");
+        tracing::warn!(
+            invocation,
+            refused = %refused.join("; "),
+            "an invocation was undone only in part"
+        );
     }
     Ok(targets
         .into_iter()
@@ -245,7 +250,7 @@ fn undo_address(
     .filter_map(|row| row.action)
     .find(|action| {
         action.address.action == UNDO
-            && action.params.iter().any(|param| param.name == RUN)
+            && action.params.iter().any(|param| param.name == INVOCATION)
             && root
                 .as_ref()
                 .is_none_or(|root| action.address.resource.starts_with(root.as_str()))
@@ -404,9 +409,9 @@ mod tests {
             }
             let edit = ui::history_source::verbs::HistoryEdit::Undo {
                 steps: None,
-                run: args
-                    .get(RUN)
-                    .and_then(|run| run.as_str())
+                invocation: args
+                    .get(INVOCATION)
+                    .and_then(|invocation| invocation.as_str())
                     .map(str::to_owned),
                 by: None,
                 to: None,
@@ -469,10 +474,10 @@ mod tests {
     }
 
     fn undo(api: &FakeApi) -> Result<Vec<TaskRunDocument>, String> {
-        undo_run(api, TASK)
+        undo_invocation(api, TASK)
     }
 
-    fn undo_run(api: &FakeApi, run: &str) -> Result<Vec<TaskRunDocument>, String> {
+    fn undo_invocation(api: &FakeApi, run: &str) -> Result<Vec<TaskRunDocument>, String> {
         undo_task_run(
             api,
             &caller(),
@@ -517,7 +522,7 @@ mod tests {
             doc.commit();
             let api = fake_api(doc, true, true);
             assert_eq!(
-                undo_run(&api, CONNECTION).expect("the document publishes its history"),
+                undo_invocation(&api, CONNECTION).expect("the document publishes its history"),
                 vec![TaskRunDocument {
                     app: APP.into(),
                     record: RECORD.into(),

@@ -66,11 +66,11 @@ nav = "Identities and keys"
 description = "People, devices and agents, what a key reaches, its expiry, minting narrower keys and revoking them."
 
 [[page]]
-slug = "runs-and-history"
-source = "docs/tilo-sh/runs-and-history.md"
+slug = "invocations-and-history"
+source = "docs/tilo-sh/invocations-and-history.md"
 section = "Concepts"
-nav = "Runs and history"
-description = "Runs, attribution, each record's history, undo by step or by run, and the links a person opens."
+nav = "Invocations and history"
+description = "Invocations, attribution, each record's history, undo by step or by group, and the links a person opens."
 
 [[page]]
 slug = "approvals"
@@ -112,7 +112,7 @@ slug = "events"
 source = "docs/tilo-sh/events.md"
 section = "Guides"
 nav = "Webhooks and events"
-description = "The watch stream: changes, run events and presence, from a cursor, and why there are no webhooks yet."
+description = "The watch stream: changes, invocation events and presence, from a cursor, and why there are no webhooks yet."
 
 [[page]]
 slug = "errors"

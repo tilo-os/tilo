@@ -829,6 +829,14 @@ pub fn prepare(
 ) -> Result<(), String> {
     use issue_part::{Create, MoveUnder, Place, SetProject};
     let held = Held(parts);
+    // The issue an action names in its own parameter may be written as its
+    // title, its number or an address too: it is resolved here, where every
+    // part is held, so the part keeping it can be found.
+    if let Some(issue) = item_of_mut(&mut action.operation)
+        && held.get(issue).is_none()
+    {
+        *issue = held.named(issue.as_str())?;
+    }
     let check_parent = |parent: Option<&Ref>| -> Result<Option<Id>, String> {
         parent.map(|parent| held.named(parent.as_str())).transpose()
     };
@@ -1005,6 +1013,28 @@ pub fn part_for(
 
 /// The issue a verb on one issue names.
 #[must_use]
+/// The issue `action` names in its own parameter, to resolve where every
+/// part is held ([`item_of`] for the id it then names).
+fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
+    use issue_part as verb;
+    match action {
+        IssuePartAction::Rename(verb::Rename { issue, .. })
+        | IssuePartAction::MoveUnder(verb::MoveUnder { issue, .. })
+        | IssuePartAction::Assign(verb::Assign { issue, .. })
+        | IssuePartAction::SetProject(verb::SetProject { issue, .. })
+        | IssuePartAction::Attach(verb::Attach { issue, .. })
+        | IssuePartAction::Detach(verb::Detach { issue, .. })
+        | IssuePartAction::AddLabel(verb::AddLabel { issue, .. })
+        | IssuePartAction::Place(verb::Place { issue, .. })
+        | IssuePartAction::Comment(verb::Comment { issue, .. })
+        | IssuePartAction::Link(verb::Link { issue, .. })
+        | IssuePartAction::LinkNote(verb::LinkNote { issue, .. })
+        | IssuePartAction::Delete(verb::Delete { issue })
+        | IssuePartAction::Plan(verb::Plan { issue, .. }) => Some(issue),
+        _ => None,
+    }
+}
+
 pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
     use issue_part as verb;
     match action {

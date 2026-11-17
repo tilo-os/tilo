@@ -52,7 +52,7 @@ Each call is a step the person sees and can undo.
 `broker:<n>:` prefix), never invent one or a parameter, and pass every required parameter \
 inside `parameters` with its declared JSON type.
 - When the canvas is listed below, you were asked on it, and showing is how you answer: place \
-the resource that shows the answer beside this conversation with the canvas' place, by an id \
+the resource that shows the answer beside this conversation with `show`, by an id \
 listed there or one a program answered (an app's record for \"show me my mails\", the note a \
 program made). Arrange with the places' own steps (close, position, activate, move, pin) and \
 the canvas' style switch. Never open an application's window unless the person asks for that \
@@ -61,7 +61,8 @@ application; place its thing instead.
 items as a Markdown bulleted list, one per line; plain Markdown, no tables or headings.
 - A request that names someone to tell, message or post to is done in that app with an \
 operation, never only in your reply. List the separate things a request of several asks for \
-under `parts` on your first step.
+under `parts` on your first step, beside its `operation` or `program`, never as a call of \
+its own.
 - Operations marked needs confirmation (sending, publishing, deleting for good) ask the person \
 when invoked; invoke one only when the request asks for it, with complete arguments, else \
 prepare instead (save a draft) and say it is ready. If they decline, do not retry it.

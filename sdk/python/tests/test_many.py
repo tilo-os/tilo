@@ -1,4 +1,4 @@
-"""A bulk call: one all-or-nothing step per call, and every call one run."""
+"""A bulk call: one all-or-nothing step per call, and every call one invocation group."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def workspace(tilo):
     return tilo.workspace("jane-doe")
 
 
-async def test_create_many_sends_a_few_bulk_calls_of_one_run(workspace, api):
+async def test_create_many_sends_a_few_bulk_calls_of_one_invocation(workspace, api):
     issues = await Issues(workspace, TASKS).load()
     items = [{"title": f"Issue {index}", "status": "todo"} for index in range(1200)]
 
@@ -40,8 +40,8 @@ async def test_create_many_sends_a_few_bulk_calls_of_one_run(workspace, api):
 
     calls = api.asked("POST", "/actions/group")
     assert len(calls) == 3
-    assert len({call["headers"]["tilo-run"] for call in calls}) == 1
-    assert len({call["headers"]["tilo-run-title"] for call in calls}) == 1
+    assert len({call["headers"]["tilo-invocation"] for call in calls}) == 1
+    assert len({call["headers"]["tilo-invocation-title"] for call in calls}) == 1
     members = [
         member for call in calls for member in json.loads(call["body"])["actions"]
     ]
@@ -57,16 +57,16 @@ async def test_an_empty_bulk_call_sends_nothing(workspace, api):
     assert len(api.requests) == sent
 
 
-async def test_a_plain_bulk_call_is_a_step_of_the_run_it_is_in(workspace, api):
+async def test_a_plain_bulk_call_is_a_step_of_the_invocation_it_is_in(workspace, api):
     issues = await Issues(workspace, TASKS).load()
 
-    async with workspace.run("Import the backlog"):
+    async with workspace.invocation("Import the backlog"):
         await issues.many("create", [{"title": "One"}, {"title": "Two"}])
 
     calls = api.asked("POST", "/actions/group")
     assert len(calls) == 1
-    # The caller's own run names it: the bulk call does not open a second one.
-    assert calls[0]["headers"]["tilo-run-title"] == "Import the backlog"
+    # The caller's own invocation names it: the bulk call does not open a second one.
+    assert calls[0]["headers"]["tilo-invocation-title"] == "Import the backlog"
 
 
 def test_the_sync_client_runs_a_bulk_call_too(api):
@@ -76,5 +76,5 @@ def test_the_sync_client_runs_a_bulk_call_too(api):
 
     calls = api.asked("POST", "/actions/group")
     assert len(calls) == 1
-    assert len({call["headers"]["tilo-run"] for call in calls}) == 1
+    assert len({call["headers"]["tilo-invocation"] for call in calls}) == 1
     assert answers[0]["result"] == {"applied": 2}

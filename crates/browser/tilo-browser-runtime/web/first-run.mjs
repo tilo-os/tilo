@@ -235,6 +235,17 @@ export function stepLines(polled, mode = 'setup') {
 /** The host a site's codes come from, as people read it: `tilo.sh`. */
 const hostOf = site => { try { return new URL(site).host || 'tilo.sh'; } catch { return 'tilo.sh'; } };
 
+/** What the screen says of a passkey sign-in that did not work, from `error`.
+ * Where the place cannot use passkeys at all (a web view inside an app that
+ * may not use this site's), another passkey changes nothing: it says the ways
+ * in that work there. */
+export function signInFailure(error) {
+  if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+    return 'Passkeys can’t be used here. Sign in with your agent, or pair this device from one where you are signed in.';
+  }
+  return 'That passkey did not sign you in. Try another, or sign in with your agent.';
+}
+
 /** What the screen says when the page could not make or use a code, from
  * `error`, on `site`. */
 export function setupFailure(error, {site = HOME_SITE} = {}) {
@@ -955,7 +966,8 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       openOwn();
     },
     /** Sign in with a passkey: at once once the page offers it, else once it
-     * does, for `PASSKEY_WAIT_MS`. */
+     * does, for `PASSKEY_WAIT_MS`. What the page's sign-in rejects with is
+     * said (`signInFailure`), but for the person closing the prompt. */
     async passkey() {
       if (closed) return;
       view.signingIn(true);
@@ -964,7 +976,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
           if (gone) reject(gone); else passkeyWaiting.push({resolve, reject});
         }), PASSKEY_WAIT_MS, later, clear);
         await run();
-      } catch (error) { console.warn('first run: sign-in', error); view.signInFailed(); } finally { view.signingIn(false); }
+      } catch (error) {
+        console.warn('first run: sign-in', error);
+        // Closing the passkey prompt is the person's own answer.
+        if (error?.code !== 'passkey-cancelled' && !['NotAllowedError', 'AbortError'].includes(error?.name)) view.signInFailed(error);
+      } finally { view.signingIn(false); }
     },
     /** The page can make setup codes: `make()` resolves to `{code, expiresAt,
      * follow(), saved}`, `saved` what the setup keeps of it, and
@@ -1193,7 +1209,7 @@ export function domView(document) {
       $('first-run-manual-left').textContent = note ?? 'The code works once, for 10 minutes, only for this tab.';
     },
     signingIn(busy) { $('first-run-passkey').setAttribute('aria-busy', String(busy)); },
-    signInFailed() { say('That passkey did not sign you in. Try another, or sign in with your agent.'); },
+    signInFailed(error) { say(signInFailure(error)); },
     close() {
       $('first-run').setAttribute('data-closing', '');
       // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the

@@ -342,12 +342,12 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     );
     // The request body is JSON: the call's own quotes stand escaped in it.
     assert!(
-        first.contains(&format!(
-            "Show a resource: `invoke` with `\\\"operation\\\": \\\"{}\\\"` and \
-             `\\\"parameters\\\": {{\\\"resource\\\": …}}`",
-            session_op(SESSION_PEER, "shell:layout", "place")
-        )),
+        first.contains("Show a resource: `show` with `\\\"resource\\\": …`"),
         "{first}"
+    );
+    assert!(
+        offered.contains(&tools::canvas::SHOW.to_owned()),
+        "showing is a tool of its own"
     );
     for (resource, action) in [
         ("shell:layout", "open"),
@@ -439,6 +439,72 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
         "no app opened: {:?}",
         world.steps
     );
+}
+
+/// "Show me my mails" with `show`, which names only what it shows, places the inbox in one model
+/// call, with the reply it carries; `beside` and `view` go to the place as its own parameters.
+#[test]
+fn show_places_what_it_names_in_one_call() {
+    let reply = "Your inbox is beside us.";
+    let mut f = canvas_fixture(
+        "show me my mails",
+        vec![turn(
+            &[(
+                tools::canvas::SHOW,
+                serde_json::json!({"resource": MAIL, "beside": TASKS, "view": "inbox", "reply": reply}),
+            )],
+            64,
+        )],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: reply.into()
+        }
+    );
+    let world = f.world.borrow();
+    let placed = ran(&world, "place");
+    assert_eq!(placed.len(), 1, "{:?}", world.steps);
+    assert_eq!(placed[0]["resource"], MAIL);
+    assert_eq!(placed[0]["beside"], TASKS);
+    assert_eq!(placed[0]["view"], "inbox");
+}
+
+/// A `show` that names nothing to show, the shape models wrote for `invoke` (`{"beside": …}` with
+/// no resource), runs nothing and is answered once with what it needs; the call that follows
+/// shows it.
+#[test]
+fn a_show_naming_nothing_is_corrected_once() {
+    let mut f = canvas_fixture(
+        "show me my mails",
+        vec![
+            turn(
+                &[(tools::canvas::SHOW, serde_json::json!({"beside": TASKS}))],
+                64,
+            ),
+            turn(
+                &[(
+                    tools::canvas::SHOW,
+                    serde_json::json!({"resource": MAIL, "reply": "Here is your mail."}),
+                )],
+                64,
+            ),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "one correction, then the show");
+    let corrected = bodies[1].to_string();
+    assert!(
+        corrected.contains("show: missing resource") && corrected.contains("nothing was run"),
+        "{corrected}"
+    );
+    let world = f.world.borrow();
+    let placed = ran(&world, "place");
+    assert_eq!(placed.len(), 1, "{:?}", world.steps);
+    assert_eq!(placed[0]["resource"], MAIL);
 }
 
 /// "Show me my mails" places the inbox in one call; "put my notes next to the inbox" stands the

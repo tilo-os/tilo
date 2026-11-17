@@ -388,21 +388,21 @@ class Listing:
 
 
 @dataclass(frozen=True)
-class RunInfo:
-    """One run of a workspace, as its listing names it: who ran it, how it
-    stands, when, and what it changed.
+class InvocationInfo:
+    """One invocation of a workspace, as its listing names it: who made it,
+    how it stands, when, and what it changed.
 
-    `id` is what `ws.status(id)` reads and the run's `undo` takes back,
-    while the host remembers the run's calls; a run known only from the
-    workspace's records (the host restarted since) has none, and is told
-    apart by `step`, the undo step its changes keep in each record's history.
+    `id` is what `ws.status(id)` reads and its `undo` takes back, while the
+    host remembers its calls; one known only from the workspace's records (the
+    host restarted since) has none, and is told apart by `step`, the undo step
+    its changes keep in each record's history.
     """
 
     status: str
     """`waiting` (for the person), `running`, `ended`, `failed`,
     `cancelled` or `undone`."""
     by: str
-    """Who ran it: the key's name, an agent's or a person's."""
+    """Who made it: the key's name, an agent's or a person's."""
     by_kind: str = ""
     """`agent` (every key is one), `person`, `bot` or `automation`."""
     id: str | None = None
@@ -426,7 +426,7 @@ class RunInfo:
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> RunInfo:
+    def of(cls, raw: Mapping[str, Any]) -> InvocationInfo:
         by = raw.get("by") if isinstance(raw.get("by"), Mapping) else {}
         return cls(
             status=str(raw.get("status") or ""),
@@ -455,32 +455,38 @@ class RunInfo:
 
 
 @dataclass
-class RunList:
-    """A page of a workspace's runs, newest first, with the totals: iterate it
-    (`for` on `Tilo`, `async for` on `AsyncTilo`) to read on to the oldest."""
+class InvocationList:
+    """A page of a workspace's invocations, newest first, with the totals:
+    iterate it (`for` on `Tilo`, `async for` on `AsyncTilo`) to read on to the
+    oldest."""
 
-    runs: Sequence[RunInfo] = ()
+    invocations: Sequence[InvocationInfo] = ()
     total: int = 0
-    """Runs the workspace holds, of which `runs` is a page."""
+    """Invocations the workspace holds, of which `invocations` is a page."""
     waiting: int = 0
-    """Of those, the runs waiting for the person."""
+    """Of those, the ones waiting for the person."""
     pending: bool = False
-    """A record could not be read yet: runs that changed only it are missing."""
+    """A record could not be read yet: invocations that changed only it are
+    missing."""
     next_cursor: str | None = None
     text: str = ""
-    """The page as a person reads it, one line per run."""
+    """The page as a person reads it, one line per invocation."""
     _client: Any = None
-    _more: Callable[[str], Awaitable[RunList]] | None = None
+    _more: Callable[[str], Awaitable[InvocationList]] | None = None
 
     @classmethod
     def of(
         cls,
         raw: Mapping[str, Any],
         client: Any = None,
-        more: Callable[[str], Awaitable[RunList]] | None = None,
-    ) -> RunList:
+        more: Callable[[str], Awaitable[InvocationList]] | None = None,
+    ) -> InvocationList:
         return cls(
-            runs=[RunInfo.of(run) for run in raw.get("runs") or [] if isinstance(run, Mapping)],
+            invocations=[
+                InvocationInfo.of(listed)
+                for listed in raw.get("invocations") or []
+                if isinstance(listed, Mapping)
+            ],
             total=_int(raw.get("total")) or 0,
             waiting=_int(raw.get("waiting")) or 0,
             pending=bool(raw.get("pending")),
@@ -496,19 +502,21 @@ class RunList:
             return None
         return self._client.handoff(self._more(self.next_cursor))
 
-    async def __aiter__(self) -> AsyncIterator[RunInfo]:
-        page: RunList | None = self
+    async def __aiter__(self) -> AsyncIterator[InvocationInfo]:
+        page: InvocationList | None = self
         while page is not None:
-            for run in page.runs:
-                yield run
+            for listed in page.invocations:
+                yield listed
             page = await page.more() if page.next_cursor else None
 
-    def __iter__(self) -> Iterator[RunInfo]:
+    def __iter__(self) -> Iterator[InvocationInfo]:
         if not getattr(self._client, "sync", False):
-            raise ProtocolError("the async client walks a listing of runs with `async for`")
-        page: RunList | None = self
+            raise ProtocolError(
+                "the async client walks a listing of invocations with `async for`"
+            )
+        page: InvocationList | None = self
         while page is not None:
-            yield from page.runs
+            yield from page.invocations
             page = page.more()
 
 
@@ -581,7 +589,7 @@ class Event:
 
     @property
     def by(self) -> str | None:
-        """Who made the change: a person's name, or the run's title when a run did."""
+        """Who made the change: a person's name, or a group's title when one did."""
         return _text(self.raw.get("by"))
 
     @property
@@ -602,22 +610,22 @@ class Event:
 
     @property
     def title(self) -> str | None:
-        """The run's title: the words the client that made it opened it with."""
+        """The group's title: the words the client that made it opened it with."""
         return _text(self.raw.get("title"))
 
     @property
-    def run(self) -> str | None:
-        """The invocation a run event is about."""
-        return _text(self.raw.get("run"))
+    def invocation(self) -> str | None:
+        """The invocation an invocation event is about."""
+        return _text(self.raw.get("invocation"))
 
     @property
     def group(self) -> str | None:
-        """The run a client opened: every call carrying its id is one step."""
+        """The group a client opened: every call carrying its id is one step."""
         return _text(self.raw.get("group"))
 
     @property
     def phase(self) -> str | None:
-        """How a run stands: `started`, `succeeded`, `failed` or `cancelled`."""
+        """How it stands: `started`, `succeeded`, `failed` or `cancelled`."""
         return _text(self.raw.get("phase"))
 
     @property

@@ -40,47 +40,6 @@ final class ProblemView: NSView {
     @objc private func pressed() { act() }
 }
 
-/// A bar under the page while the site keeps this device out: what brings the person in, and
-/// the one button that does it.
-@MainActor
-final class WayInBar: NSView {
-    private let act: () -> Void
-
-    init(words: String, button: String, act: @escaping () -> Void) {
-        self.act = act
-        super.init(frame: .zero)
-        let said = NSTextField(wrappingLabelWithString: words)
-        said.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let press = NSButton(title: button, target: self, action: #selector(pressed))
-        press.setContentHuggingPriority(.required, for: .horizontal)
-        press.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let row = NSStackView(views: [said, press])
-        row.orientation = .horizontal
-        row.spacing = 12
-        row.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        let line = NSBox()
-        line.boxType = .separator
-        line.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        addSubview(line)
-        NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            line.topAnchor.constraint(equalTo: topAnchor),
-            line.leadingAnchor.constraint(equalTo: leadingAnchor),
-            line.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("made in code") }
-
-    @objc private func pressed() { act() }
-}
-
 /// One line over the foot of the page, for the moment words wait for a place to go.
 @MainActor
 final class HintView: NSVisualEffectView {

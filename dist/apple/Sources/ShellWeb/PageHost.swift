@@ -32,6 +32,7 @@ public final class PageHost: NSObject {
     public weak var delegate: (any PageHostDelegate)?
 
     private let door = Door()
+    private let offer: DoorOffer?
     private var permission: NoticePermission
     private var lastEnd: Date?
     private var titleWatch: NSKeyValueObservation?
@@ -47,13 +48,16 @@ public final class PageHost: NSObject {
     public var settling = Duration.seconds(1.5)
 
     /// - Parameters:
+    ///   - offer: the ways in this device has, which the page shows in its door while the
+    ///     site keeps the device out.
     ///   - keepsData: `false` only for a check that must leave nothing behind.
     ///   - inspectable: lets Safari's Web Inspector attach, for development.
-    public init(settings: ShellSettings, permission: NoticePermission, keepsData: Bool = true,
+    public init(settings: ShellSettings, permission: NoticePermission, offer: DoorOffer? = nil, keepsData: Bool = true,
                 frame: CGRect = CGRect(x: 0, y: 0, width: 1100, height: 760), inspectable: Bool = false) {
         self.settings = settings
         policy = SitePolicy(settings: settings)
         self.permission = permission
+        self.offer = offer
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = keepsData ? .default() : .nonPersistent()
         configuration.applicationNameForUserAgent = "TiloShell"
@@ -175,6 +179,16 @@ public final class PageHost: NSObject {
         return (answer as? String).flatMap(ComposeOutcome.init(rawValue:)) ?? .noBridge
     }
 
+    /// Say `words` in the door, under the ways in the shell offers there: why a link the
+    /// person brought was not followed. `false` where the door shows no such offer, and the
+    /// words are the app's to say.
+    public func say(atDoor words: String) async -> Bool {
+        let answer = try? await view.callAsyncJavaScript(
+            "return Boolean(globalThis.__tiloShell?.refused(words))",
+            arguments: ["words": words], in: nil, contentWorld: .page)
+        return answer as? Bool ?? false
+    }
+
     /// Tell the page what the system now says about notifications. Pages loaded later read
     /// the same.
     public func setPermission(_ permission: NoticePermission) {
@@ -206,7 +220,7 @@ public final class PageHost: NSObject {
         let scripts = view.configuration.userContentController
         scripts.removeAllUserScripts()
         scripts.addUserScript(WKUserScript(
-            source: Bridge.script(origin: settings.origin, permission: permission),
+            source: Bridge.script(origin: settings.origin, permission: permission, offer: offer),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 

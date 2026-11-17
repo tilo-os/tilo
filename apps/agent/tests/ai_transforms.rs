@@ -277,7 +277,7 @@ fn run_shortcut(
         &Unattended,
         InvocationRequest {
             shortcut,
-            invocation: tilo_automation::InvocationId::new(),
+            invocation: tilo_automation::AutomationInvocationId::new(),
             caller: Caller::local_person("ada"),
             mode: InvocationMode::Unattended,
             trigger: InvocationTrigger::Manual,

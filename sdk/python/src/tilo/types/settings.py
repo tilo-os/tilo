@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Root` is the app's `settings.root` at `settings/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "ColorFilter",
@@ -740,7 +740,7 @@ class Appearance(Resource):
         return self.action("choose-theme", theme=theme)
 
     def choose_theme_many(self, items: list[ChooseThemeArgs]) -> list[dict[str, Any]]:
-        """Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("choose-theme", items)
 
     def set_dark_mode(self, *, on: bool) -> None:
@@ -748,7 +748,7 @@ class Appearance(Resource):
         return self.action("set-dark-mode", on=on)
 
     def set_dark_mode_many(self, items: list[SetDarkModeArgs]) -> list[dict[str, Any]]:
-        """Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-dark-mode", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -805,7 +805,7 @@ class Accessibility(Resource):
         return self.action("step-magnifier", step=step)
 
     def step_magnifier_many(self, items: list[StepMagnifierArgs]) -> list[dict[str, Any]]:
-        """Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("step-magnifier", items)
 
     def set_screen_reader(self, *, on: bool) -> None:
@@ -813,7 +813,7 @@ class Accessibility(Resource):
         return self.action("set-screen-reader", on=on)
 
     def set_screen_reader_many(self, items: list[SetScreenReaderArgs]) -> list[dict[str, Any]]:
-        """Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-screen-reader", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -881,7 +881,7 @@ class Input(Resource):
         return self.action("set-key-repeat", rate=rate)
 
     def set_key_repeat_many(self, items: list[SetKeyRepeatArgs]) -> list[dict[str, Any]]:
-        """Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-key-repeat", items)
 
     def choose_layout(self, *, layout: str) -> None:
@@ -889,7 +889,7 @@ class Input(Resource):
         return self.action("choose-layout", layout=layout)
 
     def choose_layout_many(self, items: list[ChooseLayoutArgs]) -> list[dict[str, Any]]:
-        """Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("choose-layout", items)
 
     def set_layouts(self,
@@ -901,7 +901,7 @@ class Input(Resource):
         return self.action("set-layouts", layouts=layouts, active=active)
 
     def set_layouts_many(self, items: list[SetLayoutsArgs]) -> list[dict[str, Any]]:
-        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-layouts", items)
 
     def set_paste_shortcut(self,
@@ -913,7 +913,7 @@ class Input(Resource):
         return self.action("set-paste-shortcut", app=app, shortcut=shortcut)
 
     def set_paste_shortcut_many(self, items: list[SetPasteShortcutArgs]) -> list[dict[str, Any]]:
-        """Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-paste-shortcut", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -964,7 +964,7 @@ class InputDevice(Resource):
         return self.action("set-keyboard-layouts", keyboard=keyboard, profile=profile)
 
     def set_keyboard_layouts_many(self, items: list[SetKeyboardLayoutsArgs]) -> list[dict[str, Any]]:
-        """Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-keyboard-layouts", items)
 
     def use_shared_layouts(self, *, keyboard: str) -> None:
@@ -972,7 +972,7 @@ class InputDevice(Resource):
         return self.action("use-shared-layouts", keyboard=keyboard)
 
     def use_shared_layouts_many(self, items: list[UseSharedLayoutsArgs]) -> list[dict[str, Any]]:
-        """Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("use-shared-layouts", items)
 
     def set_keyboard_model(self, *, model: str) -> None:
@@ -980,7 +980,7 @@ class InputDevice(Resource):
         return self.action("set-keyboard-model", model=model)
 
     def set_keyboard_model_many(self, items: list[SetKeyboardModelArgs]) -> list[dict[str, Any]]:
-        """Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-keyboard-model", items)
 
     def show_keyboard_layout(self,
@@ -994,7 +994,7 @@ class InputDevice(Resource):
         return self.action("show-keyboard-layout", **args)
 
     def show_keyboard_layout_many(self, items: list[ShowKeyboardLayoutArgs]) -> list[dict[str, Any]]:
-        """Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show-keyboard-layout", items)
 
     def inspect_keyboard(self,
@@ -1007,7 +1007,7 @@ class InputDevice(Resource):
         return self.action("inspect-keyboard", level=level, extra_levels=extra_levels, key=key)
 
     def inspect_keyboard_many(self, items: list[InspectKeyboardArgs]) -> list[dict[str, Any]]:
-        """Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("inspect-keyboard", items)
 
     def set_tablet_output(self,
@@ -1019,7 +1019,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-output", device=device, output=output)
 
     def set_tablet_output_many(self, items: list[SetTabletOutputArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-output", items)
 
     def set_tablet_keep_aspect(self,
@@ -1031,7 +1031,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-keep-aspect", device=device, on=on)
 
     def set_tablet_keep_aspect_many(self, items: list[SetTabletKeepAspectArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-keep-aspect", items)
 
     def set_tablet_left_handed(self,
@@ -1043,7 +1043,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-left-handed", device=device, on=on)
 
     def set_tablet_left_handed_many(self, items: list[SetTabletLeftHandedArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-left-handed", items)
 
     def set_tablet_tip_feel(self,
@@ -1055,7 +1055,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-tip-feel", device=device, feel=feel)
 
     def set_tablet_tip_feel_many(self, items: list[SetTabletTipFeelArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-tip-feel", items)
 
     def set_tablet_button(self,
@@ -1068,7 +1068,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-button", device=device, button=button, action=action)
 
     def set_tablet_button_many(self, items: list[SetTabletButtonArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-button", items)
 
     def set_tablet_eraser(self,
@@ -1080,7 +1080,7 @@ class InputDevice(Resource):
         return self.action("set-tablet-eraser", device=device, action=action)
 
     def set_tablet_eraser_many(self, items: list[SetTabletEraserArgs]) -> list[dict[str, Any]]:
-        """Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-tablet-eraser", items)
 
     def set_pad_button(self,
@@ -1093,7 +1093,7 @@ class InputDevice(Resource):
         return self.action("set-pad-button", device=device, button=button, action=action)
 
     def set_pad_button_many(self, items: list[SetPadButtonArgs]) -> list[dict[str, Any]]:
-        """Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-pad-button", items)
 
     def set_pad_dial(self,
@@ -1108,7 +1108,7 @@ class InputDevice(Resource):
         return self.action("set-pad-dial", device=device, dial=dial, index=index, mode=mode, action=action)
 
     def set_pad_dial_many(self, items: list[SetPadDialArgs]) -> list[dict[str, Any]]:
-        """Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-pad-dial", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1147,7 +1147,7 @@ class Power(Resource):
         return self.action("set-suspend-plugged-in", minutes=minutes)
 
     def set_suspend_plugged_in_many(self, items: list[SetSuspendPluggedInArgs]) -> list[dict[str, Any]]:
-        """Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-suspend-plugged-in", items)
 
     def set_suspend_on_battery(self, *, minutes: int) -> None:
@@ -1155,7 +1155,7 @@ class Power(Resource):
         return self.action("set-suspend-on-battery", minutes=minutes)
 
     def set_suspend_on_battery_many(self, items: list[SetSuspendOnBatteryArgs]) -> list[dict[str, Any]]:
-        """Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-suspend-on-battery", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1197,7 +1197,7 @@ class Updates(Resource):
         return self.action("record-automatic-updates", on=on)
 
     def record_automatic_updates_many(self, items: list[RecordAutomaticUpdatesArgs]) -> list[dict[str, Any]]:
-        """Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-automatic-updates", items)
 
     def record_update_check(self, *, at: str) -> None:
@@ -1205,7 +1205,7 @@ class Updates(Resource):
         return self.action("record-update-check", at=at)
 
     def record_update_check_many(self, items: list[RecordUpdateCheckArgs]) -> list[dict[str, Any]]:
-        """Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-update-check", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1230,7 +1230,7 @@ class Notifications(Resource):
         return self.action("set-do-not-disturb", on=on)
 
     def set_do_not_disturb_many(self, items: list[SetDoNotDisturbArgs]) -> list[dict[str, Any]]:
-        """Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-do-not-disturb", items)
 
     def mute_app(self,
@@ -1242,7 +1242,7 @@ class Notifications(Resource):
         return self.action("mute-app", app=app, duration=duration)
 
     def mute_app_many(self, items: list[MuteAppArgs]) -> list[dict[str, Any]]:
-        """Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mute-app", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1269,7 +1269,7 @@ class Audio(Resource):
         return self.action("set-mono-output", on=on)
 
     def set_mono_output_many(self, items: list[SetMonoOutputArgs]) -> list[dict[str, Any]]:
-        """Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-mono-output", items)
 
     def set_echo_cancellation(self, *, on: bool) -> None:
@@ -1277,7 +1277,7 @@ class Audio(Resource):
         return self.action("set-echo-cancellation", on=on)
 
     def set_echo_cancellation_many(self, items: list[SetEchoCancellationArgs]) -> list[dict[str, Any]]:
-        """Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-echo-cancellation", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1302,7 +1302,7 @@ class AudioDevice(Resource):
         return self.action("remember-output-device", device=device)
 
     def remember_output_device_many(self, items: list[RememberOutputDeviceArgs]) -> list[dict[str, Any]]:
-        """Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember-output-device", items)
 
     def remember_input_device(self, *, device: str) -> None:
@@ -1310,7 +1310,7 @@ class AudioDevice(Resource):
         return self.action("remember-input-device", device=device)
 
     def remember_input_device_many(self, items: list[RememberInputDeviceArgs]) -> list[dict[str, Any]]:
-        """Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember-input-device", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1336,7 +1336,7 @@ class Display(Resource):
         return self.action("set-automatic-brightness", on=on)
 
     def set_automatic_brightness_many(self, items: list[SetAutomaticBrightnessArgs]) -> list[dict[str, Any]]:
-        """Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-automatic-brightness", items)
 
     def set_rotation_lock(self, *, locked: bool) -> None:
@@ -1344,7 +1344,7 @@ class Display(Resource):
         return self.action("set-rotation-lock", locked=locked)
 
     def set_rotation_lock_many(self, items: list[SetRotationLockArgs]) -> list[dict[str, Any]]:
-        """Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-rotation-lock", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1424,7 +1424,7 @@ class Continuity(Resource):
         return self.action("allow-continuity", on=on)
 
     def allow_continuity_many(self, items: list[AllowContinuityArgs]) -> list[dict[str, Any]]:
-        """Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("allow-continuity", items)
 
     def allow_capability(self,
@@ -1436,7 +1436,7 @@ class Continuity(Resource):
         return self.action("allow-capability", capability=capability, on=on)
 
     def allow_capability_many(self, items: list[AllowCapabilityArgs]) -> list[dict[str, Any]]:
-        """Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("allow-capability", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1465,7 +1465,7 @@ class Shortcuts(Resource):
         return self.action("rebind", shortcut=shortcut, chord=chord)
 
     def rebind_many(self, items: list[RebindArgs]) -> list[dict[str, Any]]:
-        """Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rebind", items)
 
     def reset(self, *, shortcuts: list[str]) -> None:
@@ -1473,7 +1473,7 @@ class Shortcuts(Resource):
         return self.action("reset", shortcuts=shortcuts)
 
     def reset_many(self, items: list[ResetArgs]) -> list[dict[str, Any]]:
-        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset", items)
 
     def reset_all(self) -> None:
@@ -1481,7 +1481,7 @@ class Shortcuts(Resource):
         return self.action("reset-all")
 
     def reset_all_many(self, items: list[ResetAllArgs]) -> list[dict[str, Any]]:
-        """Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-all", items)
 
     def set_action_chords(self, *, chords: Any) -> None:
@@ -1489,7 +1489,7 @@ class Shortcuts(Resource):
         return self.action("set-action-chords", chords=chords)
 
     def set_action_chords_many(self, items: list[SetActionChordsArgs]) -> list[dict[str, Any]]:
-        """Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-action-chords", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1526,7 +1526,7 @@ class ShellViews(Resource):
         return self.action("bind", **args)
 
     def bind_many(self, items: list[BindArgs]) -> list[dict[str, Any]]:
-        """Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("bind", items)
 
     def reset(self,
@@ -1542,7 +1542,7 @@ class ShellViews(Resource):
         return self.action("reset", **args)
 
     def reset_many(self, items: list[ShellViewsResetArgs]) -> list[dict[str, Any]]:
-        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1575,7 +1575,7 @@ class AgentProviders(Resource):
         return self.action("set-providers", config=config)
 
     def set_providers_many(self, items: list[SetProvidersArgs]) -> list[dict[str, Any]]:
-        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-providers", items)
 
     def follow_local_models(self, *, profile: Any) -> None:
@@ -1583,7 +1583,7 @@ class AgentProviders(Resource):
         return self.action("follow-local-models", profile=profile)
 
     def follow_local_models_many(self, items: list[FollowLocalModelsArgs]) -> list[dict[str, Any]]:
-        """Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("follow-local-models", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1604,7 +1604,7 @@ class HostedAgentProviders(Resource):
         return self.action("set-providers", hosted=hosted)
 
     def set_providers_many(self, items: list[HostedAgentProvidersSetProvidersArgs]) -> list[dict[str, Any]]:
-        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-providers", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1629,7 +1629,7 @@ class DefaultApps(Resource):
         return self.action("set-default-app-handler", kind=kind, app=app)
 
     def set_default_app_handler_many(self, items: list[SetDefaultAppHandlerArgs]) -> list[dict[str, Any]]:
-        """Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-default-app-handler", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1656,7 +1656,7 @@ class DisplayPlacement(Resource):
         return self.action("arrange-displays", placement=placement)
 
     def arrange_displays_many(self, items: list[ArrangeDisplaysArgs]) -> list[dict[str, Any]]:
-        """Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("arrange-displays", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1677,7 +1677,7 @@ class AutomaticDisplay(Resource):
         return self.action("set-automatic-display-input", on=on)
 
     def set_automatic_display_input_many(self, items: list[SetAutomaticDisplayInputArgs]) -> list[dict[str, Any]]:
-        """Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-automatic-display-input", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1739,7 +1739,7 @@ class OskSources(Resource):
         return self.action("set-layouts", layouts=layouts, active=active)
 
     def set_layouts_many(self, items: list[OskSourcesSetLayoutsArgs]) -> list[dict[str, Any]]:
-        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-layouts", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1777,7 +1777,7 @@ class DeviceVpn(Resource):
         return self.action("route-through", device=device, on=on)
 
     def route_through_many(self, items: list[RouteThroughArgs]) -> list[dict[str, Any]]:
-        """Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("route-through", items)
 
     def set_kill_switch(self, *, on: bool) -> None:
@@ -1785,7 +1785,7 @@ class DeviceVpn(Resource):
         return self.action("set-kill-switch", on=on)
 
     def set_kill_switch_many(self, items: list[SetKillSwitchArgs]) -> list[dict[str, Any]]:
-        """Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-kill-switch", items)
 
     # the app's `stop` action is named as a field of this kind: run it with
@@ -1805,7 +1805,7 @@ class DeviceVpn(Resource):
         return self.action("set-profile-kill-switch", **args)
 
     def set_profile_kill_switch_many(self, items: list[SetProfileKillSwitchArgs]) -> list[dict[str, Any]]:
-        """Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-profile-kill-switch", items)
 
     def release_profile(self, *, profile: str) -> None:
@@ -1813,7 +1813,7 @@ class DeviceVpn(Resource):
         return self.action("release-profile", profile=profile)
 
     def release_profile_many(self, items: list[ReleaseProfileArgs]) -> list[dict[str, Any]]:
-        """Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("release-profile", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1862,7 +1862,7 @@ class NetworkUsage(Resource):
         return self.action("count-data-used", **args)
 
     def count_data_used_many(self, items: list[CountDataUsedArgs]) -> list[dict[str, Any]]:
-        """Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("count-data-used", items)
 
     def reset_data_used(self,
@@ -1876,7 +1876,7 @@ class NetworkUsage(Resource):
         return self.action("reset-data-used", **args)
 
     def reset_data_used_many(self, items: list[ResetDataUsedArgs]) -> list[dict[str, Any]]:
-        """Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-data-used", items)
 
     def forget_data_used(self,
@@ -1890,7 +1890,7 @@ class NetworkUsage(Resource):
         return self.action("forget-data-used", **args)
 
     def forget_data_used_many(self, items: list[ForgetDataUsedArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget-data-used", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1915,7 +1915,7 @@ class McpServer(Resource):
         return self.action("set-accept-own-devices", on=on)
 
     def set_accept_own_devices_many(self, items: list[SetAcceptOwnDevicesArgs]) -> list[dict[str, Any]]:
-        """Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-accept-own-devices", items)
 
     def set_act_without_asking(self, *, on: bool) -> None:
@@ -1923,7 +1923,7 @@ class McpServer(Resource):
         return self.action("set-act-without-asking", on=on)
 
     def set_act_without_asking_many(self, items: list[SetActWithoutAskingArgs]) -> list[dict[str, Any]]:
-        """Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-act-without-asking", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -1947,7 +1947,7 @@ class Accounts(Resource):
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
     def publish_browser_identity_many(self, items: list[PublishBrowserIdentityArgs]) -> list[dict[str, Any]]:
-        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("publish-browser-identity", items)
 
     def save_account(self,
@@ -1963,7 +1963,7 @@ class Accounts(Resource):
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
     def save_account_many(self, items: list[SaveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-account", items)
 
     def remove_account(self, *, account: str) -> None:
@@ -1971,7 +1971,7 @@ class Accounts(Resource):
         return self.action("remove-account", account=account)
 
     def remove_account_many(self, items: list[RemoveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
     def set_active_account(self, *, account: str) -> None:
@@ -1979,7 +1979,7 @@ class Accounts(Resource):
         return self.action("set-active-account", account=account)
 
     def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-active-account", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

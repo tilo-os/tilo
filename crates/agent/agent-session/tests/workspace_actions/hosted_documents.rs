@@ -328,7 +328,7 @@ async fn indexed(
 
 /// Undo `run` in the record `route` names, through the history `undo` the
 /// record publishes, as the activity's undo asks it.
-async fn undo_run(page: &mut Browser, route: &DocumentRoute, run: &str) {
+async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, run: &str) {
     let provider = tilo_agent_session::record_provider(route);
     let rows = page
         .catalogue(CatalogueQuery {
@@ -610,8 +610,8 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     );
 
     // Undoing the run takes the agent's edits back.
-    undo_run(&mut page, &pdf, &run).await;
-    undo_run(&mut page, &writer, &run).await;
+    undo_invocation(&mut page, &pdf, &run).await;
+    undo_invocation(&mut page, &writer, &run).await;
     loop {
         let values = form_values(&mut page, &pdf);
         let text = writer_text(&mut page, &writer);

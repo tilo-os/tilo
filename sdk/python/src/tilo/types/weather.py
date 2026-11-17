@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Locations` is the app's `weather.locations` at `weather/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Place",
@@ -81,7 +81,7 @@ class Locations(Resource):
         return self.action("save-location", **args)
 
     def save_location_many(self, items: list[SaveLocationArgs]) -> list[dict[str, Any]]:
-        """Runs `save-location` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-location` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-location", items)
 
     def use_as_default(self, *, place: str) -> None:
@@ -89,7 +89,7 @@ class Locations(Resource):
         return self.action("use-as-default", place=place)
 
     def use_as_default_many(self, items: list[UseAsDefaultArgs]) -> list[dict[str, Any]]:
-        """Runs `use-as-default` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `use-as-default` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("use-as-default", items)
 
     def move_to_top(self, *, place: str) -> None:
@@ -97,7 +97,7 @@ class Locations(Resource):
         return self.action("move-to-top", place=place)
 
     def move_to_top_many(self, items: list[MoveToTopArgs]) -> list[dict[str, Any]]:
-        """Runs `move-to-top` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `move-to-top` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move-to-top", items)
 
     # the app's `remove` action is the SDK's own: run it with `action("remove")`.

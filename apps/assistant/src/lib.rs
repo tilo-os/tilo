@@ -41,8 +41,10 @@ use sources::{Assistant, Read, Reads};
 const CHAT_WORKSPACE: &str = "chat.workspace";
 const CHAT_SEND: &str = "send";
 
-/// The resource Settings publishes itself under.
-const SETTINGS_ROOT: &str = "settings.root";
+/// The page of Settings where a person links their model providers and chooses the model each
+/// kind of work runs on, as Settings publishes it: the kind of a page, and that page.
+const SETTINGS_PAGE: &str = "settings.section";
+const SETTINGS_MODELS: &str = "settings.section:agent_models";
 
 /// What the window shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,9 +142,9 @@ impl Hands {
     }
 
     /// Make the person's assistant: an agent of the workspace's own record of agents, kept by
-    /// them, through that record's own `create-agent`. A page runs no agent, so one made in a
-    /// browser works on the workspace's host, around the clock; one made on a computer runs
-    /// there, as the workspace's settings make an agent.
+    /// them, through that record's own `create-agent`, and set to run on the workspace's
+    /// host: an assistant answers while every device of its person is off, so no device runs
+    /// it, wherever it was made. Its model is its keeper's own.
     ///
     /// # Errors
     /// The workspace's agents are not held here, or the workspace's grants refuse.
@@ -163,16 +165,14 @@ impl Hands {
                 }),
             )
             .map_err(|error| error.to_string())?;
-        if tilo_platform_caps::WEB {
-            agents
-                .invoke(&WorkspaceAgents::SET_AGENT_ON_HOST.with(
-                    workspace_agents::SetAgentOnHost {
-                        agent: Id::from_raw(id),
-                        on_host: true,
-                    },
-                ))
-                .map_err(|error| error.to_string())?;
-        }
+        agents
+            .invoke(
+                &WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
+                    agent: Id::from_raw(id),
+                    on_host: true,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
         self.nav
             .changed
             .update(|changed| *changed = changed.wrapping_add(1));
@@ -231,13 +231,13 @@ impl Hands {
         );
     }
 
-    /// Open Settings, where the person's model providers and the model each kind of work
-    /// runs on are chosen.
+    /// Open Settings at Agent models, where the person's model providers and the model each
+    /// kind of work runs on are chosen.
     fn open_settings(&self) {
         self.dispatcher.open_reference(
             ui::apps::SETTINGS,
             None,
-            &ResourceRef::whole(SETTINGS_ROOT, SETTINGS_ROOT, "Settings"),
+            &ResourceRef::whole(SETTINGS_PAGE, SETTINGS_MODELS, "Settings"),
         );
     }
 }

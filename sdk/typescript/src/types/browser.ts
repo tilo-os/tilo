@@ -8,12 +8,12 @@
  * resource's path (`browser/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -224,18 +224,18 @@ export interface Application extends tilo.Resource {
     url: string;
     title?: string;
   }): Promise<void>;
-  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addBookmarkMany(items: AddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     bookmark: string;
   }): Promise<void>;
-  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeBookmarkMany(items: RemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   setSiteProtection(args: {
     origin: string;
     enabled: boolean;
   }): Promise<void>;
-  /** Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setSiteProtectionMany(items: SetSiteProtectionArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberForms(args: {
     origin: string;
@@ -244,21 +244,21 @@ export interface Application extends tilo.Resource {
     whole: boolean;
     at: number;
   }): Promise<void>;
-  /** Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberFormsMany(items: RememberFormsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetForm(args: {
     origin: string;
     signature: string;
   }): Promise<void>;
-  /** Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetFormMany(items: ForgetFormArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetSiteForms(args: {
     origin: string;
   }): Promise<void>;
-  /** Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetSiteFormsMany(items: ForgetSiteFormsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetAllForms(): Promise<void>;
-  /** Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetAllFormsMany(items: ForgetAllFormsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -282,24 +282,24 @@ export interface PersonalBookmarks extends tilo.Resource {
     url: string;
     title: string;
   }): Promise<void>;
-  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addBookmarkMany(items: PersonalBookmarksAddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     url: string;
     observed_tags: string[];
   }): Promise<void>;
-  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeBookmarkMany(items: PersonalBookmarksRemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   importBookmarks(args: {
     bundle: string;
   }): Promise<void>;
-  /** Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importBookmarksMany(items: ImportBookmarksArgs[]): Promise<tilo.ActionAnswer[]>;
   removeImportedNode(args: {
     source: string;
     id: string;
   }): Promise<void>;
-  /** Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeImportedNodeMany(items: RemoveImportedNodeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -323,26 +323,26 @@ export interface BrowsingHistory extends tilo.Resource {
     title: string;
     at: number;
   }): Promise<void>;
-  /** Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   visitMany(items: VisitArgs[]): Promise<tilo.ActionAnswer[]>;
   importHistoryBundle(args: {
     bundle: string;
   }): Promise<void>;
-  /** Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importHistoryBundleMany(items: ImportHistoryBundleArgs[]): Promise<tilo.ActionAnswer[]>;
   nameVisit(args: {
     url: string;
     title: string;
   }): Promise<void>;
-  /** Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   nameVisitMany(items: NameVisitArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     url: string;
   }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clearHistory(): Promise<void>;
-  /** Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearHistoryMany(items: ClearHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

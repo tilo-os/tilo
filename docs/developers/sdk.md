@@ -90,8 +90,9 @@ Almost everything in Tilo happens somewhere else: an action runs at its app's ho
 sync between devices, a Linux command runs in a VM. The SDK is async first.
 
 - **An action is an invocation.** `await form.read_form_fields()` resolves when the action
-  answers. An action that takes longer resolves to a `Run`, with `run.output()` (an async
-  iterator), `await run.result()`, `await run.cancel()` and `await run.undo()`.
+  answers. An action that takes longer resolves to an `Invocation`, with
+  `invocation.output()` (an async iterator), `await invocation.result()`,
+  `await invocation.cancel()` and `await invocation.undo()`.
 - **Reads are snapshots, and watches are live.** `async for change in doc.watch()` yields
   each change as it syncs, with who made it. The same goes for a collection, a workspace's
   runs, and presence.
@@ -102,10 +103,11 @@ sync between devices, a Linux command runs in a VM. The SDK is async first.
 
 ## Runs, attribution and undo
 
-A client connection is an agent run, named for its key ("visa-backend #3"). People watching
+A client connection is an agent session, named for its key ("visa-backend #3"). People watching
 the workspace see it live, with its own name and colour, and it appears in each resource's
-history. `async with ws.run("Fill Jane's application") as run:` groups the steps inside into
-one run, which a person can undo as a whole, as one tilolang call is one step.
+history. `async with ws.invocation("Fill Jane's application") as invocation:` groups the steps
+inside into one invocation, which a person can undo as a whole, as one tilolang call is one
+step.
 
 ## Bulk calls
 
@@ -133,8 +135,8 @@ const answers = await tracker.createMany([
 is three calls: at most 500 items and about 4 MiB of JSON each, and a member is never
 split. Each call is one step, so if one of its members refuses, nothing of that call
 applies; the calls before it stand, because they were steps of their own. All the calls of
-one bulk call carry one `Tilo-Run`, so History lists the work once and one undo takes it
-back; inside `ws.run(...)` they join that run instead. A bulk call answers each call's
+one bulk call carry one `Tilo-Invocation`, so History lists the work once and one undo takes
+it back; inside `ws.invocation(...)` they join that group instead. A bulk call answers each call's
 answer, in order, and an empty list sends nothing.
 
 A read, or an action that answers a value (the record it made, a file it exported), has no
@@ -143,9 +145,9 @@ bulk form: `group` reports no member's answer, so the value would be lost.
 ## Links for people
 
 Work ends with a person looking at it, so every call that changed a record answers that
-record's link, the one a person copies in the app: `run.links` lists each record a run's calls
-changed, once each, and `run.link` is the one link when they changed one record (else
-`None`/`null`). A pending call's `Run` has `link` once it finished. `ws.link(path)` answers the
+record's link, the one a person copies in the app: `invocation.links` lists each record its
+calls changed, once each, and `invocation.link` is the one link when they changed one record
+(else `None`/`null`). A pending call's `Invocation` has `link` once it finished. `ws.link(path)` answers the
 link to anything a path names. A link opens the record in its app for the workspace's members
 and carries no secret: invite the person first (`ws.members.invite`).
 
@@ -167,10 +169,10 @@ the caller's. Revoking a key ends every key minted from it.
 ## Wire
 
 The SDKs speak Tilo's `/v1` JSON API, [`api.md`](api.md): an action is
-`POST …/resources/{path}/actions/{action}`, a run is followed at `…/runs/{run}`, and a
-watch is the workspace's event stream (`…/events`, resumed with `Last-Event-ID`). Each call
-carries an `Idempotency-Key`, so a retry runs nothing twice, and a run's calls carry
-`Tilo-Run` and `Tilo-Run-Title`. They can also reach a Tilo host in process, through the same
+`POST …/resources/{path}/actions/{action}`, an invocation is followed at
+`…/invocations/{invocation}`, and a watch is the workspace's event stream (`…/events`, resumed
+with `Last-Event-ID`). Each call carries an `Idempotency-Key`, so a retry runs nothing twice,
+and a group's calls carry `Tilo-Invocation` and `Tilo-Invocation-Title`. They can also reach a Tilo host in process, through the same
 Rust client the API server runs: no second implementation, no socket. File bytes go through
 `…/uploads`, then the Files app's actions.
 

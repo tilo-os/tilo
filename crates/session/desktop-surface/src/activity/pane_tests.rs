@@ -500,7 +500,7 @@ mod tests {
         // workspace's history.
         {
             let (_tree, _records, mut pane, _record) = agent_task_fixture();
-            let run = pane.agent_sessions[0].session.steps[0].run.clone();
+            let run = pane.agent_sessions[0].session.steps[0].range.clone();
             let middle = pane
                 .timeline
                 .entries()
@@ -566,7 +566,7 @@ mod tests {
                 !pane.agent_sessions.is_empty(),
                 "the refresh the pane uses reads the runs"
             );
-            let end = pane.agent_sessions[0].session.steps[0].run.end;
+            let end = pane.agent_sessions[0].session.steps[0].range.end;
             let row = detached_row(&pane, end);
             pane.timeline.set_selection(Some((row, row)));
             let task = pane
@@ -648,7 +648,12 @@ mod tests {
         pane
     }
 
-    fn agent_task_fixture() -> (WorkspaceTree, ResourceStore, WorkspaceActivityPane, DocumentId) {
+    fn agent_task_fixture() -> (
+        WorkspaceTree,
+        ResourceStore,
+        WorkspaceActivityPane,
+        DocumentId,
+    ) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let records = ResourceStore::in_memory();
@@ -687,23 +692,25 @@ mod tests {
                         .with_message(context.change_message().unwrap()),
                 );
             }
-            let change = ui::latest_run_by(doc, &agent_hex).expect("agent change");
-            let key = ui::record_run_with_details(
+            let change = ui::latest_invocation_by(doc, &agent_hex).expect("agent change");
+            let key = ui::record_invocation_with_details(
                 doc,
                 "Rewrite the opening and preserve the pricing table",
                 Some(&agent_hex),
                 Some(&issuer_hex),
                 Some("Rewrite the opening and preserve the pricing table"),
                 Some("The opening was vague; the pricing table was already correct."),
-                &[ui::RunStep {
+                &[ui::InvocationStep {
                     app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
-                    run: change,
+                    range: change,
                     what: vec![crate::activity::testing::verb("rewrite the launch story")],
                 }],
             )
             .expect("task receipt");
-            assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+            assert!(ui::history_source::invocations::set_invocation_task(
+                doc, &key, "task:1"
+            ));
             tilo_resource::history::commit_stamped_at(doc, 23);
         });
         tree.desktop
@@ -719,7 +726,7 @@ mod tests {
         authors.register(&issuer_hex, HistoryAuthor::new("Ada", 120.0, "ada"));
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        let end = pane.agent_sessions[0].session.steps[0].run.end;
+        let end = pane.agent_sessions[0].session.steps[0].range.end;
         let selected = pane
             .timeline
             .entries()
@@ -818,7 +825,7 @@ mod tests {
     fn an_app_records_rows_are_restored_and_undone_by_its_app() {
         let (mut tree, records, mut pane, record) = agent_task_fixture();
         pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
-        let newest = pane.agent_sessions[0].session.steps[0].run.end;
+        let newest = pane.agent_sessions[0].session.steps[0].range.end;
         let row = detached_row(&pane, newest);
         pane.timeline.set_selection(Some((row, row)));
         let before = records
@@ -2660,325 +2667,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tasks_link_tests {
-    use super::*;
-    use crate::activity::TaskRunDocument;
-    use crate::activity::testing::TestTree as WorkspaceTree;
-    use ui::resource::ResourceStore;
-    #[derive(Default)]
-    pub(super) struct UndoHost {
-        pub(super) undos: RefCell<Vec<TaskRunUndo>>,
-        ended: RefCell<Option<Result<Vec<TaskRunDocument>, String>>>,
-    }
-    impl ActivityHost for UndoHost {
-        fn local_user(&self) -> String {
-            "local".into()
-        }
-        fn mutations_available(&self) -> bool {
-            true
-        }
-        fn undo_task_run(&self, undo: TaskRunUndo) -> Result<(), String> {
-            self.undos.borrow_mut().push(undo);
-            Ok(())
-        }
-        fn poll_task_run_undo(
-            &self,
-            _invocation: uuid::Uuid,
-        ) -> Option<Result<Vec<TaskRunDocument>, String>> {
-            self.ended.borrow_mut().take()
-        }
-    }
-    fn fixture() -> (WorkspaceTree, WorkspaceActivityPane, Rc<UndoHost>) {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let host = Rc::new(UndoHost::default());
-        let mut pane = WorkspaceActivityPane::new();
-        pane.set_host(host.clone());
-        pane.refresh(&mut tree);
-        pane.view = ActivityView::Explore;
-        (tree, pane, host)
-    }
-
-    /// Once an agent's run of a task recorded what it changed under the task, undoing it asks the
-    /// host to undo the run in each changed document, and tells how that ended.
-    #[test]
-    fn an_agent_sessions_task_is_undone_by_the_host_as_one() {
-        let (mut tree, mut pane, host) = fixture();
-        let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
-        let doc = tree.document_mut();
-        let key = ui::record_run_with_details(
-            doc,
-            "Review release notes",
-            Some("agent:scribe"),
-            Some("local"),
-            None,
-            None,
-            &[ui::RunStep {
-                app: "so.tilo.notes".into(),
-                record: "file:/notes/release.note".into(),
-                run: ui::ChangeRun::new(change, change),
-                what: Vec::new(),
-            }],
-        )
-        .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
-        doc.commit();
-        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
-
-        assert!(pane.undo_task_run("task:1"));
-        let undo = host.undos.borrow().last().cloned().unwrap();
-        assert_eq!(undo.task_id, "task:1");
-        assert_eq!(
-            undo.workspace,
-            tree.active_workspace().unwrap().id().to_string()
-        );
-        assert_eq!(
-            undo.steps,
-            vec![(
-                "so.tilo.notes".to_owned(),
-                "file:/notes/release.note".to_owned()
-            )]
-        );
-        assert!(pane.undo_task_run("task:1"));
-        assert_eq!(host.undos.borrow().len(), 1, "one undo at a time");
-
-        host.ended.replace(Some(Ok(vec![TaskRunDocument {
-            app: "so.tilo.notes".into(),
-            record: "file:/notes/release.note".into(),
-        }])));
-        pane.refresh(&mut tree);
-        assert!(pane.undo_pending.is_none());
-        assert_eq!(
-            pane.agent_undo_notice
-                .as_ref()
-                .map(|(_, notice)| notice.clone()),
-            Some(t("activity-undo-task-done"))
-        );
-        assert!(pane.unreverted.is_empty(), "every record came back");
-    }
-
-    /// Each record of the run can be undone on its own from the task view: the host is asked for
-    /// the task, in that one document only.
-    #[test]
-    fn one_record_of_a_run_is_undone_alone() {
-        let (mut tree, mut pane, host) = fixture();
-        let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
-        let doc = tree.document_mut();
-        let key = ui::record_run_with_details(
-            doc,
-            "Review release notes",
-            Some("agent:scribe"),
-            Some("local"),
-            None,
-            None,
-            &[
-                ui::RunStep {
-                    app: "so.tilo.notes".into(),
-                    record: "file:/notes/release.note".into(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-                ui::RunStep {
-                    app: "so.tilo.sheets".into(),
-                    record: "file:/sheets/budget.tilo-sheet".into(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-            ],
-        )
-        .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
-        doc.commit();
-        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
-
-        assert!(pane.undo_task_record(
-            "task:1",
-            "so.tilo.sheets",
-            "file:/sheets/budget.tilo-sheet"
-        ));
-        let undo = host.undos.borrow().last().cloned().unwrap();
-        assert_eq!(undo.task_id, "task:1");
-        assert_eq!(
-            undo.steps,
-            vec![(
-                "so.tilo.sheets".to_owned(),
-                "file:/sheets/budget.tilo-sheet".to_owned()
-            )],
-            "only the record the person picked is undone"
-        );
-    }
-
-    /// The agent composer follows the task, not the history: it names the run by its task, and the
-    /// same one record is undone, nothing else; a task that changed nothing is refused.
-    #[test]
-    fn one_record_of_a_run_is_undone_by_its_task() {
-        use tilo_actions::remote::workspace_activity as wire;
-        let (mut tree, mut pane, host) = fixture();
-        let change = ui::history_source::entry_id_from_hash(&"ef".repeat(32));
-        let doc = tree.document_mut();
-        let key = ui::record_run_with_details(
-            doc,
-            "Move the card to Done",
-            Some("agent:scribe"),
-            Some("local"),
-            None,
-            None,
-            &[
-                ui::RunStep {
-                    app: "so.tilo.notes".into(),
-                    record: "file:/notes/release.note".into(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-                ui::RunStep {
-                    app: "so.tilo.lang.board".into(),
-                    record: String::new(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-            ],
-        )
-        .unwrap();
-        assert!(ui::history_source::runs::set_run_task(
-            doc,
-            &key,
-            "tasks.tracker/issues/release"
-        ));
-        doc.commit();
-        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
-
-        let query = |task: &str| {
-            serde_json::to_value(wire::ResourceQuery {
-                task: Some(task.into()),
-                app_id: "so.tilo.lang.board".into(),
-                ..wire::ResourceQuery::default()
-            })
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap()
-        };
-        let outcome = pane
-            .serve_action(
-                wire::UNDO_RECORD,
-                &query("tasks.tracker/issues/release"),
-                &mut tree,
-            )
-            .unwrap();
-        assert!(outcome.handled);
-        let undo = host.undos.borrow().last().cloned().unwrap();
-        assert_eq!(undo.task_id, "tasks.tracker/issues/release");
-        assert_eq!(
-            undo.steps,
-            vec![("so.tilo.lang.board".to_owned(), String::new())],
-            "only that app's record of the task is undone"
-        );
-        assert!(
-            pane.serve_action(
-                wire::UNDO_RECORD,
-                &query("tasks.tracker/issues/other"),
-                &mut tree
-            )
-            .is_err()
-        );
-    }
-
-    /// A record the host did not undo is named, not dropped: the task view says what did not come
-    /// back.
-    #[test]
-    fn a_record_undo_did_not_reach_is_reported() {
-        let (mut tree, mut pane, host) = fixture();
-        let change = ui::history_source::entry_id_from_hash(&"cd".repeat(32));
-        let doc = tree.document_mut();
-        let key = ui::record_run_with_details(
-            doc,
-            "Review release notes",
-            Some("agent:scribe"),
-            Some("local"),
-            None,
-            None,
-            &[
-                ui::RunStep {
-                    app: "so.tilo.notes".into(),
-                    record: "file:/notes/release.note".into(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-                ui::RunStep {
-                    app: "so.tilo.sheets".into(),
-                    record: "file:/sheets/budget.tilo-sheet".into(),
-                    run: ui::ChangeRun::new(change, change),
-                    what: Vec::new(),
-                },
-            ],
-        )
-        .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
-        doc.commit();
-        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
-
-        assert!(pane.undo_task_run("task:1"));
-        // The host reached only the notes document.
-        host.ended.replace(Some(Ok(vec![TaskRunDocument {
-            app: "so.tilo.notes".into(),
-            record: "file:/notes/release.note".into(),
-        }])));
-        pane.poll_undo();
-        assert_eq!(
-            pane.agent_undo_notice
-                .as_ref()
-                .map(|(_, notice)| notice.clone()),
-            Some(t("activity-undo-task-partial-records"))
-        );
-        assert_eq!(pane.unreverted.len(), 1, "the sheets record is named");
-        assert!(
-            pane.unreverted[0].contains("so.tilo.sheets"),
-            "the record's app is said: {:?}",
-            pane.unreverted
-        );
-    }
-
-    /// A run the host cannot undo says so, in the host's words, and reports no record as come
-    /// back.
-    #[test]
-    fn a_run_the_host_cannot_undo_is_reported_as_refused() {
-        let (mut tree, mut pane, host) = fixture();
-        let change = ui::history_source::entry_id_from_hash(&"12".repeat(32));
-        let doc = tree.document_mut();
-        let key = ui::record_run_with_details(
-            doc,
-            "Review release notes",
-            Some("agent:scribe"),
-            Some("local"),
-            None,
-            None,
-            &[ui::RunStep {
-                app: "so.tilo.notes".into(),
-                record: "file:/notes/release.note".into(),
-                run: ui::ChangeRun::new(change, change),
-                what: Vec::new(),
-            }],
-        )
-        .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
-        doc.commit();
-        pane.refresh_records(&mut tree, &ResourceStore::in_memory());
-
-        assert!(pane.undo_task_run("task:1"));
-        let why = "open the documents this task changed to undo it";
-        host.ended.replace(Some(Err(why.into())));
-        pane.poll_undo();
-        assert_eq!(
-            pane.agent_undo_notice
-                .as_ref()
-                .map(|(_, notice)| notice.clone()),
-            Some(crate::i18n::t_args(
-                "activity-undo-task-refused",
-                &[("detail", why.into())]
-            ))
-        );
-        assert!(pane.unreverted.is_empty(), "nothing came back");
-    }
-}
+#[path = "pane_tasks_link_tests.rs"]
+mod tasks_link_tests;
 
 #[cfg(test)]
 mod morning_source_tests {

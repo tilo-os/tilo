@@ -146,14 +146,14 @@ class FakeApi:
         self.polls: dict[str, int] = {}
         self.polls_until_done = 1
         self.finished: dict[str, dict[str, Any]] = {}
-        # Runs still waiting for the person, by the run id an action answered.
+        # Invocations still waiting for the person, by the id an action answered.
         self.asks: dict[str, dict[str, Any]] = {}
         self.ask_answered = False
         self.append_pending = False
         self.cancelled: list[str] = []
         self.undone: list[str] = []
-        # Every run the workspace lists, oldest first, as its host keeps them.
-        self.runs: list[dict[str, Any]] = []
+        # Every invocation the workspace lists, oldest first, as its host keeps them.
+        self.invocations: list[dict[str, Any]] = []
         # Files: the uploads received, and the bytes content names.
         self.uploads: list[bytes] = []
         self.contents: dict[str, bytes] = {}
@@ -169,7 +169,7 @@ class FakeApi:
         self.ran: dict[str, int] = {}
         # The branches made, by the idempotency key each was asked with.
         self.branches: dict[str, dict[str, Any]] = {}
-        # Whether the person answers a workspace's ask to run commands
+        # Whether the person answers a workspace's ask to invocation commands
         # unattended: `None` while they have not, then whether they allowed it.
         self.unattended_allowed: bool | None = None
 
@@ -189,11 +189,11 @@ class FakeApi:
             if call["method"] == method and path in call["path"]
         ]
 
-    def finish(self, run: str, result: Any = {"appended": "c01e"}) -> None:
-        """Answer `run` as the next look at it would."""
-        self.finished[run] = {
+    def finish(self, invocation: str, result: Any = {"appended": "c01e"}) -> None:
+        """Answer `invocation` as the next look at it would."""
+        self.finished[invocation] = {
             "status": "ok",
-            "run": run,
+            "invocation": invocation,
             "path": f"{TODO}#append-paragraph",
             "result": result,
             "link": link_to(TODO),
@@ -333,10 +333,10 @@ class FakeApi:
             return httpx.Response(200, content=data, headers=self.headers())
         if after == "events":
             return self.stream(self.events, call)
-        if after == "runs" and request.method == "GET":
-            return self.list_runs(call)
-        if after.startswith("runs/"):
-            return self.run_route(request, after.removeprefix("runs/"))
+        if after == "invocations" and request.method == "GET":
+            return self.list_invocations(call)
+        if after.startswith("invocations/"):
+            return self.invocation_route(request, after.removeprefix("invocations/"))
         return self.refuse(404, "not_found", "the API has no such route")
 
     # -- what a test drives -------------------------------------------------
@@ -394,7 +394,7 @@ class FakeApi:
 
     def unattended(self, call: dict[str, Any], workspace: str) -> httpx.Response:
         """Running commands unattended in `workspace`: off at once, on only
-        once the person allows it, a run waiting for them meanwhile."""
+        once the person allows it, an invocation waiting for them meanwhile."""
         row = next(row for row in self.workspaces if row["id"] == workspace)
         if row["role"] != "owner":
             return self.refuse(
@@ -407,11 +407,11 @@ class FakeApi:
                 {"status": "ok", "path": "workspace/unattended#set",
                  "result": {"workspace": workspace, "unattended": False}},
             )
-        run = f"unattended-{workspace}"
-        self.asks[run] = {"path": "workspace/unattended#set", "workspace": workspace}
+        invocation = f"unattended-{workspace}"
+        self.asks[invocation] = {"path": "workspace/unattended#set", "workspace": workspace}
         return self.answer(
             202,
-            {"status": "pending", "run": run, "path": "workspace/unattended#set", "ask": {}},
+            {"status": "pending", "invocation": invocation, "path": "workspace/unattended#set", "ask": {}},
         )
 
     def delete_workspace(self, workspace: str) -> httpx.Response:
@@ -590,16 +590,16 @@ class FakeApi:
         if at == f"{TODO}#undo":
             return self.done(at, {"undone": 1})
         if at == f"{TODO}#ask":
-            run = f"ask-{len(self.asks) + 1}"
-            self.asks[run] = {"path": at}
+            invocation = f"ask-{len(self.asks) + 1}"
+            self.asks[invocation] = {"path": at}
             return httpx.Response(
                 202,
                 json={
                     "status": "pending",
-                    "run": run,
+                    "invocation": invocation,
                     "ask": {"url": "https://tilo.sh/ask/1"},
                 },
-                headers=self.headers(location=f"/v1/workspaces/{WORKSPACE_ID}/runs/{run}"),
+                headers=self.headers(location=f"/v1/workspaces/{WORKSPACE_ID}/invocations/{invocation}"),
             )
         if at == f"{TODO}#remove-me":
             return self.done(at, None)
@@ -612,15 +612,15 @@ class FakeApi:
             [f"GET /v1/workspaces/{WORKSPACE_ID}/resources?path={path} lists its actions"],
         )
 
-    def note_run(self, run: str, path: str, status: str, changes: int) -> None:
-        """Keep `run` as the workspace's host lists it."""
-        self.runs.append(
+    def note_invocation(self, invocation: str, path: str, status: str, changes: int) -> None:
+        """Keep `invocation` as the workspace's host lists it."""
+        self.invocations.append(
             {
-                "id": run,
-                "calls": [run],
+                "id": invocation,
+                "calls": [invocation],
                 "by": {"name": "Visa backend", "kind": "agent"},
                 "status": status,
-                "started_ms": len(self.runs) + 1,
+                "started_ms": len(self.invocations) + 1,
                 "action": path,
                 "changes": changes,
                 "undone": 0,
@@ -630,26 +630,26 @@ class FakeApi:
             }
         )
 
-    def listed_as(self, run: str, status: str) -> None:
-        for listed in self.runs:
-            if listed["id"] == run:
+    def listed_as(self, invocation: str, status: str) -> None:
+        for listed in self.invocations:
+            if listed["id"] == invocation:
                 listed["status"] = status
                 if status == "undone":
                     listed["undone"] = listed["changes"]
                     listed["undoable"] = False
 
-    def list_runs(self, call: dict[str, Any]) -> httpx.Response:
-        """A page of the runs, newest first; the cursor is where it ends."""
-        newest = list(reversed(self.runs))
+    def list_invocations(self, call: dict[str, Any]) -> httpx.Response:
+        """A page of the invocations, newest first; the cursor is where it ends."""
+        newest = list(reversed(self.invocations))
         limit = min(int(call["query"].get("limit") or 50), 200)
         start = int(call["query"].get("cursor") or 0)
         page = newest[start : start + limit]
         answer: dict[str, Any] = {
-            "runs": page,
+            "invocations": page,
             "total": len(newest),
-            "waiting": sum(1 for run in newest if run["status"] == "waiting"),
+            "waiting": sum(1 for invocation in newest if invocation["status"] == "waiting"),
             "pending": False,
-            "text": "\n".join(f"{run['id']} {run['status']}" for run in page),
+            "text": "\n".join(f"{invocation['id']} {invocation['status']}" for invocation in page),
         }
         if start + limit < len(newest):
             answer["next_cursor"] = str(start + limit)
@@ -685,7 +685,7 @@ class FakeApi:
     ) -> httpx.Response:
         answer: dict[str, Any] = {
             "status": "ok",
-            "run": f"run-{len(self.requests)}",
+            "invocation": f"invocation-{len(self.requests)}",
             "path": path,
             "resources": resources or [],
         }
@@ -693,72 +693,72 @@ class FakeApi:
             answer["result"] = result
         if link is not None:
             answer["link"] = link
-        self.note_run(answer["run"], path, "ended", len(resources or []))
+        self.note_invocation(answer["invocation"], path, "ended", len(resources or []))
         return self.answer(200, answer)
 
     def pending(self, path: str) -> httpx.Response:
-        run = f"run-{len(self.requests)}"
-        self.polls[run] = 0
-        self.note_run(run, path, "running", 0)
+        invocation = f"invocation-{len(self.requests)}"
+        self.polls[invocation] = 0
+        self.note_invocation(invocation, path, "running", 0)
         return httpx.Response(
             202,
-            json={"status": "pending", "run": run},
-            headers=self.headers(location=f"/v1/workspaces/{WORKSPACE_ID}/runs/{run}"),
+            json={"status": "pending", "invocation": invocation},
+            headers=self.headers(location=f"/v1/workspaces/{WORKSPACE_ID}/invocations/{invocation}"),
         )
 
-    def run_route(self, request: httpx.Request, rest: str) -> httpx.Response:
-        run, _, after = rest.partition("/")
+    def invocation_route(self, request: httpx.Request, rest: str) -> httpx.Response:
+        invocation, _, after = rest.partition("/")
         if after == "cancel":
-            self.cancelled.append(run)
-            self.listed_as(run, "cancelled")
-            self.finished[run] = {"status": "cancelled", "run": run, "path": f"{TODO}#append-paragraph"}
-            return self.answer(200, self.finished[run])
+            self.cancelled.append(invocation)
+            self.listed_as(invocation, "cancelled")
+            self.finished[invocation] = {"status": "cancelled", "invocation": invocation, "path": f"{TODO}#append-paragraph"}
+            return self.answer(200, self.finished[invocation])
         if after == "undo":
-            self.undone.append(run)
-            self.listed_as(run, "undone")
+            self.undone.append(invocation)
+            self.listed_as(invocation, "undone")
             return self.answer(200, {"status": "ok", "undone": [TODO]})
         if after == "output":
-            return self.stream(self.output_for(run), None)
+            return self.stream(self.output_for(invocation), None)
         if after:
             return self.refuse(404, "not_found", "the API has no such route")
-        finished = self.finished.get(run)
+        finished = self.finished.get(invocation)
         if finished is not None:
             return self.answer(200, finished)
-        if run in self.asks and "workspace" in self.asks[run]:
+        if invocation in self.asks and "workspace" in self.asks[invocation]:
             if self.unattended_allowed is None:
-                return self.answer(202, {"status": "pending", "run": run, "ask": {}})
+                return self.answer(202, {"status": "pending", "invocation": invocation, "ask": {}})
             if not self.unattended_allowed:
                 return self.refuse(403, "refused", "the workspace refused: the person did not allow it")
-            workspace = self.asks[run]["workspace"]
+            workspace = self.asks[invocation]["workspace"]
             for row in self.workspaces:
                 if row["id"] == workspace:
                     row["unattended"] = True
             return self.answer(
                 200,
-                {"status": "ok", "run": run, "path": "workspace/unattended#set",
+                {"status": "ok", "invocation": invocation, "path": "workspace/unattended#set",
                  "result": {"workspace": workspace, "unattended": True}},
             )
-        if run in self.asks:
+        if invocation in self.asks:
             if not self.ask_answered:
-                return self.answer(202, {"status": "pending", "run": run, "ask": {"url": "https://tilo.sh/ask/1"}})
+                return self.answer(202, {"status": "pending", "invocation": invocation, "ask": {"url": "https://tilo.sh/ask/1"}})
             return self.answer(
                 200,
-                {"status": "ok", "run": run, "path": f"{TODO}#ask", "result": {"allowed": True}},
+                {"status": "ok", "invocation": invocation, "path": f"{TODO}#ask", "result": {"allowed": True}},
             )
-        if run in self.polls:
-            self.polls[run] += 1
-            if self.polls[run] >= self.polls_until_done:
-                self.finish(run)
-                return self.answer(200, self.finished[run])
-            return self.answer(202, {"status": "pending", "run": run})
-        return self.refuse(404, "not_found", "no such run")
+        if invocation in self.polls:
+            self.polls[invocation] += 1
+            if self.polls[invocation] >= self.polls_until_done:
+                self.finish(invocation)
+                return self.answer(200, self.finished[invocation])
+            return self.answer(202, {"status": "pending", "invocation": invocation})
+        return self.refuse(404, "not_found", "no such invocation")
 
-    def output_for(self, run: str) -> list[tuple[str, dict[str, Any]]]:
+    def output_for(self, invocation: str) -> list[tuple[str, dict[str, Any]]]:
         if self.output:
             return self.output
         return [
-            ("run", {"phase": "started", "run": run, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 1}),
-            ("run", {"phase": "succeeded", "run": run, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 2}),
+            ("invocation", {"phase": "started", "invocation": invocation, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 1}),
+            ("invocation", {"phase": "succeeded", "invocation": invocation, "path": f"{TODO}#append-paragraph", "title": "Fill Jane's application", "time_ms": 2}),
         ]
 
     def search(self, call: dict[str, Any]) -> httpx.Response:

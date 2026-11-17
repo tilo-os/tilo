@@ -162,7 +162,11 @@ impl ChatApp {
     /// The conversations and categories the record keeps, the one open, and
     /// how much each of the others holds unread.
     fn sync_conversations(&mut self, chat: &crate::record::Chat, held: &crate::messages::Messages) {
-        self.channels = chat.conversation_rows(&self.me.id, held, &self.workspace_agent_names);
+        self.channels = chat.conversation_rows(
+            &self.me.id,
+            held,
+            (&self.workspace_agent_names, &self.workspace_names),
+        );
         self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
         self.categories = chat.category_rows();
         for category in &mut self.categories {

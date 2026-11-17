@@ -287,17 +287,17 @@ pub(super) fn question(
         || "One of your devices".into(),
         |agent| caller.agent_name().unwrap_or(agent).to_owned(),
     );
-    // The run as the agent titled it (`_meta` run.title); a run that goes
-    // by the agent's own name says nothing more.
-    let run = super::said_run_title(request)
-        .filter(|run| *run != agent)
+    // The invocation as the agent titled it (`_meta` invocation.title); one that
+    // goes by the agent's own name says nothing more.
+    let title = super::said_invocation_title(request)
+        .filter(|title| *title != agent)
         .unwrap_or_default();
     let contract = &about.descriptor.contract;
     Ok(ConfirmationQuestion {
         id,
         device_label: agent,
         workspace: workspace.to_owned(),
-        run,
+        title,
         action_label: about.descriptor.action_label.clone(),
         resource_label: about.record.clone(),
         arguments: tilo_actions::Draft::render(&about.descriptor, &about.arguments).summary(),

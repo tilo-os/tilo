@@ -21,12 +21,12 @@ use tilo_actions::remote::{
 
 use crate::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
-    AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
-    ConfirmationRequest, InvocationHooks, InvocationId, InvocationMode, InvocationOutcome,
-    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Recovered,
-    SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy, StepStatus,
-    StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run, shortcut_resource_id,
+    AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, AutomationInvocationId, Binding, CatchUp,
+    CheckErrorKind, Condition, ConfirmationRequest, InvocationHooks, InvocationMode,
+    InvocationOutcome, InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts,
+    Recovered, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector,
+    Shortcut, Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepPolicy,
+    StepStatus, StopWatch, TimeOfDay, TriggerSpec, Weekday, check, run, shortcut_resource_id,
 };
 
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -387,7 +387,7 @@ pub(crate) struct Hooks {
     confirmation: Option<Confirmation>,
     answer: Option<Value>,
     confirmations: Mutex<Vec<ConfirmationRequest>>,
-    /// How many times a run fell back to waiting out a poll interval.
+    /// How many times an invocation fell back to waiting out a poll interval.
     settles: AtomicUsize,
 }
 
@@ -485,30 +485,30 @@ pub(crate) fn run_with(
     host: &FakeHost,
     hooks: &Hooks,
     shortcut: &Shortcut,
-    run_id: InvocationId,
+    invocation_id: AutomationInvocationId,
     mode: InvocationMode,
 ) -> InvocationReport {
-    run_chained(host, hooks, shortcut, run_id, mode, Vec::new())
+    run_chained(host, hooks, shortcut, invocation_id, mode, Vec::new())
 }
 
-/// [`run_with`] for a run of `shortcut` no person is watching.
+/// [`run_with`] for an invocation of `shortcut` no person is watching.
 fn unattended(host: &FakeHost, shortcut: &Shortcut) -> InvocationReport {
     run_with(
         host,
         &Hooks::default(),
         shortcut,
-        InvocationId::new(),
+        AutomationInvocationId::new(),
         InvocationMode::Unattended,
     )
 }
 
-/// [`run_with`], for a run whose host says other shortcuts are already
+/// [`run_with`], for an invocation whose host says other shortcuts are already
 /// running above it.
 fn run_chained(
     host: &FakeHost,
     hooks: &Hooks,
     shortcut: &Shortcut,
-    run_id: InvocationId,
+    invocation_id: AutomationInvocationId,
     mode: InvocationMode,
     chain: Vec<String>,
 ) -> InvocationReport {
@@ -517,7 +517,7 @@ fn run_chained(
         hooks,
         InvocationRequest {
             shortcut,
-            invocation: run_id,
+            invocation: invocation_id,
             caller: caller(),
             mode,
             trigger: InvocationTrigger::Manual,
@@ -608,18 +608,18 @@ tilo_test_env::scenario! {
             ],
         );
         let report = unattended(&host, &tidy);
-        let (path, why) = failure(&report).expect("the run stopped at the step");
+        let (path, why) = failure(&report).expect("the invocation stopped at the step");
         assert_eq!(path, &StepPath::root().child(0));
         assert_eq!(why.code(), "remote_actions_unavailable");
         assert_eq!(report.steps[0].attempts.len(), 3, "three tries were made");
-        assert!(!report.is_degraded(), "a stopped run is not a degraded one");
+        assert!(!report.is_degraded(), "a stopped invocation is not a degraded one");
     }
 
     phase a_step_passed_over_with_its_default_carries_on_and_degrades_the_run;
     {
         let host = FakeHost::new();
         // The list the rest of the shortcut reads never comes back, so the
-        // default stands in for it: the run carries on with an empty count and
+        // default stands in for it: the invocation carries on with an empty count and
         // says so, rather than reading nothing as though the list were empty.
         host.flaky("list", 99);
         let tidy = shortcut(
@@ -656,20 +656,20 @@ tilo_test_env::scenario! {
         assert!(after.status.succeeded(), "the later step read the default");
         let summary = report.degraded_summary().expect("a summary");
         assert!(summary.contains("1 step"), "{summary}");
-        // What the run answers with carries the degradation too, so the chip
+        // What the invocation answers with carries the degradation too, so the chip
         // that started it can say the result fell short.
         let value = report
             .reported_value()
-            .expect("the run answers with its degradation");
+            .expect("the invocation answers with its degradation");
         assert_eq!(value["degraded"], json!(summary), "{value:?}");
     }
 
-    phase a_run_that_finished_as_intended_answers_with_its_own_output;
+    phase an_invocation_that_finished_as_intended_answers_with_its_own_output;
     {
-        // Nothing fell short, so the run answers with the value itself: the
+        // Nothing fell short, so the invocation answers with the value itself: the
         // degradation note is only there when there is something to say.
         let report = InvocationReport {
-            invocation: InvocationId::new(),
+            invocation: AutomationInvocationId::new(),
             shortcut: "tidy".into(),
             version: None,
             trigger: "manual".into(),
@@ -759,15 +759,15 @@ tilo_test_env::scenario! {
                 ),
             ],
         );
-        let run_id = InvocationId::new();
-        let first = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        let invocation_id = AutomationInvocationId::new();
+        let first = run_with(&host, &Hooks::default(), &tidy, invocation_id, InvocationMode::Unattended);
         assert_eq!(first.outcome, InvocationOutcome::Completed, "{first:?}");
         let ids = first.invocations();
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), 3, "every loop iteration has its own id");
 
-        let retry = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        let retry = run_with(&host, &Hooks::default(), &tidy, invocation_id, InvocationMode::Unattended);
         assert_eq!(retry.outcome, InvocationOutcome::Completed, "{retry:?}");
         assert_eq!(retry.invocations(), ids);
         assert_eq!(
@@ -889,8 +889,8 @@ tilo_test_env::scenario! {
         tidy.output = Some(Binding::step("create", ""));
         assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
 
-        let run_id = InvocationId::new();
-        let report = run_with(&host, &Hooks::default(), &tidy, run_id, InvocationMode::Unattended);
+        let invocation_id = AutomationInvocationId::new();
+        let report = run_with(&host, &Hooks::default(), &tidy, invocation_id, InvocationMode::Unattended);
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!(NOTE)));
 
@@ -908,7 +908,7 @@ tilo_test_env::scenario! {
         let context = started[1].context.as_ref().unwrap();
         assert_eq!(context.purpose.as_deref(), Some("Tidy inbox"));
         let group = context.group.as_ref().unwrap();
-        assert_eq!(group.id, run_id.0.to_string());
+        assert_eq!(group.id, invocation_id.0.to_string());
         assert_eq!(group.kind, "shortcut");
         assert!(
             context
@@ -972,7 +972,7 @@ tilo_test_env::scenario! {
             &Hooks::default(),
             InvocationRequest {
                 shortcut: &make,
-                invocation: InvocationId::new(),
+                invocation: AutomationInvocationId::new(),
                 caller: caller(),
                 mode: InvocationMode::Unattended,
                 trigger: InvocationTrigger::Manual,
@@ -1082,7 +1082,7 @@ tilo_test_env::scenario! {
                 &Hooks::default(),
                 InvocationRequest {
                     shortcut: &make,
-                    invocation: InvocationId::new(),
+                    invocation: AutomationInvocationId::new(),
                     caller: caller(),
                     mode: InvocationMode::Unattended,
                     trigger: InvocationTrigger::Manual,
@@ -1306,9 +1306,9 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn a_run_records_where_it_came_from;
+    fn an_invocation_records_where_it_came_from;
 
-    phase a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group;
+    phase an_invocation_a_task_asked_for_stamps_its_steps_with_that_tasks_group;
     {
         let host = FakeHost::new();
         let tidy = shortcut("tidy", vec![list()]);
@@ -1324,7 +1324,7 @@ tilo_test_env::scenario! {
             &Hooks::default(),
             InvocationRequest {
                 shortcut: &tidy,
-                invocation: InvocationId::new(),
+                invocation: AutomationInvocationId::new(),
                 caller: caller(),
                 mode: InvocationMode::Unattended,
                 trigger: InvocationTrigger::Manual,
@@ -1347,12 +1347,12 @@ tilo_test_env::scenario! {
             assert_eq!(
                 context.purpose.as_deref(),
                 Some("Tidy inbox"),
-                "the run keeps its own name inside the task"
+                "the invocation keeps its own name inside the task"
             );
         }
     }
 
-    phase a_run_reports_the_version_of_the_shortcut_it_ran;
+    phase an_invocation_reports_the_version_of_the_shortcut_it_ran;
     {
         let archive = archive_shortcut();
         let edit = |name: &str| {
@@ -1367,7 +1367,7 @@ tilo_test_env::scenario! {
             &Hooks::default(),
             InvocationRequest {
                 shortcut: &archive,
-                invocation: InvocationId::new(),
+                invocation: AutomationInvocationId::new(),
                 caller: caller(),
                 mode: InvocationMode::Unattended,
                 trigger: InvocationTrigger::Manual,
@@ -1380,7 +1380,7 @@ tilo_test_env::scenario! {
             },
         ));
         let edited = edit("Tidy the inbox");
-        // The record of the run says which version produced it, so editing the
+        // The record of the invocation says which version produced it, so editing the
         // shortcut afterwards does not make its history ambiguous.
         assert_eq!(first.version.as_deref(), Some(edit("Tidy inbox").as_str()));
         assert_ne!(first.version.as_deref(), Some(edited.as_str()));
@@ -1400,7 +1400,7 @@ tilo_test_env::scenario! {
             &Hooks::default(),
             InvocationRequest {
                 shortcut: &tidy,
-                invocation: InvocationId::new(),
+                invocation: AutomationInvocationId::new(),
                 caller: caller(),
                 mode: InvocationMode::Unattended,
                 trigger: InvocationTrigger::Manual,
@@ -1466,7 +1466,7 @@ fn read_step(id: &str, record: &str, joined: bool) -> Step {
 }
 
 tilo_test_env::scenario! {
-    fn a_run_reaches_only_what_its_grant_allows;
+    fn an_invocation_reaches_only_what_its_grant_allows;
 
     phase a_read_step_reads_records_through_the_api_inside_the_grant;
     // A record read is a step of its own: inside the grant it answers the
@@ -1523,7 +1523,7 @@ tilo_test_env::scenario! {
         assert!(read["revision"].is_string());
         assert!(host.started().is_empty(), "a read invokes nothing");
 
-        // A read names its record from the run, and a condition asks whether a
+        // A read names its record from the invocation, and a condition asks whether a
         // value carries a field: one it lacks is absent, not a failure.
         let when = |field: &str, then| {
             let cond = Condition::Truthy(Binding::Var(format!("event/{field}")));
@@ -1585,7 +1585,7 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &leak,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
         );
         assert!(
@@ -1690,13 +1690,13 @@ tilo_test_env::scenario! {
                 chain: vec!["a".into(), "a".into()]
             }]
         );
-        // The run is told its own id is running, as every host says of a run it
+        // The invocation is told its own id is running, as every host says of an invocation it
         // starts, and the step that would run it is refused.
         let report = run_chained(
             &host,
             &Hooks::default(),
             &direct,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
             vec!["a".into()],
         );
@@ -1719,13 +1719,13 @@ tilo_test_env::scenario! {
         assert_eq!(check(&a, &host.catalog(), &NoShortcuts), Ok(()));
 
         // Two shortcuts saved before one of them learned to call the other: the
-        // check that reads the saved library never sees the chain, so the run
+        // check that reads the saved library never sees the chain, so the invocation
         // refuses the call to one already running above it.
         let report = run_chained(
             &host,
             &Hooks::default(),
             &a,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
             vec!["b".into(), "a".into()],
         );
@@ -1739,7 +1739,7 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &a,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
             vec!["a".into()],
         );
@@ -1841,7 +1841,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Why the run's read did not read: a read is a step of the run's own, which
+/// Why the invocation's read did not read: a read is a step of the invocation's own, which
 /// a later step reading it fails with.
 fn read_failure(report: &InvocationReport) -> Option<&StepFailure> {
     report.steps.iter().find_map(|step| match &step.status {
@@ -1883,7 +1883,7 @@ tilo_test_env::scenario! {
             &host,
             &declining,
             &purge,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
         );
         assert!(
@@ -1901,7 +1901,7 @@ tilo_test_env::scenario! {
             &host,
             &confirming,
             &purge,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
         );
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
@@ -1939,7 +1939,7 @@ tilo_test_env::scenario! {
             &host,
             &Hooks::default(),
             &consented("notes.note:other"),
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert!(
@@ -1956,13 +1956,13 @@ tilo_test_env::scenario! {
             &host,
             &hooks,
             &consented(NOTE),
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Unattended,
         );
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert!(
             hooks.confirmations.lock().unwrap().is_empty(),
-            "nobody is asked in an unattended run"
+            "nobody is asked in an unattended invocation"
         );
         let started = host.started();
         assert_eq!(started.len(), 1);
@@ -2017,7 +2017,7 @@ tilo_test_env::scenario! {
             &host,
             &declining,
             &attach,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
         );
         assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
@@ -2050,7 +2050,7 @@ tilo_test_env::scenario! {
             &host,
             &answering,
             &asking,
-            InvocationId::new(),
+            AutomationInvocationId::new(),
             InvocationMode::Interactive,
         );
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
@@ -2059,7 +2059,7 @@ tilo_test_env::scenario! {
             answer: Some(json!(7)),
             ..Hooks::default()
         };
-        let report = run_with(&host, &wrong, &asking, InvocationId::new(), InvocationMode::Interactive);
+        let report = run_with(&host, &wrong, &asking, AutomationInvocationId::new(), InvocationMode::Interactive);
         assert!(
             matches!(failure(&report), Some((_, StepFailure::Arguments { .. }))),
             "{report:?}"
@@ -2224,7 +2224,7 @@ tilo_test_env::scenario! {
             &Hooks::default(),
             InvocationRequest {
                 shortcut: &leak,
-                invocation: InvocationId::new(),
+                invocation: AutomationInvocationId::new(),
                 caller: caller(),
                 mode: InvocationMode::Unattended,
                 trigger: InvocationTrigger::Manual,
@@ -2290,7 +2290,7 @@ tilo_test_env::scenario! {
                     ..Hooks::default()
                 },
                 &leak,
-                InvocationId::new(),
+                AutomationInvocationId::new(),
                 InvocationMode::Interactive,
             );
             assert!(
@@ -2467,7 +2467,9 @@ impl RunningHost {
             job.finished = true;
             job.change.take()
         };
-        change.expect("the run waits on the host").complete(());
+        change
+            .expect("the invocation waits on the host")
+            .complete(());
     }
 
     fn observes(&self) -> usize {
@@ -2557,7 +2559,7 @@ fn archive_shortcut() -> Shortcut {
     )
 }
 
-fn archive_run<'a, K: InvocationHooks>(
+fn archive_invocation<'a, K: InvocationHooks>(
     host: &'a RunningHost,
     hooks: &'a K,
     shortcut: &'a Shortcut,
@@ -2567,7 +2569,7 @@ fn archive_run<'a, K: InvocationHooks>(
         hooks,
         InvocationRequest {
             shortcut,
-            invocation: InvocationId::new(),
+            invocation: AutomationInvocationId::new(),
             caller: caller(),
             mode: InvocationMode::Unattended,
             trigger: InvocationTrigger::Manual,
@@ -2582,21 +2584,21 @@ fn archive_run<'a, K: InvocationHooks>(
 }
 
 tilo_test_env::scenario! {
-    fn a_run_waits_on_its_host_and_stops_when_told_or_out_of_patience;
+    fn an_invocation_waits_on_its_host_and_stops_when_told_or_out_of_patience;
 
     phase a_running_step_wakes_on_host_change_not_on_a_timer;
     {
         let host = RunningHost::new(true, 0);
         let hooks = Hooks::default();
         let archive = archive_shortcut();
-        let mut running = std::pin::pin!(archive_run(&host, &hooks, &archive));
+        let mut running = std::pin::pin!(archive_invocation(&host, &hooks, &archive));
         let mut cx = Context::from_waker(Waker::noop());
 
         assert!(
             running.as_mut().poll(&mut cx).is_pending(),
             "an accepted step waits for its host"
         );
-        // Only the look for an earlier invocation has observed so far: the run
+        // Only the look for an earlier invocation has observed so far: the invocation
         // is parked on the host's change, not re-observing on a schedule.
         assert_eq!(host.observes(), 1);
         assert!(running.as_mut().poll(&mut cx).is_pending());
@@ -2624,7 +2626,7 @@ tilo_test_env::scenario! {
         let host = RunningHost::new(false, 2);
         let hooks = Hooks::default();
         let archive = archive_shortcut();
-        let report = block_on(archive_run(&host, &hooks, &archive));
+        let report = block_on(archive_invocation(&host, &hooks, &archive));
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         // The look for an earlier invocation, two observations still running,
         // then the one that finds it finished: each after a poll interval.
@@ -2635,7 +2637,7 @@ tilo_test_env::scenario! {
     phase a_stopped_run_ends_as_cancelled_and_starts_nothing_more;
     {
         // Two steps: the first archives, the second deletes. The stop is asked
-        // before the first step, so the run never invokes anything.
+        // before the first step, so the invocation never invokes anything.
         let host = RunningHost::new(true, 0);
         let hooks = StoppableHooks::after(1, "the person stopped it");
         let delete = Step::new(
@@ -2649,7 +2651,7 @@ tilo_test_env::scenario! {
         );
         let mut tidy = archive_shortcut();
         tidy.steps.push(delete);
-        let report = block_on(archive_run(&host, &hooks, &tidy));
+        let report = block_on(archive_invocation(&host, &hooks, &tidy));
         assert_eq!(
             report.outcome,
             InvocationOutcome::Cancelled {
@@ -2688,13 +2690,13 @@ tilo_test_env::scenario! {
         ));
         // The first step is accepted and stays running until the test ends it,
         // so the stop is asked for between the two.
-        let mut running = std::pin::pin!(archive_run(&host, &hooks, &tidy));
+        let mut running = std::pin::pin!(archive_invocation(&host, &hooks, &tidy));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(running.as_mut().poll(&mut cx).is_pending(), "{hooks:?}");
         assert_eq!(hooks.asked.load(Ordering::Relaxed), 2);
         host.finish();
         let Poll::Ready(report) = running.as_mut().poll(&mut cx) else {
-            panic!("the finished step lets the run look at the stop");
+            panic!("the finished step lets the invocation look at the stop");
         };
         assert_eq!(
             report.outcome,
@@ -2729,7 +2731,7 @@ tilo_test_env::scenario! {
         let hooks = Hooks::default();
         let mut archive = archive_shortcut();
         archive.step_timeout_secs = Some(0);
-        let report = block_on(archive_run(&host, &hooks, &archive));
+        let report = block_on(archive_invocation(&host, &hooks, &archive));
         assert_eq!(
             failure(&report),
             Some((
@@ -2740,7 +2742,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             host.observes() > 1,
-            "the run looked again at a host that cannot push changes"
+            "the invocation looked again at a host that cannot push changes"
         );
     }
 }
@@ -2749,7 +2751,7 @@ tilo_test_env::scenario! {
 #[derive(Debug)]
 struct StoppableHooks {
     inner: Hooks,
-    /// When a stop is reported: once the run asked `after` times, with this
+    /// When a stop is reported: once the invocation asked `after` times, with this
     /// reason. `None` never stops.
     stop: Option<(usize, String)>,
     asked: AtomicUsize,

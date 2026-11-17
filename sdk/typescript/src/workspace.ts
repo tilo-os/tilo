@@ -1,7 +1,7 @@
 /** One workspace: what is in it, what to do there, and who is there. */
 
 import type { Tilo } from "./client.ts";
-import { type Endpoint, RunGroup, withinRun } from "./endpoint.ts";
+import { type Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
 import {
   actionAnswerOf,
   type Event,
@@ -15,7 +15,7 @@ import {
   memberOf,
   type MintedKey,
   type ProgramAnswer,
-  RunList,
+  InvocationList,
   type View,
   type WorkspaceExport,
   type WorkspaceInfo,
@@ -27,7 +27,7 @@ import { resourceProxy, type Resource, type Surface } from "./resource.ts";
 import { query as queryOf, routes } from "./routes.ts";
 import { collect } from "./transport.ts";
 
-const RUN_PREFIX = "sdk:";
+const INVOCATION_PREFIX = "sdk:";
 
 /** A file's bytes, as they go up: one upload's own type, when the caller knows it. */
 export type FileBytes = Uint8Array | ArrayBuffer | Blob;
@@ -153,13 +153,13 @@ export class Members {
   }
 }
 
-function runId(title: string): string {
+function invocationId(title: string): string {
   const slug = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-  return `${RUN_PREFIX}${slug || "run"}:${crypto.randomUUID().slice(0, 8)}`;
+  return `${INVOCATION_PREFIX}${slug || "invocation"}:${crypto.randomUUID().slice(0, 8)}`;
 }
 
 /**
@@ -262,7 +262,7 @@ export class Workspace {
   }
 
   /**
-   * One call in this workspace, `app/resource#action`: its result, the `Run`
+   * One call in this workspace, `app/resource#action`: its result, the `Invocation`
    * that follows it, or `AskPending` when it waits for the person. `surface`
    * is sent as `Tilo-Surface` for a call made through generated types.
    */
@@ -274,31 +274,33 @@ export class Workspace {
     return (await this.endpoint()).action(path, args, surface);
   }
 
-  /** Run one action: its result, or the `Run` that follows it. */
+  /** Run one action: its result, or the `Invocation` that follows it. */
   async do(path: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.call(path, args);
   }
 
   /**
-   * The workspace's runs in records this key may read, newest first, whoever
-   * ran them: a `RunList` of `RunInfo`s, `limit` to a page (50 unless said,
-   * at most 200); `for await` reads on to the oldest. Of each run it says only
-   * what lies in those records, and its totals count only those runs. Each says who ran it, how it stands (`waiting` for
-   * the person, `running`, `ended`, `failed`, `cancelled`, `undone`), when,
-   * what it changed and whether it can still be taken back. Its `id` is the
-   * run id a `Run` reads, cancels and undoes; a run the host no longer
-   * remembers, after it restarted, is listed from the workspace's records
-   * without one.
+   * The workspace's invocations in records this key may read, newest first,
+   * whoever made them: an `InvocationList` of `InvocationInfo`s, `limit` to a
+   * page (50 unless said, at most 200); `for await` reads on to the oldest. Of
+   * each it says only what lies in those records, and its totals count only
+   * those. Each says who made it, how it stands (`waiting` for the person,
+   * `running`, `ended`, `failed`, `cancelled`, `undone`), when, what it changed
+   * and whether it can still be taken back. Its `id` is what an `Invocation`
+   * reads, cancels and undoes; one the host no longer remembers, after it
+   * restarted, is listed from the workspace's records without one.
    */
-  async runs(options: { limit?: number | null; cursor?: string | null } = {}): Promise<RunList> {
+  async invocations(
+    options: { limit?: number | null; cursor?: string | null } = {},
+  ): Promise<InvocationList> {
     const endpoint = await this.endpoint();
-    const page = async (cursor: string | null): Promise<RunList> => {
+    const page = async (cursor: string | null): Promise<InvocationList> => {
       const answer = await endpoint.answer(
         "GET",
-        `${routes.runs(endpoint.id)}${queryOf({ limit: options.limit, cursor })}`,
+        `${routes.invocations(endpoint.id)}${queryOf({ limit: options.limit, cursor })}`,
         { idempotent: false },
       );
-      return new RunList(answer, (next) => page(next));
+      return new InvocationList(answer, (next) => page(next));
     };
     return page(options.cursor ?? null);
   }
@@ -308,7 +310,7 @@ export class Workspace {
     return (await this.endpoint()).program(source, confirm);
   }
 
-  /** Each change, run event and presence change, the cursor kept. */
+  /** Each change, invocation event and presence change, the cursor kept. */
   async *watch(path: string | null = null): AsyncGenerator<Event> {
     yield* (await this.endpoint()).events(path);
   }
@@ -426,11 +428,14 @@ export class Workspace {
   }
 
   /**
-   * Run `body` as one run: every call inside carries its id and title, so the
-   * apps record one undo step and history shows the title.
+   * Run `body` as one invocation group: every call inside carries its id and
+   * title, so the apps record one undo step and history shows the title.
    */
-  async run<T>(title: string, body: (run: RunGroup) => Promise<T>): Promise<T> {
-    const group = new RunGroup(await this.endpoint(), title, runId(title));
-    return withinRun(group, () => body(group));
+  async invocation<T>(
+    title: string,
+    body: (invocation: InvocationGroup) => Promise<T>,
+  ): Promise<T> {
+    const group = new InvocationGroup(await this.endpoint(), title, invocationId(title));
+    return withinInvocation(group, () => body(group));
   }
 }

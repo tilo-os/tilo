@@ -117,6 +117,10 @@ fn answered_line(question: &Question, answer: &str, reader: &Reader<'_>) -> Stri
 #[must_use]
 pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> {
     let kind = question.kind.0.as_str();
+    // A secret's card is worded where its protected field is drawn.
+    if kind == crate::question::SECRET {
+        return Some(crate::secret_ask::shown(question, reader));
+    }
     let mut shown = QuestionShown {
         posts: kind == CHOICE,
         ..QuestionShown::default()

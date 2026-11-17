@@ -883,7 +883,6 @@ dependencies = [
  "runtime-dylib",
  "serde_json",
  "tilo-app",
- "tilo-platform-caps",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -21194,6 +21193,7 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "ring",
+ "runtime-collab",
  "runtime-fs",
  "runtime-identity",
  "rustix 1.1.6",

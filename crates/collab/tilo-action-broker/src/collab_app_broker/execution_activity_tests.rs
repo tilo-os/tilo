@@ -1480,7 +1480,7 @@ async fn shortcut_step_observes_once_per_change() {
         None,
         tokio::runtime::Handle::current(),
         crate::automation::RunningInvocations::default(),
-        tilo_automation::InvocationId::new(),
+        tilo_automation::AutomationInvocationId::new(),
     ));
     let running = tokio::spawn({
         let state = Arc::clone(&state);
@@ -1495,7 +1495,7 @@ async fn shortcut_step_observes_once_per_change() {
                 &hooks,
                 tilo_automation::InvocationRequest {
                     shortcut: &shortcut,
-                    invocation: tilo_automation::InvocationId::new(),
+                    invocation: tilo_automation::AutomationInvocationId::new(),
                     caller,
                     mode: tilo_automation::InvocationMode::Unattended,
                     trigger: tilo_automation::InvocationTrigger::Manual,

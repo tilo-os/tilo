@@ -14,8 +14,9 @@ This page is the map. The [quickstart](quickstart.md) gets you from nothing to a
   same apps run in the desktop app and in the browser at [tilo.sh](https://tilo.sh).
 - **Everything addressable.** An app's resources have paths, its actions are named, and the fields are
   typed. An agent, a script and a click run the same action ([resources and actions](resources-and-actions.md)).
-- **History you can audit and undo.** Each change says who made it and which run it belonged to, and a
-  whole run can be taken back in one go ([runs and history](runs-and-history.md)).
+- **History you can audit and undo.** Each change says who made it and which invocation it belonged to,
+  and a whole invocation can be taken back in one go
+  ([invocations and history](invocations-and-history.md)).
 - **A person in the loop where it matters.** An action that leaves the workspace, such as submitting a
   web form, waits for a person to allow it ([approvals](approvals.md)).
 

@@ -27,7 +27,10 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some() || self.channel_sheet.is_some() || !self.host_focused;
+        let editing = self.editing.is_some()
+            || self.channel_sheet.is_some()
+            || !self.host_focused
+            || self.secret_entry.focused;
         // Without an open channel the main composer has nowhere to send, so
         // it takes no keys.
         let has_target = self.channel(&self.active_channel).is_some();

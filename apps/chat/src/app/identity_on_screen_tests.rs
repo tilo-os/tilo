@@ -411,7 +411,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         read.display_names(
             &conversation,
             Some(&MemberId::person(crate::model::ME)),
-            &app.workspace_agent_names
+            (&app.workspace_agent_names, &app.workspace_names)
         ),
         "Notes"
     );

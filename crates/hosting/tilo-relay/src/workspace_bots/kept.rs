@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 use tilo_action_policy::Rule;
-use tilo_agent_session::bot::api::RunStep;
+use tilo_agent_session::bot::api::AutomationStep;
 use tilo_agent_session::bot::host_steps::{HostStepError, Keeps};
 use tilo_agent_session::bot::kept::{Kept, NoteChange, note_value};
 use tilo_lock::MutexRecover as _;
@@ -114,7 +114,7 @@ fn write(path: &Path, kept: &Kept) -> Result<(), String> {
 }
 
 impl Keeps for KeptFile {
-    fn count(&self, step: &RunStep, name: &str) -> Result<u64, HostStepError> {
+    fn count(&self, step: &AutomationStep, name: &str) -> Result<u64, HostStepError> {
         self.change(|kept| kept.count(step, name))
     }
 

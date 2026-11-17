@@ -303,6 +303,7 @@ fn sample(ty: &Type) -> Value {
         Type::Actor => Value::Actor {
             identity: tilo_actions::MemberId::person("ada").into(),
             name: "Ada".into(),
+            hue: None,
         },
         Type::Resource => Value::Resource("r".into()),
         Type::Link => Value::Link {
@@ -1063,4 +1064,22 @@ tilo_test_env::scenario! {
             None
         );
     }
+}
+
+/// Someone a view shows wears the colour their workspace paints them in, carried with them; a
+/// sender that knows no members leaves it to the rule every surface derives it by.
+#[test]
+fn a_person_wears_the_colour_that_travels_with_them() {
+    let identity: tilo_actions::Actor = tilo_actions::MemberId::agent("planner").into();
+    let worn = |hue| {
+        Person::from_value(&Value::Actor {
+            identity: identity.clone(),
+            name: "Planner".into(),
+            hue,
+        })
+        .unwrap()
+        .hue
+    };
+    assert_eq!(worn(Some(1)), crate::tokens::PresenceHue::Orange);
+    assert_eq!(worn(None), crate::tokens::PresenceHue::of_actor(&identity));
 }

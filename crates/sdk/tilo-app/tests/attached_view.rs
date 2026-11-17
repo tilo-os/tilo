@@ -168,20 +168,20 @@ tilo_test_env::scenario! {
             .last()
             .unwrap();
         let end = tilo_app::history_source::entry_id_from_hash(&last.hash.to_string());
-        let steps = [tilo_app::RunStep {
+        let steps = [tilo_app::InvocationStep {
             app: TallyApp::ID.into(),
             record: String::new(),
-            run: tilo_app::ChangeRun::single(end),
+            range: tilo_app::ChangeRange::single(end),
             what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new(TallyApp::ID, "document", "bump"),
                 [],
             ))],
         }];
-        assert!(view.record_run("Count", None, None, &steps));
-        assert!(!view.record_run("Nothing", None, None, &[]));
+        assert!(view.record_invocation("Count", None, None, &steps));
+        assert!(!view.record_invocation("Nothing", None, None, &[]));
 
         merge(&mut app, &mut view);
-        let runs = app.read_document(tilo_app::read_runs);
+        let runs = app.read_document(tilo_app::read_invocations);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs.first().unwrap().label, "Count");
     }

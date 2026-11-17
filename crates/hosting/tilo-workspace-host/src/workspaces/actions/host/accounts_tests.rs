@@ -14,7 +14,7 @@
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_accounts::{self, MailAccounts};
+use tilo_actions::remote::person_accounts::{self, MailAccounts, MailArrivals};
 use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -144,5 +144,112 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
             .map(|account| account.address.as_str())
             .collect::<Vec<_>>(),
         ["ada@example.test"]
+    );
+}
+
+/// What a receipt answered, as the arrivals it carries.
+fn arrived(receipt: tilo_actions::remote::InvocationReceipt) -> MailArrivals {
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the host answers at once, not {:?}", receipt.status);
+    };
+    serde_json::from_value(output.value.expect("an answer")).expect("the arrivals read")
+}
+
+/// What arrived in a person's inboxes is theirs to ask for, and asking is
+/// listening: the host watches their inboxes from then on, with no window
+/// open. Another person reads their own log, and an agent is offered
+/// nothing.
+#[tokio::test]
+async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
+    use crate::workspaces::mail_watch::testing::{Watched, keep as keep_signed_in, told};
+    use tilo_mail_session::InboxSeen;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let servers = std::sync::Arc::new(Watched::default());
+    workspaces.carry_mail_through(servers.clone());
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let device = key_of(&root, "studio");
+    let person = root.verifying_key().to_bytes();
+    keep_signed_in(
+        &workspaces.person_settings_root(&person),
+        "ada@example.test",
+        "adas-password",
+    );
+    let page = host.in_workspace_as(
+        workspaces.create("Mail").await.unwrap().workspace_id,
+        &device,
+    );
+    let ada = caller(&device);
+    assert!(servers.running().is_empty(), "nobody asked yet");
+
+    let first = arrived(
+        settled(page.invoke(&ada, asking(person_accounts::ARRIVED, json!({}))))
+            .await
+            .unwrap(),
+    );
+    assert!(first.arrivals.is_empty());
+    assert_eq!(first.newest, 0);
+    assert_eq!(servers.running().len(), 1, "asking is listening");
+
+    servers.heard("ada@example.test").arrived(
+        vec![told(
+            4,
+            "jonas@northzone.example",
+            "Cap table",
+            "Could you send it?",
+        )],
+        InboxSeen {
+            uid_validity: 7,
+            uid: 4,
+        },
+    );
+    let then = arrived(
+        settled(page.invoke(
+            &ada,
+            asking(person_accounts::ARRIVED, json!({"after": first.newest})),
+        ))
+        .await
+        .unwrap(),
+    );
+    assert_eq!(then.arrivals.len(), 1);
+    assert_eq!(then.arrivals[0].subject, "Cap table");
+    assert_eq!(
+        then.arrivals[0].facts()["from"],
+        json!("jonas@northzone.example")
+    );
+    assert_eq!(then.newest, 1);
+    assert_eq!(
+        servers.running().len(),
+        1,
+        "asking again starts no second watch"
+    );
+
+    // Another person reads their own log, never this one.
+    let other = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
+    let other_page = host.in_workspace_as(
+        workspaces.create("Other").await.unwrap().workspace_id,
+        &other,
+    );
+    let theirs = arrived(
+        settled(other_page.invoke(&caller(&other), asking(person_accounts::ARRIVED, json!({}))))
+            .await
+            .unwrap(),
+    );
+    assert!(theirs.arrivals.is_empty());
+
+    // An agent is offered nothing here, the person's own included.
+    let agent = Caller::delegated_agent("writer", device.user_public_key, device.device_public_key);
+    let refused = settled(page.invoke(&agent, asking(person_accounts::ARRIVED, json!({})))).await;
+    assert!(
+        matches!(
+            refused,
+            Err(tilo_actions::remote::ActionHostError::UnknownAction)
+        ),
+        "{refused:?}"
     );
 }

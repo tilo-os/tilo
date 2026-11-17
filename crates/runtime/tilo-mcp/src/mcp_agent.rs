@@ -44,11 +44,11 @@ mod render;
 mod status;
 #[path = "mcp_tilo.rs"]
 mod tilo;
-#[path = "mcp_undo_run.rs"]
-mod undo_run;
+#[path = "mcp_undo_invocation.rs"]
+mod undo_invocation;
 #[path = "mcp_agent_view.rs"]
 mod view;
-pub(super) use undo_run::Undoable;
+pub(super) use undo_invocation::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, outcome, text_result};
@@ -105,104 +105,6 @@ const NAMES_LISTED: usize = 12;
 const BOUND_PREFIX: &str = "tilo-ui-bound:v1:";
 /// Pages of installed apps read at most: a page holds 256.
 const INSTALLED_PAGES: usize = 4;
-
-/// The agent tools, built once.
-pub(super) fn tool_definitions() -> &'static [Value] {
-    static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tools);
-    &TOOLS
-}
-
-fn tools() -> Vec<Value> {
-    let string = json!({"type":"string"});
-    let integer = json!({"type":"integer"});
-    let read = json!({"readOnlyHint":true,"openWorldHint":false});
-    let call = json!({
-        "type":"object",
-        "properties":{"path":string,"args":{"type":"object"}},
-        "required":["path"],
-        "additionalProperties":false
-    });
-    [
-        (
-            "tilo_ls",
-            "List what is in the workspace. No path: the apps. `notes`: an app's resources and actions; `notes/Todo`: a note's children and actions; `notes/Todo#rename`: an action's parameters. A path is app[@window]/resource names (title, kind or key, any case), stable across restarts. kind: resources or actions; limit and cursor page.",
-            json!({"path":string,"kind":{"enum":["resources","actions"]},"limit":integer,"cursor":string}),
-            json!([]),
-            read.clone(),
-        ),
-        (
-            "tilo_read",
-            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in the id (`^c01e`) block actions take; a long read ends with a cursor to pass back. `notes`: what the app publishes. `record:<app>:<id>`: the record as JSON with its revision; after: a revision to wait past; parts: join its chain (Chat's messages: `record:so.tilo.chat:<id>` of a `chain:<id>` row of `tilo_ls chat`)",
-            json!({"path":string,"cursor":string,"max_chars":integer,"parts":{"type":"boolean"},"after":string}),
-            json!(["path"]),
-            read.clone(),
-        ),
-        (
-            "tilo_do",
-            "Run an action: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`; several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result or `failed: why`; past wait_ms (default 5000), `pending <id>` for tilo_status. An invocation_id never runs twice.",
-            json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
-            json!([]),
-            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
-        ),
-        (
-            "tilo_link",
-            "A link a person opens to see what a path names (`notes/Todo`); only workspace members can open it. mode: app or desktop.",
-            json!({"path":string,"mode":{"enum":["app","desktop"]}}),
-            json!(["path"]),
-            read.clone(),
-        ),
-        (
-            "tilo_view",
-            "What a person's window shows for `path`: its labels, values and controls in reading order, each with its action. picture: the view as a PNG. Starts the app when it is not running.",
-            json!({"path":string,"picture":{"type":"boolean"},"scale":{"type":"number"}}),
-            json!(["path"]),
-            read.clone(),
-        ),
-        (
-            "tilo_find",
-            "Search the workspace by words, best first, as the palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit: a path for tilo_ls and tilo_do, `path#action` for an action.",
-            json!({"query":string,"app":string,"limit":integer}),
-            json!(["query"]),
-            read,
-        ),
-        (
-            "tilo",
-            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets and refs (n3) persist. Bulk or destructive programs preview: resend with confirm: true. `undo`, `undo task`, `history task` (across sessions).",
-            json!({"program":string,"confirm":{"type":"boolean"}}),
-            json!(["program"]),
-            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
-        ),
-        (
-            "tilo_watch",
-            "What changed since cursor: a resource's changes (`path`), runs starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
-            json!({"cursor":string,"path":string,"wait_ms":integer}),
-            json!([]),
-            json!({"readOnlyHint":true,"openWorldHint":false}),
-        ),
-        (
-            "tilo_status",
-            "How an invocation went, or with no id this session's (cancel: stop it, undo: take its run back).",
-            json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),
-            json!([]),
-            json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
-        ),
-    ]
-    .into_iter()
-    .map(|(name, description, properties, required, annotations)| {
-        json!({
-            "name": name,
-            "description": description,
-            "inputSchema": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": false
-            },
-            "annotations": annotations
-        })
-    })
-    .collect()
-}
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -415,9 +317,11 @@ mod mcp_agent_node;
     reason = "split out of this module, it reads this module's names"
 )]
 mod mcp_agent_paths;
+mod mcp_agent_tools;
 
 use mcp_agent_node::{Level, Node, level_of};
 use mcp_agent_paths::{CLOSE_MATCHES, close_matches, kind_address};
+pub(super) use mcp_agent_tools::tool_definitions;
 
 /// Whether `segment`, a segment of a path, is written the way a program types a type
 /// (`tasks.Task`): a package's alias, a dot, and a name that begins with a capital letter.
@@ -2291,6 +2195,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.host.installed_surface(app_id).await.flatten()
     }
 
+    /// What a typed read of an app answers when no resource is named: the
+    /// surface the app publishes, which a generated SDK's types are read
+    /// from.
+    fn app_surface(path: &str, app_id: &str, surface: &[u8]) -> Reply {
+        let mut reply = Reply::ok(String::new());
+        reply.structured = Some(json!({
+            "path": path,
+            "kind": "app",
+            "app": app_id,
+            "surface": String::from_utf8_lossy(surface),
+        }));
+        reply
+    }
+
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
         if let Some((app, record)) = tilo_actions::remote::resource_parts(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
@@ -2309,14 +2227,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 self.app_ref(&parsed.app).await
             && let Some(surface) = self.surface_bytes(&app_id).await
         {
-            let mut reply = Reply::ok(String::new());
-            reply.structured = Some(json!({
-                "path": parsed.app,
-                "kind": "app",
-                "app": app_id,
-                "surface": String::from_utf8_lossy(&surface),
-            }));
-            return Ok(reply);
+            return Ok(Self::app_surface(&parsed.app, &app_id, &surface));
         }
         let (mut resolved, forms) = match self.resolve(&parsed).await? {
             (Ok(resolved), forms) => (resolved, forms),
@@ -2330,14 +2241,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             && resolved.node.is_none()
             && let Some(surface) = self.surface_bytes(&resolved.app_id).await
         {
-            let mut reply = Reply::ok(String::new());
-            reply.structured = Some(json!({
-                "path": resolved.path,
-                "kind": "app",
-                "app": resolved.app_id,
-                "surface": String::from_utf8_lossy(&surface),
-            }));
-            return Ok(reply);
+            return Ok(Self::app_surface(
+                &resolved.path,
+                &resolved.app_id,
+                &surface,
+            ));
         }
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
@@ -2540,11 +2448,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let id = asked.unwrap_or_default();
         if !(path.contains('#') && super::confirm::needs_the_person(&failure)) {
             if asked.is_some() {
-                self.watch_run_ended(id, "refused");
+                self.watch_invocation_ended(id, "refused");
             }
             return Err(failure);
         }
-        self.watch_run_held(id);
+        self.watch_invocation_held(id);
         if !structured {
             return Err(failure);
         }
@@ -2573,7 +2481,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(invocation.unwrap_or_else(|| tilo_actions::InvocationId::new().0.to_string()));
         let asked = invocation.clone();
         if let Some(id) = asked.as_deref() {
-            self.watch_run_started(id, path);
+            self.watch_invocation_started(id, path);
         }
         let answer = Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await;
         let answer = match answer {
@@ -2583,7 +2491,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match answer {
             Done::Launched { value, mut reply } => {
                 if let Some(id) = asked.as_deref() {
-                    self.watch_run_ended(
+                    self.watch_invocation_ended(
                         id,
                         value
                             .pointer("/update/state")
@@ -2609,7 +2517,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor, None));
                 }
                 if let Some(id) = asked.as_deref() {
-                    self.watch_run_ended(
+                    self.watch_invocation_ended(
                         id,
                         value
                             .pointer("/update/state")

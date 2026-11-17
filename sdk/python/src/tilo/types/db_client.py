@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Workspace` is the app's `db-client.workspace` at `db-client/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Engine",
@@ -98,7 +98,7 @@ class Workspace(Resource):
         return self.action("add-connection", **args)
 
     def add_connection_many(self, items: list[AddConnectionArgs]) -> list[dict[str, Any]]:
-        """Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-connection", items)
 
     def remove_connection(self, *, connection: str) -> None:
@@ -106,7 +106,7 @@ class Workspace(Resource):
         return self.action("remove-connection", connection=connection)
 
     def remove_connection_many(self, items: list[RemoveConnectionArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-connection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-connection", items)
 
     def save_query(self,
@@ -122,7 +122,7 @@ class Workspace(Resource):
         return self.action("save-query", **args)
 
     def save_query_many(self, items: list[SaveQueryArgs]) -> list[dict[str, Any]]:
-        """Runs `save-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `save-query` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-query", items)
 
     def remove_query(self, *, query: str) -> None:
@@ -130,7 +130,7 @@ class Workspace(Resource):
         return self.action("remove-query", query=query)
 
     def remove_query_many(self, items: list[RemoveQueryArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-query` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-query", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

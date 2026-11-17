@@ -18,7 +18,7 @@ pub enum ResourceTarget<'a> {
     /// The first resource whose kind is this kind or a sub-kind of it.
     Kind(&'a str),
     /// Any resource that offers the action. Only the checker uses this, for
-    /// a resource address that is not known until the run.
+    /// a resource address that is not known until the invocation.
     Any,
 }
 

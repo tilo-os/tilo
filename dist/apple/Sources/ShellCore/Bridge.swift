@@ -77,10 +77,44 @@ public struct PageEntry: Equatable, Sendable {
     }
 }
 
+/// A way to bring a link in at the site's door that only the system has.
+public enum WayIn: String, CaseIterable, Sendable, Equatable {
+    /// Read the code another device shows, with the camera.
+    case scan
+    /// Take the link out of the clipboard.
+    case paste
+}
+
+/// What the shell offers at a closed door: one sentence that says where a code and a link
+/// come from, and a button for each way this device has. The page shows it in the door's own
+/// column, drawn as the door draws its own controls (`Bridge`).
+public struct DoorOffer: Equatable, Sendable {
+    public struct Way: Equatable, Sendable {
+        public let way: WayIn
+        /// What its button says.
+        public let label: String
+
+        public init(_ way: WayIn, _ label: String) {
+            self.way = way
+            self.label = label
+        }
+    }
+
+    public let said: String
+    public let ways: [Way]
+
+    public init(said: String, ways: [Way]) {
+        self.said = said
+        self.ways = ways
+    }
+}
+
 /// What the page tells the shell. Everything else a page posts is dropped.
 public enum PageMessage: Equatable, Sendable {
     case notify(PageNotice)
     case entry(PageEntry)
+    /// The person pressed one of the shell's ways in at the door.
+    case wayIn(WayIn)
     case withdraw(id: String)
     case askPermission
     /// Words that waited for a field are in it now.
@@ -106,6 +140,9 @@ public enum PageMessage: Equatable, Sendable {
         case "entry":
             guard let state = said["state"] as? String, state.count <= 32 else { return nil }
             self = .entry(PageEntry(state: state, pairing: said["pairing"] as? Bool ?? false))
+        case "way-in":
+            guard let way = (said["way"] as? String).flatMap(WayIn.init(rawValue:)) else { return nil }
+            self = .wayIn(way)
         case "words-inserted":
             self = .wordsInserted
         default:
@@ -138,14 +175,38 @@ public enum ComposeOutcome: String, Sendable, Equatable {
 /// To the shell it is `__tiloShell`: `permission(state)`, `chosen(id, action, reply)`,
 /// `closed(id)` and `compose(words)`. It also tells the shell where the page stands at its
 /// site's door, which the page writes on its root element.
+///
+/// At a closed door it shows the shell's `DoorOffer` in the door itself. The page's door is
+/// plain markup in one dark look, set in the system's type, and it scrolls; a native bar
+/// under it followed the system's appearance and stood apart. So the offer is put into the
+/// door's own column as markup with the door's measures and colours: a button for each way,
+/// and the sentence under them. It stands first among what the door offers someone who
+/// already has something (`#arrival-refusal .refusal-alt` in the entry page), under the
+/// actions of the screen for a refusal of another kind (`#arrival-failure`), and under the
+/// status line on a page that has neither, such as the page that shows one app. A press is told to the shell
+/// (`way-in`), and what the shell has to say of a link it refuses is shown under the buttons
+/// (`refused(words)`). The offer goes when the page is in, and while a pairing is under way.
+///
+/// A door that draws these options itself marks its element `data-way-in`, reads what this
+/// device has from `__tiloShell.ways` and calls `__tiloShell.wayIn(way)`; nothing is added
+/// to such a door.
 public enum Bridge {
     /// The message handler the page's side posts to.
     public static let name = "tiloShell"
 
-    public static func script(origin: String, permission: NoticePermission) -> String {
+    public static func script(origin: String, permission: NoticePermission, offer: DoorOffer? = nil) -> String {
         source
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%PERMISSION%", with: literal(permission.rawValue))
+            .replacingOccurrences(of: "%OFFER%", with: offer.map(literal) ?? "null")
+    }
+
+    /// `offer` as a JavaScript object literal.
+    static func literal(_ offer: DoorOffer) -> String {
+        let said: [String: Any] = ["said": offer.said,
+                                   "ways": offer.ways.map { ["way": $0.way.rawValue, "label": $0.label] }]
+        let encoded = try? JSONSerialization.data(withJSONObject: said, options: [.sortedKeys])
+        return encoded.flatMap { String(data: $0, encoding: .utf8) } ?? "null"
     }
 
     /// `text` as a JavaScript string literal.
@@ -266,11 +327,130 @@ public enum Bridge {
         }, 0);
       }, true);
 
-      // Where the page stands at its site's door, for the shell's own way in.
+      // Where the page stands at its site's door.
       const root = document.documentElement;
       if (root) {
         const door = () => tell('entry', {state: cut(root.dataset.entry, 32), pairing: Boolean(root.dataset.pairingCode)});
         new MutationObserver(door).observe(root, {attributes: true, attributeFilter: ['data-entry', 'data-pairing-code']});
+      }
+
+      // The way in. While the site keeps this device out, what only the system can do for
+      // the person stands in the door's own column, drawn as the door draws its own controls.
+      const offer = %OFFER%;
+      const ways = Object.freeze(offer ? offer.ways.map(one => one.way) : []);
+      const wayIn = way => {
+        if (!ways.includes(way)) return false;
+        tell('way-in', {way});
+        return true;
+      };
+      // The door's measures and colours (index.html of the entry page): a control's height
+      // and corner, the raised fill of a second choice, its focus ring, and under the
+      // controls a note in the door's quiet tone, as under its own wait list.
+      const look = `
+        .tilo-shell-way-in { box-sizing: border-box; display: grid; justify-items: center; gap: 10px; width: 100%; margin: 0 0 20px; padding: 0; text-align: center; font: 13px/1.5 system-ui, sans-serif; color: #7f7f89; }
+        .tilo-shell-way-in > p { margin: 0; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: balance; }
+        .tilo-shell-way-in > p:empty { display: none; }
+        .tilo-shell-way-in > p[role=alert] { color: #ff8a80; overflow-wrap: anywhere; }
+        .tilo-shell-ways { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: 100%; }
+        .tilo-shell-ways button { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 1 1 0; min-width: 136px; min-height: 40px; margin: 0; padding: 8px 16px; font: inherit; font-size: 15px; font-weight: 500; line-height: 1.3; border: 0; border-radius: 8px; background: #26282e; color: #ececf0; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+        .tilo-shell-ways button:only-child { flex: 0 1 auto; }
+        .tilo-shell-ways button::after { content: ''; position: absolute; inset: -3px 0; }
+        @media (hover: hover) { .tilo-shell-ways button:hover { background: #30333a; } }
+        .tilo-shell-ways button:active { background: #30333a; }
+        .tilo-shell-ways button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+        .tilo-shell-ways svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+        .tilo-shell-way-in[data-place=failure] { margin: 24px 0 0; }
+        .tilo-shell-way-in[data-place=alone] { position: fixed; z-index: 2; left: 50%; transform: translateX(-50%); width: min(400px, calc(100% - 48px)); margin: 0; }
+      `;
+      // The toolkit's own icons (`ui::icons`): a code, and a paste.
+      const drawings = {
+        scan: [['rect', {x: 3, y: 3, width: 5, height: 5, rx: 1}], ['rect', {x: 16, y: 3, width: 5, height: 5, rx: 1}],
+          ['rect', {x: 3, y: 16, width: 5, height: 5, rx: 1}],
+          ['path', {d: 'M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1M21 12v.01M12 21v-1'}]],
+        paste: [['path', {d: 'M11 14h10M16 4h2a2 2 0 0 1 2 2v1.344M17 18l4-4-4-4M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113'}],
+          ['rect', {x: 8, y: 2, width: 8, height: 4, rx: 1}]],
+      };
+      const drawn = shapes => {
+        const space = 'http://www.w3.org/2000/svg';
+        const picture = document.createElementNS(space, 'svg');
+        picture.setAttribute('viewBox', '0 0 24 24');
+        picture.setAttribute('aria-hidden', 'true');
+        for (const [kind, measures] of shapes) {
+          const shape = document.createElementNS(space, kind);
+          for (const [name, value] of Object.entries(measures)) shape.setAttribute(name, value);
+          picture.append(shape);
+        }
+        return picture;
+      };
+      let group = null;
+      let problem = null;
+      const build = () => {
+        const style = document.createElement('style');
+        style.textContent = look;
+        (document.head ?? root).append(style);
+        group = document.createElement('div');
+        group.className = 'tilo-shell-way-in';
+        group.dataset.wayIn = 'shell';
+        const said = document.createElement('p');
+        // Another control's name, which stands in quotes, is never broken over two lines.
+        said.textContent = offer.said.replace(/“[^”]*”/g, name => name.replace(/ /g, '\u00a0'));
+        const row = document.createElement('div');
+        row.className = 'tilo-shell-ways';
+        problem = document.createElement('p');
+        problem.setAttribute('role', 'alert');
+        for (const {way, label} of offer.ways) {
+          const press = document.createElement('button');
+          press.type = 'button';
+          press.dataset.way = way;
+          if (drawings[way]) press.append(drawn(drawings[way]));
+          press.append(label);
+          press.addEventListener('click', () => {
+            problem.textContent = '';
+            wayIn(way);
+          });
+          row.append(press);
+        }
+        group.append(row, said, problem);
+      };
+      // Under the status line, on a page whose door is that line alone.
+      const under = () => {
+        if (!group?.isConnected || group.dataset.place !== 'alone') return;
+        const line = document.getElementById('status');
+        const foot = line?.getClientRects().length ? line.getBoundingClientRect().bottom : innerHeight / 2;
+        group.style.top = `${Math.round(foot + 20)}px`;
+      };
+      let watched = false;
+      const place = () => {
+        const closed = root.dataset.entry === 'refused' && !root.dataset.pairingCode;
+        if (!closed || !document.body || document.querySelector('[data-way-in]:not([data-way-in="shell"])')) {
+          group?.remove();
+          return;
+        }
+        if (!group) build();
+        const others = 'refusal' in root.dataset && document.querySelector('#arrival-refusal .refusal-alt');
+        const actions = 'failure' in root.dataset && document.querySelector('#arrival-failure .failure-actions');
+        if (others) {
+          group.dataset.place = 'door';
+          if (others.firstElementChild !== group) others.prepend(group);
+        } else if (actions) {
+          group.dataset.place = 'failure';
+          if (actions.nextElementSibling !== group) actions.after(group);
+        } else {
+          group.dataset.place = 'alone';
+          if (group.parentNode !== document.body) document.body.append(group);
+          const line = document.getElementById('status');
+          if (line && !watched && typeof ResizeObserver === 'function') {
+            watched = true;
+            new ResizeObserver(under).observe(line);
+          }
+        }
+        group.style.top = '';
+        under();
+      };
+      if (root && ways.length) {
+        new MutationObserver(place).observe(root, {attributes: true,
+          attributeFilter: ['data-entry', 'data-pairing-code', 'data-refusal', 'data-failure']});
+        addEventListener('resize', under);
       }
 
       Object.defineProperty(globalThis, '__tiloShell', {value: Object.freeze({
@@ -295,6 +475,14 @@ public enum Bridge {
           notice.dispatchEvent(new Event('close'));
         },
         compose,
+        ways,
+        wayIn,
+        refused(words) {
+          if (!group?.isConnected || typeof words !== 'string') return false;
+          problem.textContent = cut(words, 512);
+          group.scrollIntoView({block: 'nearest'});
+          return true;
+        },
       })});
     })();
     """#

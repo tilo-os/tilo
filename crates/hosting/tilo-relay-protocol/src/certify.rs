@@ -438,9 +438,9 @@ pub struct PendingConfirmation {
     /// The agent's display name: the name its key goes by, as History names
     /// its changes.
     pub agent_label: String,
-    /// The run it asks in, by the title the agent gave it; empty when it
+    /// The group it asks in, by the title the agent gave it; empty when it
     /// named none.
-    pub run: String,
+    pub title: String,
     /// The action, by the title its app declares.
     pub action_label: String,
     /// What it acts on: the record by its name.

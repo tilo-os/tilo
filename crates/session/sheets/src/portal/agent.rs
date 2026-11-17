@@ -1,4 +1,4 @@
-//! An agent's question on a workspace host: who asks, in which run, exactly
+//! An agent's question on a workspace host: who asks, in which group, exactly
 //! what would happen and where, and the person's answer for that one
 //! invocation. A native session and a page show it on the same sheet, in the
 //! same words.
@@ -13,9 +13,9 @@ use crate::{word, words};
 pub struct AgentQuestion {
     /// The agent, by the name it goes by in History.
     pub agent: String,
-    /// The run it asks in, by the title it gave it; empty when it named none.
+    /// The group it asks in, by the title it gave it; empty when it named none.
     #[serde(default)]
-    pub run: String,
+    pub title: String,
     /// The action, by the title its app declares.
     pub action: String,
     /// The record it acts on, by its name.
@@ -45,7 +45,7 @@ pub struct AgentQuestion {
 
 impl AgentQuestion {
     /// The sheet asking it, as request `handle`: Allow once, or Deny. The
-    /// title says who wants to do what; the run, the record, the arguments
+    /// title says who wants to do what; the group, the record, the arguments
     /// and what it risks follow, and the picture of the page it leaves from.
     #[must_use]
     pub fn dialog(&self, handle: &str) -> Dialog {
@@ -63,7 +63,7 @@ impl AgentQuestion {
                     ("doing", &in_sentence(&self.action)),
                 ],
             ),
-            heading: self.run.clone(),
+            heading: self.title.clone(),
             detail: words(
                 "network-agent-question-detail",
                 &[("resource", &self.resource), ("workspace", &self.workspace)],

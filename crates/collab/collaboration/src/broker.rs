@@ -5093,6 +5093,52 @@ async fn recheck_native_invocation(
     Ok(false)
 }
 
+/// The code an invocation fails with when the app never took it: its document
+/// did not become current for it to run against.
+pub(crate) const UNDELIVERED_INVOCATION: &str = "action_not_delivered";
+
+/// Answer `invocation`, which the app never took (`why`), with its failure:
+/// nothing ran, so its caller is told it failed rather than waiting for an
+/// answer that will not come. The broker refusing the failure is about this
+/// invocation only; a call whose delivery is unknown is the error.
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
+async fn fail_undelivered_invocation(
+    channel: &runtime_collab::ChannelHandle,
+    invocation: &runtime_collab::Invocation,
+    why: &str,
+) -> Result<(), String> {
+    tracing::warn!(
+        id = invocation.id,
+        %why,
+        "collab: an accepted invocation did not reach the app; it fails and nothing ran"
+    );
+    let failed = tilo_actions::InvocationUpdate::Failed {
+        invocation: tilo_actions::InvocationId(Uuid::from_bytes(invocation.invocation_uuid)),
+        error: tilo_actions::ActionFailure {
+            code: UNDELIVERED_INVOCATION.into(),
+            message: format!("the app did not take this action, so nothing ran: {why}"),
+            details: None,
+            retryable: true,
+        },
+    };
+    let wire = serde_json::to_string(&failed).map_err(|error| error.to_string())?;
+    match channel.update_invocation(invocation.id, &wire).await {
+        Ok(()) => Ok(()),
+        Err(error) if refused_by_peer(&error) => {
+            tracing::warn!(
+                %error,
+                id = invocation.id,
+                "collab: the broker refused this invocation's failure; the bridge stays open"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -5114,12 +5160,29 @@ async fn spawn_invocation_stream(
                 let owner = tx.state.document_reads.delivery_owner(&key);
                 let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
                     Ok(turn) => turn,
-                    Err(error) => {
-                        tx.state
-                            .fail_closed("native invocation capture; outcome unknown");
-                        tracing::warn!(%error, "accepted invocation retains unknown outcome");
-                        break;
-                    }
+                    // The app never took this invocation: it fails, saying
+                    // why, and the stream goes on to the next. Only a failure
+                    // the broker may or may not have kept leaves its outcome
+                    // unknown, which stops collaboration.
+                    Err(error) => match fail_undelivered_invocation(
+                        &cancellation_channel,
+                        &invocation,
+                        &error,
+                    )
+                    .await
+                    {
+                        Ok(()) => continue,
+                        Err(lost) => {
+                            tx.state
+                                .fail_closed("native invocation capture; outcome unknown");
+                            tracing::warn!(
+                                %error,
+                                %lost,
+                                "accepted invocation retains unknown outcome"
+                            );
+                            break;
+                        }
+                    },
                 };
                 if let Some(turn) = &turn {
                     match tokio::time::timeout_at(

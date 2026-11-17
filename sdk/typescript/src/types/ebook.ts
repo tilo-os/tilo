@@ -8,12 +8,12 @@
  * resource's path (`ebook/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -240,7 +240,7 @@ export interface Library extends tilo.Resource {
     shared: boolean;
     content?: unknown;
   }): Promise<void>;
-  /** Runs `shelve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `shelve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   shelveMany(items: ShelveArgs[]): Promise<tilo.ActionAnswer[]>;
   shelveFound(args: {
     book: string;
@@ -248,18 +248,18 @@ export interface Library extends tilo.Resource {
     author: string;
     subject: string;
   }): Promise<void>;
-  /** Runs `shelve-found` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `shelve-found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   shelveFoundMany(items: ShelveFoundArgs[]): Promise<tilo.ActionAnswer[]>;
   removeFromLibrary(args: {
     book: string;
   }): Promise<void>;
-  /** Runs `remove-from-library` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-from-library` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeFromLibraryMany(items: RemoveFromLibraryArgs[]): Promise<tilo.ActionAnswer[]>;
   indexBook(args: {
     book: string;
     index: unknown;
   }): Promise<void>;
-  /** Runs `index-book` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `index-book` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   indexBookMany(items: IndexBookArgs[]): Promise<tilo.ActionAnswer[]>;
   recordProgress(args: {
     book: string;
@@ -268,20 +268,20 @@ export interface Library extends tilo.Resource {
     fraction: number;
     opened: boolean;
   }): Promise<void>;
-  /** Runs `record-progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-progress` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordProgressMany(items: RecordProgressArgs[]): Promise<tilo.ActionAnswer[]>;
   addNote(args: {
     passage: Passage;
     color: string;
     text: string;
   }): Promise<void>;
-  /** Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addNoteMany(items: AddNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   addComment(args: {
     highlight: string;
     text: string;
   }): Promise<void>;
-  /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   toggleBookmark(args: {
     book: string;
@@ -289,7 +289,7 @@ export interface Library extends tilo.Resource {
     block: number;
     excerpt: string;
   }): Promise<void>;
-  /** Runs `toggle-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `toggle-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggleBookmarkMany(items: ToggleBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   highlight(args: {
     book: string;
@@ -298,33 +298,33 @@ export interface Library extends tilo.Resource {
     replacing: string[];
     pieces: HiPiece[];
   }): Promise<void>;
-  /** Runs `highlight` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `highlight` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   highlightMany(items: HighlightArgs[]): Promise<tilo.ActionAnswer[]>;
   changeColor(args: {
     highlight: string;
     color: string;
   }): Promise<void>;
-  /** Runs `change-color` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `change-color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   changeColorMany(items: ChangeColorArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteHighlight(args: {
     highlight: string;
   }): Promise<void>;
-  /** Runs `delete-highlight` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-highlight` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteHighlightMany(items: DeleteHighlightArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteAnnotation(args: {
     annotation: string;
   }): Promise<void>;
-  /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteAnnotationMany(items: DeleteAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   removeFont(args: {
     font: string;
   }): Promise<void>;
-  /** Runs `remove-font` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeFontMany(items: RemoveFontArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteScheme(args: {
     scheme: string;
   }): Promise<void>;
-  /** Runs `delete-scheme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-scheme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteSchemeMany(items: DeleteSchemeArgs[]): Promise<tilo.ActionAnswer[]>;
   readChapter(args: {
     book: string;
@@ -362,7 +362,7 @@ export interface Files extends tilo.Resource {
     device: string;
     kept: unknown;
   }): Promise<void>;
-  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

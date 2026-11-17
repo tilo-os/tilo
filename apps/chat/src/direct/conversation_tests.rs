@@ -102,9 +102,19 @@ fn a_pair_of_windows(workspace: &str, ada: &str, bob: &str) -> (Window, Window) 
     bob_window
         .deliver_changes_to(&mut ada_window)
         .expect("one record");
-    ada_window.harness().relayout();
-    bob_window.harness().relayout();
+    lists_member(&mut ada_window, bob, "Bob");
+    lists_member(&mut bob_window, ada, "Ada");
     (ada_window, bob_window)
+}
+
+/// `window`'s workspace lists the person `id`, called `name`, as the member list its host
+/// delivers says: whether or not they ever opened Chat.
+fn lists_member(window: &mut Window, id: &str, name: &str) {
+    window.harness().update_presence(|presence| {
+        presence.set_display_name(MemberId::person(id.to_owned()), name);
+        true
+    });
+    window.harness().relayout();
 }
 
 /// What `window`'s record holds of its conversation with `peer`: each
@@ -264,6 +274,59 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
     );
 }
 
+/// A box's send reaches a member of the workspace who never opened Chat: the workspace's member
+/// list says who they are, and the message is waiting in their conversation when they first do.
+#[test]
+fn a_box_send_reaches_a_member_who_never_opened_chat() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-000000000010";
+    let ada = "ad".repeat(32);
+    let ben = "be".repeat(32);
+    let mut ada_window = Window::for_person_in(&ada, WORKSPACE).expect("Ada's window opens");
+    ada_window
+        .invoke(Chat::INTRODUCE.with(crate::record::chat::Introduce {
+            name: "Ada".into(),
+            initials: "A".into(),
+            color: 1,
+        }))
+        .expect("Ada introduces herself");
+    lists_member(&mut ada_window, &ben, "Ben");
+
+    let sent = ada_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ben.clone(), "Ben")],
+            attached: Vec::new(),
+            text: "have a look at this plan".into(),
+            parent: None,
+            body: None,
+            opens: Some(true),
+        })
+        .expect("Ada's box sends to Ben");
+    assert_eq!(
+        sent.value
+            .as_ref()
+            .and_then(|value| value["accepted"].as_bool()),
+        Some(true),
+        "{:?}",
+        sent.value
+    );
+
+    // Ben opens Chat for the first time: the record and the message reach his window.
+    let mut ben_window = Window::for_person_in(&ben, WORKSPACE).expect("Ben's window opens");
+    ada_window
+        .deliver_changes_to(&mut ben_window)
+        .expect("one record");
+    lists_member(&mut ben_window, &ada, "Ada");
+    deliver_messages(&mut ada_window, &mut ben_window);
+    assert_eq!(
+        read_conversation(&mut ben_window, &ada),
+        [("have a look at this plan".to_owned(), ada.clone())],
+        "Ben reads what Ada sent him"
+    );
+}
+
 /// A box with no words to send but something to send it about — a task
 /// handed to someone — posts the message carrying that, and nothing else.
 #[test]
@@ -358,8 +421,8 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     });
 }
 
-/// An agent's send names whom it goes to by name alone: the person the workspace's people call
-/// that, or the agent its record of agents does.
+/// An agent's send names whom it goes to by name alone: the person the workspace's member list
+/// calls that, or the agent its record of agents does.
 #[test]
 fn a_send_by_name_reaches_the_member_called_that() {
     use ui::floating_surface::{Recipient, RecipientKind};
@@ -368,12 +431,10 @@ fn a_send_by_name_reaches_the_member_called_that() {
     let agent = "a5".repeat(16);
     app.workspace_agent_names
         .insert(agent.clone(), "Reviewer".to_owned());
-    let mut chat = Chat::default();
-    chat.people.push(crate::record::Person {
-        name: "Ada".into(),
-        ..crate::record::Person::unnamed(MemberId::person("ad".repeat(32)))
-    });
-    let named = |kind, name: &str| app.member_named(&Recipient::found(kind, "", name), &chat);
+    app.workspace_presence_answers = true;
+    app.workspace_names
+        .insert(MemberId::person("ad".repeat(32)), "Ada".to_owned());
+    let named = |kind, name: &str| app.member_named(&Recipient::found(kind, "", name));
     assert_eq!(
         named(RecipientKind::Person, "ada"),
         Ok(MemberId::person("ad".repeat(32)))
@@ -556,7 +617,7 @@ fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
     // person differently, naming what it lacks.
     let empty = crate::ChatApp::new_ephemeral();
     let refused = empty
-        .direct_conversation(&unknown, &Chat::default())
+        .direct_conversation(&unknown)
         .expect_err("a window without the workspace's chat");
     assert!(
         refused.contains(&crate::i18n::t("chat-direct-unavailable")),

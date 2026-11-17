@@ -329,4 +329,44 @@ tilo_test_env::scenario! {
         });
         assert!(!search.palette().is_searching(), "the search is over");
     }
+
+    phase a_host_that_never_answers_ends_in_nothing_matched_not_searching;
+    // The workspace's host is asked and never answers. The search waits for it only so long
+    // ([`hosted::PATIENCE`]), and once that ends nothing is left to come: a card still saying
+    // "Searching…" would go on saying it for as long as it stood, since no answer would arrive to
+    // draw it again. The person reads that nothing matched, and what to try instead.
+    {
+        let host = Arc::new(Host::default());
+        let mut data = super::tests::data();
+        data.sources.push(Held::new(crate::providers::hosted::HostSearch::new(
+            Arc::clone(&host) as Arc<dyn tilo_actions::remote::ResourceSearch>,
+            tilo_actions::remote::Caller::local_person("ana"),
+            "w",
+            Arc::new(|| {}),
+        )));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        search.set_room(600.0, 400.0);
+        frames_until(&mut search, |search| !search.results().is_empty());
+        search.set_query("xqzvwk");
+        search.refresh();
+        // Nothing matched and the host is still being waited for: the card says it is searching.
+        frames_until(&mut search, |search| {
+            search.palette().is_searching() && search.results().is_empty()
+        });
+        // The wait ends, and the frames after it draw a card that says nothing matched.
+        frames_until(&mut search, |search| !search.waiting());
+        frames_until(&mut search, |search| !search.palette().is_searching());
+        assert!(
+            search.palette().empty_text().contains("xqzvwk"),
+            "the card says nothing matched: {:?}",
+            search.palette().empty_text()
+        );
+        // What the shell publishes as the search still searching follows the card: a host that
+        // reads it for its own frames is not told to keep looking for an answer that is not coming.
+        assert!(
+            !search.expecting(),
+            "nothing is coming, so the host is not asked to look again"
+        );
+    }
 }

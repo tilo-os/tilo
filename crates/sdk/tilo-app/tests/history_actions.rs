@@ -106,11 +106,8 @@ fn carried(versions: &[Value]) -> Vec<Value> {
         .iter()
         .map(|version| {
             let mut version = version.as_object().unwrap().clone();
-            if !["run_id", "by"]
-                .iter()
-                .any(|key| version.contains_key(*key))
-            {
-                for key in ["run", "run_id", "by"] {
+            if !["group", "by"].iter().any(|key| version.contains_key(*key)) {
+                for key in ["title", "group", "by"] {
                     if let Some(value) = before.get(key) {
                         version.insert(key.into(), value.clone());
                     }
@@ -305,7 +302,7 @@ tilo_test_env::scenario! {
         assert_eq!(cards(&app), ["agent one"]);
         app.call("redo", json!({})).unwrap();
 
-        // Naming the run undoes everything of it still in effect.
+        // Naming the group undoes everything of it still in effect.
         app.call_in_run("mcp:run-1", "add", json!({"text": "agent two"}))
             .unwrap();
         let listed = history(&mut app);
@@ -313,15 +310,15 @@ tilo_test_env::scenario! {
             .as_array()
             .unwrap()
             .iter()
-            .find_map(|version| version["run_id"].as_str())
+            .find_map(|version| version["group"].as_str())
             .unwrap()
             .to_owned();
         assert_eq!(run, "mcp:run-1");
-        app.call("undo", json!({"run": run})).unwrap();
+        app.call("undo", json!({"invocation": run})).unwrap();
         assert_eq!(cards(&app), ["person's card"]);
         let nothing = refusal(app.call_in_run("mcp:run-1", "undo", json!({})));
         assert!(
-            nothing.contains("This agent run (\"mcp:run-1\") has nothing in effect to undo"),
+            nothing.contains("This agent session (\"mcp:run-1\") has nothing in effect to undo"),
             "{nothing}"
         );
     }
@@ -337,7 +334,7 @@ tilo_test_env::scenario! {
         let refused = refusal(app.call_in_run("mcp:later", "undo", json!({"steps": 4})));
         assert!(
             refused.contains(
-                r#""mcp:earlier" by mcp:earlier (4 steps): undo {"run": "mcp:earlier", "steps": 4}"#
+                r#""mcp:earlier" by mcp:earlier (4 steps): undo {"invocation": "mcp:earlier", "steps": 4}"#
             ),
             "{refused}"
         );
@@ -348,14 +345,14 @@ tilo_test_env::scenario! {
         app.call_in_run(
             "mcp:later",
             "undo",
-            json!({"run": "mcp:earlier", "steps": 4}),
+            json!({"invocation": "mcp:earlier", "steps": 4}),
         )
         .unwrap();
         assert!(cards(&app).is_empty());
         let none_left = refusal(app.call_in_run("mcp:later", "undo", json!({})));
         assert!(!none_left.contains("mcp:earlier"), "{none_left}");
 
-        // A person asking names the runs too.
+        // A person asking names the groups too.
         app.call_in_run("mcp:earlier", "redo", json!({}))
             .unwrap_err();
         app.call_in_run("mcp:later", "redo", json!({})).unwrap();
@@ -366,7 +363,7 @@ tilo_test_env::scenario! {
             "{person}"
         );
         assert!(
-            person.contains(r#"undo {"run": "mcp:later", "steps": 1}"#),
+            person.contains(r#"undo {"invocation": "mcp:later", "steps": 1}"#),
             "{person}"
         );
     }
@@ -380,7 +377,7 @@ tilo_test_env::scenario! {
             json!({"by": " \n "}),
             json!({"by": "author\u{0000}"}),
             json!({"by": "a".repeat(513)}),
-            json!({"by": "agent:one", "run": "run:one"}),
+            json!({"by": "agent:one", "invocation": "run:one"}),
         ] {
             assert!(app.call("undo", args).is_err());
             assert_eq!(cards(&app), ["keep"]);
@@ -520,11 +517,11 @@ tilo_test_env::scenario! {
         let [.., sea, gull] = versions.as_slice() else {
             panic!("sea and gull are listed: {listed}");
         };
-        assert_eq!(sea["run_id"], "mcp:run-7", "{listed}");
-        assert_eq!(gull["run_id"], "mcp:run-7", "{listed}");
+        assert_eq!(sea["group"], "mcp:run-7", "{listed}");
+        assert_eq!(gull["group"], "mcp:run-7", "{listed}");
         // The run is named once: its second step carries it over.
         let gull = listed["versions"].as_array().unwrap().last().unwrap();
-        assert!(gull.get("run_id").is_none(), "{listed}");
+        assert!(gull.get("group").is_none(), "{listed}");
         assert!(gull.get("by").is_none(), "{listed}");
         assert_eq!(listed["checkpoints"][0]["name"], "before sea");
         assert_eq!(listed["checkpoints"][0]["version"], named["version"]);

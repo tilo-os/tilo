@@ -89,11 +89,11 @@ arrival-failed-files = This window keeps no files, so apps here can’t store fi
 arrival-failed-renderer = The desktop stopped drawing. Try again to start it, or reload the page.
 arrival-refusal-heading = { $workspace } is invite-only for now
 arrival-refusal-heading-unnamed = This workspace is invite-only for now
-arrival-refusal-body = Ask someone in it for an invite link, then paste it here.
-arrival-invite-link = Invite link
-arrival-invite-placeholder = Paste an invite link
+arrival-refusal-body = Ask someone in it for an invite link, then paste it here. If you are in it on another device, paste the link “Pair a new device” makes there.
+arrival-invite-link = Invite or pairing link
+arrival-invite-placeholder = Paste an invite or pairing link
 arrival-invite-open = Open
-arrival-invite-not-a-link = That isn’t an invite link. Paste the whole link you were sent.
+arrival-invite-not-a-link = That isn’t an invite or pairing link. Paste the whole link.
 arrival-refusal-wait-heading = Sorry, Tilo is invite-only right now
 arrival-refusal-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
 arrival-wait-email = Email
@@ -127,7 +127,8 @@ arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { 
 arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.
 arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.
 arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
-arrival-invite-toggle = Have an invite link?
+arrival-sign-in-no-passkeys = Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.
+arrival-invite-toggle = Have an invite or pairing link?
 arrival-own = Or try Tilo on your own
 
 ## The reconnect screen: the page was not let in yet and tries again

@@ -1,8 +1,15 @@
-/** Reading a workspace, acting in it, following runs, editing fields and watching. */
+/** Reading a workspace, acting in it, following invocations, editing fields and watching. */
 
 import { describe, expect, it } from "bun:test";
 
-import { AskPending, Refused, Run, type RunInfo, RunList, Tilo } from "../src/index.ts";
+import {
+  AskPending,
+  Refused,
+  Invocation,
+  type InvocationInfo,
+  InvocationList,
+  Tilo,
+} from "../src/index.ts";
 import { FakeApi, PDF, TODO, WORKSPACE_ID, linkTo } from "./fakeApi.ts";
 
 function open(api: FakeApi): Tilo {
@@ -148,19 +155,19 @@ describe("acting", () => {
   });
 });
 
-describe("a run", () => {
+describe("a invocation", () => {
   it("is what an unfinished action answers, and follows to its result", async () => {
     const api = new FakeApi();
     api.pendingRuns = 2;
     const tilo = open(api);
 
-    const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Run;
-    expect(run).toBeInstanceOf(Run);
-    expect(run.invocationId).toBe("inv-2");
+    const invocation = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Invocation;
+    expect(invocation).toBeInstanceOf(Invocation);
+    expect(invocation.invocationId).toBe("inv-2");
 
-    expect(await run.result()).toEqual({ appended: "c01e" });
-    expect(run.link).toBe(linkTo(TODO));
-    expect(run.path).toBe(`${TODO}#append-paragraph`);
+    expect(await invocation.result()).toEqual({ appended: "c01e" });
+    expect(invocation.link).toBe(linkTo(TODO));
+    expect(invocation.path).toBe(`${TODO}#append-paragraph`);
     expect(api.last()?.query).toEqual({ wait: "60" });
   });
 
@@ -169,37 +176,37 @@ describe("a run", () => {
     api.pendingRuns = 1;
     const tilo = open(api);
 
-    const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Run;
-    const cancelled = await run.cancel();
+    const invocation = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Invocation;
+    const cancelled = await invocation.cancel();
     expect(cancelled.status).toBe("cancelled");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs/${run.invocationId}/cancel`);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/invocations/${invocation.invocationId}/cancel`);
 
-    expect((await run.undo()).undone).toEqual([TODO]);
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs/${run.invocationId}/undo`);
+    expect((await invocation.undo()).undone).toEqual([TODO]);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/invocations/${invocation.invocationId}/undo`);
   });
 
-  it("is listed with every run of the workspace, newest first, page by page", async () => {
+  it("is listed with every invocation of the workspace, newest first, page by page", async () => {
     const api = new FakeApi();
     const workspace = open(api).workspace("jane-doe");
     await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
     api.pendingRuns = 1;
-    const run = (await workspace.do(`${TODO}#append-paragraph`, { text: "Buy bread" })) as Run;
-    await run.undo();
+    const invocation = (await workspace.do(`${TODO}#append-paragraph`, { text: "Buy bread" })) as Invocation;
+    await invocation.undo();
 
-    const first = await workspace.runs({ limit: 1 });
-    expect(first).toBeInstanceOf(RunList);
+    const first = await workspace.invocations({ limit: 1 });
+    expect(first).toBeInstanceOf(InvocationList);
     expect([first.total, first.waiting, first.nextCursor]).toEqual([2, 0, "1"]);
-    const newest = first.runs[0] as RunInfo;
+    const newest = first.invocations[0] as InvocationInfo;
     expect([newest.id, newest.status, newest.by, newest.byKind]).toEqual([
-      run.invocationId,
+      invocation.invocationId,
       "undone",
       "Visa backend",
       "agent",
     ]);
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs`);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/invocations`);
     expect(api.last()?.query).toEqual({ limit: "1" });
 
-    const every: RunInfo[] = [];
+    const every: InvocationInfo[] = [];
     for await (const listed of first) {
       every.push(listed);
     }
@@ -212,10 +219,10 @@ describe("a run", () => {
   it("answers its events as a stream, ending when it ends", async () => {
     const api = new FakeApi();
     api.pendingRuns = 1;
-    const run = (await open(api).workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Run;
+    const invocation = (await open(api).workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Invocation;
 
     const phases: (string | null)[] = [];
-    for await (const event of run.output()) {
+    for await (const event of invocation.output()) {
       phases.push(event.phase);
     }
 
@@ -277,21 +284,21 @@ describe("running commands unattended", () => {
   });
 });
 
-describe("a grouped run", () => {
-  it("names its run and title on its calls, and keeps the links they changed", async () => {
+describe("a grouped invocation", () => {
+  it("names its invocation and title on its calls, and keeps the links they changed", async () => {
     const api = new FakeApi();
     const tilo = open(api);
     const workspace = tilo.workspace("jane-doe");
 
-    const links = await workspace.run("Fill Jane's application", async (run) => {
+    const links = await workspace.invocation("Fill Jane's application", async (invocation) => {
       await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
       await workspace.do(`${PDF}#read-form-fields`, {});
-      return run;
+      return invocation;
     });
 
     const calls = api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/append-paragraph`);
-    expect(calls[0]?.headers["tilo-run"]).toBe(links.id);
-    expect(calls[0]?.headers["tilo-run-title"]).toBe("Fill Jane's application");
+    expect(calls[0]?.headers["tilo-invocation"]).toBe(links.id);
+    expect(calls[0]?.headers["tilo-invocation-title"]).toBe("Fill Jane's application");
     expect(links.invocations).toHaveLength(2);
     expect(links.link).toBe(linkTo(TODO));
     expect(links.links).toContain(linkTo(TODO));
@@ -301,38 +308,38 @@ describe("a grouped run", () => {
     const api = new FakeApi();
     const workspace = open(api).workspace("jane-doe");
 
-    await workspace.run("Two steps", async () => {
+    await workspace.invocation("Two steps", async () => {
       await workspace.do(`${TODO}#append-paragraph`, {});
       await workspace.do(`${TODO}#append-paragraph`, {});
     });
 
     const calls = api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/append-paragraph`);
-    expect(calls[0]?.headers["tilo-run-title"]).toBe("Two steps");
-    expect(calls[1]?.headers["tilo-run-title"]).toBe("Two steps");
-    expect(calls[1]?.headers["tilo-run"]).toBe(calls[0]?.headers["tilo-run"]);
+    expect(calls[0]?.headers["tilo-invocation-title"]).toBe("Two steps");
+    expect(calls[1]?.headers["tilo-invocation-title"]).toBe("Two steps");
+    expect(calls[1]?.headers["tilo-invocation"]).toBe(calls[0]?.headers["tilo-invocation"]);
   });
 
-  it("is taken back as its run, by the run's own route", async () => {
+  it("is taken back as its invocation, by the invocation's own route", async () => {
     const api = new FakeApi();
     const workspace = open(api).workspace("jane-doe");
 
-    const run = await workspace.run("Write it", async (run) => {
+    const invocation = await workspace.invocation("Write it", async (invocation) => {
       await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
-      return run;
+      return invocation;
     });
-    const undone = await run.undo();
+    const undone = await invocation.undo();
 
-    const last = run.invocations.at(-1);
+    const last = invocation.invocations.at(-1);
     expect(undone.status).toBe("ok");
-    expect(api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/runs/${last}/undo`)).toHaveLength(1);
+    expect(api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/invocations/${last}/undo`)).toHaveLength(1);
   });
 });
 
 describe("a workspace's stream", () => {
-  it("yields changes, run events and presence, as they come", async () => {
+  it("yields changes, invocation events and presence, as they come", async () => {
     const api = new FakeApi();
     api.events = [
-      { event: "change", data: { path: TODO, change: "edit", sentence: "Jane added a paragraph", by: "ada", run: "inv-1", time_ms: 5, undone: false } },
+      { event: "change", data: { path: TODO, change: "edit", sentence: "Jane added a paragraph", by: "ada", invocation: "inv-1", time_ms: 5, undone: false } },
       { event: "presence", data: { here: [{ who: "ada", name: "Ada", kind: "person" }] } },
     ];
     const workspace = open(api).workspace("jane-doe");

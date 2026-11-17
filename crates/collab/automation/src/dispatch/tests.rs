@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
         let event = event_of("ws-1", "rec-1", "discord.guild", "ab", &context);
         assert_eq!(event.arguments["op"]["channel"], "1");
         assert_eq!(
-            event.started_run().map(|run| run.0.to_string()).as_deref(),
+            event.started_invocation().map(|run| run.0.to_string()).as_deref(),
             Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
         );
     }
@@ -197,7 +197,7 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
 
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
-    fn a_run_never_fires_itself_again;
+    fn an_invocation_never_fires_itself_again;
 
     phase a_bot_never_fires_on_its_own_change;
     {
@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
     phase a_shortcut_never_fires_on_a_change_its_own_run_made;
     {
         let shortcut = program(vec![watch_chat(ActorFilter::Anyone)]);
-        // A Shortcut's run acts as its person; the run's `shortcut` facet is
+        // A Shortcut's run acts as its person; the invocation's `shortcut` facet is
         // what names it.
         let mut event = post(
             Acting::automation("ada").acting_for(Acting::person("ada")),
@@ -226,7 +226,7 @@ tilo_test_env::scenario! {
         assert!(out.firings.is_empty());
         assert_eq!(out.skipped[0].2, Skipped::SelfTriggered);
         // Another Shortcut's run is somebody else's change, but it is still a
-        // run's: firing on it would run two shortcuts into each other.
+        // invocation's: firing on it would run two shortcuts into each other.
         event.shortcut = Some("tidy".into());
         let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
         assert!(out.firings.is_empty());
@@ -282,7 +282,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn the_same_change_gives_the_same_run_id() {
+fn the_same_change_gives_the_same_invocation_id() {
     let shortcut = program(vec![
         watch_chat(ActorFilter::Anyone),
         watch_chat(ActorFilter::People),
@@ -291,9 +291,9 @@ fn the_same_change_gives_the_same_run_id() {
     let first = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
     let again = dispatch(&as_bot("b1", &shortcut), Event::Record(&event));
     assert_eq!(first.firings[0].invocation, again.firings[0].invocation);
-    // Each trigger index is its own run.
+    // Each trigger index is its own invocation.
     assert_ne!(first.firings[0].invocation, first.firings[1].invocation);
-    // Another installation of the same program is another run.
+    // Another installation of the same program is another invocation.
     assert_ne!(
         dispatch(&as_bot("b2", &shortcut), Event::Record(&event)).firings[0].invocation,
         first.firings[0].invocation
@@ -500,7 +500,7 @@ tilo_test_env::scenario! {
                 "payload": {"subject": "Invoice", "from": "bob"},
             })
         );
-        // The same declaration twice is one event, so one run.
+        // The same declaration twice is one event, so one invocation.
         assert_eq!(
             out.firings[0].invocation,
             dispatch(

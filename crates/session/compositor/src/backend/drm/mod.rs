@@ -243,6 +243,10 @@ struct Inner {
     /// This run continues an in-place restart of the login's desktop
     /// ([`DisplayConfig::following_restart`]).
     following_restart: bool,
+    /// The login's handover descriptor, when the wrapper opened one
+    /// ([`DisplayConfig::restart_handover`]). Kept here, not read back from the configuration: the
+    /// session replaces that with what settings say, which knows nothing of this run's start.
+    restart_handover: Option<RawFd>,
     /// How this run says its first frame is on every display, until it has.
     handover: Option<Handover>,
     /// The last topology line written, so it is written when it changes.
@@ -427,6 +431,7 @@ impl DrmBackend {
         })?;
         let seat = session.seat();
         let following_restart = config.following_restart;
+        let restart_handover = config.restart_handover;
 
         let mut libinput =
             LibinputContext::new_with_udev(LibinputSessionInterface::from(session.clone()));
@@ -445,6 +450,7 @@ impl DrmBackend {
             config,
             active: true,
             following_restart,
+            restart_handover,
             handover: None,
             topology: String::new(),
         }));
@@ -554,7 +560,7 @@ impl Backend for DrmBackend {
 
     fn keep_picture(&mut self, restarting: bool) {
         let mut inner = self.inner.borrow_mut();
-        let handover = inner.config.restart_handover;
+        let handover = inner.restart_handover;
         if !keeps_picture(restarting, handover) {
             return;
         }
@@ -1798,7 +1804,7 @@ fn arm_handover(inner: &Rc<RefCell<Inner>>) {
     if !inner.following_restart {
         return;
     }
-    let Some(fd) = inner.config.restart_handover else {
+    let Some(fd) = inner.restart_handover else {
         return;
     };
     // Apps this desktop starts must not inherit it.

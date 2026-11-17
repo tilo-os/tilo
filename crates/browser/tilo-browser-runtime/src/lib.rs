@@ -186,7 +186,16 @@ mod invite;
 mod jobs_card;
 #[cfg(target_arch = "wasm32")]
 mod layers;
-#[cfg(target_arch = "wasm32")]
+// Native builds compile it for its tests: how a sheet stands over the page and what it takes
+// while it stands there is the page's own answer, tested where the host runs it.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page draws a sheet over its desktop"
+    )
+)]
 mod over_page;
 #[cfg(target_arch = "wasm32")]
 mod page_apps;

@@ -28,8 +28,8 @@
       "description": "Running an action on a resource"
     },
     {
-      "name": "Runs",
-      "description": "An action's run after it answered: awaiting, cancelling, undoing it"
+      "name": "Invocations",
+      "description": "An action's invocation after it answered: awaiting, cancelling, undoing it"
     },
     {
       "name": "Events",
@@ -67,10 +67,10 @@
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -112,10 +112,10 @@
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -165,10 +165,10 @@
             "description": "Only the workspaces labelled so: `label[customer_id]=cus_8121`; several must all match"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -202,10 +202,10 @@
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -263,10 +263,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -324,10 +324,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -395,10 +395,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -446,10 +446,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -485,10 +485,10 @@
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -522,10 +522,10 @@
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -583,10 +583,10 @@
             "description": "The key's grant, as `GET /v1/keys` lists it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -670,10 +670,10 @@
             "description": "`resources` or `actions` only"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -736,10 +736,10 @@
             "description": "Where the previous page ended"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -749,6 +749,81 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Resource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/views": {
+      "get": {
+        "operationId": "viewResource",
+        "summary": "What an app's window shows for a resource: its view as lines, and a picture with `picture`",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The resource whose view to read"
+          },
+          {
+            "name": "picture",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`true` to answer a picture too, kept as content"
+          },
+          {
+            "name": "scale",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Pixels per point of that picture, 0.5 to 2"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What an app's window shows for a resource: its view as lines, and a picture with `picture`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
                 }
               }
             }
@@ -802,10 +877,10 @@
             "description": "The action's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -856,12 +931,12 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/runs": {
+    "/v1/workspaces/{workspace}/invocations": {
       "get": {
-        "operationId": "listRuns",
-        "summary": "The workspace's runs in records the key may read, newest first",
+        "operationId": "listInvocations",
+        "summary": "The workspace's invocations in records the key may read, newest first",
         "tags": [
-          "Runs"
+          "Invocations"
         ],
         "parameters": [
           {
@@ -880,7 +955,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "How many runs at most: 50 unless said, at most 200"
+            "description": "How many invocations at most: 50 unless said, at most 200"
           },
           {
             "name": "cursor",
@@ -892,19 +967,19 @@
             "description": "Where the previous page ended"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
           "200": {
-            "description": "The workspace's runs in records the key may read, newest first",
+            "description": "The workspace's invocations in records the key may read, newest first",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunList"
+                  "$ref": "#/components/schemas/InvocationList"
                 }
               }
             }
@@ -922,12 +997,12 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/runs/{run}": {
+    "/v1/workspaces/{workspace}/invocations/{invocation}": {
       "get": {
-        "operationId": "getRun",
-        "summary": "A run, held until it is no longer pending for `wait` seconds",
+        "operationId": "getInvocation",
+        "summary": "An invocation, held until it is no longer pending for `wait` seconds",
         "tags": [
-          "Runs"
+          "Invocations"
         ],
         "parameters": [
           {
@@ -940,13 +1015,13 @@
             "description": "The workspace's id"
           },
           {
-            "name": "run",
+            "name": "invocation",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The run, as an action answered it"
+            "description": "The invocation, as an action answered it"
           },
           {
             "name": "wait",
@@ -958,10 +1033,10 @@
             "description": "Seconds to hold while it is pending, at most 60"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -998,12 +1073,12 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/runs/{run}/cancel": {
+    "/v1/workspaces/{workspace}/invocations/{invocation}/cancel": {
       "post": {
-        "operationId": "cancelRun",
-        "summary": "Stop a run",
+        "operationId": "cancelInvocation",
+        "summary": "Stop an invocation",
         "tags": [
-          "Runs"
+          "Invocations"
         ],
         "parameters": [
           {
@@ -1016,19 +1091,19 @@
             "description": "The workspace's id"
           },
           {
-            "name": "run",
+            "name": "invocation",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The run, as an action answered it"
+            "description": "The invocation, as an action answered it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1068,12 +1143,12 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/runs/{run}/undo": {
+    "/v1/workspaces/{workspace}/invocations/{invocation}/undo": {
       "post": {
-        "operationId": "undoRun",
-        "summary": "Take back what a run changed",
+        "operationId": "undoInvocation",
+        "summary": "Take back what an invocation changed",
         "tags": [
-          "Runs"
+          "Invocations"
         ],
         "parameters": [
           {
@@ -1086,19 +1161,19 @@
             "description": "The workspace's id"
           },
           {
-            "name": "run",
+            "name": "invocation",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The run, as an action answered it"
+            "description": "The invocation, as an action answered it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1106,7 +1181,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Take back what a run changed",
+            "description": "Take back what an invocation changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1128,12 +1203,12 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/runs/{run}/output": {
+    "/v1/workspaces/{workspace}/invocations/{invocation}/output": {
       "get": {
-        "operationId": "runOutput",
-        "summary": "A run's events, ending when it ends",
+        "operationId": "invocationOutput",
+        "summary": "An invocation's events, ending when it ends",
         "tags": [
-          "Runs"
+          "Invocations"
         ],
         "parameters": [
           {
@@ -1146,19 +1221,19 @@
             "description": "The workspace's id"
           },
           {
-            "name": "run",
+            "name": "invocation",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The run, as an action answered it"
+            "description": "The invocation, as an action answered it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1230,10 +1305,10 @@
             "description": "How many hits at most"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1296,10 +1371,10 @@
             "description": "`app` (the default) or `desktop`"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1344,10 +1419,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1390,10 +1465,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1451,10 +1526,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1508,10 +1583,10 @@
             "description": ""
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -1556,10 +1631,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1617,10 +1692,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1678,10 +1753,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1739,10 +1814,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1810,10 +1885,10 @@
             "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1878,10 +1953,10 @@
             "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -1947,10 +2022,10 @@
             "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -2002,10 +2077,10 @@
             "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -2059,10 +2134,10 @@
             "description": "`tilo.content:<hash>`, as an upload or an action answered it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -2117,10 +2192,10 @@
             "description": "One resource's changes, and what is under it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -2165,10 +2240,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           }
         ],
         "responses": {
@@ -2211,10 +2286,10 @@
             "description": "The workspace's id"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -2281,10 +2356,10 @@
             "description": "The webhook's id, as its creation answered it"
           },
           {
-            "$ref": "#/components/parameters/Run"
+            "$ref": "#/components/parameters/Invocation"
           },
           {
-            "$ref": "#/components/parameters/RunTitle"
+            "$ref": "#/components/parameters/InvocationTitle"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -3017,12 +3092,12 @@
             "type": "string",
             "description": "`ok`, `pending` or `cancelled`. (A failure is the error shape.)"
           },
-          "run": {
+          "invocation": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The run: what `…/runs/{run}` follows."
+            "description": "The invocation: what `…/invocations/{invocation}` follows."
           },
           "path": {
             "type": [
@@ -3076,7 +3151,7 @@
         "required": [
           "status"
         ],
-        "description": "An action's answer, and a run's."
+        "description": "An action's answer, and an invocation's."
       },
       "Ask": {
         "type": "object",
@@ -3104,17 +3179,17 @@
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "Runs the workspace holds, of which `runs` is a page."
+            "description": "Invocations the workspace holds, of which `items` is a page."
           },
           "waiting": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "Of those, the runs waiting for the person."
+            "description": "Of those, the ones waiting for the person."
           },
           "pending": {
             "type": "boolean",
-            "description": "A record could not be read yet: runs that changed only it are missing\nuntil it can.",
+            "description": "A record could not be read yet: invocations that changed only it are\nmissing until it can.",
             "default": false
           },
           "next_cursor": {
@@ -3129,7 +3204,7 @@
               "string",
               "null"
             ],
-            "description": "The page as a person reads it, one line per run: what `tilo runs` and\nan MCP client's `tilo_read workspace/runs` print."
+            "description": "The page as a person reads it, one line per invocation: what\n`tilo invocations` and an MCP client's `tilo_read workspace/invocations`\nprint."
           }
         },
         "required": [
@@ -3137,7 +3212,7 @@
           "total",
           "waiting"
         ],
-        "description": "`GET /v1/workspaces/{workspace}/runs`: a page of its runs in records the\nkey may read, newest first: of each run only what lies in those records,\nand the totals over them alone."
+        "description": "`GET /v1/workspaces/{workspace}/invocations`: a page of them in records\nthe key may read, newest first: of each invocation only what lies in those\nrecords, and the totals over them alone."
       },
       "InvocationInfo": {
         "type": "object",
@@ -3147,14 +3222,14 @@
               "string",
               "null"
             ],
-            "description": "What `…/runs/{run}`, its `cancel` and its `undo` take: the invocation of\nits newest call (the undo of any call of a run takes back the whole\nrun). Absent for a run known only from the workspace's records, whose\ncalls the host no longer remembers (it restarted since)."
+            "description": "What `…/invocations/{invocation}`, its `cancel` and its `undo` take:\nthe invocation of its newest call (the undo of any call of an\ninvocation takes back the whole of it). Absent for one known only from\nthe workspace's records, whose calls the host no longer remembers (it\nrestarted since)."
           },
           "calls": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Every call of it the host remembers, oldest first: one, or each call\nof a run its client named with `Tilo-Run`."
+            "description": "Every call of it the host remembers, oldest first: one, or each call\nof an invocation its client named with `Tilo-Invocation`."
           },
           "step": {
             "type": [
@@ -3171,7 +3246,7 @@
               "string",
               "null"
             ],
-            "description": "What its client called it (`Tilo-Run-Title`), when it named it."
+            "description": "What its client called it (`Tilo-Invocation-Title`), when it named it."
           },
           "status": {
             "type": "string",
@@ -3260,7 +3335,7 @@
           "recorded",
           "remembered"
         ],
-        "description": "One run of a workspace, as the listing of its runs answers it."
+        "description": "One invocation of a workspace, as the listing of them answers it."
       },
       "InvocationBy": {
         "type": "object",
@@ -3278,7 +3353,7 @@
           "name",
           "kind"
         ],
-        "description": "Who ran a run."
+        "description": "Who made the invocation."
       },
       "InvocationChange": {
         "type": "object",
@@ -3301,7 +3376,7 @@
           "app",
           "app_id"
         ],
-        "description": "A record a run changed."
+        "description": "A record an invocation changed."
       },
       "SearchHits": {
         "type": "object",
@@ -3364,6 +3439,93 @@
           "path",
           "link"
         ]
+      },
+      "View": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The lines, in reading order, one node each:\n`<role> \"<name>\" = \"<value>\" [state]`, indented by depth."
+          },
+          "path": {
+            "type": "string"
+          },
+          "app": {
+            "type": "string",
+            "description": "The app whose window shows it."
+          },
+          "shown": {
+            "type": "string",
+            "description": "Whether the lines are of the resource or of the window it could not show."
+          },
+          "tree": {
+            "description": "The same view as a tree: each node's role, name, value, state, bounds and action.",
+            "default": null
+          },
+          "nodes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "omitted": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "viewport": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "The view's size, in logical pixels."
+          },
+          "window_origin": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Where the view stands in the app's window, in logical pixels."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision of the document the view shows."
+          },
+          "picture": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the picture is kept, as a content address, when one was asked for."
+          }
+        },
+        "required": [
+          "text",
+          "path",
+          "app",
+          "shown"
+        ],
+        "description": "What an app's window shows for a resource: its view's semantic lines, the\nsame ones an MCP client's `tilo_view` prints, and a picture with `picture`."
       },
       "Members": {
         "type": "object",
@@ -11173,7 +11335,7 @@
         "required": [],
         "description": ""
       },
-      "code_editor.project.record-run.Arguments": {
+      "code_editor.project.record-command.Arguments": {
         "type": "object",
         "properties": {
           "command": {
@@ -27759,20 +27921,20 @@
           "maxLength": 255
         }
       },
-      "Run": {
-        "name": "Tilo-Run",
+      "Invocation": {
+        "name": "Tilo-Invocation",
         "in": "header",
         "required": false,
-        "description": "The run this call is a step of: every call naming it is one undo step per app",
+        "description": "The invocation this call is a step of: every call naming it is one undo step per app",
         "schema": {
           "type": "string"
         }
       },
-      "RunTitle": {
-        "name": "Tilo-Run-Title",
+      "InvocationTitle": {
+        "name": "Tilo-Invocation-Title",
         "in": "header",
         "required": false,
-        "description": "What History calls the run",
+        "description": "What History calls the invocation",
         "schema": {
           "type": "string"
         }
@@ -29001,8 +29163,8 @@
     {
       "app": "so.tilo.code-editor",
       "resource": "code_editor.project",
-      "action": "record-run",
-      "arguments": "#/components/schemas/code_editor.project.record-run.Arguments"
+      "action": "record-command",
+      "arguments": "#/components/schemas/code_editor.project.record-command.Arguments"
     },
     {
       "app": "so.tilo.code-editor",

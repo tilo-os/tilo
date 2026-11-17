@@ -6,18 +6,18 @@ write it again rather than editing it.
 `Application` is the app's `browser.application` at `browser/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
-that takes longer answers a `Run`. A record is the dict the wire carries, and an
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
 the file says where it is. An undoable action that answers nothing also has a
 `<action>_many`, which applies it to every argument object of a list in a few
-all-or-nothing steps, all of them one run.
+all-or-nothing steps, all of them one invocation group.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Entry, Resource, Run
+from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Bookmark",
@@ -260,7 +260,7 @@ class Application(Resource):
         return self.action("add-bookmark", **args)
 
     def add_bookmark_many(self, items: list[AddBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-bookmark", items)
 
     def remove_bookmark(self, *, bookmark: str) -> None:
@@ -268,7 +268,7 @@ class Application(Resource):
         return self.action("remove-bookmark", bookmark=bookmark)
 
     def remove_bookmark_many(self, items: list[RemoveBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-bookmark", items)
 
     def set_site_protection(self,
@@ -280,7 +280,7 @@ class Application(Resource):
         return self.action("set-site-protection", origin=origin, enabled=enabled)
 
     def set_site_protection_many(self, items: list[SetSiteProtectionArgs]) -> list[dict[str, Any]]:
-        """Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-site-protection", items)
 
     def remember_forms(self,
@@ -295,7 +295,7 @@ class Application(Resource):
         return self.action("remember-forms", origin=origin, page=page, forms=forms, whole=whole, at=at)
 
     def remember_forms_many(self, items: list[RememberFormsArgs]) -> list[dict[str, Any]]:
-        """Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remember-forms", items)
 
     def forget_form(self,
@@ -307,7 +307,7 @@ class Application(Resource):
         return self.action("forget-form", origin=origin, signature=signature)
 
     def forget_form_many(self, items: list[ForgetFormArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget-form", items)
 
     def forget_site_forms(self, *, origin: str) -> None:
@@ -315,7 +315,7 @@ class Application(Resource):
         return self.action("forget-site-forms", origin=origin)
 
     def forget_site_forms_many(self, items: list[ForgetSiteFormsArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget-site-forms", items)
 
     def forget_all_forms(self) -> None:
@@ -323,7 +323,7 @@ class Application(Resource):
         return self.action("forget-all-forms")
 
     def forget_all_forms_many(self, items: list[ForgetAllFormsArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget-all-forms", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -364,7 +364,7 @@ class PersonalBookmarks(Resource):
         return self.action("add-bookmark", url=url, title=title)
 
     def add_bookmark_many(self, items: list[PersonalBookmarksAddBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add-bookmark", items)
 
     def remove_bookmark(self,
@@ -376,7 +376,7 @@ class PersonalBookmarks(Resource):
         return self.action("remove-bookmark", url=url, observed_tags=observed_tags)
 
     def remove_bookmark_many(self, items: list[PersonalBookmarksRemoveBookmarkArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-bookmark", items)
 
     def import_bookmarks(self, *, bundle: str) -> None:
@@ -384,7 +384,7 @@ class PersonalBookmarks(Resource):
         return self.action("import-bookmarks", bundle=bundle)
 
     def import_bookmarks_many(self, items: list[ImportBookmarksArgs]) -> list[dict[str, Any]]:
-        """Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-bookmarks", items)
 
     def remove_imported_node(self,
@@ -396,7 +396,7 @@ class PersonalBookmarks(Resource):
         return self.action("remove-imported-node", source=source, id=id)
 
     def remove_imported_node_many(self, items: list[RemoveImportedNodeArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-imported-node", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -434,7 +434,7 @@ class BrowsingHistory(Resource):
         return self.action("visit", url=url, title=title, at=at)
 
     def visit_many(self, items: list[VisitArgs]) -> list[dict[str, Any]]:
-        """Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("visit", items)
 
     def import_history_bundle(self, *, bundle: str) -> None:
@@ -442,7 +442,7 @@ class BrowsingHistory(Resource):
         return self.action("import-history-bundle", bundle=bundle)
 
     def import_history_bundle_many(self, items: list[ImportHistoryBundleArgs]) -> list[dict[str, Any]]:
-        """Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-history-bundle", items)
 
     def name_visit(self,
@@ -454,7 +454,7 @@ class BrowsingHistory(Resource):
         return self.action("name-visit", url=url, title=title)
 
     def name_visit_many(self, items: list[NameVisitArgs]) -> list[dict[str, Any]]:
-        """Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("name-visit", items)
 
     def forget(self, *, url: str) -> None:
@@ -462,7 +462,7 @@ class BrowsingHistory(Resource):
         return self.action("forget", url=url)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget", items)
 
     def clear_history(self) -> None:
@@ -470,7 +470,7 @@ class BrowsingHistory(Resource):
         return self.action("clear-history")
 
     def clear_history_many(self, items: list[ClearHistoryArgs]) -> list[dict[str, Any]]:
-        """Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        """Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-history", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

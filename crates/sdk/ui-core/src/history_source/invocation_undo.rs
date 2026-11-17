@@ -1,6 +1,7 @@
 //! Undoing an instruction that spanned more than one application.
 //!
-//! [`runs`](crate::history_source::runs) records *what* the instruction did;
+//! [`invocations`](crate::history_source::invocations) records *what* the
+//! instruction did;
 //! [`revert`](crate::history_source::revert) undoes one such reference inside
 //! one document. This is the piece between them: coordination and reporting
 //! which steps were completed.
@@ -8,18 +9,18 @@
 //! A run undone while one of its apps is closed leaves a report that no longer
 //! mentions a photo and a photo that is still cropped — and from inside either
 //! app that looks finished. So any unreachable step refuses the whole run
-//! ([`unreachable_steps`], then [`refuse_run`]), nothing is written, and the
+//! ([`unreachable_steps`], then [`refuse_invocation`]), nothing is written, and the
 //! refusal names the affected apps.
 //!
 //! The one partial allowed is within a step, where slots somebody edited after
 //! the run are kept rather than overwritten. It is never silent:
-//! [`RunUndoReport::is_complete`] is false whenever any step carries one.
+//! [`InvocationUndoReport::is_complete`] is false whenever any step carries one.
 
 use automerge::AutoCommit;
 
 use crate::history_source::authors::AuthorDirectory;
-use crate::history_source::revert::{KeptSlot, RevertError, revert_run};
-use crate::history_source::runs::{AgentSession, RunStep};
+use crate::history_source::invocations::{AgentSession, InvocationStep};
+use crate::history_source::revert::{KeptSlot, RevertError, revert_invocation};
 
 /// What happened to one application's share of a run.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,12 +65,12 @@ pub struct StepOutcome {
 /// Exists so a caller cannot accidentally report success for a run where one app
 /// was unreachable.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RunUndoReport {
+pub struct InvocationUndoReport {
     pub label: String,
     pub steps: Vec<StepOutcome>,
 }
 
-impl RunUndoReport {
+impl InvocationUndoReport {
     /// True only when every step came back clean. This is the one predicate a
     /// caller may put the word "undone" behind.
     pub fn is_complete(&self) -> bool {
@@ -120,14 +121,14 @@ impl RunUndoReport {
 /// result means every step can be attempted; a non-empty one is a refusal.
 pub fn unreachable_steps(
     run: &AgentSession,
-    reachable: impl Fn(&RunStep) -> bool,
-) -> Vec<&RunStep> {
+    reachable: impl Fn(&InvocationStep) -> bool,
+) -> Vec<&InvocationStep> {
     run.steps.iter().filter(|s| !reachable(s)).collect()
 }
 
 /// Build the report for a run that was refused whole. Nothing was written.
-pub fn refuse_run(run: &AgentSession, missing: &[&RunStep]) -> RunUndoReport {
-    RunUndoReport {
+pub fn refuse_invocation(run: &AgentSession, missing: &[&InvocationStep]) -> InvocationUndoReport {
+    InvocationUndoReport {
         label: run.label.clone(),
         steps: run
             .steps
@@ -150,7 +151,7 @@ pub fn refuse_run(run: &AgentSession, missing: &[&RunStep]) -> RunUndoReport {
 
 /// Undo one application's share of a run against the document that app owns.
 ///
-/// The record's own history does the undoing — [`revert_run`] over the
+/// The record's own history does the undoing — [`revert_invocation`] over the
 /// step's one change, the same revert `revert_step` writes for an app's
 /// own Ctrl+Z — so a run undone from an agent's report and the same work
 /// undone in the app land alike, with the same charge for what a later
@@ -160,13 +161,13 @@ pub fn refuse_run(run: &AgentSession, missing: &[&RunStep]) -> RunUndoReport {
 /// the person who asked for it and replicates like any other edit.
 pub fn undo_step(
     doc: &mut AutoCommit,
-    step: &RunStep,
+    step: &InvocationStep,
     by: Option<&str>,
     authors: &AuthorDirectory,
 ) -> StepOutcome {
     // A step's run is one change, so reverting the run is reverting that
     // change: exactly what an app's own undo writes for it.
-    let change = revert_run(doc, &step.run, by, authors);
+    let change = revert_invocation(doc, &step.range, by, authors);
     let state = match change {
         Err(RevertError::UnknownRun | RevertError::Inverted) => StepState::NotInDocument,
         Ok(o) if !o.kept.is_empty() => StepState::KeptSome {
@@ -192,16 +193,16 @@ pub fn undo_step(
 ///
 /// Each visited document is left with an **open** transaction. The caller
 /// commits per document, so each undo is stamped and attributed where it lands.
-pub fn undo_run(
+pub fn undo_invocation(
     run: &AgentSession,
     by: Option<&str>,
     authors: &AuthorDirectory,
     open: &mut [(String, String, &mut AutoCommit)],
-) -> RunUndoReport {
-    let have = |s: &RunStep| open.iter().any(|(a, r, _)| a == &s.app && r == &s.record);
+) -> InvocationUndoReport {
+    let have = |s: &InvocationStep| open.iter().any(|(a, r, _)| a == &s.app && r == &s.record);
     let missing = unreachable_steps(run, have);
     if !missing.is_empty() {
-        return refuse_run(run, &missing);
+        return refuse_invocation(run, &missing);
     }
     let mut steps = Vec::with_capacity(run.steps.len());
     for step in &run.steps {
@@ -221,7 +222,7 @@ pub fn undo_run(
             }),
         }
     }
-    RunUndoReport {
+    InvocationUndoReport {
         label: run.label.clone(),
         steps,
     }

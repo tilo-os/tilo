@@ -931,7 +931,7 @@ impl InstanceRecord {
     ) -> Result<(), RecordError> {
         let edit = HistoryEdit::Undo {
             steps: None,
-            run: None,
+            invocation: None,
             by: None,
             to: None,
             step: Some(ChangeHash(*change).to_string()),
@@ -976,7 +976,7 @@ impl InstanceRecord {
             let chunk = self.chunk_of_change(&change).unwrap_or(FIRST);
             let edit = HistoryEdit::Undo {
                 steps: None,
-                run: None,
+                invocation: None,
                 by: None,
                 to: None,
                 step: Some(ChangeHash(change).to_string()),
@@ -2130,9 +2130,9 @@ impl crate::instance::HistoryAsk {
     /// The history verb that carries it out on the record.
     #[must_use]
     pub fn edit(&self) -> HistoryEdit {
-        let undo = |run: Option<&String>, step: Option<&String>| HistoryEdit::Undo {
+        let undo = |invocation: Option<&String>, step: Option<&String>| HistoryEdit::Undo {
             steps: None,
-            run: run.cloned(),
+            invocation: invocation.cloned(),
             by: None,
             to: None,
             step: step.cloned(),

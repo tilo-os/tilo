@@ -62,17 +62,46 @@ const prfFirst = credential => {
   return bytesOf(first);
 };
 
+/** How soon a refusal is the place's and not the person's (`asked`). */
+export const REFUSED_WITHIN_MS = 500;
+
+/**
+ * What a `WebAuthn` call (`ask()`) answers. A browser says the same
+ * (`NotAllowedError`) of a person who closed its sheet and of a place where
+ * it shows none, so time is what tells them apart: reading a sheet and
+ * closing it takes a person a moment. Refused at once, with the page in
+ * front, it is the place that cannot use passkeys (`passkeys-refused`): a web
+ * view inside an app, which the system hands only the passkeys of the sites
+ * that app is associated with, or a frame nobody gave the permission. A page
+ * answers that with what to do instead. A refusal the person had time for
+ * stays the browser's own error: it is their answer. `now` is the clock, in
+ * milliseconds.
+ */
+async function asked(ask, now = () => globalThis.performance.now()) {
+  // A page that is not in front is refused at once too, and may ask again.
+  const inFront = globalThis.document?.hasFocus?.() !== false;
+  const since = now();
+  try {
+    return await ask();
+  } catch (error) {
+    if (error?.name !== 'NotAllowedError' || !inFront || now() - since >= REFUSED_WITHIN_MS) throw error;
+    const refused = new IdentityError('passkeys-refused', 'Passkeys cannot be used here');
+    refused.cause = error;
+    throw refused;
+  }
+}
+
 /**
  * Ask the authenticator for PRF output: one assertion over `passkeys`
  * (`[{credentialId, prfSalt, rpId}]`, from the runtime), each evaluated with
  * its own PRF input so any of them can answer.
  */
-async function assertPasskey(credentials, passkeys, rpId) {
+async function assertPasskey(credentials, passkeys, rpId, now) {
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   const evalByCredential = Object.fromEntries(passkeys.map(({credentialId, prfSalt}) => [
     base64(credentialId), {first: bytesOf(prfSalt)},
   ]));
-  const credential = await credentials.get({
+  const credential = await asked(() => credentials.get({
     publicKey: {
       challenge: random(32),
       rpId,
@@ -80,7 +109,7 @@ async function assertPasskey(credentials, passkeys, rpId) {
       userVerification: 'required',
       extensions: {prf: {evalByCredential}},
     },
-  });
+  }), now);
   if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was used');
   const output = prfFirst(credential);
   if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
@@ -95,10 +124,10 @@ function base64(bytes) {
 }
 
 /** Create a passkey for `options` and read its PRF output for `salt`. */
-async function createPasskey(credentials, {rpId, rpName = 'Tilo', userName, userId, displayName}, salt, exclude = []) {
+async function createPasskey(credentials, {rpId, rpName = 'Tilo', userName, userId, displayName, now}, salt, exclude = []) {
   if (!credentials?.create) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   if (!rpId || !userName || !userId) throw new TypeError('rpId, userName and userId are required');
-  const credential = await credentials.create({
+  const credential = await asked(() => credentials.create({
     publicKey: {
       rp: {id: rpId, name: rpName},
       user: {id: new TextEncoder().encode(String(userId)).slice(0, 64), name: userName, displayName: displayName ?? userName},
@@ -110,14 +139,14 @@ async function createPasskey(credentials, {rpId, rpName = 'Tilo', userName, user
       excludeCredentials: exclude.map(id => ({type: 'public-key', id: bytesOf(id)})),
       extensions: {prf: {eval: {first: bytesOf(salt)}}},
     },
-  });
+  }), now);
   if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was created');
   const credentialId = new Uint8Array(credential.rawId);
   const prf = credential.getClientExtensionResults?.()?.prf;
   // Some authenticators evaluate the PRF only on assertion.
   let output = prfFirst(credential);
   if (!output && prf?.enabled !== false) {
-    output = (await assertPasskey(credentials, [{credentialId, prfSalt: salt, rpId}], rpId)).output;
+    output = (await assertPasskey(credentials, [{credentialId, prfSalt: salt, rpId}], rpId, now)).output;
   }
   if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
   return {credentialId, output};
@@ -193,7 +222,7 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
     const rpId = how.rpId ?? passkeys[0]?.rpId;
     const candidates = passkeys.filter(passkey => passkey.rpId === rpId);
     if (!candidates.length) throw new IdentityError('no-wrap', 'This identity has no passkey here');
-    const {credentialId, output} = await assertPasskey(credentialsOf(how), candidates, rpId);
+    const {credentialId, output} = await assertPasskey(credentialsOf(how), candidates, rpId, how.now);
     identity = await runtime.rootOpenPasskey(sealed(envelope), credentialId, output);
   } else {
     throw new TypeError('unlock with {passkey: true}, {prfOutput, credentialId} or {recoveryKey}');
@@ -261,8 +290,8 @@ async function openKept(storage, record, persist, runtime) {
     /** Add a passkey for `rpId` (default this page's host) that opens this
      * person; `userName` is what the authenticator lists it as. Resolves to
      * the new envelope, also kept here. */
-    async keepWithPasskey({rpId = globalThis.location?.hostname, userName, displayName, credentials} = {}) {
-      const options = {rpId, prfSalt: await browserPrfSalt(), credentials};
+    async keepWithPasskey({rpId = globalThis.location?.hostname, userName, displayName, credentials, now} = {}) {
+      const options = {rpId, prfSalt: await browserPrfSalt(), credentials, now};
       if (userName) Object.assign(options, {userName, displayName: displayName ?? userName});
       return save(await withPasskey(identity, record.envelope, options));
     },
@@ -356,18 +385,20 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  * the root), `fetchEnvelope(rootPublicKeyHex)` finds that person's envelope
  * (from a host that keeps it, `fetchEnvelope` below), and the PRF output the
  * same assertion gave opens it. The root is then kept here as
- * `browserIdentity` keeps it, replacing whoever this browser was.
+ * `browserIdentity` keeps it, replacing whoever this browser was. Where the
+ * place cannot use passkeys at all it rejects with `passkeys-refused`
+ * (`asked`; `now` is its clock), which is not the person's answer.
  */
-export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime} = {}) {
+export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime, now} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
   storage ??= (await import('./device-custody.mjs')).idbStorage();
   runtime ??= await pageRuntime();
   credentials = credentialsOf({credentials});
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   const salt = await browserPrfSalt();
-  const credential = await credentials.get({
+  const credential = await asked(() => credentials.get({
     publicKey: {challenge: random(32), rpId, userVerification: 'required', extensions: {prf: {eval: {first: salt}}}},
-  });
+  }), now);
   if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was used');
   const output = prfFirst(credential);
   if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');

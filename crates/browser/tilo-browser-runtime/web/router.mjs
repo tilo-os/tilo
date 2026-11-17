@@ -61,6 +61,12 @@ function focusedEntry(snapshot) {
     && route.group === active.group && route.tab === active.tab);
 }
 
+/** Whether `location` names no route: the site's own address with nothing
+ * after it, or with the empty fragment a taken-out route or a person's typing
+ * leaves there (`#`, `#/`). The first paint reads it the same way
+ * (first-run.inline.js). */
+export const bareEntry = location => ['', '#', '#/'].includes(location.hash);
+
 export function startRouter({
   window = globalThis, link, initial, show, onError = () => {}, navigation,
   now = () => window.performance?.now?.() ?? Date.now(),
@@ -113,6 +119,14 @@ export function startRouter({
   async function follow() {
     if (stopped || location.href === followed) return;
     followed = location.href;
+    // An address changed to name no route is the bare site's. Where that goes
+    // (the workspace last chosen, the site's home, the person's own desktop)
+    // is decided as the page loads, so the page loads it. The grammar would
+    // read `#/` as a route with an empty part, and refuse it.
+    if (bareEntry(location)) {
+      location.reload();
+      return;
+    }
     let route;
     try {
       route = link.parse(location.href);

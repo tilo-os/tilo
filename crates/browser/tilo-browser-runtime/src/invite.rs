@@ -490,6 +490,12 @@ impl OverSheet for PageInvite {
         self.follow(show, missing)
     }
 
+    fn put_away(&self) {
+        if !self.presentation.is_open() {
+            self.presentation.gone();
+        }
+    }
+
     fn drawn(&self) -> bool {
         self.presentation.is_drawn()
     }

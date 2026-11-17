@@ -113,7 +113,7 @@ struct Step {
     /// are published on, as the task's host named them.
     history: Vec<History>,
     /// The program's first line, as `history task` names the step; a run's name, for the
-    /// steps a client groups by naming a run (`_meta` run).
+    /// steps a client groups by naming an invocation (`_meta` invocation).
     program: String,
     changed: u64,
     undone: bool,
@@ -192,11 +192,11 @@ pub(crate) struct Programs {
 }
 
 impl Programs {
-    /// Note a change a call of the run `gesture` (named `label`, `""` when the run has no title)
-    /// made through the app `app`, whose record's history is on `history` when the call found
-    /// one: the calls of one run are one step of the task's, taken back in each app they
-    /// changed, as one program is.
-    pub(super) fn note_run(
+    /// Note a change a call of the invocation `gesture` (named `label`, `""` when it has no
+    /// title) made through the app `app`, whose record's history is on `history` when the call
+    /// found one: the calls of one invocation are one step of the task's, taken back in each
+    /// app they changed, as one program is.
+    pub(super) fn note_invocation(
         &mut self,
         gesture: tilo_actions::ActionId,
         label: &str,
@@ -225,9 +225,9 @@ impl Programs {
             apps: vec![app.to_owned()],
             history: vec![at],
             program: if label.is_empty() {
-                "run".to_owned()
+                "invocation".to_owned()
             } else {
-                format!("run \"{label}\"")
+                format!("invocation \"{label}\"")
             },
             changed,
             undone: false,

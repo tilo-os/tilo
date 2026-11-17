@@ -1,4 +1,4 @@
-"""A run: an invocation that has not finished, and what to do with it."""
+"""An invocation: an action that has not finished, and what to do with it."""
 
 from __future__ import annotations
 
@@ -9,28 +9,30 @@ from ._endpoint import Endpoint, result_of
 from ._models import Event
 
 
-class Run:
+class Invocation:
     """An action still running, or one that waits for the person.
 
-    `await run.result()` follows it to its result, `async for event in
-    run.output()` follows its events, `await run.cancel()` stops it and
-    `await run.undo()` takes back what it changed. With the sync client the
-    same calls return their answers directly. Once it is done, `run.link` is
-    the link to the record it changed, when it changed one.
+    `await invocation.result()` follows it to its result, `async for event in
+    invocation.output()` follows its events, `await invocation.cancel()` stops
+    it and `await invocation.undo()` takes back what it changed. With the sync
+    client the same calls return their answers directly. Once it is done,
+    `invocation.link` is the link to the record it changed, when it changed one.
     """
 
-    def __init__(self, endpoint: Endpoint, run_id: str, path: str | None = None) -> None:
+    def __init__(
+        self, endpoint: Endpoint, invocation_id: str, path: str | None = None
+    ) -> None:
         self.endpoint = endpoint
-        self.run_id = run_id
+        self.invocation_id = invocation_id
         self.path = path
         self.link: str | None = None
 
     def __repr__(self) -> str:
-        return f"Run({self.run_id!r}, path={self.path!r})"
+        return f"Invocation({self.invocation_id!r}, path={self.path!r})"
 
     @property
     def resource(self) -> str | None:
-        """The resource whose action the run is, `app/name` without the action."""
+        """The resource whose action the invocation is, `app/name` without the action."""
         if not self.path or "#" not in self.path:
             return None
         return self.path.split("#", 1)[0]
@@ -39,11 +41,11 @@ class Run:
         return self.endpoint.client.handoff(value)
 
     def answer(self, timeout: float | None = None) -> Any:
-        """The whole answer once the run is done."""
+        """The whole answer once the invocation is done."""
         return self._handoff(self._answer(timeout))
 
     async def _answer(self, timeout: float | None) -> Mapping[str, Any]:
-        answer = await self.endpoint.wait(self.run_id, timeout)
+        answer = await self.endpoint.wait(self.invocation_id, timeout)
         path = answer.get("path")
         if isinstance(path, str) and path:
             self.path = path
@@ -60,13 +62,13 @@ class Run:
         return result_of(await self._answer(timeout))
 
     def cancel(self) -> Any:
-        """Stop the run."""
-        return self._handoff(self.endpoint.status(self.run_id, cancel=True))
+        """Stop the invocation."""
+        return self._handoff(self.endpoint.status(self.invocation_id, cancel=True))
 
     def output(self) -> AsyncIterator[Event]:
-        """The run's events, from started to succeeded, failed or cancelled."""
-        return self._handoff(self.endpoint.output(self.run_id))
+        """The invocation's events, from started to succeeded, failed or cancelled."""
+        return self._handoff(self.endpoint.output(self.invocation_id))
 
     def undo(self) -> Any:
-        """Take back what the run changed, in its app's own step."""
-        return self._handoff(self.endpoint.undo(self.run_id))
+        """Take back what the invocation changed, in its app's own step."""
+        return self._handoff(self.endpoint.undo(self.invocation_id))

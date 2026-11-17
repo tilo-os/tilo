@@ -559,15 +559,17 @@ pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};
+pub use history_source::invocation_undo::{
+    InvocationUndoReport, StepOutcome, StepState, refuse_invocation, undo_invocation, undo_step,
+    unreachable_steps,
+};
+pub use history_source::invocations::{
+    AgentSession, InvocationStep, forget_invocation, invocation_starting_at, read_invocations,
+    record_invocation, record_invocation_with_details,
+};
 pub use history_source::revert::{
-    ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
-};
-pub use history_source::run_undo::{
-    RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
-};
-pub use history_source::runs::{
-    AgentSession, RunStep, forget_run, read_runs, record_run, record_run_with_details,
-    run_starting_at,
+    ChangeRange, KeptSlot, RevertError, RevertOutcome, Slot, latest_invocation_by, plan_revert,
+    revert_invocation,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use save_status::{

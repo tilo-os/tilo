@@ -64,8 +64,11 @@ public struct SitePolicy: Equatable, Sendable {
 
     /// The first link in `text` that leads into this site: what a person pasted, scanned or
     /// shared to get in (an invitation, a pairing link) or to open a document. It is taken out
-    /// of whatever is written around it, a sentence or brackets. The same computer under
-    /// another name is another site: the page's keys are kept under the name it was opened by.
+    /// of whatever is written around it, a sentence or brackets.
+    ///
+    /// A link leads into this site when its origin is the site's, and when the computer that
+    /// serves the site wrote it under a name only that computer can use (`asOwn`). What is
+    /// returned is always an address in this site's origin; a link of any other site is none.
     public func link(in text: String) -> URL? {
         for word in text.split(whereSeparator: \.isWhitespace) {
             guard let start = word.firstMatch(of: /https?:\/\//)?.range.lowerBound else { continue }
@@ -73,9 +76,79 @@ public struct SitePolicy: Equatable, Sendable {
             // What closes a sentence or a bracket around a link is not part of it. A dash or
             // an underline may end an invitation's key, and stays.
             while let last = written.last, ".,;:!?)]}>\"'”’»".contains(last) { written.removeLast() }
-            if let url = URL(string: written), SitePolicy.origin(of: url) == origin { return url }
+            guard let url = URL(string: written) else { continue }
+            if SitePolicy.origin(of: url) == origin { return url }
+            if let own = asOwn(url) { return own }
         }
         return nil
+    }
+
+    /// `url` as a link of this site, when it is written the way the computer that serves the
+    /// site writes it for itself: its host means "this computer" (`localhost`, a name under
+    /// it, a `127.x` address, `[::1]`) and its port is this site's. `nil` for anything else.
+    ///
+    /// A page opened as `http://tilo.localhost:24120` on the computer that runs the site makes
+    /// its pairing links and invitations under that name, and names the workspace's host in
+    /// the route the same way (`#/@127.0.0.1:24100/w/…`). No other device reaches either name:
+    /// on a phone both mean the phone. A link spelled so was made for another device than the
+    /// one it was made on, and the one site it can be meant for here is the site this app
+    /// opens. It is read as that: this site's origin with the link's own path, query and
+    /// fragment, its secret untouched. Where this site goes by a name other devices use, a
+    /// host in the route that means "this computer" is written with the site's name and the
+    /// host's own port: the computer the link calls itself is the one this app reaches under
+    /// that name, and a site served beyond its computer serves its host on the same port there.
+    ///
+    /// What that gives away: nothing. The address opened is in this site's origin, so the
+    /// secret reaches this site's page and no other, and the script that joins page and system
+    /// runs nowhere else. A link written with this site's name could always carry any path and
+    /// name any host; one spelled as "this computer" can now say as much and no more. A link of
+    /// another site stays refused, and so does one on another port, which is some other
+    /// program on someone's computer and not this site.
+    private func asOwn(_ url: URL) -> URL? {
+        guard let site = URLComponents(string: origin), let name = site.host?.lowercased(),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = parts.host?.lowercased(), ShellSettings.isThisComputer(host),
+              // A name before the host is a sign-in, which no link of Tilo's carries.
+              parts.user == nil, parts.password == nil,
+              SitePolicy.port(of: parts) == SitePolicy.port(of: site)
+        else { return nil }
+        var written = origin + (parts.percentEncodedPath.isEmpty ? "/" : parts.percentEncodedPath)
+        if let query = parts.percentEncodedQuery { written += "?\(query)" }
+        if let route = parts.percentEncodedFragment {
+            written += "#" + (ShellSettings.isThisComputer(name) ? route : SitePolicy.route(route, hostAs: name))
+        }
+        return URL(string: written)
+    }
+
+    /// `route` with the host it starts by (`/@<host>[:port]/…`, the link grammar's way to say
+    /// whose workspace follows) written as `name`, when that host means "this computer". The
+    /// port stays: it is the host's own under whatever name its computer goes by. The mark the
+    /// grammar gives this computer over TLS (`https:<host>`) goes, because any other name is
+    /// reached over https anyway, and so does the port https has by itself.
+    private static func route(_ route: String, hostAs name: String) -> String {
+        // A name with a colon in it is an address the grammar has no way to write.
+        guard route.hasPrefix("/@"), !name.contains(":") else { return route }
+        let rest = route.dropFirst(2)
+        let end = rest.firstIndex { $0 == "/" || $0 == "?" } ?? rest.endIndex
+        guard var host = String(rest[..<end]).removingPercentEncoding?.lowercased() else { return route }
+        if host.hasPrefix("https:") { host.removeFirst("https:".count) }
+        var port: String?
+        // `127.0.0.1:24100` and `[::1]:24100`: the port follows the last colon outside brackets.
+        if let colon = host.lastIndex(of: ":"), !host[colon...].contains("]") {
+            port = String(host[host.index(after: colon)...])
+            host = String(host[..<colon])
+        }
+        guard ShellSettings.isThisComputer(host),
+              port.map({ !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }) ?? true
+        else { return route }
+        let kept = port.flatMap { $0 == "443" ? nil : ":\($0)" } ?? ""
+        return "/@\(name)\(kept)\(rest[end...])"
+    }
+
+    /// The port an address is reached on: the one it names, or its scheme's own.
+    private static func port(of parts: URLComponents) -> Int {
+        parts.port ?? (parts.scheme?.lowercased() == "https" ? 443 : 80)
     }
 
     /// `scheme://host[:port]` of an http address, with the standard port left out.

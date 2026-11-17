@@ -8,12 +8,12 @@
  * resource's path (`chat/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -872,19 +872,19 @@ export interface Workspace extends tilo.Resource {
     initials: string;
     color: number;
   }): Promise<void>;
-  /** Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   beginChatMany(items: BeginChatArgs[]): Promise<tilo.ActionAnswer[]>;
   introduce(args: {
     name: string;
     initials: string;
     color: number;
   }): Promise<void>;
-  /** Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   introduceMany(items: IntroduceArgs[]): Promise<tilo.ActionAnswer[]>;
   createCategory(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createCategoryMany(items: CreateCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   createChannel(args: {
     name: string;
@@ -892,7 +892,7 @@ export interface Workspace extends tilo.Resource {
     kind?: ChannelKind;
     topic?: string;
   }): Promise<void>;
-  /** Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createChannelMany(items: CreateChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   createChannelWithId(args: {
     id: string;
@@ -902,78 +902,78 @@ export interface Workspace extends tilo.Resource {
     topic?: string;
     members?: unknown[];
   }): Promise<void>;
-  /** Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createChannelWithIdMany(items: CreateChannelWithIdArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteCategory(args: {
     category: string;
   }): Promise<void>;
-  /** Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteCategoryMany(items: DeleteCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   moveChannel(args: {
     channel: string;
     up: boolean;
   }): Promise<void>;
-  /** Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveChannelMany(items: MoveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   moveCategory(args: {
     category: string;
     up: boolean;
   }): Promise<void>;
-  /** Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveCategoryMany(items: MoveCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   arrangeChannels(args: {
     categories: string[];
     channels: ChannelPlace[];
   }): Promise<void>;
-  /** Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   arrangeChannelsMany(items: ArrangeChannelsArgs[]): Promise<tilo.ActionAnswer[]>;
   setChannelCategory(args: {
     channel: string;
     category?: string;
   }): Promise<void>;
-  /** Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setChannelCategoryMany(items: SetChannelCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   renameChannel(args: {
     channel: string;
     name: string;
   }): Promise<void>;
-  /** Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameChannelMany(items: RenameChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   setChannelTopic(args: {
     channel: string;
     topic: string;
   }): Promise<void>;
-  /** Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setChannelTopicMany(items: SetChannelTopicArgs[]): Promise<tilo.ActionAnswer[]>;
   archiveChannel(args: {
     channel: string;
     archived: boolean;
   }): Promise<void>;
-  /** Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   archiveChannelMany(items: ArchiveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   renameCategory(args: {
     category: string;
     name: string;
   }): Promise<void>;
-  /** Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameCategoryMany(items: RenameCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteChannel(args: {
     channel: string;
   }): Promise<void>;
-  /** Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteChannelMany(items: DeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   reportMessage(args: {
     message: string;
     author: unknown;
     reason: string;
   }): Promise<void>;
-  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   reportPerson(args: {
     person: string;
     reason: string;
   }): Promise<void>;
-  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
   decideReports(args: {
     id: string;
@@ -981,32 +981,32 @@ export interface Workspace extends tilo.Resource {
     reports: string[];
     ruling: Ruling;
   }): Promise<void>;
-  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   decideReportsMany(items: DecideReportsArgs[]): Promise<tilo.ActionAnswer[]>;
   overturnDecision(args: {
     decision: string;
     note: string;
   }): Promise<void>;
-  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   overturnDecisionMany(items: OverturnDecisionArgs[]): Promise<tilo.ActionAnswer[]>;
   markRead(args: {
     channel: string;
     part: number;
     seen: number;
   }): Promise<void>;
-  /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
   submitFeedback(args: {
     channel: string;
     submission: unknown;
   }): Promise<void>;
-  /** Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   submitFeedbackMany(items: SubmitFeedbackArgs[]): Promise<tilo.ActionAnswer[]>;
   triage(args: {
     report: string;
     update: unknown;
   }): Promise<void>;
-  /** Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   triageMany(items: TriageArgs[]): Promise<tilo.ActionAnswer[]>;
   exportContent(args: {
     channel: string;
@@ -1043,7 +1043,7 @@ export interface Messages extends tilo.Resource {
     written?: number;
     origin?: Origin;
   }): Promise<void>;
-  /** Runs `post` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `post` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   postMany(items: PostArgs[]): Promise<tilo.ActionAnswer[]>;
   postFile(args: {
     channel: string;
@@ -1053,7 +1053,7 @@ export interface Messages extends tilo.Resource {
     attachment?: Attached;
     mentions?: Mention[];
   }): Promise<void>;
-  /** Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   postFileMany(items: PostFileArgs[]): Promise<tilo.ActionAnswer[]>;
   shareResource(args: {
     channel: string;
@@ -1061,7 +1061,7 @@ export interface Messages extends tilo.Resource {
     text?: string;
     mentions?: Mention[];
   }): Promise<void>;
-  /** Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   shareResourceMany(items: ShareResourceArgs[]): Promise<tilo.ActionAnswer[]>;
   shareWindow(args: {
     channel: string;
@@ -1070,24 +1070,24 @@ export interface Messages extends tilo.Resource {
     text?: string;
     mentions?: Mention[];
   }): Promise<void>;
-  /** Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   shareWindowMany(items: ShareWindowArgs[]): Promise<tilo.ActionAnswer[]>;
   stopSharing(args: {
     message: string;
   }): Promise<void>;
-  /** Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopSharingMany(items: StopSharingArgs[]): Promise<tilo.ActionAnswer[]>;
   setShareAccess(args: {
     message: string;
     access: ShareAccess;
   }): Promise<void>;
-  /** Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setShareAccessMany(items: SetShareAccessArgs[]): Promise<tilo.ActionAnswer[]>;
   shareOpen(args: {
     message: string;
     open: boolean;
   }): Promise<void>;
-  /** Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   shareOpenMany(items: ShareOpenArgs[]): Promise<tilo.ActionAnswer[]>;
   deliverMessage(args: {
     channel: string;
@@ -1095,7 +1095,7 @@ export interface Messages extends tilo.Resource {
     body: string;
     ts?: number;
   }): Promise<void>;
-  /** Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deliverMessageMany(items: DeliverMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   editMessage(args: {
     message: string;
@@ -1103,36 +1103,36 @@ export interface Messages extends tilo.Resource {
     body?: ClipBlock[];
     mentions?: Mention[];
   }): Promise<void>;
-  /** Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   editMessageMany(items: EditMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteMessage(args: {
     message: string;
   }): Promise<void>;
-  /** Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMessageMany(items: DeleteMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMessage(args: {
     message: string;
   }): Promise<void>;
-  /** Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeMessageMany(items: RemoveMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   pin(args: {
     message: string;
     pinned: boolean;
   }): Promise<void>;
-  /** Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pinMany(items: PinArgs[]): Promise<tilo.ActionAnswer[]>;
   retry(args: {
     message: string;
     reply: string;
   }): Promise<void>;
-  /** Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retryMany(items: RetryArgs[]): Promise<tilo.ActionAnswer[]>;
   recordWork(args: {
     message: string;
     work: WorkUpdate;
     say?: string;
   }): Promise<void>;
-  /** Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordWorkMany(items: RecordWorkArgs[]): Promise<tilo.ActionAnswer[]>;
   ask(args: {
     channel: string;
@@ -1142,7 +1142,7 @@ export interface Messages extends tilo.Resource {
     detail?: unknown;
     parent?: string;
   }): Promise<void>;
-  /** Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   askMany(items: AskArgs[]): Promise<tilo.ActionAnswer[]>;
   answerQuestion(args: {
     message: string;
@@ -1150,25 +1150,25 @@ export interface Messages extends tilo.Resource {
     device?: string;
     detail?: unknown;
   }): Promise<void>;
-  /** Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   answerQuestionMany(items: AnswerQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
   withdrawQuestion(args: {
     message: string;
     why?: string;
   }): Promise<void>;
-  /** Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   withdrawQuestionMany(items: WithdrawQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
   settleQuestion(args: {
     message: string;
     outcome: string;
     detail?: string;
   }): Promise<void>;
-  /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   settleQuestionMany(items: SettleQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
   carryCounts(args: {
     earlier: Record<string, Record<string, number>>;
   }): Promise<void>;
-  /** Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   carryCountsMany(items: CarryCountsArgs[]): Promise<tilo.ActionAnswer[]>;
   streamOutput(args: {
     channel: string;
@@ -1176,7 +1176,7 @@ export interface Messages extends tilo.Resource {
     event: unknown;
     name?: string;
   }): Promise<void>;
-  /** Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   streamOutputMany(items: StreamOutputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1195,7 +1195,7 @@ export interface Drafts extends tilo.Resource {
   startDraft(args: {
     key: string;
   }): Promise<void>;
-  /** Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startDraftMany(items: StartDraftArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1215,17 +1215,17 @@ export interface WorkspaceEmoji extends tilo.Resource {
     name: string;
     image: string;
   }): Promise<void>;
-  /** Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addEmojiMany(items: AddEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
   removeEmoji(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeEmojiMany(items: RemoveEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAnyEmoji(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeAnyEmojiMany(items: RemoveAnyEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1249,55 +1249,55 @@ export interface ChatAgent extends tilo.Resource {
     colour?: number;
     mcp_client?: string;
   }): Promise<void>;
-  /** Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createAgentMany(items: CreateAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentSpendLimit(args: {
     agent: string;
     limit_micros?: number;
   }): Promise<void>;
-  /** Runs `set-agent-spend-limit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-spend-limit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentSpendLimitMany(items: SetAgentSpendLimitArgs[]): Promise<tilo.ActionAnswer[]>;
   recordAgentSpend(args: {
     agent: string;
     day: string;
     cost_micros: number;
   }): Promise<void>;
-  /** Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordAgentSpendMany(items: RecordAgentSpendArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentOnHost(args: {
     agent: string;
     on_host: boolean;
   }): Promise<void>;
-  /** Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentOnHostMany(items: SetAgentOnHostArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentColour(args: {
     agent: string;
     colour: number;
   }): Promise<void>;
-  /** Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentColourMany(items: SetAgentColourArgs[]): Promise<tilo.ActionAnswer[]>;
   renameAgent(args: {
     agent: string;
     name: string;
   }): Promise<void>;
-  /** Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameAgentMany(items: RenameAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentModel(args: {
     agent: string;
     model?: string;
   }): Promise<void>;
-  /** Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentModelMany(items: SetAgentModelArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentBound(args: {
     agent: string;
     bound: Bound[];
   }): Promise<void>;
-  /** Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentBoundMany(items: SetAgentBoundArgs[]): Promise<tilo.ActionAnswer[]>;
   retireAgent(args: {
     agent: string;
   }): Promise<void>;
-  /** Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retireAgentMany(items: RetireAgentArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

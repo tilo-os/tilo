@@ -420,7 +420,7 @@ impl Shared {
             tracing::info!(program = %working.program, "an agent's card asked to undo the changes of a session that has none of its own");
             return;
         };
-        if let Err(error) = self.activity.undo_run(
+        if let Err(error) = self.activity.undo_invocation(
             &working.workspace,
             session.as_str(),
             working.changed.clone(),

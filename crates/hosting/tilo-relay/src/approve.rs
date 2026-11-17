@@ -351,7 +351,7 @@ fn described(question: &PendingConfirmation) -> serde_json::Value {
             "action": question.action_label,
             "resource": question.resource_label,
             "agent": question.agent_label,
-            "run": question.run,
+            "title": question.title,
             "workspace": question.workspace,
             "risk": question.risk,
             "kind": question.kind,

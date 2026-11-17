@@ -289,18 +289,18 @@ enum Cmd {
         /// The program to run, by its path here.
         file: std::path::PathBuf,
     },
-    /// The runs of a hosted workspace (-w) in records you may read, newest first.
+    /// The invocations of a hosted workspace (-w) in records you may read, newest first.
     #[command(
-        after_help = "Examples:\n  tilo runs -w jane-doe\n  tilo runs -w jane-doe --limit 10\n\n\
-                      Each line is a run: its id, how it stands (waiting for you, running, ended, failed,\n\
-                      cancelled, undone), who ran it and what it changed. A long list ends with a cursor:\n\
-                      `tilo runs --cursor <cursor> -w` reads on."
+        after_help = "Examples:\n  tilo invocations -w jane-doe\n  tilo invocations -w jane-doe --limit 10\n\n\
+                      Each line is an invocation: its id, how it stands (waiting for you, running,\n\
+                      ended, failed, cancelled, undone), who made it and what it changed. A long list\n\
+                      ends with a cursor: `tilo invocations --cursor <cursor> -w` reads on."
     )]
-    Runs {
-        /// How many runs at most: 50 unless said, at most 200.
+    Invocations {
+        /// How many invocations at most: 50 unless said, at most 200.
         #[arg(long)]
         limit: Option<u32>,
-        /// The cursor a long list ended with, for the older runs.
+        /// The cursor a long list ended with, for the older invocations.
         #[arg(long)]
         cursor: Option<String>,
     },
@@ -1034,9 +1034,9 @@ fn run_hosted(
         Cmd::Run { file } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(reach, &workspace, &file)),
-        Cmd::Runs { limit, cursor } => workspace
+        Cmd::Invocations { limit, cursor } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::runs(reach, &workspace, limit, cursor.as_deref())),
+            .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
         other => return Err(other),
     })
@@ -1065,7 +1065,7 @@ fn acts_in_a_workspace(cmd: &Cmd) -> bool {
             | Cmd::Members { .. }
             | Cmd::Files { .. }
             | Cmd::Run { .. }
-            | Cmd::Runs { .. }
+            | Cmd::Invocations { .. }
             | Cmd::Ls { .. }
             | Cmd::Read { .. }
     )
@@ -1119,7 +1119,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Account { .. }
         | Cmd::Files { .. }
         | Cmd::Run { .. }
-        | Cmd::Runs { .. }
+        | Cmd::Invocations { .. }
         | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
@@ -1961,7 +1961,7 @@ mod tests {
                 &["tilo", "ls", "notes", "-w", "jane-doe", "--json"][..],
                 &["tilo", "read", "notes/Todo", "-w", "jane-doe", "--json"][..],
                 &["tilo", "run", "visa.tl", "-w", "jane-doe", "--json"][..],
-                &["tilo", "runs", "-w", "jane-doe", "--limit", "5", "--json"][..],
+                &["tilo", "invocations", "-w", "jane-doe", "--limit", "5", "--json"][..],
             ] {
                 let cli = Cli::try_parse_from(args)
                     .unwrap_or_else(|error| panic!("tilo {args:?}: {error}"));
@@ -2262,7 +2262,7 @@ mod tests {
                     "account",
                     "files",
                     "run",
-                    "runs",
+                    "invocations",
                     "sdk",
                     "device",
                     "agent",
@@ -2339,7 +2339,7 @@ mod tests {
                 listed(elsewhere),
                 [
                     "app", "do", "ls", "read", "view", "keys", "members", "account", "files",
-                    "run", "runs", "sdk", "login", "folders", "migrate"
+                    "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2359,7 +2359,7 @@ mod tests {
                 listed(nothing),
                 [
                     "do", "ls", "read", "view", "keys", "members", "account", "files", "run",
-                    "runs",
+                    "invocations",
                     "sdk", "login", "folders", "migrate"
                 ]
             );

@@ -15,9 +15,9 @@ use ui::tilo_actions::InvocationUpdate;
 use ui::tilo_actions::remote::{
     InvokeArgument, person_accounts,
     person_accounts::{
-        BeginSend, FetchMail, FetchedMail, MAX_SEND_PIECE_BYTES, MailAccount, MailAccounts,
-        MarkMail, PieceKept, SendFile as WireFile, SendId, SendMail, SendPiece, SentMail,
-        StartedSend,
+        BeginSend, FetchMail, FetchedMail, FoundMail, MAX_SEND_PIECE_BYTES, MailAccount,
+        MailAccounts, MarkMail, PieceKept, SearchMail, SendFile as WireFile, SendId, SendMail,
+        SendPiece, SentMail, StartedSend,
     },
 };
 use ui::{Arrival, InvocationCall, RemoteActions};
@@ -107,11 +107,16 @@ pub(crate) struct HostMail {
     /// The messages the window sent, while the host takes them: one step of
     /// one at a time, in the order they were sent.
     staging: Vec<Staging>,
+    /// The begun messages the host keeps as drafts instead of sending.
+    drafts: std::collections::HashSet<EngineRequestId>,
+    /// Where the window keeps the bytes of a draft's files: a draft kept on
+    /// its server is written from them, as a send is.
+    content: tilo_content::ContentStore,
 }
 
 /// A window with the host's mail session as its engine: what the window
 /// posts is asked of the host, and what the host answers is the window's.
-pub(super) fn engine() -> (EngineHandle, HostMail) {
+pub(super) fn engine(content: tilo_content::ContentStore) -> (EngineHandle, HostMail) {
     let (tx, requests) = mpsc::channel();
     let (events, rx) = mpsc::channel();
     let host = HostMail {
@@ -125,6 +130,8 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         adding: None,
         add_error: None,
         staging: Vec::new(),
+        drafts: std::collections::HashSet::new(),
+        content,
     };
     (EngineHandle { tx, rx }, host)
 }
@@ -203,6 +210,22 @@ impl HostMail {
                 self.begin_send(request_id, &account, &draft, files);
                 continue;
             }
+            // A draft kept on its server is begun as a message is, with the
+            // bytes its files hold here, and kept instead of sent.
+            if let EngineRequest::SaveDraft {
+                request_id,
+                account,
+                draft,
+            } = request
+            {
+                self.drafts.insert(request_id);
+                match crate::attachment_store::materialize_files(&self.content, &draft.attachments)
+                {
+                    Ok(files) => self.begin_send(request_id, &account, &draft, files),
+                    Err(reason) => self.fail_send(request_id, reason),
+                }
+                continue;
+            }
             if let Some((target, argument)) = asking(&request) {
                 let remote = self.remote();
                 let call = remote.invoke(target, argument, None);
@@ -255,10 +278,16 @@ impl HostMail {
                 Some(Err(reason)) => {
                     changed = true;
                     tracing::warn!(%reason, "mail: the host refused this window's request");
+                    // A search the host would not make finds nothing, as on
+                    // a device, and the window says so nowhere.
+                    let context = match asked.request {
+                        EngineRequest::Search { .. } => "search",
+                        _ => "host",
+                    };
                     let _ = self.events.send(EngineEvent::Error {
                         request_id: asked.request.request_id(),
                         kind: asked.request.kind(),
-                        context: "host".into(),
+                        context: context.into(),
                         message: reason,
                     });
                 }
@@ -451,6 +480,12 @@ impl HostMail {
                     format!("the host's answer was not a piece: {error}"),
                 ),
             },
+            (Staging::Sending { .. }, Ok(_)) if self.drafts.remove(&request_id) => {
+                let _ = self.events.send(EngineEvent::Completed {
+                    request_id,
+                    kind: EngineRequestKind::SaveDraft,
+                });
+            }
             (Staging::Sending { .. }, Ok(value)) => {
                 let _ = self.events.send(EngineEvent::Sent {
                     request_id,
@@ -482,9 +517,14 @@ impl HostMail {
         file: usize,
     ) {
         if file >= files.len() {
+            let action = if self.drafts.contains(&request_id) {
+                person_accounts::SAVE_DRAFT
+            } else {
+                person_accounts::SEND
+            };
             let remote = self.remote();
             let call = remote.invoke(
-                person_accounts::target(person_accounts::SEND),
+                person_accounts::target(action),
                 map(&SendId { send }).unwrap_or(InvokeArgument::None),
                 None,
             );
@@ -544,12 +584,18 @@ impl HostMail {
         });
     }
 
-    /// Say why the message the window sent did not leave it.
-    fn fail_send(&self, request_id: EngineRequestId, reason: String) {
+    /// Say why the message the window sent did not leave it, or why its
+    /// draft was not kept.
+    fn fail_send(&mut self, request_id: EngineRequestId, reason: String) {
         tracing::warn!(%reason, "mail: the host would not take the message");
+        let kind = if self.drafts.remove(&request_id) {
+            EngineRequestKind::SaveDraft
+        } else {
+            EngineRequestKind::Send
+        };
         let _ = self.events.send(EngineEvent::Error {
             request_id,
-            kind: EngineRequestKind::Send,
+            kind,
             context: "host".into(),
             message: reason,
         });
@@ -569,13 +615,17 @@ impl HostMail {
                 request_id,
                 account,
                 folder,
-                ..
+                want,
             } => match serde_json::from_value::<FetchedMail>(value) {
                 Ok(fetched) => EngineEvent::Fetched {
                     request_id: *request_id,
                     account_id: account.email.clone(),
                     folder: Folder::from_key(&fetched.folder).unwrap_or(*folder),
-                    synced: synced(fetched, &account.email),
+                    synced: synced(
+                        fetched,
+                        &account.email,
+                        matches!(want, crate::sync::Want::Older { .. }),
+                    ),
                 },
                 Err(error) => EngineEvent::Error {
                     request_id: *request_id,
@@ -593,10 +643,26 @@ impl HostMail {
             | EngineRequest::Purge { request_id, .. }
             | EngineRequest::OAuthAuthorize { request_id, .. }
             | EngineRequest::SaveDraft { request_id, .. }
-            | EngineRequest::Watch { request_id, .. }
-            | EngineRequest::Search { request_id, .. } => EngineEvent::Completed {
+            | EngineRequest::Watch { request_id, .. } => EngineEvent::Completed {
                 request_id: *request_id,
                 kind: request.kind(),
+            },
+            EngineRequest::Search {
+                request_id,
+                account,
+                ..
+            } => match serde_json::from_value::<FoundMail>(value) {
+                Ok(found) => EngineEvent::Found {
+                    request_id: *request_id,
+                    account_id: account.email.clone(),
+                    messages: found_messages(found, &account.email),
+                },
+                Err(error) => EngineEvent::Error {
+                    request_id: *request_id,
+                    kind: request.kind(),
+                    context: "search".into(),
+                    message: format!("the host's answer was not what it found: {error}"),
+                },
             },
         };
         let _ = self.events.send(event);
@@ -614,27 +680,40 @@ fn asking(
         EngineRequest::Connect { .. }
         | EngineRequest::Watch { .. }
         | EngineRequest::SaveDraft { .. }
-        | EngineRequest::Search { .. }
         | EngineRequest::OAuthAuthorize { .. }
         | EngineRequest::Send { .. } => return None,
+        EngineRequest::Search { account, text, .. } => {
+            let searching = SearchMail {
+                account: account.email.clone(),
+                text: Some(text.clone()),
+                ..SearchMail::default()
+            };
+            (person_accounts::SEARCH, map(&searching)?)
+        }
         EngineRequest::Fetch {
             account,
             folder,
             want,
             ..
         } => {
-            // A window that wants older mail asks the newest page again:
-            // what it holds is what it scrolls, and a page of mail older
-            // than the one on screen stays on the device that keeps it.
-            let known = match want {
-                crate::sync::Want::Latest { known } => *known,
-                crate::sync::Want::Older { .. } => None,
-            };
-            let asking = FetchMail {
-                account: account.email.clone(),
-                folder: folder.as_key().to_owned(),
-                known_uid: known.map(|window| window.newest),
-                known_uid_validity: known.map(|window| window.uid_validity),
+            // What arrived since the newest message the window holds, or,
+            // for a window scrolled past its oldest one, the page before
+            // that.
+            let asking = match want {
+                crate::sync::Want::Latest { known } => FetchMail {
+                    account: account.email.clone(),
+                    folder: folder.as_key().to_owned(),
+                    known_uid: known.map(|window| window.newest),
+                    known_uid_validity: known.map(|window| window.uid_validity),
+                    before_uid: None,
+                },
+                crate::sync::Want::Older { known } => FetchMail {
+                    account: account.email.clone(),
+                    folder: folder.as_key().to_owned(),
+                    known_uid: None,
+                    known_uid_validity: Some(known.uid_validity),
+                    before_uid: Some(known.oldest),
+                },
             };
             (person_accounts::FETCH, map(&asking)?)
         }
@@ -712,59 +791,33 @@ fn answered(call: &InvocationCall) -> Option<Result<serde_json::Value, String>> 
     }
 }
 
-/// A folder the host read, as the window's engine reports one.
-fn synced(fetched: FetchedMail, account: &str) -> Synced {
+/// What the host found, as the window's engine reports it: each message in
+/// its folder, and none with a place a refresh counts, since a search
+/// reaches outside what the window syncs.
+fn found_messages(found: FoundMail, account: &str) -> Vec<Message> {
+    found
+        .folders
+        .into_iter()
+        .flat_map(|found| {
+            let folder = Folder::from_key(&found.folder).unwrap_or_default();
+            let uid_validity = found.uid_validity;
+            found.messages.into_iter().map(move |message| Message {
+                server: None,
+                ..message_of(message, folder, uid_validity, account)
+            })
+        })
+        .collect()
+}
+
+/// A folder the host read, as the window's engine reports one. An `older`
+/// page adds to what the window holds and names no window of its own.
+fn synced(fetched: FetchedMail, account: &str, older: bool) -> Synced {
     let folder = Folder::from_key(&fetched.folder).unwrap_or_default();
+    let uid_validity = fetched.uid_validity;
     let messages: Vec<Message> = fetched
         .messages
         .into_iter()
-        .map(|message| {
-            let at = ServerPlace {
-                folder,
-                uid: message.uid,
-                uid_validity: fetched.uid_validity,
-            };
-            Message {
-                id: message_id(&message),
-                rfc_message_id: message.message_id,
-                in_reply_to: message.in_reply_to,
-                from: Addr::new(message.from.name.unwrap_or_default(), message.from.email),
-                to: message
-                    .to
-                    .into_iter()
-                    .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
-                    .collect(),
-                cc: message
-                    .cc
-                    .into_iter()
-                    .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
-                    .collect(),
-                subject: message.subject,
-                body: message.body,
-                html_body: message.html_body,
-                attachments: message
-                    .attachments
-                    .into_iter()
-                    .map(|attachment| Attachment {
-                        filename: attachment.filename,
-                        mime: attachment.mime,
-                        size: attachment.size,
-                        hydrated: false,
-                        content_id: None,
-                        content: Vec::new(),
-                        kept: false,
-                        inline_id: attachment.inline_id,
-                    })
-                    .collect(),
-                timestamp_min: message.minutes,
-                read: message.read,
-                starred: message.starred,
-                folder,
-                labels: Vec::new(),
-                account: account.to_owned(),
-                server: Some(at),
-            }
-        })
+        .map(|message| message_of(message, folder, uid_validity, account))
         .collect();
     let window = messages
         .iter()
@@ -772,9 +825,10 @@ fn synced(fetched: FetchedMail, account: &str) -> Synced {
         .fold(None::<(u32, u32)>, |window, uid| match window {
             None => Some((uid, uid)),
             Some((oldest, newest)) => Some((oldest.min(uid), newest.max(uid))),
-        });
+        })
+        .filter(|_| !older);
     Synced {
-        uid_validity: fetched.uid_validity,
+        uid_validity,
         reset: fetched.reset,
         messages,
         flags: fetched
@@ -785,6 +839,60 @@ fn synced(fetched: FetchedMail, account: &str) -> Synced {
         window,
         has_older: Some(fetched.has_older),
         originals: Vec::new(),
+    }
+}
+
+/// One message the host read, as the window keeps one.
+fn message_of(
+    message: person_accounts::FetchedMessage,
+    folder: Folder,
+    uid_validity: u32,
+    account: &str,
+) -> Message {
+    let at = ServerPlace {
+        folder,
+        uid: message.uid,
+        uid_validity,
+    };
+    Message {
+        id: message_id(&message),
+        rfc_message_id: message.message_id,
+        in_reply_to: message.in_reply_to,
+        from: Addr::new(message.from.name.unwrap_or_default(), message.from.email),
+        to: message
+            .to
+            .into_iter()
+            .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
+            .collect(),
+        cc: message
+            .cc
+            .into_iter()
+            .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
+            .collect(),
+        subject: message.subject,
+        body: message.body,
+        html_body: message.html_body,
+        attachments: message
+            .attachments
+            .into_iter()
+            .map(|attachment| Attachment {
+                filename: attachment.filename,
+                mime: attachment.mime,
+                size: attachment.size,
+                hydrated: false,
+                content_id: None,
+                content: Vec::new(),
+                kept: false,
+                inline_id: attachment.inline_id,
+            })
+            .collect(),
+        timestamp_min: message.minutes,
+        read: message.read,
+        starred: message.starred,
+        folder,
+        labels: Vec::new(),
+        account: account.to_owned(),
+        server: Some(at),
     }
 }
 
@@ -972,6 +1080,22 @@ mod tests {
                     }],
                     "flags": []
                 }),
+                person_accounts::SEARCH => json!({
+                    "folders": [{
+                        "folder": "archive",
+                        "uidValidity": 9,
+                        "messages": [{
+                            "uid": 7,
+                            "messageId": "old@example.test",
+                            "from": {"name": "Ada", "email": "ada@example.test"},
+                            "subject": "Quarterly numbers",
+                            "body": "From last year.",
+                            "minutes": 50,
+                            "read": true,
+                            "starred": false
+                        }]
+                    }]
+                }),
                 person_accounts::BEGIN_SEND => json!({ "send": "test-send" }),
                 person_accounts::SEND_PIECE => {
                     let InvokeArgument::Json(argument) = &request.argument else {
@@ -1041,7 +1165,7 @@ mod tests {
     fn a_window_reads_its_accounts_and_mail_through_the_host() {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving, Caller::local_person("ada"));
-        let (handle, mut mail) = engine();
+        let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
 
         // The host reads its accounts, and the window takes what it sent.
         let listed = taken_accounts(&mut mail);
@@ -1081,6 +1205,83 @@ mod tests {
         assert_eq!(fetched.1.messages[0].server.map(|at| at.uid), Some(42));
     }
 
+    /// A window scrolled past its oldest message asks the host for the page
+    /// before it, and a search asks the host's server. What is found comes
+    /// back as messages outside what a refresh counts.
+    #[test]
+    fn a_window_asks_the_host_for_older_mail_and_for_what_a_search_finds() {
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
+        let config = crate::model::AccountConfig {
+            email: "ada@example.test".into(),
+            ..crate::model::AccountConfig::default()
+        };
+        handle
+            .tx
+            .send(EngineRequest::fetch_wanting(
+                config.clone(),
+                Folder::Inbox,
+                crate::sync::Want::Older {
+                    known: crate::sync::Window {
+                        uid_validity: 7,
+                        newest: 42,
+                        oldest: 12,
+                    },
+                },
+            ))
+            .unwrap();
+        handle
+            .tx
+            .send(EngineRequest::search(config, "quarterly".into()))
+            .unwrap();
+        assert!(mail.poll());
+
+        let asked = serving.asked();
+        let argument = |action: &str| {
+            let request = asked
+                .iter()
+                .find(|request| request.target.address.action == action)
+                .expect("the host is asked");
+            let InvokeArgument::Json(argument) = &request.argument else {
+                panic!("the request carries what it asks");
+            };
+            argument.clone()
+        };
+        let older = argument(person_accounts::FETCH);
+        assert_eq!(older["beforeUid"], json!(12));
+        assert_eq!(older["knownUidValidity"], json!(7));
+        assert!(older.get("knownUid").is_none());
+        assert_eq!(
+            argument(person_accounts::SEARCH)["text"],
+            json!("quarterly")
+        );
+
+        let events: Vec<EngineEvent> = std::iter::from_fn(|| handle.rx.try_recv().ok()).collect();
+        let page = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Fetched { synced, .. } => Some(synced),
+                _ => None,
+            })
+            .expect("the older page reaches the window");
+        assert_eq!(
+            page.window, None,
+            "an older page names no window of its own"
+        );
+        let found = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Found { messages, .. } => Some(messages),
+                _ => None,
+            })
+            .expect("what the host found reaches the window");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].subject, "Quarterly numbers");
+        assert_eq!(found[0].folder, Folder::Archive);
+        assert!(found[0].server.is_none());
+    }
+
     /// An account another window adds through the host reaches this window
     /// through what it follows: no timer asks the host again, and the
     /// window's listing is the host's whole answer.
@@ -1088,7 +1289,7 @@ mod tests {
     fn an_account_added_in_another_window_reaches_this_one() {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
-        let (_handle, mut mail) = engine();
+        let (_handle, mut mail) = engine(tilo_content::ContentStore::memory());
         let listed = taken_accounts(&mut mail);
         assert_eq!(listed.accounts.len(), 1);
 
@@ -1127,7 +1328,7 @@ mod tests {
     fn a_page_hands_the_account_it_takes_in_to_the_host() {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
-        let (_handle, mut mail) = engine();
+        let (_handle, mut mail) = engine(tilo_content::ContentStore::memory());
         let config = crate::model::AccountConfig {
             display_name: "Ada".into(),
             email: "ada@example.test".into(),
@@ -1160,6 +1361,62 @@ mod tests {
         );
     }
 
+    /// A draft the window keeps on its server is begun with the host as a
+    /// message is, and kept in the account's Drafts folder instead of sent.
+    #[test]
+    fn a_draft_is_begun_with_the_host_and_kept_instead_of_sent() {
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
+        handle
+            .tx
+            .send(EngineRequest::save_draft(
+                crate::model::AccountConfig {
+                    email: "ada@example.test".into(),
+                    ..crate::model::AccountConfig::default()
+                },
+                Box::new(crate::model::Draft {
+                    to: "bob@example.test".into(),
+                    subject: "Not yet".into(),
+                    body: "Still thinking.".into(),
+                    ..crate::model::Draft::default()
+                }),
+            ))
+            .unwrap();
+
+        let mut kept = false;
+        for _ in 0..8 {
+            mail.poll();
+            while let Ok(event) = handle.rx.try_recv() {
+                assert!(
+                    !matches!(event, EngineEvent::Error { .. } | EngineEvent::Sent { .. }),
+                    "{event:?}"
+                );
+                kept |= matches!(
+                    event,
+                    EngineEvent::Completed {
+                        kind: EngineRequestKind::SaveDraft,
+                        ..
+                    }
+                );
+            }
+            if kept {
+                break;
+            }
+        }
+        assert!(kept, "the host's answer settles the draft");
+        let actions: Vec<String> = serving
+            .asked()
+            .iter()
+            .map(|request| request.target.address.action.clone())
+            .filter(|action| action != person_accounts::WATCH)
+            .collect();
+        assert_eq!(
+            actions,
+            [person_accounts::BEGIN_SEND, person_accounts::SAVE_DRAFT]
+        );
+    }
+
     /// A send written in the page is begun with the host that keeps the
     /// account, its file's bytes handed over a piece at a time, and sent,
     /// carrying no secret: the host signs in with the one it keeps.
@@ -1167,7 +1424,7 @@ mod tests {
     fn a_send_hands_its_files_to_the_host_a_piece_at_a_time() {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
-        let (handle, mut mail) = engine();
+        let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
         let file = |name: &str, bytes: &[u8]| crate::model::SendFile {
             attachment: crate::model::DraftAttachment {
                 content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),

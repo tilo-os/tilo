@@ -526,18 +526,16 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
         let target = tilo_desktop_search::Target::Invoke(Box::new(
             tilo_desktop_search::providers::settings::opening(&workspace, &anchor),
         ));
-        let opened = shared
-            .search
-            .perform_checked(&workspace, target, &mut |own| {
-                shared
-                    .published
-                    .invoke(
-                        &own.address,
-                        &own.arguments,
-                        &mut tilo_session_core::surfaces::Look::none(),
-                    )
-                    .map(drop)
-            });
+        let opened = shared.search.perform(&workspace, target, &mut |own| {
+            shared
+                .published
+                .invoke(
+                    &own.address,
+                    &own.arguments,
+                    &mut tilo_session_core::surfaces::Look::none(),
+                )
+                .map(drop)
+        });
         if opened.is_ok() {
             return;
         }

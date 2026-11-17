@@ -428,6 +428,19 @@ def step_of(line: str) -> dict:
     return got
 
 
+def delivered_ms(text: str, sent: float) -> int | None:
+    """How long the message took from the send to the agent: the agent's first "answering the
+    conversation's turn" line after it, by its own timestamp, less the wall time of the send."""
+    for line in text.splitlines():
+        if "answering the conversation's turn" not in line:
+            continue
+        m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)Z", line)
+        if m:
+            at = dt.datetime.fromisoformat(m.group(1)).replace(tzinfo=dt.timezone.utc)
+            return round((at.timestamp() - sent) * 1000)
+    return None
+
+
 def gateway_calls(text: str) -> list[dict]:
     return [fields(line) for line in text.splitlines() if "timing plan" in line]
 
@@ -459,6 +472,7 @@ def ask_agent(s: Session, ask: Ask, out: Path, timeout: float) -> dict:
         s.unended = True
     time.sleep(0.3)
     gateway_text = s.read_since(s.gateway_log, gw_at)
+    delivered = delivered_ms(session_text, began)
     (out / f"{ask.name}.session.log").write_text(session_text)
     (out / f"{ask.name}.gateway.log").write_text(gateway_text)
     calls = gateway_calls(gateway_text)
@@ -468,6 +482,7 @@ def ask_agent(s: Session, ask: Ask, out: Path, timeout: float) -> dict:
         "sent": sent.strip()[:300],
         "ended": ended,
         "seconds": round(seconds, 1),
+        "delivered_ms": delivered,
         "calls": len(calls),
         "prompt_tokens": [number(c.get("prompt_tokens")) for c in calls],
         "first_byte_ms": [number(c.get("first_byte_ms")) for c in calls],
@@ -759,6 +774,7 @@ def main() -> int:
             rows.append({"name": ask.name, "text": ask.text, **got, "data": data, "fails": fails})
             print(
                 f"  {got['calls']} calls, {got['seconds']} s, "
+                f"delivered {got.get('delivered_ms')} ms, "
                 f"{'PASS' if not fails else 'FAIL: ' + '; '.join(fails)}",
                 flush=True,
             )
@@ -848,7 +864,8 @@ def write_summary(args, results: Path, rows: list[dict], canvas: dict | None) ->
         lines.append(f"\n### {row['text']}\n")
         lines.append(f"ended: {row['ended']}\n")
         lines.append(f"prompt tokens: {row.get('prompt_tokens')}; first byte ms: "
-                     f"{row.get('first_byte_ms')}; call ms: {row.get('call_ms')}\n")
+                     f"{row.get('first_byte_ms')}; call ms: {row.get('call_ms')}; "
+                     f"delivered ms: {row.get('delivered_ms')}\n")
         lines.append("steps:\n" + "\n".join(f"- {st}" for st in row["steps"]))
         lines.append("\ntools:\n" + "\n".join(f"- `{t}`" for t in row["tools"]))
         if row.get("data") is not None:

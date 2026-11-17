@@ -142,11 +142,16 @@ impl ResourceRef {
     }
 }
 
-/// Who acted, and what the workspace calls them.
+/// Who acted, what the workspace calls them, and the colour it paints them in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
     pub id: tilo_actions::Actor,
     pub name: String,
+    /// The presence palette slot the workspace paints them in: their chosen colour, else the one
+    /// who they are gives them. `None` where the sender does not know the workspace's members,
+    /// and the window derives it from `id` by the same rule.
+    #[serde(default)]
+    pub hue: Option<u8>,
 }
 
 /// A value a node holds: the language's values as a view shows them. Formatting (a date the
@@ -998,6 +1003,7 @@ mod tests {
             Value::Actor(Actor {
                 id: tilo_actions::MemberId::person(id).into(),
                 name: id.to_owned(),
+                hue: None,
             })
         };
         let reactions = Value::Map(vec![

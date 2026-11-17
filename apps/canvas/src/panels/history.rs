@@ -42,7 +42,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         if version.housekeeping {
             continue;
         }
-        let session = version.run.as_deref();
+        let session = version.invocation.as_deref();
         if let Some(last) = entries.last_mut()
             && session.is_some()
             && last.session.as_deref() == session
@@ -57,7 +57,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
             change: version.change.clone(),
             action: version.action.clone(),
             author: version.author.clone(),
-            session: version.run.clone(),
+            session: version.invocation.clone(),
             steps: 1,
             time_ms: version.time_ms,
             undone: version.undone,
@@ -97,7 +97,9 @@ pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
         // undid or redid from here.
         let latest = versions.last();
         let moved = latest.map(|version| version.change.clone()) != *newest.borrow();
-        if moved && newest.borrow().is_some() && latest.is_some_and(|version| version.run.is_none())
+        if moved
+            && newest.borrow().is_some()
+            && latest.is_some_and(|version| version.invocation.is_none())
         {
             tools.preview.set(None);
         }

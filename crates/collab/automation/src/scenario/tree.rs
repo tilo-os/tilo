@@ -62,7 +62,7 @@ impl<'a> SelectorTarget<'a> {
             Selector::Fixed(id) => Some(Self::Fixed(id)),
             Selector::FirstOfKind(kind) => Some(Self::Kind(kind)),
             // A binding is part of a Shortcut's program, and its value at run
-            // time is the run's business, not the tree's.
+            // time is the invocation's business, not the tree's.
             Selector::FromBinding(Binding::Literal(serde_json::Value::String(id))) => {
                 Some(Self::Fixed(id))
             }
@@ -170,7 +170,7 @@ mod tests {
         let mut missing = step(Selector::Fixed("notes.note:1".into()));
         missing.action = ActionKey::new("so.tilo.notes", "notes.note", "publish");
         assert_eq!(resolve(&resources, &missing), None);
-        // A value only the run knows names nothing before it runs.
+        // A value only the invocation knows names nothing before it runs.
         assert_eq!(
             resolve(
                 &resources,

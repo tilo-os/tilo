@@ -1695,14 +1695,14 @@ tilo_test_env::scenario! {
             assert_eq!(change["change"], "c1a2");
             assert_eq!(change["sentence"], "added \"Buy milk\"");
             assert_eq!(change["by"], "Ada");
-            let run = events
+            let told = events
                 .iter()
-                .find(|event| event["kind"] == "run")
-                .unwrap_or_else(|| panic!("the run is told: {watched}"));
-            assert_eq!(run["invocation_id"], ran["invocation_id"]);
-            assert_eq!(run["path"], "notes/Todo/body#append-paragraph");
-            assert_eq!(run["phase"], "succeeded");
-            assert_eq!(run["run"], "MCP agent");
+                .find(|event| event["kind"] == "invocation")
+                .unwrap_or_else(|| panic!("the invocation is told: {watched}"));
+            assert_eq!(told["invocation_id"], ran["invocation_id"]);
+            assert_eq!(told["path"], "notes/Todo/body#append-paragraph");
+            assert_eq!(told["phase"], "succeeded");
+            assert_eq!(told["title"], "MCP agent");
             let here = events
                 .iter()
                 .find(|event| event["kind"] == "presence")
@@ -2481,15 +2481,15 @@ tilo_test_env::scenario! {
                 .collect();
             assert_eq!(steps.len(), 3, "{contexts:?}");
             assert!(steps[0].0.is_some(), "a call joins an undo step");
-            assert_eq!(steps[0].0, steps[1].0, "one run is one step");
-            assert_ne!(steps[0].0, steps[2].0, "another run is another step");
+            assert_eq!(steps[0].0, steps[1].0, "one invocation is one step");
+            assert_ne!(steps[0].0, steps[2].0, "another invocation is another step");
             assert_eq!(
                 steps[0].1.as_deref(),
                 Some("Fill Jane's application"),
-                "the run is named as its caller named it"
+                "the invocation is named as its caller named it"
             );
 
-            // `undo task` takes the run back, in the app it changed.
+            // `undo task` takes the invocation back, in the app it changed.
             let (undone, failed) = answer(&server, "tilo", json!({"program":"history task"})).await;
             assert!(!failed, "{undone}");
             assert!(
@@ -2497,7 +2497,7 @@ tilo_test_env::scenario! {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|step| step["program"] == "run \"Fill Jane's application\""
+                    .any(|step| step["program"] == "invocation \"Fill Jane's application\""
                         && step["apps"][0] == "so.tilo.notes"),
                 "{undone}"
             );
@@ -2829,7 +2829,7 @@ async fn typed<H: ActionHost + Send + Sync + 'static>(
     let reply = server
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":name,"arguments":arguments,
-                "_meta":{"so.tilo.mcp":{"structured":true,"run":meta}}}}))
+                "_meta":{"so.tilo.mcp":{"structured":true,"invocation":meta}}}}))
         .await
         .unwrap();
     let result = &reply["result"];

@@ -2019,7 +2019,7 @@ pub(crate) fn stream_plan_delta(
     };
     if !matches!(
         frame.get("name").and_then(Value::as_str),
-        Some(tools::PLAN | tools::INVOKE)
+        Some(tools::PLAN | tools::INVOKE | tools::canvas::SHOW)
     ) {
         return;
     }

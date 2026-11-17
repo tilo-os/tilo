@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Mac app, as either of the two apps. build.sh writes the app's name, program and
      identifier for __NAME__, __PROGRAM__ and __ID__, then the version, the site, what is shown
-     of it and the signing team. -->
+     of it and the signing team. Where the signature names sites whose passkeys the page may
+     use, it lists them as TiloPasskeySites, for the app's own check. -->
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>__NAME__</string>

@@ -46,8 +46,8 @@ mod log;
 pub mod narrative;
 /// Taking back a run of changes, below the toolkit.
 pub use collaboration::history_source::revert;
-pub mod run_undo;
-pub mod runs;
+pub mod invocation_undo;
+pub mod invocations;
 pub mod schema_ops;
 pub mod sentence;
 pub(crate) use authors::workspace_agents_revision;
@@ -78,21 +78,22 @@ pub use groups::{
     move_named_boundary, name_is_generated, name_range, name_range_by, read_named_ranges,
     split_named_range,
 };
+pub use invocation_undo::{
+    InvocationUndoReport, StepOutcome, StepState, refuse_invocation, undo_invocation, undo_step,
+    unreachable_steps,
+};
+pub use invocations::{
+    AgentSession, INVOCATIONS_KEY, InvocationStep, forget_invocation, invocation_starting_at,
+    is_invocation_marker, read_invocations, record_invocation, record_invocation_with_details,
+};
 pub use log::HistoryLog;
 pub use narrative::{
     ActivityNarrator, GroundedNarrative, NarrativeRequest, NarrativeSource,
     deterministic_narrative, validate_narrative,
 };
 pub use revert::{
-    ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
-    revert_step,
-};
-pub use run_undo::{
-    RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
-};
-pub use runs::{
-    AgentSession, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
-    record_run_with_details, run_starting_at,
+    ChangeRange, KeptSlot, RevertError, RevertOutcome, Slot, latest_invocation_by, plan_revert,
+    revert_invocation, revert_step,
 };
 pub use schema_ops::{SchemaChange, SchemaCreation, SchemaObjectId, schema_changes_since};
 pub use sentence::ThreadWords;

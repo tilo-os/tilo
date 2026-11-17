@@ -269,7 +269,7 @@ fn start_direct(
             workspace,
             "echo",
             trigger,
-            tilo_automation::InvocationId(fixture.request.invocation.0),
+            tilo_automation::AutomationInvocationId(fixture.request.invocation.0),
             serde_json::Map::new(),
         )
     } else {
@@ -933,7 +933,7 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {
-            invocation: tilo_automation::InvocationId::new(),
+            invocation: tilo_automation::AutomationInvocationId::new(),
             from: tilo_automation::StepPath::parse("0"),
         }),
     );
@@ -958,7 +958,7 @@ async fn continuing_a_run_from_the_run_itself_is_refused() {
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {
-            invocation: tilo_automation::InvocationId::new(),
+            invocation: tilo_automation::AutomationInvocationId::new(),
             from: tilo_automation::StepPath::root(),
         }),
     );

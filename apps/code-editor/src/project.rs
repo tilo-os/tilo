@@ -411,7 +411,7 @@ impl Project {
         self.terminal()?.stop()
     }
 
-    #[action(external, id = "record-run", audience = "agents")]
+    #[action(external, id = "record-command", audience = "agents")]
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,

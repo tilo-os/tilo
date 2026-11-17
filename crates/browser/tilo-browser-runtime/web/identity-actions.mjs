@@ -430,6 +430,14 @@ export function createIdentityActions({
       done = Math.max(done, ASK_AFTER_ACTIONS);
       ask();
     },
+    /** Be, in this browser, a person kept with a passkey elsewhere, and load
+     * the page again as them. Rejects with why not, for a caller that says it
+     * (the first screen); `perform` hands a failure to `onError`. */
+    async signIn() {
+      const origins = [...new Set(lookups())];
+      await signIn({rpId, fetchEnvelope: root => find(root, origins)});
+      reload();
+    },
     /** Run the host action `id`, with what the person already typed for it
      * (`value`, the name from the profile card); resolves when done (errors
      * go to `onError`). */
@@ -509,9 +517,7 @@ export function createIdentityActions({
           // root revokes the key, for the reason the person chose.
           await identity.revokeDevice(value.key, value.reason);
         } else if (id === SIGN_IN.id) {
-          const origins = [...new Set(lookups())];
-          await signIn({rpId, fetchEnvelope: root => find(root, origins)});
-          reload();
+          await controller.signIn();
         } else if (id === CONNECT_AGENT.id && showAgentSetup) {
           // The first screen again, with a fresh code: the person's agent runs
           // `tilo login`, or an MCP-only client is added with Tilo's address.
@@ -520,6 +526,19 @@ export function createIdentityActions({
           throw new IdentityError('unknown-action', `no identity action ${id}`);
         }
       } catch (error) {
+        // The place cannot use passkeys (a web view inside an app that may
+        // not use this site's: `asked` in identity.mjs), whatever the browser
+        // said of itself on attach. From now on it is offered what a browser
+        // without passkeys is, and keeping goes on with a recovery key.
+        if ((id === KEEP.id || id === SIGN_IN.id) && ['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+          withPasskeys = false;
+          refresh();
+          if (id === KEEP.id) {
+            offer({...RECOVERY, title: 'Save a recovery key'}, 'Passkeys can’t be used here',
+              'A recovery key brings you back as yourself in their place: saved to your password manager, or as a file.', 'no-passkeys');
+            return;
+          }
+        }
         onError(error);
       }
     },

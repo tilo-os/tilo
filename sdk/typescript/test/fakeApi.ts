@@ -125,7 +125,7 @@ export class FakeApi {
   /** How many calls the host refuses as busy before it answers them, and the wait it says. */
   busy = 0;
   busyWaitMs = 5;
-  /** How many answers the run stays pending for, once it is asked about. */
+  /** How many answers the invocation stays pending for, once it is asked about. */
   pendingRuns = 0;
   /** Whether an action waits for the person, and whether they have decided. */
   ask = false;
@@ -136,13 +136,13 @@ export class FakeApi {
   polls = 0;
   pollsUntilApproved = 1;
   pollAnswer: Answer | null = null;
-  /** The events the workspace's stream carries, and how many the run's carries. */
+  /** The events the workspace's stream carries, and how many the invocation's carries. */
   events: { event: string; data: Answer }[] = [];
   /** How many events one stream answer carries before it ends; all without it. */
   eventsPerStream: number | null = null;
-  /** Every run the workspace lists, oldest first, as its host keeps them. */
-  runs: Answer[] = [];
-  /** What `GET …/runs/{run}` answers once it is no longer pending. */
+  /** Every invocation the workspace lists, oldest first, as its host keeps them. */
+  invocations: Answer[] = [];
+  /** What `GET …/invocations/{invocation}` answers once it is no longer pending. */
   finished: Answer = { result: { appended: "c01e" }, resources: [TODO], link: linkTo(TODO) };
 
   /** The `fetch` this fake answers: hand it to the client. */
@@ -284,8 +284,8 @@ export class FakeApi {
         }
         return this.runAction(path, action, call);
       }
-      case "runs":
-        return this.run(tail, method, call);
+      case "invocations":
+        return this.invocation(tail, method, call);
       case "unattended":
         return method === "PUT" ? this.unattended(workspace, call) : this.refuse("method_not_allowed", 405);
       case "search":
@@ -460,14 +460,14 @@ export class FakeApi {
       );
     }
     const args = JSON.parse(call.body || "{}") as Answer;
-    const run = `inv-${this.calls.length}`;
+    const invocation = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
     if (action === "group") {
       const members = Array.isArray(args.actions) ? (args.actions as Answer[]) : [];
       this.groups.push({ resource: path, actions: members });
       return this.json({
         status: "ok",
-        run,
+        invocation,
         path: whole,
         result: { applied: members.length },
         resources: [path],
@@ -482,7 +482,7 @@ export class FakeApi {
       this.applyEdit(path, args.edit ?? {});
       return this.json({
         status: "ok",
-        run,
+        invocation,
         path: whole,
         result: { edited: true },
         resources: [path],
@@ -490,39 +490,39 @@ export class FakeApi {
       });
     }
     if (action === "undo") {
-      return this.json({ status: "ok", run, path: whole, result: { undone: args.steps ?? 1 } });
+      return this.json({ status: "ok", invocation, path: whole, result: { undone: args.steps ?? 1 } });
     }
     if (whole === `${TODO}#ask`) {
       if (!this.askAnswered) {
         return this.json(
-          { status: "pending", run: "ask-1", ask: { url: "https://api.test/ask/1" } },
+          { status: "pending", invocation: "ask-1", ask: { url: "https://api.test/ask/1" } },
           202,
         );
       }
-      return this.json({ status: "ok", run: "ask-1", path: whole, result: { allowed: true } });
+      return this.json({ status: "ok", invocation: "ask-1", path: whole, result: { allowed: true } });
     }
     if (whole === "word-processor#export-content") {
       const letter = new TextEncoder().encode("PK cover letter");
       const content = `tilo.content:${letter.length}`;
       this.contents.set(content, letter);
-      return this.json({ status: "ok", run, path: whole, resources: [content] });
+      return this.json({ status: "ok", invocation, path: whole, resources: [content] });
     }
     if (whole === `${PDF}#read-form-fields`) {
       return this.json({
         status: "ok",
-        run,
+        invocation,
         path: whole,
         result: { fields: Object.keys(this.fields[PDF]?.form_values ?? {}) },
       });
     }
     if (this.pendingRuns > 0) {
-      this.noteRun(run, whole, "running", 0);
-      return this.json({ status: "pending", run, path: whole }, 202);
+      this.noteInvocation(invocation, whole, "running", 0);
+      return this.json({ status: "pending", invocation, path: whole }, 202);
     }
-    this.noteRun(run, whole, "ended", 1);
+    this.noteInvocation(invocation, whole, "ended", 1);
     return this.json({
       status: "ok",
-      run,
+      invocation,
       path: whole,
       result: { appended: "c01e" },
       resources: [path],
@@ -530,14 +530,14 @@ export class FakeApi {
     });
   }
 
-  /** Keep `run` as the workspace's host lists it. */
-  private noteRun(run: string, action: string, status: string, changes: number): void {
-    this.runs.push({
-      id: run,
-      calls: [run],
+  /** Keep `invocation` as the workspace's host lists it. */
+  private noteInvocation(invocation: string, action: string, status: string, changes: number): void {
+    this.invocations.push({
+      id: invocation,
+      calls: [invocation],
       by: { name: "Visa backend", kind: "agent" },
       status,
-      started_ms: this.runs.length + 1,
+      started_ms: this.invocations.length + 1,
       action,
       changes,
       undone: 0,
@@ -547,9 +547,9 @@ export class FakeApi {
     });
   }
 
-  private listedAs(run: string, status: string): void {
-    for (const listed of this.runs) {
-      if (listed.id === run) {
+  private listedAs(invocation: string, status: string): void {
+    for (const listed of this.invocations) {
+      if (listed.id === invocation) {
         listed.status = status;
         if (status === "undone") {
           listed.undone = listed.changes;
@@ -559,39 +559,39 @@ export class FakeApi {
     }
   }
 
-  /** A page of the runs, newest first; the cursor is where it ends. */
-  private listRuns(call: Recorded): Response {
-    const newest = [...this.runs].reverse();
+  /** A page of the invocations, newest first; the cursor is where it ends. */
+  private listInvocations(call: Recorded): Response {
+    const newest = [...this.invocations].reverse();
     const limit = Math.min(Number(call.query.limit ?? 50), 200);
     const start = Number(call.query.cursor ?? 0);
     const page = newest.slice(start, start + limit);
     return this.json({
-      runs: page,
+      invocations: page,
       total: newest.length,
-      waiting: newest.filter((run) => run.status === "waiting").length,
+      waiting: newest.filter((invocation) => invocation.status === "waiting").length,
       pending: false,
-      text: page.map((run) => `${String(run.id)} ${String(run.status)}`).join("\n"),
+      text: page.map((invocation) => `${String(invocation.id)} ${String(invocation.status)}`).join("\n"),
       ...(start + limit < newest.length ? { next_cursor: String(start + limit) } : {}),
     });
   }
 
-  private run(tail: string[], method: string, call: Recorded): Response {
-    const run = tail[0] ?? "";
+  private invocation(tail: string[], method: string, call: Recorded): Response {
+    const invocation = tail[0] ?? "";
     if (tail.length === 0 && method === "GET") {
-      return this.listRuns(call);
+      return this.listInvocations(call);
     }
     if (tail[1] === "cancel") {
-      this.listedAs(run, "cancelled");
-      return this.json({ status: "cancelled", run, path: `${TODO}#append-paragraph` });
+      this.listedAs(invocation, "cancelled");
+      return this.json({ status: "cancelled", invocation, path: `${TODO}#append-paragraph` });
     }
     if (tail[1] === "undo") {
-      this.listedAs(run, "undone");
-      return this.json({ status: "ok", run, undone: [TODO] });
+      this.listedAs(invocation, "undone");
+      return this.json({ status: "ok", invocation, undone: [TODO] });
     }
     if (tail[1] === "output") {
       const frames = [
-        `event: run\ndata: ${JSON.stringify({ phase: "started", run, path: `${TODO}#append-paragraph`, title: "Append", time_ms: 1 })}\n\n`,
-        `event: run\ndata: ${JSON.stringify({ phase: "succeeded", run, path: `${TODO}#append-paragraph`, title: "Append", time_ms: 2 })}\n\n`,
+        `event: invocation\ndata: ${JSON.stringify({ phase: "started", invocation, path: `${TODO}#append-paragraph`, title: "Append", time_ms: 1 })}\n\n`,
+        `event: invocation\ndata: ${JSON.stringify({ phase: "succeeded", invocation, path: `${TODO}#append-paragraph`, title: "Append", time_ms: 2 })}\n\n`,
       ].join("");
       return new Response(frames, {
         status: 200,
@@ -601,10 +601,10 @@ export class FakeApi {
     if (method !== "GET") {
       return this.refuse("method_not_allowed", 405);
     }
-    if (run.startsWith("unattended-")) {
-      const workspace = run.slice("unattended-".length);
+    if (invocation.startsWith("unattended-")) {
+      const workspace = invocation.slice("unattended-".length);
       if (this.unattendedAllowed === null) {
-        return this.json({ status: "pending", run, ask: {} }, 202);
+        return this.json({ status: "pending", invocation, ask: {} }, 202);
       }
       if (!this.unattendedAllowed) {
         return this.refuse("refused", 403, "the workspace refused: the person did not allow it");
@@ -614,16 +614,16 @@ export class FakeApi {
           row.unattended = true;
         }
       }
-      return this.json({ status: "ok", run, result: { workspace, unattended: true } });
+      return this.json({ status: "ok", invocation, result: { workspace, unattended: true } });
     }
-    if (run === "ask-1") {
-      return this.json({ status: "ok", run, path: `${TODO}#ask`, result: { allowed: true } });
+    if (invocation === "ask-1") {
+      return this.json({ status: "ok", invocation, path: `${TODO}#ask`, result: { allowed: true } });
     }
     if (this.pendingRuns > 0) {
       this.pendingRuns -= 1;
-      return this.json({ status: "pending", run, path: `${TODO}#append-paragraph` }, 202);
+      return this.json({ status: "pending", invocation, path: `${TODO}#append-paragraph` }, 202);
     }
-    return this.json({ status: "ok", run, path: `${TODO}#append-paragraph`, ...this.finished });
+    return this.json({ status: "ok", invocation, path: `${TODO}#append-paragraph`, ...this.finished });
   }
 
   private applyEdit(resource: string, edit: Answer): void {
@@ -701,7 +701,7 @@ export class FakeApi {
       }
       return this.json({ status: "ok", result: { workspace, unattended: false } });
     }
-    return this.json({ status: "pending", run: `unattended-${workspace}`, ask: {} }, 202);
+    return this.json({ status: "pending", invocation: `unattended-${workspace}`, ask: {} }, 202);
   }
 
   private deleteWorkspace(workspace: string): Response {

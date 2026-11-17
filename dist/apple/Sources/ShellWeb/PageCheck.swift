@@ -120,6 +120,9 @@ public final class PageCheck {
             return [Line(name: "site \(settings.origin)", value: "answers, and says nothing of its host", passed: false)]
         }
         var lines = [Line(name: "site \(settings.origin)", value: "answers", passed: true)]
+        lines.append(PageCheck.passkeys(host: settings.site.host() ?? settings.origin,
+                                        named: settings.isNamed(among: ShellSettings.passkeySites()),
+                                        allowed: seen["passkeys"] as? Bool))
         if let problem = seen["error"] as? String {
             lines.append(Line(name: "the site's host", value: problem, passed: false))
             return lines
@@ -137,6 +140,22 @@ public final class PageCheck {
             lines.append(Line(name: "a live connection from this app", value: opened, passed: opened == "opened"))
         }
         return lines
+    }
+
+    /// Whether a page of the site may ask for a passkey in this app. The system hands a web
+    /// view the passkeys of a site only in an app that the site names and whose signature
+    /// names the site. `allowed` is the system's own answer to the page, which a web view
+    /// gives for the app it is in; `nil` where the web view has no passkeys at all. `named`
+    /// is whether this build's signature names the site.
+    nonisolated static func passkeys(host: String, named: Bool, allowed: Bool?) -> Line {
+        let name = "passkeys of \(host)"
+        guard let allowed else { return Line(name: name, value: "this web view has none", passed: nil) }
+        if allowed { return Line(name: name, value: "this app may use them", passed: true) }
+        guard named else {
+            return Line(name: name, value: "not in this build: its signature does not name the site", passed: nil)
+        }
+        return Line(name: name, value: "the build names the site, and the system does not let the app use them: "
+            + "the site has to name the app, and the device needs a passcode", passed: false)
     }
 
     /// Run `question`, the body of an asynchronous function that returns JSON text, in the page.
@@ -196,6 +215,11 @@ public final class PageCheck {
 
     private static let siteQuestions = #"""
     const out = {};
+    // Whether the system lets this app use the site's passkeys. A system web view answers
+    // this for the app it is in, and the page names its own host as the site.
+    if (typeof PublicKeyCredential === 'function') {
+      out.passkeys = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(Boolean, () => false);
+    }
     try {
       const entry = await (await fetch('/entry.json', {cache: 'no-store'})).json();
       const host = entry?.home?.host ?? null;

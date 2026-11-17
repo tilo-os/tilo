@@ -832,7 +832,8 @@ pub(crate) fn parts_schema() -> Value {
     json!({
         "type": "array",
         "description":
-            "On your FIRST invoke (or plan): every separate thing the request asks for, in \
+            "On the call of your first step, beside its `operation` or `program` and never \
+             instead of them: every separate thing the request asks for, in \
              order, each with the application it happens in (its id, e.g. `so.tilo.chat`). \
              Each message to post is its own part. Opening an application is a step, not a \
              part: list what the request wants done in it. The task cannot finish until \
@@ -941,6 +942,7 @@ pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
         list_operations_definition(),
         describe_operation_definition(),
         invoke_definition(),
+        canvas::show_definition(),
         crate::pages::read_result_definition(),
         web::search_definition(),
         web::read_page_definition(),
