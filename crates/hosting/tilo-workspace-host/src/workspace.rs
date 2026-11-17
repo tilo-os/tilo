@@ -869,7 +869,7 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 /// when the workspace is busy, not the time any check may take.
 pub(crate) const ACCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The device_access to decide `author`'s change in `ws` against, and the
+/// What the workspace's devices may do, to decide `author`'s change in `ws` against, and the
 /// workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
@@ -878,7 +878,7 @@ pub(crate) const ACCESS_WAIT: std::time::Duration = std::time::Duration::from_se
 /// row is still on its way into the workspace's governance. Decided against
 /// the projection of that moment, such a change would be refused for a grant
 /// the host is about to record. So a change the projection of the moment
-/// `refuses`, while the workspace projects device_access and none is `author`'s,
+/// `refuses`, while the workspace projects what its devices may do and nothing for `author`'s,
 /// waits for the next projection, up to [`ACCESS_WAIT`], and is decided
 /// against that one. Every other change, the author's presence and
 /// governance among them, is decided at once. Nothing is decided without

@@ -790,8 +790,8 @@ impl GovernedAccessWriter {
         &self.shell_payloads
     }
 
-    /// Whether the relay decides `workspace_id`'s changes against device_access
-    /// that hold `device`'s. A workspace this relay has not opened yet is
+    /// Whether what the relay decides `workspace_id`'s changes against holds
+    /// what `device` may do. A workspace this relay has not opened yet is
     /// projected by the settle that opens it, so it counts as holding it.
     pub(crate) async fn projects_access(
         &self,
