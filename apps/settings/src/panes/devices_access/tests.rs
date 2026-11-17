@@ -1629,6 +1629,57 @@ tilo_test_env::scenario! {
         assert!(published_row(&mut app, &computer_row_id()).is_some());
     }
 
+    phase the_question_before_a_removal_speaks_to_the_person;
+    // The sheet that asks first read what the action says of itself to
+    // whoever looks it up: "End every tab's access of one browser of the
+    // person's, for good."
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        for (row, verb, named, told) in [
+            (
+                computer_row_id(),
+                "revoke-device",
+                "Remove device",
+                "It's signed out and can't act as you anymore.",
+            ),
+            (
+                browser_row_id(),
+                "revoke-browser",
+                "Remove browser",
+                "It's signed out and can't act as you anymore.",
+            ),
+            (
+                agent_row_id(),
+                "revoke-device",
+                "Remove device",
+                "It stops acting as you right away.",
+            ),
+        ] {
+            let row = published_row(&mut app, &row).unwrap();
+            let spec = offered(&row, verb);
+            assert_eq!(plain(&spec.label), named, "{verb}");
+            assert_eq!(
+                spec.description.as_deref().map(plain),
+                Some(told.to_owned()),
+                "{verb}"
+            );
+        }
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+        );
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.remove"),
+        );
+        let (_, question) = app.asking().expect("removing asks first");
+        assert!(
+            plain(&question).contains("Remove device"),
+            "the sheet names what the row's button does: {question}"
+        );
+    }
+
     phase a_removal_the_host_took_and_never_showed_gone_stops_saying_so;
     {
         en();

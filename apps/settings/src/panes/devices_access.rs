@@ -1378,8 +1378,13 @@ fn device_row(device: &DeviceView, draft: &str) -> LiveRow {
 /// them to the same action. An address carries one action: the host refuses
 /// a surface that offers an address twice, and withdraws every action of the
 /// app with it.
+///
+/// What it says of itself is what the person reads when they are asked
+/// before it runs: what removing does, said to them, as the row says it.
 fn revocation(effect: DevicesAccessEffect) -> ui::tilo_actions::ActionSpec {
-    SettingsEffect::from(effect).bound_asking(&["reason"])
+    SettingsEffect::from(effect)
+        .bound_asking(&["reason"])
+        .with_description(t("settings-access-remove-device-consequence"))
 }
 
 /// Naming `device`: a button that opens a field holding the name it reads by,
@@ -1536,7 +1541,12 @@ fn browser_item(
 fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     let id = agent.id();
     let mut row = LiveRow::typed::<AgentGrant>(format!("settings.agent-grant:{id}"), agent.label())
-        .operation(SettingsEffect::from(agent.removal()).bound());
+        .operation(
+            SettingsEffect::from(agent.removal())
+                .bound()
+                // What the person reads when they are asked before it runs.
+                .with_description(t("settings-access-remove-agent-consequence")),
+        );
     // A computer an agent works on is a device of the person's too: they name
     // it here, where two of them enrolled under one name.
     if let Some(key) = agent.key {
