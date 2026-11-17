@@ -13,13 +13,19 @@
 //! devices before it is handed the workspace, as before it was named.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
 use tilo_peer_state::join::{Role, TransportHint};
+use tilo_relay_client::{
+    LinkError,
+    https::{HttpClient, HttpFuture},
+};
 use tilo_relay_session::client::RelayClient;
 use tilo_relay_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace,
@@ -538,8 +544,8 @@ impl Workspaces {
             .collect())
     }
 
-    /// Have the host whose site is at `origin` (`https://tilo.sh`) hold
-    /// `workspace` as well, `caller`'s request: the host says who it is and
+    /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
+    /// `workspace` as well, `caller`'s request: the holder says who it is and
     /// where it is dialed at its origin, and is then handed the workspace
     /// ([`Self::attach_host`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
@@ -554,18 +560,30 @@ impl Workspaces {
         origin: &str,
     ) -> Result<TransportHint, String> {
         self.authorize_hosts(workspace, caller).await?;
-        let (device, addr) = host_at(origin).await?;
+        let (device, addr) = host_at(origin, self.site_reach()).await?;
         self.attach_host(workspace, caller, device, addr).await
     }
 
-    /// Stop having the host `named` hold `workspace`: named by its site's
+    /// Which addresses this device asks when an owner names a holder by its
+    /// site: those on the public internet, and its own network too only
+    /// where its operator lets it call there, the one leave a person's model
+    /// provider is called by ([`Self::call_private_model_addresses`]).
+    fn site_reach(&self) -> Destinations {
+        if self.inner.models.private_addresses() {
+            Destinations::Any
+        } else {
+            Destinations::Public
+        }
+    }
+
+    /// Stop having the holder `named` hold `workspace`: named by its site's
     /// origin, or by its device key (64 hex) as [`Self::host_list`] names it.
-    /// Answers whether the host confirmed it let the workspace go
+    /// Answers whether the holder confirmed it let the workspace go
     /// ([`Self::detach_host`]).
     ///
     /// # Errors
     ///
-    /// The caller does not choose the workspace's hosts, the host is not one of
+    /// The caller does not choose the workspace's holders, the holder is not one of
     /// the workspace's, or the origin did not say who it is.
     pub async fn remove_host(
         &self,
@@ -578,7 +596,7 @@ impl Workspaces {
         let (device, addr) = if let Some(device) = device_key(named) {
             (device, None)
         } else {
-            let (device, addr) = host_at(named).await?;
+            let (device, addr) = host_at(named, self.site_reach()).await?;
             (device, Some(addr))
         };
         if !self.names_host(workspace, device).await {
@@ -694,23 +712,89 @@ fn device_key(text: &str) -> Option<[u8; 32]> {
     <[u8; 32]>::from_hex(text).ok()
 }
 
-/// The host whose site is at `origin`, as it says there: its device and where
-/// it is dialed.
-async fn host_at(origin: &str) -> Result<([u8; 32], EndpointAddr), String> {
-    let origin = origin.trim().trim_end_matches('/');
-    if !(origin.starts_with("https://") || origin.starts_with("http://")) {
-        return Err(format!(
-            "{origin:?} is no host's address: name its site, like https://tilo.sh"
-        ));
+/// How long a holder's site may take to say who it is.
+const SITE_ANSWERS: Duration = Duration::from_secs(20);
+/// The most read of what a site says of its holder.
+const MAX_SITE_ANSWER: usize = 64 * 1024;
+
+/// A site, asked through the function it holds.
+struct Site<F>(F);
+
+impl<F> HttpClient for Site<F>
+where
+    F: Fn(&str, Vec<u8>) -> HttpFuture<'static> + Send + Sync,
+{
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        (self.0)(path, body)
     }
-    let client = tilo_net::Client::builder()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
-        &client, origin,
-    ))
-    .await
-    .map_err(|error| format!("{origin} did not say which host it is: {error}"))?;
+}
+
+/// The holder whose site is at `origin`, as it says there: its device and
+/// where it is dialed.
+///
+/// An owner names the site, and this device asks it from inside its own
+/// network. So it asks as it asks a provider a person named: an https
+/// address, on the public internet at the lookup the connection dials, and
+/// no redirect is followed. With [`Destinations::Any`], its operator's
+/// leave, an address on its own network is asked too, also over plain http.
+/// What a site answers a refusal with is not handed on.
+async fn host_at(
+    origin: &str,
+    destinations: Destinations,
+) -> Result<([u8; 32], EndpointAddr), String> {
+    let origin = origin.trim().trim_end_matches('/');
+    let no_site = || {
+        format!(
+            "{origin:?} is no holder's address: name its site by its https address, like \
+             https://tilo.sh"
+        )
+    };
+    let url = tilo_net::Url::parse(origin).map_err(|_| no_site())?;
+    let plain = url.scheme() == "http" && destinations == Destinations::Any;
+    if !(url.scheme() == "https" || plain)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || check_destination(&url, destinations).is_err()
+    {
+        return Err(no_site());
+    }
+    let client =
+        guarded_client(destinations, system_lookup()).map_err(|error| error.to_string())?;
+    let site = origin.to_owned();
+    let asked = Site(move |path: &str, body: Vec<u8>| -> HttpFuture<'static> {
+        let request = client
+            .post(format!("{site}{path}"))
+            .header("content-type", "application/octet-stream")
+            .timeout(SITE_ANSWERS)
+            .body(body);
+        Box::pin(async move {
+            let mut response = request
+                .send()
+                .await
+                .map_err(|error| error.without_url().to_string())?;
+            let status = response.status().as_u16();
+            let mut answer = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| error.without_url().to_string())?
+            {
+                if answer.len().saturating_add(chunk.len()) > MAX_SITE_ANSWER {
+                    return Err("it answered more than a holder says of itself".to_owned());
+                }
+                answer.extend_from_slice(&chunk);
+            }
+            Ok((status, answer))
+        })
+    });
+    let info = tilo_relay_client::https::host_info(&asked)
+        .await
+        .map_err(|error| match error {
+            // What a site answers a refusal with stays with it: an owner
+            // names any site, and its words are not this device's to hand on.
+            LinkError::Refused(_) => format!("{origin} refused to say which holder it is"),
+            other => format!("{origin} did not say which holder it is: {other}"),
+        })?;
     let address = info
         .address
         .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;
