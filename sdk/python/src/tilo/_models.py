@@ -484,7 +484,7 @@ class InvocationList:
         return cls(
             invocations=[
                 InvocationInfo.of(listed)
-                for listed in raw.get("invocations") or []
+                for listed in raw.get("items") or []
                 if isinstance(listed, Mapping)
             ],
             total=_int(raw.get("total")) or 0,

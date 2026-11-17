@@ -645,7 +645,7 @@ class FakeApi:
         start = int(call["query"].get("cursor") or 0)
         page = newest[start : start + limit]
         answer: dict[str, Any] = {
-            "invocations": page,
+            "items": page,
             "total": len(newest),
             "waiting": sum(1 for invocation in newest if invocation["status"] == "waiting"),
             "pending": False,

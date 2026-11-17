@@ -566,7 +566,7 @@ export class FakeApi {
     const start = Number(call.query.cursor ?? 0);
     const page = newest.slice(start, start + limit);
     return this.json({
-      invocations: page,
+      items: page,
       total: newest.length,
       waiting: newest.filter((invocation) => invocation.status === "waiting").length,
       pending: false,
