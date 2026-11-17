@@ -76,6 +76,9 @@ mod team;
 mod turn_provider;
 mod vault_uses;
 
+// What a turn reaches of the services its person connected.
+mod connections;
+
 pub use asks::{Answered, Carried, Carries, ServerAsk};
 pub use sub_agents::Line;
 
@@ -527,6 +530,8 @@ impl HostAgents {
             carriers: Arc::default(),
             initiative: None,
         };
+        // What a person answers about a connection of theirs is carried out from the start.
+        agents.carries(connections::WORD, connections::answers(&agents.workspaces));
         // What a turn asks its person is put to them in its conversation.
         agents.ask_in_conversations();
         agents.carry_sends();
@@ -987,6 +992,9 @@ impl HostAgents {
         team::join(&self.workspaces, turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
+        // Beside that, the services its person connected, by this server's own entry for a turn.
+        let own = connections::of(self.as_asker(), turn, &scope.reply(turn), workspace_id).await;
+        scope.provider = scope.provider.answering(own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(uses).answering(mail);

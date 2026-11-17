@@ -600,3 +600,7 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
 /// What a person's "Always" to a question its agent reworded does: nothing.
 #[path = "hosted_reworded_question.rs"]
 mod reworded;
+
+/// The same server, person and assistant, using a service the person connected.
+#[path = "hosted_connections.rs"]
+mod connections;
