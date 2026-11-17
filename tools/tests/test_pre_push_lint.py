@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from hang import HANG_BOUND
@@ -209,13 +210,19 @@ class PrePushLintTests(unittest.TestCase):
             env["CARGO"] = str(self.bin / "drop-in")
         return env
 
-    def push(self, head=None, remote_oid=None, ref="refs/heads/topic", cwd=None, **environment):
-        """Run the hook as Git would, with the ref lines it writes for a push."""
+    def push(self, head=None, remote_oid=None, ref="refs/heads/topic", cwd=None, wide=False,
+             **environment):
+        """Run the hook as Git would, with the ref lines it writes for a push.
+
+        `wide` runs the lint t's lint-head runs on main instead, over the same refs.
+        """
         self.log.unlink(missing_ok=True)
         remote_oid = self.base if remote_oid is None else remote_oid
         cwd = cwd or self.root
+        command = ([sys.executable, str(cwd / "tools/ci/pre_push_lint.py"), "--wide", "origin"] if wide
+                   else [str(cwd / ".githooks/pre-push"), "origin", "file:///dev/null"])
         return subprocess.run(
-            [str(cwd / ".githooks/pre-push"), "origin", "file:///dev/null"], cwd=cwd,
+            command, cwd=cwd,
             capture_output=True, text=True, env=self.environment(**environment), timeout=HANG_BOUND,
             input=f"{ref} {head or self.head()} {ref} {remote_oid}\n",
         )
@@ -251,7 +258,7 @@ class PrePushLintTests(unittest.TestCase):
         self.add_dependent("spare", "pub fn unrelated() -> u32 { 1 }\n")
         self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
         self.commit("refactor: the answer is the solution")
-        result = self.push()
+        result = self.push(wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("clippy --locked -p fixture-native -p user --all-targets "
                       "--keep-going -- -D warnings", self.calls())
@@ -292,7 +299,7 @@ class PrePushLintTests(unittest.TestCase):
         self.write("Cargo.lock", LOCK.replace(
             'name = "wasm-bindgen"\nversion = "0.1.0"', 'name = "wasm-bindgen"\nversion = "0.2.0"'))
         self.commit("chore: move the binding")
-        result = self.push()
+        result = self.push(wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         # The binding's own record is a member here, so it is linted as well.
         self.assertEqual(sorted(self.calls()), sorted([
@@ -325,10 +332,21 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
         self.assertIn("lint passed", result.stderr)
 
+    def test_a_push_leaves_dependents_and_the_page_to_the_wide_lint(self):
+        # Their rebuilds took minutes, and main moved on before they finished: a push lints
+        # what it changes, and lint-head lints the rest on every commit of main.
+        self.page_entry = True
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
+        self.commit("refactor: the answer is the solution")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
     def test_a_page_crate_change_lints_the_page_at_the_same_time(self):
         self.write("web/src/lib.rs", LIB.format(answer=8))
         self.commit("feat: answer 8 in the page")
-        result = self.push(sleep=1)
+        result = self.push(sleep=1, wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         # Which run started first is up to the scheduler; that both did is not.
         self.assertEqual(sorted(self.calls()), sorted([
@@ -348,7 +366,7 @@ class PrePushLintTests(unittest.TestCase):
         self.page_entry = True
         self.write("native/src/lib.rs", LIB.format(answer=44))
         self.commit("feat: answer 44")
-        result = self.push()
+        result = self.push(wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(self.calls()), sorted([
             NATIVE_CLIPPY,
@@ -361,7 +379,7 @@ class PrePushLintTests(unittest.TestCase):
         # side unlinted, which is how a wasm-only break reached main.
         self.write("web/src/lib.rs", LIB.format(answer=12))
         self.commit("feat: answer 12 in the page")
-        result = self.push(page=False)
+        result = self.push(page=False, wide=True)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.calls(), [], "nothing may be sent for a lint that cannot speak for it")
         self.assertIn("wasm32-unknown-unknown is not installed here", result.stderr)
@@ -370,7 +388,7 @@ class PrePushLintTests(unittest.TestCase):
     def test_a_cargo_drop_in_compiles_instead_of_the_local_cargo(self):
         self.write("web/src/lib.rs", LIB.format(answer=13))
         self.commit("feat: answer 13 in the page")
-        result = self.push(drop_in=True, page=False)
+        result = self.push(drop_in=True, page=False, wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(self.calls("dropin")), sorted([
             "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
@@ -403,7 +421,7 @@ class PrePushLintTests(unittest.TestCase):
     def test_a_lint_failure_refuses_the_push(self):
         self.write("web/src/lib.rs", LIB.format(answer=9))
         self.commit("feat: answer 9 in the page")
-        result = self.push(status=1)
+        result = self.push(status=1, wide=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("pre-push: clippy (native) failed - rerun: cargo "
                       "clippy --locked -p fixture-web --all-targets --keep-going -- -D warnings",
@@ -421,7 +439,7 @@ class PrePushLintTests(unittest.TestCase):
         self.write("web/src/lib.rs", LIB.format(answer=10))
         self.commit("feat: answer 10 in the page")
         self.git("update-ref", "refs/remotes/origin/main", self.base)
-        result = self.push(remote_oid=MISSING_REF)
+        result = self.push(remote_oid=MISSING_REF, wide=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
                       self.calls())
@@ -455,9 +473,9 @@ class PrePushLintTests(unittest.TestCase):
     def test_a_retry_after_a_dependency_changed_lints_again(self):
         self.write("web/src/lib.rs", LIB.format(answer=52))
         self.commit("feat: answer 52 in the page")
-        self.assertEqual(self.push().returncode, 0)
+        self.assertEqual(self.push(wide=True).returncode, 0)
         main = self.rebase({"fake-binding/src/lib.rs": "pub fn bind() {}\npub fn more() {}\n"})
-        retry = self.push(remote_oid=main)
+        retry = self.push(remote_oid=main, wide=True)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(sorted(self.calls()), sorted([
             "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
@@ -513,7 +531,8 @@ class PrePushLintTests(unittest.TestCase):
         self.write("web/src/lib.rs", LIB.format(answer=11))
         self.commit("feat: answer 11 in the page")
         result = subprocess.run(
-            ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "origin", "--plan"], cwd=self.root,
+            ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "origin", "--plan", "--wide"],
+            cwd=self.root,
             capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
             input=f"refs/heads/topic {self.head()} refs/heads/topic {self.base}\n",
         )

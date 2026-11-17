@@ -5,19 +5,21 @@ Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
     <local ref> <local oid> <remote ref> <remote oid>
 
-Two sets of packages are linted the way CI lints them: the ones the pushed
-commits own, and the ones whose own source names something those commits
-changed. A rename, a removed item or a field added to a struct breaks the crates
-that use it, not the crate that declares it, and a check that linted only the
-declaring crate left main red with every linted package green.
+A push lints the packages its commits own: the changed files through the
+repository's own format check, and Clippy over every target of the host with the
+features the workspace's unified build gives each package (so code behind a
+feature that no default build enables is compiled). Those features are the same
+whichever packages are selected, so one push's build stays warm for the next.
 
-What is linted is what CI lints: the changed files through the repository's own
-format check, Clippy over every target of the host with the features the
-workspace's unified build gives each package (so code behind a feature that no
-default build enables is compiled), the packages CI also checks as they ship,
-and Clippy for `wasm32-unknown-unknown` on the ones that build for the page,
-under the page's own Clippy configuration (std's clocks are banned there). A
-change can compile on the host and still break the page.
+`--wide` adds what a push leaves out, and `t`'s lint-head check runs it on every
+commit of main, so a commit that breaks one of them is named there: the packages
+whose own source names something the commits changed (a rename, a removed item
+or a field added to a struct breaks the crates that use it, not the crate that
+declares it), the packages CI also checks as they ship, and Clippy for
+`wasm32-unknown-unknown` on the ones that build for the page, under the page's
+own Clippy configuration (std's clocks are banned there). A push used to run
+them too; with main moving every minute, their minutes of rebuilding lost the
+race to the next commit, again on each retry.
 
 The Clippy runs start together, so a one-crate push costs about one build. A run
 that passed is not repeated while everything it reads is unchanged
@@ -37,6 +39,7 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 
     tools/ci/pre_push_lint.py --plan < pre-push-stdin    print what a push would lint
     tools/ci/pre_push_lint.py --range BASE..HEAD         lint what that range changes
+    tools/ci/pre_push_lint.py --wide --range BASE..HEAD  also its dependents, as shipped, and the page
 """
 from __future__ import annotations
 
@@ -451,14 +454,15 @@ def reading_packages(root: Path, paths: list[str]) -> list[str]:
         return []
 
 
-def select(root: Path, push: Push, files: set[str]) -> Selection | None:
+def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Selection | None:
     """The packages to lint for the host and the page, or None when the push cannot be named.
 
     Those are the packages the commits own or read the changed files through,
     plus every package whose own source names something they changed: a rename,
     a removed item or a field added to a struct breaks the crates that use it.
     The page lint covers the same crates that build for it, and the page's entry
-    when the change reaches anything the page compiles.
+    when the change reaches anything the page compiles. Without `wide`, only the
+    packages the commits own are linted, for the host alone.
     """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
@@ -492,6 +496,8 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
                 "only a workspace-wide lint speaks for (`t cargo clippy --workspace`)")
             return None
         seeds |= reached
+    if not wide:
+        return Selection(sorted(seeds), [], [], metadata)
     names = changed_names(root, push.comparisons, files)
     dependents = closure(seeds, reverse_dependencies(packages, root)) - seeds
     if len(names) > NAMED_LIMIT:
@@ -558,7 +564,7 @@ def page_clippy_config(root: Path) -> dict[str, str]:
 
 
 def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str],
-              own_build_dirs: bool = False) -> list[Lint]:
+              own_build_dirs: bool = False, wide: bool = True) -> list[Lint]:
     """The runs the check makes: formatting, the host lint, and the page lint where it can run.
 
     `web` is what is actually linted for the page, so a toolchain without the
@@ -584,7 +590,7 @@ def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list
                       "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
     # The packages CI lints as they ship too (tools/ci/package_features.py): a
     # lint that only sees them with extra features never builds that shape.
-    shipped = package_features.default_builds(native)
+    shipped = package_features.default_builds(native) if wide else []
     if shipped:
         runs.append(Lint("clippy (native, as it ships)", [
             *cargo, "clippy", "--locked", *build_dir("lint-as-shipped"),
@@ -730,6 +736,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
                         help="lint what that range changes, for a run outside a push (CI, t)")
+    parser.add_argument("--wide", action="store_true",
+                        help="also lint the dependents that name what changed, the packages as they "
+                             "ship, and the page (what t's lint-head runs on every commit of main)")
     parser.add_argument("--own-build-dirs", action="store_true",
                         help="build the lints as packages ship and for the page in build directories "
                              "of their own, so all three start together")
@@ -766,7 +775,7 @@ def main(argv: list[str]) -> int:
             "on disk: check it out and push again")
         return 1
     try:
-        selection = select(root, push, files)
+        selection = select(root, push, files, options.wide)
     except (subprocess.CalledProcessError, RuntimeError) as error:
         say(f"pre-push: cargo metadata could not name the packages this push touches: {error}")
         return 1
@@ -808,7 +817,7 @@ def main(argv: list[str]) -> int:
                   if selection.dependents else "")
     say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
     runs = lint_runs(root, selection, web, formatting,
-                     options.own_build_dirs)
+                     options.own_build_dirs, options.wide)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
     passes = Passes(root)
     pending = []

@@ -328,12 +328,13 @@ exclude = [
 ]
 default = false
 
-# What the push check lints, on every new head of a followed branch: the packages
-# the head changes and the packages whose own source names something it changed,
-# natively and for the page. It is the same selection a push is refused for
-# (tools/ci/pre_push_lint.py), so a head that reached main without the check - a
-# merge the forge made, a branch pushed from a clone without the hook - has a
-# verdict within minutes, where the whole-tree `clippy` family reaches the same
+# What the push check lints and more, on every new head of a followed branch: the
+# packages the head changes and the packages whose own source names something it
+# changed, natively, as they ship and for the page (tools/ci/pre_push_lint.py
+# --wide). A push lints only the packages it changes, for the host, so it lands
+# before main moves on; this check is where a commit that broke a dependent or
+# the page is named, and a head that reached main without the hook - a merge the
+# forge made, a branch pushed from a clone without it - has a verdict within minutes, where the whole-tree `clippy` family reaches the same
 # crates only after everything a merge widens its selection to.
 #
 # It is not `heavy`: it is the check that says a head is red while whoever
@@ -344,7 +345,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 # It reads the commit's own diff, so it needs the Git view and reruns on every
 # commit (the lint's own pass cache is what keeps it cheap).
 git = true
-run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git rev-parse HEAD^)\npython3 -I tools/ci/pre_push_lint.py --range \"$base..$(git rev-parse HEAD)\"\n"
+run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git rev-parse HEAD^)\npython3 -I tools/ci/pre_push_lint.py --wide --range \"$base..$(git rev-parse HEAD)\"\n"
 
 # The visual goldens: the three packages whose baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), in the image whose fonts and lavapipe they were
