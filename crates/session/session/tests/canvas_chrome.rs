@@ -302,8 +302,11 @@ fn switching_to_the_frameless_style_keeps_every_place() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
+    enter_text(&mut session, "my mails");
+    wait_for(&mut session, "the inbox on the canvas", |session| {
+        place_showing(session, "so.tilo.lang.mail")
+    });
     let before = boxes(&session);
-    assert!(!before.is_empty(), "the framed canvas holds places");
     show_preset(&mut session, "so.tilo.shell:frameless");
     wait_for(&mut session, "the frameless canvas", |session| {
         on_screen(session, "Frameless")
