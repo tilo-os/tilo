@@ -410,7 +410,9 @@ impl crate::Server {
         expires_at_ns: u64,
     ) -> String {
         let entry = self.config.web_entry.trim_end_matches('/');
-        let host = self.hosts.names().into_iter().next();
+        // The site's shelf keeps the origin the invitation admits into, never a
+        // bare name: a shelf refuses what is not an origin.
+        let (host, origin) = self.hosts.first_named();
         let shelved = match (
             tilo_workspace_directory::client(),
             tilo_workspace_directory::web_origin(&format!("{entry}/")),
@@ -419,7 +421,7 @@ impl crate::Server {
                 tilo_workspace_directory::shelve(
                     &client,
                     &site,
-                    host.as_deref(),
+                    origin.as_deref(),
                     invitation,
                     expires_at_ns,
                 )

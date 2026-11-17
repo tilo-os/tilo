@@ -335,12 +335,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(Err(error)) => Err(error.to_string()),
             None => Err("the host did not answer".to_owned()),
         };
-        tracing::debug!(
-            ?shown,
-            provider,
-            app,
-            "mcp: a window asked for on the layout"
-        );
+        match &shown {
+            Ok(tilo_actions::remote::ReceiptStatus::Rejected { error }) => {
+                tracing::warn!(%error, provider, app, "mcp: the window asked for on the layout was refused");
+            }
+            Err(error) => {
+                tracing::warn!(%error, provider, app, "mcp: the window asked for on the layout was not answered");
+            }
+            Ok(status) => tracing::debug!(
+                ?status,
+                provider,
+                app,
+                "mcp: a window asked for on the layout"
+            ),
+        }
     }
 
     /// "Show this window" (`descriptor`, answered `value`) shows it to the person: its record opens

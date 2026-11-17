@@ -88,4 +88,8 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
     fn here(&self, caller: &Caller) -> Option<Vec<super::Here>> {
         (**self).here(caller)
     }
+
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        (**self).installed_surface(app_id)
+    }
 }

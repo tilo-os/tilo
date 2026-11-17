@@ -54,8 +54,20 @@ impl Hosts {
     pub fn names(&self) -> Vec<String> {
         self.relays
             .iter()
-            .map(|relay| relay.name().to_owned())
+            .map(|each| each.name().to_owned())
             .collect()
+    }
+
+    /// The first configured one's name and origin: what a link that admits
+    /// into it names.
+    #[must_use]
+    pub fn first_named(&self) -> (Option<String>, Option<String>) {
+        self.relays.first().map_or((None, None), |first| {
+            (
+                Some(first.name().to_owned()),
+                Some(first.origin().to_owned()),
+            )
+        })
     }
 
     /// A session with the host that serves `key`'s workspace best right now:

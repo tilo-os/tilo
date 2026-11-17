@@ -76,6 +76,7 @@ mod reads;
 mod run_context;
 mod session_voice;
 mod share;
+mod shows;
 mod terminal;
 mod tree_put;
 pub(super) use arguments::invoke_arguments;
@@ -1267,6 +1268,9 @@ struct Worker {
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
+    /// Windows asked for on each workspace's layout, still to be placed
+    /// ([`shows`]).
+    shows: HashMap<WorkspaceId, Vec<shows::Show>>,
     clock: u64,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
@@ -1406,6 +1410,7 @@ impl Worker {
             channels_opened: HashSet::new(),
             titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
+            shows: HashMap::new(),
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
@@ -1524,6 +1529,7 @@ impl Worker {
     /// those that are ready run here, and those still waiting for keys are
     /// held again with what they have waited so far.
     fn resume(&mut self, workspace_id: WorkspaceId) {
+        let _ = self.place_shows(workspace_id);
         let Some(waiting) = self.joining.remove(&workspace_id) else {
             return;
         };
@@ -1622,7 +1628,7 @@ impl Worker {
 
     /// Stop asking to be woken for `workspace_id` once nothing waits for it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
-        if !self.joining.contains_key(&workspace_id) {
+        if !self.joining.contains_key(&workspace_id) && !self.shows.contains_key(&workspace_id) {
             self.awaiting(workspace_id, false);
         }
     }
@@ -2536,7 +2542,7 @@ impl Worker {
                 .ok_or_else(unknown)?
                 .person
         };
-        let run = caller_context(caller, request)
+        let opened_by = caller_context(caller, request)
             .and_then(|context| context.group)
             .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
@@ -2574,38 +2580,21 @@ impl Worker {
                 reason: format!("this workspace has no {app} record {}", route.document),
             }));
         }
-        let workspace = self
-            .workspaces
-            .get_mut(&workspace_id)
-            .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        // A host that holds no layout of the workspace starts none and waits for none: the open is
-        // done, and the people's pages show the record on the layout they hold, in their own way.
-        let Some(held) = workspace
-            .records
-            .as_ref()
-            .and_then(WorkspaceDocuments::desktop)
-        else {
-            return Ok(ActionOutput::default());
-        };
-        let view = tilo_desktop_model::place::View {
-            app_id: app,
-            title: &title,
-            record: &route.document,
-            beside: None,
-        };
-        let opener = tilo_desktop_model::place::Opener {
-            person: &person,
-            run,
-        };
-        let Some(change) = tilo_desktop_model::place::place_view(&held, &opener, &view) else {
-            return Ok(ActionOutput::default());
-        };
-        self.commit(
-            workspace_id,
-            &layout,
-            &DocumentMutation::Incremental(change),
-        )
-        .map_err(|reason| commit_failed(reason, true))?;
+        // Answered at once whether or not the layout is here yet: an action never waits for a
+        // window, which is placed as soon as the layout is ([`shows`]).
+        self.shows
+            .entry(workspace_id)
+            .or_default()
+            .push(shows::Show::new(
+                named,
+                app,
+                title,
+                route.document,
+                person.to_string(),
+                opened_by,
+            ));
+        self.place_shows(workspace_id)
+            .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
     }
 
