@@ -461,6 +461,20 @@ struct Lens {
     asked: Option<Point>,
     answer: Option<String>,
     asked_among: Vec<String>,
+    /// What the person's hand is doing on the map that was built again under it: a press not let
+    /// go yet, a pan or an edge being dragged, and where the pointer is. The release reaches the
+    /// new map, which answers it as the old one would have; without these a click made while an
+    /// answer arrived put no caret, and a drag across a rebuild sized nothing.
+    hand: Hand,
+}
+
+/// A gesture under way on a map, and where the pointer is: what a rebuild hands on ([`Lens`]).
+#[derive(Clone, Debug, Default)]
+struct Hand {
+    cursor: Point,
+    pan: Option<Pan>,
+    free_press: Option<FreePress>,
+    edge_drag: Option<EdgeDrag>,
 }
 
 impl Drop for Map {
@@ -480,6 +494,12 @@ impl Drop for Map {
                 asked: self.asked,
                 answer: self.answer.take(),
                 asked_among: std::mem::take(&mut self.asked_among),
+                hand: Hand {
+                    cursor: self.cursor,
+                    pan: self.pan.take(),
+                    free_press: self.free_press.take(),
+                    edge_drag: self.edge_drag.take(),
+                },
             },
         );
     }
@@ -596,6 +616,11 @@ impl Map {
             self.asked_among = lens.asked_among;
         }
         self.take_answer(&lens.pins, lens.answer);
+        // The gesture under way goes on on this map: its release is answered here.
+        self.cursor = lens.hand.cursor;
+        self.pan = self.pan.take().or(lens.hand.pan);
+        self.free_press = self.free_press.take().or(lens.hand.free_press);
+        self.edge_drag = self.edge_drag.take().or(lens.hand.edge_drag);
         self.reveal = self
             .pins
             .iter()
@@ -1936,6 +1961,12 @@ impl Widget for Map {
 
     fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// The map's name, which it keeps across a rebuild (its lens is kept under it too): the
+    /// keyboard a press gave the canvas is found again on the map built in its place.
+    fn test_id(&self) -> Option<&str> {
+        (!self.name.is_empty()).then_some(self.name.as_str())
     }
 
     fn build_layout(
