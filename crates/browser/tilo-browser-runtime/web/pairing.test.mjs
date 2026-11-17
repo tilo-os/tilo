@@ -163,3 +163,22 @@ test('a device that stopped is told that nothing was paired', async () => {
   assert.equal(pairing.pairingFailure(Object.assign(new Error('stopped here'), {code: 'stopped'})), pairing.PAIRING_STOPPED);
   assert.match(pairing.PAIRING_STOPPED, /^Nothing was paired\./);
 });
+
+test('a pairing a tab asked for itself is known as its own once, and a link it did not ask for never is', async () => {
+  const {askOwnPairing, ownPairing} = await import('./pairing.mjs');
+  const kept = new Map();
+  const storage = {getItem: key => kept.get(key) ?? null, setItem: (key, value) => kept.set(key, value), removeItem: key => kept.delete(key)};
+  const invite = '0f'.repeat(16);
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing(USER, invite, storage), true);
+  assert.equal(ownPairing(USER, invite, storage), false, 'read once');
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing('cd'.repeat(32), invite, storage), false, 'another person');
+  askOwnPairing(USER, invite, storage);
+  assert.equal(ownPairing(USER, 'aa'.repeat(16), storage), false, 'another invite');
+  assert.equal(ownPairing(USER, invite, storage), false, 'and a mismatch spends it too');
+  assert.equal(ownPairing(USER, invite, null), false, 'no storage: nothing asked here');
+  const broken = {getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => {}};
+  askOwnPairing(USER, invite, broken);
+  assert.equal(ownPairing(USER, invite, broken), false);
+});

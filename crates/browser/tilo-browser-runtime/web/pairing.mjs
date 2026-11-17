@@ -167,6 +167,43 @@ export function newInvite(random = bytes => globalThis.crypto.getRandomValues(by
 /** The `pair` secret of a link: the person, then the invite if any. */
 export const pairSecret = (userPublicKey, invite = null) => `${userPublicKey}${invite ?? ''}`;
 
+/** Where a tab keeps the pairing it opens for itself (`askOwnPairing`). */
+const OWN_PAIRING = 'tilo-own-pairing';
+
+/**
+ * Kept by a tab about to open a pairing link it made itself: the person
+ * signed in here with their agent, whose device claimed this tab's sign-in
+ * code and named the person and the invite (`pair`, its secret). The person
+ * asked for this pairing on this very page a moment ago, so the page it
+ * loads asks them nothing about whose device this becomes
+ * (`ownPairing`). It is kept for this tab alone (`sessionStorage`), which
+ * no link and no other page writes.
+ */
+export function askOwnPairing(userPublicKey, invite, storage = globalThis.sessionStorage) {
+  try {
+    storage?.setItem(OWN_PAIRING, pairSecret(userPublicKey, invite));
+  } catch {
+    // Not kept: the page asks whose device this becomes, as for any link.
+  }
+}
+
+/**
+ * Whether the pairing link this page opened, for `userPublicKey` with
+ * `invite`, is the one this tab asked for itself (`askOwnPairing`), and not
+ * a link someone handed its reader. Read once: what was kept is gone after,
+ * so a later link, even one naming the same person, is asked about again.
+ */
+export function ownPairing(userPublicKey, invite, storage = globalThis.sessionStorage) {
+  let kept = null;
+  try {
+    kept = storage?.getItem(OWN_PAIRING) ?? null;
+    storage?.removeItem(OWN_PAIRING);
+  } catch {
+    return false;
+  }
+  return kept !== null && kept === pairSecret(userPublicKey, invite);
+}
+
 /** `{userPublicKey, invite}` (invite `null` when none) of a link's `pair`
  * secret, or `null` when it is neither 64 nor 96 lowercase hex. */
 export function parsePairSecret(secret) {

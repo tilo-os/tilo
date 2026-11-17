@@ -31,7 +31,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, ofThisSite, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
+import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -476,8 +476,9 @@ function pairingWait(code, whose, where, onStop) {
   stop.type = 'button';
   stop.textContent = PAIRING_WHOSE.stop;
   stop.addEventListener('click', () => onStop());
-  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'), paragraph(whose, 'tilo-pair-whose'),
-    paragraph(where, 'tilo-pair-whose'), paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
+  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
+    ...[whose, where].filter(Boolean).map(said => paragraph(said, 'tilo-pair-whose')),
+    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
   document.body.append(card);
   return () => card.remove();
 }
@@ -1247,6 +1248,10 @@ export async function startEntryPage({mode}) {
       let whose = '';
       let where = '';
       let stopped = false;
+      // A link this tab opened for itself, signing its person in with their
+      // agent (`signInAs`), is theirs: they asked for it on this page, so
+      // they are not asked whose device this becomes.
+      const own = ownPairing(userPublicKey, invite);
       try {
         // The person this browser already is, where it keeps one: the one
         // this tab opened, else the one it keeps (a tab that opens a link
@@ -1259,6 +1264,7 @@ export async function startEntryPage({mode}) {
           // asked who the link's person is; any other names nobody.
           ofSite: ofThisSite(origin, {page: location.href, entry: admitting?.entry}),
           agree: who => {
+            if (own) return true;
             whose = pairingWhose(who.name, who);
             where = pairingWhere(who.origin, who);
             return pairingAgree(whose, where, {already: Boolean(who.holds)});
@@ -2396,6 +2402,7 @@ async function signInAs({user, invite}, {origin, workspace}, link) {
   const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
   setupDone();
   try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+  askOwnPairing(user, invite);
   globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
   globalThis.location.reload();
 }

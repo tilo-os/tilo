@@ -559,13 +559,16 @@ if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`)
 const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
-// The tab says whose device it becomes before it asks to be let in, and the
-// person, who asked their agent to sign them in here, goes on.
-await until(second, `(() => {
-    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
-    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
+// The person asked their agent to sign them in on this tab, so the tab asks
+// them nothing about whose device it becomes: that card, which warns of a
+// link someone else made, is for a link handed to a device.
+const signedInOrAsked = await until(second, `(() => {
+    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
     return document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount;
   })()`, 'the returning tab signed in', stepLimit(4));
+if (signedInOrAsked === 'asked') {
+  await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
+}
 const back = await person(second);
 report.returned = back;
 if (!signedUp.user || back.user !== signedUp.user) {

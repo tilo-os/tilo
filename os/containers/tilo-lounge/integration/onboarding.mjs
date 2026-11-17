@@ -687,13 +687,16 @@ try {
   const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
-  // The tab says whose device it becomes before it asks to be let in, and the
-  // person, who asked their agent to sign them in here, goes on.
-  await until(returning.tab, `(() => {
-    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
-    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
+  // The person asked their agent to sign them in on this tab, so the tab asks
+  // them nothing about whose device it becomes: that card, which warns of a
+  // link someone else made, is for a link handed to a device.
+  const signedInOrAsked = await until(returning.tab, `(() => {
+    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
     return ${OWN_WORKSPACE};
   })()`, 'the signed-in tab in the person\'s own workspace', stepLimit(3));
+  if (signedInOrAsked === 'asked') {
+    await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
+  }
   const signedIn = await person(returning.tab);
   report.signedIn = signedIn;
   if (signedIn.user !== report.landed.user) await fail(`the agent signed in ${signedIn.user}, not ${report.landed.user}`);

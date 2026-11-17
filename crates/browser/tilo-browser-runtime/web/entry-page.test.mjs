@@ -1069,3 +1069,43 @@ test('a pairing link that names a server this site does not name as its own puts
   assert.equal(failure?.code, 'pairing');
   assert.equal(screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
 });
+
+test('a tab its person signed in with their agent pairs without asking whose device it becomes; a link handed to it is asked about', async () => {
+  // "Sign in with your agent": the tab showed a code, the person's computer
+  // claimed it with `tilo login`, and the tab opened the pairing link the
+  // claim named. Its card then warned of someone it had no name for, and of
+  // a link the reader did not make, about a link this page made for
+  // its own person a moment before.
+  const words = await import('./pairing.mjs');
+  const invite = '0f'.repeat(16);
+  const asked = [];
+  let shown = null;
+  let waiting = null;
+  const own = await fixture({boot: pairingBoot(ELSEWHERE, HOME_AT_ORIGIN), session: {'tilo-own-pairing': words.pairSecret(ELSEWHERE, invite)},
+    whose: card => { shown = cardAndButtons(card); return 'stop'; },
+    pair: async options => {
+      asked.push(options.userPublicKey);
+      options.onPairingCode('123456');
+      waiting = cardWords('pair-wait');
+      return {workspace: 'current'};
+    }});
+  assert.equal(shown, null, 'no card asks whose device this becomes');
+  assert.deepEqual(asked, [ELSEWHERE], 'the server is asked at once');
+  assert.ok(!waiting.join('\n').includes('no name for'), `the waiting card warns of nobody: ${waiting.join(' | ')}`);
+  assert.equal(own.failure, null);
+  assert.equal(own.session.get('tilo-own-pairing'), undefined, 'what the tab kept is read once');
+
+  // The same tab handed a link by someone else, or one for another invite or
+  // person: the card and its warning, as before.
+  for (const session of [{}, {'tilo-own-pairing': words.pairSecret(ELSEWHERE, 'aa'.repeat(16))}, {'tilo-own-pairing': words.pairSecret(USER, invite)}]) {
+    shown = null;
+    const paired = [];
+    const handed = await fixture({boot: pairingBoot(ELSEWHERE, HOME_AT_ORIGIN), session,
+      whose: card => { shown = cardAndButtons(card); return 'stop'; },
+      pair: async options => { paired.push(options); return {workspace: 'current'}; }});
+    assert.match(shown?.[1] ?? '', /^You are adding this device to the devices of someone .* no name for\. If you did not make this link yourself, stop\.$/,
+      JSON.stringify(session));
+    assert.deepEqual(paired, [], 'nobody is asked before the person goes on');
+    assert.equal(handed.screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
+  }
+});
