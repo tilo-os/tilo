@@ -239,7 +239,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     assert_eq!(
         entry.settled,
         Some(Settled::Done(CommandAnswer {
-            run: Some(request.clone()),
+            id: Some(request.clone()),
             exit: Some(0),
             refusal: None,
         }))

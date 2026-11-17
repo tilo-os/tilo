@@ -41,7 +41,7 @@ pub struct SessionOptions {
     pub term: String,
     pub host_root: PathBuf,
     pub verbose: bool,
-    pub runs: Option<String>,
+    pub marks_key: Option<String>,
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
     pub terminal: Option<Arc<OwnedFd>>,
     pub mcp_server: Option<PathBuf>,
@@ -59,9 +59,9 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
-            runs: std::env::var(crate::runs::KEY_ENV)
+            marks_key: std::env::var(crate::command_marks::KEY_ENV)
                 .ok()
-                .filter(|key| crate::runs::valid_key(key)),
+                .filter(|key| crate::command_marks::valid_key(key)),
             editor: None,
             terminal: None,
             mcp_server: None,
@@ -465,7 +465,7 @@ pub enum ServeRequest {
         #[serde(default)]
         requested_by: crate::host::RequestedBy,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        runs: Option<String>,
+        commands: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
         /// Explicit opt-in: before a session's lease closes, tell the app on
@@ -549,7 +549,7 @@ pub enum ServeResponse {
         session: String,
         environment: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        runs: bool,
+        commands: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
     },
@@ -895,7 +895,7 @@ fn open_environment(
         rows,
         term,
         command,
-        runs,
+        commands,
         editor_protocol,
         end_report,
         ..
@@ -903,7 +903,8 @@ fn open_environment(
     else {
         return Ok(Served::Done);
     };
-    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
+    let commands =
+        commands.filter(|key| command.is_empty() && crate::command_marks::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
     let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
         Some(runtime_portal::editor::Socket::pair()?)
@@ -924,7 +925,7 @@ fn open_environment(
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
-        runs: runs.as_deref(),
+        commands: commands.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
@@ -944,7 +945,7 @@ fn open_environment(
         &ServeResponse::Session {
             session: id,
             environment: record,
-            runs: runs.is_some(),
+            commands: commands.is_some(),
             editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
         },
         master,
@@ -1255,7 +1256,7 @@ fn serve_host(
         term,
         command,
         requested_by,
-        runs,
+        commands,
         ..
     } = req
     else {
@@ -1299,10 +1300,10 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let interactive_bash = command.is_empty() && crate::runs::is_bash(&account.shell);
-    let key = runs
+    let interactive_bash = command.is_empty() && crate::command_marks::is_bash(&account.shell);
+    let key = commands
         .as_deref()
-        .filter(|key| interactive_bash && crate::runs::valid_key(key));
+        .filter(|key| interactive_bash && crate::command_marks::valid_key(key));
     let rc = interactive_bash
         .then(|| {
             let rc = store.session_dir(&id).join("shell.bash");
@@ -1311,9 +1312,9 @@ fn serve_host(
             Some(rc)
         })
         .flatten();
-    let runs = key.filter(|_| rc.is_some());
+    let commands = key.filter(|_| rc.is_some());
     let child = spawn_on_pty(
-        crate::host::host_command(&account, term, command, rc.as_deref(), runs),
+        crate::host::host_command(&account, term, command, rc.as_deref(), commands),
         &slave,
     )?;
     drop(slave);
@@ -1325,7 +1326,7 @@ fn serve_host(
         &ServeResponse::Session {
             session: id,
             environment: "host".into(),
-            runs: runs.is_some(),
+            commands: commands.is_some(),
             editor_protocol: None,
         },
         master,
@@ -1500,7 +1501,7 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
-    runs: Option<&'a str>,
+    commands: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
@@ -1562,9 +1563,9 @@ fn spawn_attached(
         launch.store.workspace_id().as_str(),
     );
     cmd.env("TERM", launch.term);
-    match launch.runs {
-        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
-        None => cmd.env_remove(crate::runs::KEY_ENV),
+    match launch.commands {
+        Some(key) => cmd.env(crate::command_marks::KEY_ENV, key),
+        None => cmd.env_remove(crate::command_marks::KEY_ENV),
     };
     let (read, write) = diagnostics_pipe()?;
     let child = spawn_on_pty_with(cmd, slave, Some(write))?;
@@ -1787,7 +1788,7 @@ mod tests {
                     &ServeResponse::Session {
                         session: "exact".into(),
                         environment: "default".into(),
-                        runs: false,
+                        commands: false,
                         editor_protocol: None,
                     },
                     master,
@@ -1854,7 +1855,7 @@ mod tests {
                     &ServeResponse::Session {
                         session: id.clone(),
                         environment: environment.into(),
-                        runs: false,
+                        commands: false,
                         editor_protocol: None,
                     },
                     master,
@@ -2018,7 +2019,7 @@ mod tests {
                 &ServeResponse::Session {
                     session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     environment: "default".into(),
-                    runs: false,
+                    commands: false,
                     editor_protocol: None,
                 },
                 Some(master.as_fd()),
@@ -2106,12 +2107,12 @@ mod tests {
             let reply = ServeResponse::Session {
                 session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 environment: "default".into(),
-                runs: true,
+                commands: true,
                 editor_protocol: None,
             };
             assert_eq!(
                 serde_json::to_string(&reply).unwrap(),
-                "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+                "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"commands\":true}"
             );
         }
 
@@ -2289,7 +2290,7 @@ mod tests {
             term: None,
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
-            runs: None,
+            commands: None,
             editor_protocol: None,
             end_report: false,
         }

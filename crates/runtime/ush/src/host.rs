@@ -416,15 +416,15 @@ pub fn host_command(
     term: &str,
     program: &[String],
     rc: Option<&Path>,
-    runs: Option<&str>,
+    commands: Option<&str>,
 ) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&account.shell);
-    cmd.env_remove(crate::runs::KEY_ENV);
+    cmd.env_remove(crate::command_marks::KEY_ENV);
     if program.is_empty() {
         cmd.args(crate::shell_start::interactive_args(&account.shell, rc));
-        if let Some(key) = runs {
-            cmd.env(crate::runs::KEY_ENV, key);
+        if let Some(key) = commands {
+            cmd.env(crate::command_marks::KEY_ENV, key);
         }
     } else {
         let name = account

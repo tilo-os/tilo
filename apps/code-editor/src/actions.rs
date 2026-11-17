@@ -232,7 +232,7 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
         }
         TerminalAction::RecordCommand(record) => {
             ProjectAction::RecordTerminalRun(project::project::RecordTerminalRun {
-                run: record.run,
+                finished: record.finished,
             })
         }
         // A session's fields change only by its verbs.

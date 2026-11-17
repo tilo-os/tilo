@@ -170,14 +170,14 @@ tilo_test_env::scenario! {
                 undoable: false,
                 items: Vec::new(),
                 request: Some(request.clone()),
-                run: request.clone(),
+                id: request.clone(),
             }))
             .unwrap();
         session
             .apply(Terminal::paths().requests.settle(
                 &request,
                 &Settled::Done(CommandAnswer {
-                    run: Some(request.clone()),
+                    id: Some(request.clone()),
                     exit: Some(101),
                     refusal: None,
                 }),
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         assert_eq!(rows[0].value["command"], "cargo test -p signup");
         let settled = rows[0].settled.as_ref().expect("the request is settled");
         assert_eq!(
-            settled.pointer("/result/run"),
+            settled.pointer("/result/id"),
             Some(&serde_json::json!(request.as_str()))
         );
         let run =

@@ -528,7 +528,7 @@ tilo_test_env::scenario! {
             let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
             assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
             assert_eq!(request["requested_by"], "person");
-            assert_eq!(request["runs"], "0123456789abcdef");
+            assert_eq!(request["commands"], "0123456789abcdef");
             assert!(
                 crate::inner::ush_request(
                     &[],

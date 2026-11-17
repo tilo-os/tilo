@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
             command: "cargo test".into(),
             cwd: "/src".into(),
             exit: 101,
-            run: Id::from("r1"),
+            id: Id::from("r1"),
             ..Default::default()
         };
         act(

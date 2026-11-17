@@ -2323,7 +2323,7 @@ impl TerminalWidget {
                 exit: run.exit,
                 truncated: run.truncated,
                 request: request.clone(),
-                run: id.clone(),
+                id: id.clone(),
             };
             let ran = crate::history::Ran {
                 command: finished.command.clone(),
@@ -2351,7 +2351,7 @@ impl TerminalWidget {
             }
             if let Some(asked) = asked {
                 let answer = crate::resource::CommandAnswer {
-                    run: recorded.is_ok().then_some(asked.request.clone()),
+                    id: recorded.is_ok().then_some(asked.request.clone()),
                     exit: Some(run.exit),
                     refusal: run.refusal.as_deref().cloned(),
                 };
@@ -4979,7 +4979,7 @@ impl TerminalBackend {
                 // session's key, as it does for the supervisor's sessions.
                 let key = program.is_empty().then(crate::commands::new_key);
                 if let Some(key) = &key {
-                    cmd.env("TILO_USH_RUNS", key);
+                    cmd.env("TILO_USH_MARKS", key);
                 } else {
                     cmd.arg("-c");
                     cmd.arg(exec_script(&program));
@@ -5428,7 +5428,7 @@ pub(crate) fn ush_request(
         // and an environment that could not be set up says so on the tab.
         fields.insert("end_report".to_string(), serde_json::json!(true));
         if let Some(key) = commands {
-            fields.insert("runs".to_string(), serde_json::json!(key));
+            fields.insert("commands".to_string(), serde_json::json!(key));
         }
     }
     crate::sessions::with_workspace(&mut request, workspace);
@@ -5451,7 +5451,7 @@ struct UshSessionReply {
     relay_session: Option<String>,
     /// The session's shell marks its runs with the key the request named.
     #[serde(default)]
-    runs: bool,
+    commands: bool,
     #[serde(default)]
     editor_protocol: Option<u8>,
     /// The control protocol that granted this session's private lease.
@@ -5584,7 +5584,7 @@ pub(crate) fn ush_backend_on(
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
         supervisor_session: Some(response.session),
-        commands: response.runs.then_some(key),
+        commands: response.commands.then_some(key),
         native_editor,
         service_lifetime: Some(lifetime),
     })

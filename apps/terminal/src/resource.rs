@@ -170,17 +170,17 @@ pub struct CommandRequest {
     pub agent: bool,
 }
 
-/// How a requested run went: the run it became.
+/// How a requested command went: the id of the command it became.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommandAnswer {
-    pub run: Option<Id>,
+    pub id: Option<Id>,
     pub exit: Option<i32>,
-    /// Why the run's host refused it, with the steps that would let it through.
+    /// Why the command's host refused it, with the steps that would let it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ui::tilo_actions::remote::host_account::Refusal>,
 }
 
-/// What a finished run recorded, as the Terminal that ran it hands it in.
+/// What a finished command recorded, as the Terminal that ran it hands it in.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct FinishedCommand {
     pub command: String,
@@ -199,8 +199,8 @@ pub struct FinishedCommand {
     pub items: Vec<CommandItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Id>,
-    /// The id the run takes: the request's, when `run` asked for it, so the answer names it.
-    pub run: Id,
+    /// The command's id: the request's, when `run` asked for it, so the answer names it.
+    pub id: Id,
 }
 
 /// The longest command line `run` takes.
@@ -345,10 +345,10 @@ impl Terminal {
     pub fn record_command(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The command, as the session marked it", flatten)] run: FinishedCommand,
+        #[param("The command, as the session marked it", flatten)] finished: FinishedCommand,
     ) -> Result<(), Refusal> {
-        let output = run.output.unwrap_or_default();
-        let asked = run
+        let output = finished.output.unwrap_or_default();
+        let asked = finished
             .request
             .as_ref()
             .and_then(|request| self.requests.get(request))
@@ -357,27 +357,27 @@ impl Terminal {
             Some(asked) => (asked.requested_by, asked.for_person),
             None => (cx.author().cloned(), None),
         };
-        let mut items = run.items;
+        let mut items = finished.items;
         items.truncate(crate::parse::MAX_ITEMS);
-        if run.run.as_str().is_empty() || self.commands.contains(&run.run) {
+        if finished.id.as_str().is_empty() || self.commands.contains(&finished.id) {
             return Err(Refusal::new("a command takes an id of its own"));
         }
-        let id = run.run;
+        let id = finished.id;
         self.commands.push(
             id,
             Command {
-                command: Atom(run.command),
-                cwd: Atom(run.cwd),
+                command: Atom(finished.command),
+                cwd: Atom(finished.cwd),
                 environment: self.target.clone(),
                 actor,
                 for_person,
-                started_ms: run.started_ms,
-                ended_ms: run.ended_ms,
-                exit: run.exit,
+                started_ms: finished.started_ms,
+                ended_ms: finished.ended_ms,
+                exit: finished.exit,
                 output,
-                truncated: run.truncated,
-                tool: Atom(run.tool),
-                undoable: run.undoable,
+                truncated: finished.truncated,
+                tool: Atom(finished.tool),
+                undoable: finished.undoable,
                 items,
             },
         );

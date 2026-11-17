@@ -585,7 +585,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     {
         use std::io::BufRead as _;
 
-        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true,\"protocol\":2}\n";
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"commands\":true,\"protocol\":2}\n";
         let (terminal_end, supervisor_end) =
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
@@ -629,13 +629,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         let backend = match opened {
             Ok(backend) => backend,
-            Err(error) => panic!("a session reply that marks runs must open: {error:?}"),
+            Err(error) => panic!("a session reply that marks commands must open: {error:?}"),
         };
         assert_eq!(backend.shell_name, "ush");
         assert_eq!(
             backend.commands.as_deref(),
-            request["runs"].as_str(),
-            "the session marks its runs with the key the request named"
+            request["commands"].as_str(),
+            "the session marks its commands with the key the request named"
         );
         assert!(backend.commands.is_some());
     }

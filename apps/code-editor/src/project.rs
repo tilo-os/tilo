@@ -415,11 +415,11 @@ impl Project {
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The run, as the session marked it", flatten)] run: FinishedCommand,
+        #[param("The command, as the session marked it", flatten)] finished: FinishedCommand,
     ) -> Result<(), Refusal> {
         self.terminal_panel
             .get_or_insert_with(Terminal::default)
-            .record_command(cx, run)
+            .record_command(cx, finished)
     }
 }
 

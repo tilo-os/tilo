@@ -79,9 +79,9 @@ type Shares = dyn Fn() -> Vec<ShareRequest> + Send + Sync;
 
 pub struct HostedPrograms {
     target: HostedTarget,
-    /// The session's Terminal runs key ([`crate::runs::KEY_ENV`]): the
+    /// The session's Terminal marks key ([`crate::command_marks::KEY_ENV`]): the
     /// held marks carry it, so no program can forge a prompt.
-    runs: Option<String>,
+    marks_key: Option<String>,
     workspace: String,
     environment: String,
     shares: Box<Shares>,
@@ -99,7 +99,7 @@ impl HostedPrograms {
     ) -> Self {
         Self {
             target,
-            runs: None,
+            marks_key: None,
             workspace,
             environment,
             shares,
@@ -126,8 +126,8 @@ impl HostedPrograms {
     }
 
     #[must_use]
-    pub fn with_runs_key(mut self, key: Option<String>) -> Self {
-        self.runs = key;
+    pub fn with_marks_key(mut self, key: Option<String>) -> Self {
+        self.marks_key = key;
         self
     }
 
@@ -336,14 +336,14 @@ impl HostedPrograms {
         }
     }
 
-    /// Write the mark `make` makes of the runs key to the session's
+    /// Write the mark `make` makes of the marks key to the session's
     /// terminal, when the session has a key and the command writes to the
     /// terminal itself.
     /// Write the mark `make` makes with the session's key to the terminal the session's runs are
     /// shown in, when it is one of the run's streams. Whether it was written: Terminal shows the
     /// prompt of a held mark, so the shell's own words can stay short.
     fn mark(&self, io: &Stdio, make: &dyn Fn(&str) -> String) -> bool {
-        let Some(key) = &self.runs else {
+        let Some(key) = &self.marks_key else {
             return false;
         };
         let terminal = if io.stderr.host_stream() == Some(Std::Err) {
@@ -873,7 +873,7 @@ mod tests {
             "default".into(),
             Box::new(Vec::new),
         )
-        .with_runs_key(Some(KEY.into()));
+        .with_marks_key(Some(KEY.into()));
         let (_, out) = Output::buffer();
         let (_, err) = Output::buffer();
         let io = Stdio {

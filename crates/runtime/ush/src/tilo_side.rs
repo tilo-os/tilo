@@ -911,7 +911,7 @@ impl Session {
                 crate::hosted_vm::shares_of(policy.trusted_dirs(now), policy.readable_dirs(now))
             }),
         )
-        .with_runs_key(self.opts.runs.clone());
+        .with_marks_key(self.opts.marks_key.clone());
         Arc::new(match std::io::stdin().as_fd().try_clone_to_owned() {
             Ok(terminal) => programs.terminal(terminal),
             Err(_) => programs,
@@ -1019,7 +1019,7 @@ impl Session {
                 let _ = shell.run_script(&text);
             }
             shell.interactive(&ush_shell::Session {
-                runs_key: self.opts.runs.clone(),
+                runs_key: self.opts.marks_key.clone(),
             })
         };
         drop(shell);
