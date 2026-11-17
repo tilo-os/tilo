@@ -541,7 +541,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(box, 'css', 'display:flex;align-items:center;gap:2px;min-width:0;height:100%;flex:1;');
         const input = elementFor(`${key}:input`, 'input', next);
         const kinds = {number: 'text', date: 'date', time: 'time', colour: 'color', search: 'search'};
-        write(input, '@type', kinds[control.input] ?? 'text');
+        write(input, '@type', control.secret ? 'password' : (kinds[control.input] ?? 'text'));
         write(input, '@role', control.input === 'number' ? 'spinbutton' : null);
         write(input, '@placeholder', control.placeholder || null);
         write(input, '@aria-label', node.semantics?.name ?? null);
@@ -550,7 +550,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         if (control.step !== undefined) input.step = String(control.step);
         if (document.activeElement !== input && input.value !== control.text) input.value = control.text;
         input.disabled = disabled;
-        mark(input, 'value', target);
+        // A secret is never the page's field: its characters stay with the
+        // widget, and the page shows the mask it was given.
+        if (!control.secret) mark(input, 'value', target);
         write(input, 'css', control.input === 'colour'
           ? 'width:30px;height:30px;padding:0;border:0;background:transparent;cursor:pointer;'
           : 'flex:1;min-width:0;background:transparent;border:0;outline:none;color:inherit;font:inherit;padding:0;');

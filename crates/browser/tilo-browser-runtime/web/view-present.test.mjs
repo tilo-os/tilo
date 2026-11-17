@@ -285,3 +285,14 @@ test('a link is an anchor whose press opens the address through the widget', () 
   assert.ok(prevented, 'the page never leaves');
   assert.deepEqual(sent.at(-1), ['Link[0]', undefined, 'activate', '', 0, 0]);
 });
+
+test('a secret entry shows its mask and never holds its characters in the page', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  show(presenter, widget('SecretPrompt[0]', [0, 0, 300, 40], {tag: 'dialog', semantics: {role: 'Dialog', name: 'Sign in', state: {}},
+    own: {kind: 'control', controls: [{kind: 'entry', input: 'search', text: '••••••', placeholder: 'Password', steppers: false, secret: true}]}}));
+  const input = byPath(layer, 'SecretPrompt[0]#control:0:input');
+  assert.equal(input.getAttribute('type'), 'password');
+  assert.equal(input.value, '••••••');
+  assert.equal(input.dataset.tiloAct, undefined, 'the page never types the secret');
+});

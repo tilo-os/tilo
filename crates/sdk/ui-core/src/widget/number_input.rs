@@ -753,6 +753,7 @@ impl Widget for NumberInput {
             steppers: true,
             increase: Some(widget_text("widget-number-increase")),
             decrease: Some(widget_text("widget-number-decrease")),
+            secret: false,
         });
     }
 

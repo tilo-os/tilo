@@ -907,6 +907,7 @@ impl Widget for ColorPicker {
             steppers: false,
             increase: None,
             decrease: None,
+            secret: false,
         });
         if !self.swatches.is_empty() {
             let options = self

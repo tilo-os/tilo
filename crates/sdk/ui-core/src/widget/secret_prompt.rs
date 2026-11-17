@@ -2464,9 +2464,12 @@ impl Widget for SecretPrompt {
         let colors = &theme.tokens.colors;
         let style = theme.text(crate::tokens::TextRole::Body);
         for field in &self.fields {
+            // A secret's characters never reach the page: it shows as many
+            // dots as the field holds, and what the person types reaches the
+            // widget as keys do.
             cx.control(Control::Entry {
                 input: InputKind::Search,
-                text: field.input.value().to_owned(),
+                text: "•".repeat(field.input.value().chars().count()),
                 placeholder: field.label.clone(),
                 min: None,
                 max: None,
@@ -2474,6 +2477,7 @@ impl Widget for SecretPrompt {
                 steppers: false,
                 increase: None,
                 decrease: None,
+                secret: true,
             });
         }
         let label = TextLook::new(self.title.clone(), &style, Some(colors.text_primary));

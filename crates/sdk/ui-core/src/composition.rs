@@ -154,6 +154,10 @@ pub enum Control {
         increase: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         decrease: Option<String>,
+        /// What it holds is a secret: the page shows its mask and never holds its
+        /// characters, which reach the widget as keys do.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
     },
     /// A chooser: a button showing the current value, its options while `open`.
     Select {

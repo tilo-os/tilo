@@ -995,6 +995,7 @@ impl Widget for Autocomplete {
             steppers: false,
             increase: None,
             decrease: None,
+            secret: false,
         });
         if !self.open {
             return;

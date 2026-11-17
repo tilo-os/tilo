@@ -458,6 +458,7 @@ impl Widget for TimePicker {
             steppers: false,
             increase: None,
             decrease: None,
+            secret: false,
         });
     }
 

@@ -382,6 +382,7 @@ impl Widget for DatePicker {
             steppers: false,
             increase: None,
             decrease: None,
+            secret: false,
         });
     }
 
