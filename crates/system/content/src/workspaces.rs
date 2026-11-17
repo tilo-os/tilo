@@ -218,6 +218,19 @@ impl ContentBackend for RoomChecked {
         self.inner.put(reader, mime)
     }
 
+    fn put_many(&self, items: &[(&[u8], &str)]) -> Vec<Result<Stored, ContentError>> {
+        // The disk is asked once for the set, then the store writes it
+        // together: what a folder of small files needs not to pay a flush and
+        // a free-space check for each.
+        match self.room() {
+            Ok(()) => self.inner.put_many(items),
+            Err(_) => items
+                .iter()
+                .map(|(bytes, mime)| self.put(&mut &bytes[..], mime))
+                .collect(),
+        }
+    }
+
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
         self.inner.open(hash)
     }

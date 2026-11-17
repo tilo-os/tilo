@@ -415,16 +415,42 @@ impl Worker {
             .workspace_content(workspace_id)
             .ok_or_else(|| refused("this workspace keeps no files on its host"))?;
         let puttings = Putting::all(&arguments, &store)?;
+        // Every file is named before the tree is touched: one the workspace
+        // holds no content for refuses the whole open, nothing half put. What
+        // the store does not hold yet — each file's manifest — is kept
+        // together, one write for all.
+        let mut kept: std::collections::BTreeMap<String, (u64, String)> =
+            std::collections::BTreeMap::new();
+        let mut pending: std::collections::BTreeMap<String, Vec<u8>> =
+            std::collections::BTreeMap::new();
+        let mut pending_bytes = 0_usize;
         let mut files = Vec::with_capacity(puttings.len());
         for putting in puttings {
-            let size = size_of(&store, &putting.hash).ok_or_else(|| {
-                refused(format!("this workspace holds no {}", putting.content))
-            })?;
-            // A file of the tree is named by its content manifest, as a
-            // mounted computer names one, so every member reads it the same way.
-            let manifest = manifest_of(&store, &putting.hash, size).map_err(refused)?;
+            let known = kept.get(&putting.hash).cloned();
+            let (size, manifest) = if let Some(named) = known {
+                named
+            } else {
+                let size = size_of(&store, &putting.hash).ok_or_else(|| {
+                    refused(format!("this workspace holds no {}", putting.content))
+                })?;
+                // A file of the tree is named by its content manifest, as a
+                // mounted computer names one, so every member reads it the
+                // same way; files of the same content are named once, and a
+                // folder's manifests are kept together.
+                let (manifest, added) =
+                    manifest_into(&store, &putting.hash, size, &mut pending).map_err(refused)?;
+                pending_bytes = pending_bytes.saturating_add(added);
+                let named = (size, manifest);
+                kept.insert(putting.hash.clone(), named.clone());
+                named
+            };
             files.push((putting, manifest, size));
+            if pending_bytes >= MANIFEST_FLUSH_BYTES {
+                keep_pending(&store, &mut pending).map_err(refused)?;
+                pending_bytes = 0;
+            }
         }
+        keep_pending(&store, &mut pending).map_err(refused)?;
         // The tree of a governed workspace is sealed: its keys are what
         // reading it and writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
@@ -489,24 +515,19 @@ fn size_of(store: &tilo_content::ContentStore, hash: &str) -> Option<u64> {
     std::io::copy(&mut reader, &mut std::io::sink()).ok()
 }
 
-/// Keep the content `hash` names, `size` bytes long, as a file of the tree is
-/// kept: chunked, each chunk and the manifest listing them under their own
-/// BLAKE3 address in `store`, the manifest's address answered. A mounted
-/// computer, a page and the workspace's host read a file of the tree from its
-/// manifest's chunks.
-///
-/// The bytes are read and chunked a piece at a time, each chunk kept as soon
-/// as its end is known: a file of a gigabyte costs what one chunk does in
-/// memory, not the file.
+/// The manifest of the content `hash` names, `size` bytes long, as a file of
+/// the tree is named: chunked, each chunk the store holds none of kept as its
+/// end is known — a file of a gigabyte costs what one chunk does in memory,
+/// not the file — and the manifest listing them answered encoded.
 ///
 /// # Errors
 /// The content is not in `store`, is not `size` bytes long, or what was kept
 /// is not at the address the manifest names.
-fn manifest_of(
+fn manifest_bytes(
     store: &tilo_content::ContentStore,
     hash: &str,
     size: u64,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
     let mut reader = store
         .open(hash)
@@ -545,10 +566,60 @@ fn manifest_of(
     if let Some(failed) = failed {
         return Err(failed);
     }
-    store
-        .put_public(&manifest.encode())
-        .map_err(|error| error.to_string())
+    Ok(manifest.encode())
 }
 
-/// How much of a file [`manifest_of`] reads at a time.
+/// How much content one [`keep_pending`] keeps at once: a folder's manifests,
+/// whose bytes are small.
+const MANIFEST_FLUSH_BYTES: usize = 8 * 1024 * 1024;
+
+/// Name the content `hash` names as a file of the tree is named: its manifest
+/// collected in `pending` under its own BLAKE3 address, that address answered
+/// with how many bytes were added. A mounted computer, a page and the
+/// workspace's host read a file of the tree from its manifest's chunks.
+///
+/// # Errors
+/// The content is not in `store`, or it does not read as the file it is named.
+fn manifest_into(
+    store: &tilo_content::ContentStore,
+    hash: &str,
+    size: u64,
+    pending: &mut std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<(String, usize), String> {
+    let encoded = manifest_bytes(store, hash, size)?;
+    let address = hex::encode(blake3::hash(&encoded).as_bytes());
+    if store.has(&address) || pending.contains_key(&address) {
+        return Ok((address, 0));
+    }
+    let added = encoded.len();
+    pending.insert(address.clone(), encoded);
+    Ok((address, added))
+}
+
+/// Keep what [`manifest_into`] collected, one store write for all of it: a
+/// folder of files waits on the disk once rather than once per file.
+fn keep_pending(
+    store: &tilo_content::ContentStore,
+    pending: &mut std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let addresses: Vec<String> = pending.keys().cloned().collect();
+    let items: Vec<&[u8]> = pending.values().map(Vec::as_slice).collect();
+    let kept = store.put_public_many(&items);
+    if kept.len() != addresses.len() {
+        return Err("the store did not answer for every kept file".into());
+    }
+    for (address, kept) in addresses.iter().zip(kept) {
+        let kept = kept.map_err(|error| error.to_string())?;
+        if kept != *address {
+            return Err(format!("content was kept at {kept}, not {address}"));
+        }
+    }
+    pending.clear();
+    Ok(())
+}
+
+/// How much of a file [`manifest_bytes`] reads at a time.
 const PIECE: usize = 1024 * 1024;

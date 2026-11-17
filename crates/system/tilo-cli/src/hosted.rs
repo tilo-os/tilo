@@ -1033,7 +1033,7 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
 }
 
 /// How many files go up at once.
-const UPLOADS_AT_ONCE: usize = 16;
+const UPLOADS_AT_ONCE: usize = 32;
 /// How many files one change of the workspace's tree takes: the host's bound.
 const TREE_BATCH_FILES: usize = 50_000;
 /// How many bytes of file entries one change carries: under the 64 MiB one
