@@ -225,7 +225,7 @@ impl Worker {
     /// ([`fs_protocol::tree::TREE_VERBS`]): change the tree as it asks, and answer what changed.
     ///
     /// # Errors
-    /// A caller who may not change what the workspace holds, a call naming a device (whose own
+    /// A caller who may not change what Files keeps in the workspace, a call naming a device (whose own
     /// disk only that device changes), a path that is none of the workspace, what the verb
     /// itself refuses, a tree this holder cannot read yet, or a change the workspace did not
     /// take.
@@ -240,7 +240,7 @@ impl Worker {
         request: &InvokeRequest,
         named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
-        if !self.may_across(
+        if !self.may_in_files(
             workspace_id,
             caller,
             ui::permissions::policy::ActionKind::Undoable,

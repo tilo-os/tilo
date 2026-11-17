@@ -18,6 +18,10 @@ use fuser::FileType;
 use super::plain;
 use crate::namespace::{Namespace, ROOT_ID, ROOT_INO, ResourceWrite};
 
+mod read;
+
+pub use read::{FileAt, MOST_LISTED, Page, Row, Trashed};
+
 /// The most files and folders one copy makes: a larger folder is copied in parts, each an
 /// action of its own.
 pub const MOST_COPIED: usize = 4096;

@@ -1,16 +1,21 @@
 //! Files' verbs by a path in the workspace, carried out where the workspace's tree is kept:
-//! `files#new-folder`, `#move`, `#rename`, `#copy-into`, `#trash` and `#restore`.
+//! `files#new-folder`, `#move`, `#rename`, `#copy-into`, `#trash` and `#restore`; and its reads
+//! by the same path, `files#list` and `#read-text`, answered there with no window.
 //!
 //! A workspace's folder is on no one disk, so these name a path in it and no device. A device's
 //! agent asks them of the workspace through its session. With no page open and no device of
 //! the person connected at all, the server's own action service answers them the same, which
 //! is how an agent that works while its person's devices are off keeps a folder for each task.
+//! An agent on a turn the server carries out asks them through that turn's tools, held to the
+//! rules the turn carries: one its rules refuse Files is refused the folder.
 
+use super::super::hosted_agent_turns::{SCOUT, make_agent};
 use super::super::hosted_documents::ask;
 use super::*;
 use serde_json::Value;
 use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionProvider as _, Caller, ContentPutAnswer, ContentPutStep, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_server::workspace_agents::WorkspaceActionProvider;
@@ -18,6 +23,12 @@ use tilo_server::workspaces::Workspaces;
 
 /// The folder the work on one task keeps its material in.
 const TASK: &str = "Tasks/12 Plan the launch";
+
+/// What the notes in the task's folder say.
+const NOTES: &str = "Launch on Friday.\nBook the hall.\n";
+
+/// The first bytes of a picture: no text.
+const PHOTO: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10];
 
 /// Whether `dir/name` is a folder of `tree`.
 fn folder_at(tree: &Tree, dir: &str, name: &str) -> bool {
@@ -189,6 +200,48 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
         content_at(&tree, TASK, "permit (2).pdf"),
         Some(manifest_of(&permit))
     );
+
+    // The folder is read by its path, with no window: what it holds, and what a file in it
+    // says. A file that is no text is refused with what reads it.
+    for (name, bytes) in [("notes.md", NOTES.as_bytes()), ("photo.jpg", PHOTO)] {
+        let content = content_in(&put(&server, bytes).await);
+        files(
+            &server,
+            "open",
+            json!({"content": content, "name": name, "dir": TASK}),
+        )
+        .await;
+    }
+    tree_when(&hosted, WORKSPACE, |tree| {
+        file_at(tree, TASK, "notes.md").is_some() && file_at(tree, TASK, "photo.jpg").is_some()
+    })
+    .await;
+    let listed = files(&server, "list", json!({"folder": TASK})).await;
+    for name in [
+        "Visa form.pdf",
+        "permit.pdf",
+        "permit (2).pdf",
+        "notes.md",
+        "photo.jpg",
+    ] {
+        assert!(listed.contains(name), "{name} is not listed: {listed}");
+    }
+    let read = files(
+        &server,
+        "read-text",
+        json!({"file": format!("{TASK}/notes.md")}),
+    )
+    .await;
+    assert!(read.contains("Book the hall."), "{read}");
+    let said = files_refused(
+        &server,
+        "read-text",
+        json!({"file": format!("{TASK}/photo.jpg")}),
+    )
+    .await;
+    assert!(said.contains("is not text"), "{said}");
+    let said = files_refused(&server, "list", json!({"folder": "../elsewhere"})).await;
+    assert!(said.contains("no name in the workspace"), "{said}");
 
     // A path never leaves the workspace's folder, and a verb writes over nothing.
     let said = files_refused(
@@ -514,4 +567,496 @@ async fn with_no_page_open_the_server_keeps_a_folder_for_a_task_by_paths() {
         folder_at(&tree, "Tasks", "12 Plan the launch") && !folder_at(&tree, "", "outside"),
         "a refused verb changed nothing"
     );
+}
+
+/// `bytes` put into the store of `workspace` through the server's own action service, as
+/// `caller`: the content's reference.
+async fn uploaded(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspace: tilo_server_protocol::WorkspaceId,
+    caller: &Caller,
+    bytes: &[u8],
+) -> String {
+    let (actions, caller, bytes) = (actions.clone(), caller.clone(), bytes.to_vec());
+    tokio::task::spawn_blocking(move || {
+        let step = |step| {
+            let answer = actions
+                .serve(
+                    workspace,
+                    &caller,
+                    RemoteActionMessage::ContentPutRequest {
+                        correlation: 1,
+                        step,
+                    },
+                )
+                .unwrap()
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .unwrap();
+            match answer {
+                RemoteActionMessage::ContentPutResponse { result, .. } => result.unwrap(),
+                other => panic!("expected an upload's answer, got {other:?}"),
+            }
+        };
+        let ContentPutAnswer::Begun { upload } = step(ContentPutStep::Begin {
+            size: bytes.len() as u64,
+        }) else {
+            panic!("an upload begins")
+        };
+        step(ContentPutStep::append(upload, 0, &bytes));
+        match step(ContentPutStep::Finish { upload }) {
+            ContentPutAnswer::Finished { content } => content,
+            other => panic!("expected the content, got {other:?}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// The names a `list` answered, in its order.
+fn names_in(listed: &Value) -> Vec<&str> {
+    listed["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_no_page_open_a_folder_is_listed_and_a_file_read_back_by_its_path() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    // The server alone: no page is opened, and no device of the person ever joins.
+    let (server, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host.key.clone(),
+            device_cert: host.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    let provider = WorkspaceActionProvider::new(actions.clone(), id);
+    let person =
+        Caller::authenticated(root.verifying_key().to_bytes(), host.cert.device_public_key)
+            .in_workspace(&workspace);
+    let list = |arguments: Value| asked(&provider, &person, &workspace, "list", arguments);
+    let read = |arguments: Value| asked(&provider, &person, &workspace, "read-text", arguments);
+
+    // A workspace nobody put anything into lists as empty.
+    let empty = list(json!({})).await.unwrap();
+    assert_eq!(empty["total"], 0, "{empty}");
+    assert_eq!(empty["entries"], json!([]), "{empty}");
+
+    // A note and a picture are put into the task's folder, beside two folders.
+    for (name, bytes) in [("notes.md", NOTES.as_bytes()), ("photo.jpg", PHOTO)] {
+        let content = uploaded(&actions, id, &person, bytes).await;
+        let put = asked(
+            &provider,
+            &person,
+            &workspace,
+            "open",
+            json!({"content": content, "name": name, "dir": TASK}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(put["path"], format!("{TASK}/{name}"), "{put}");
+    }
+    for name in ["sources", "Drafts"] {
+        asked(
+            &provider,
+            &person,
+            &workspace,
+            "new-folder",
+            json!({"parent": TASK, "name": name}),
+        )
+        .await
+        .unwrap();
+    }
+
+    // The folder is listed by its path: names in order, kinds, a file's size, when it changed.
+    let listed = list(json!({"folder": TASK})).await.unwrap();
+    assert_eq!(
+        names_in(&listed),
+        ["Drafts", "notes.md", "photo.jpg", "sources"],
+        "{listed}"
+    );
+    assert_eq!(listed["folder"], TASK, "{listed}");
+    assert_eq!(listed["total"], 4, "{listed}");
+    assert_eq!(listed["next"], Value::Null, "{listed}");
+    let folder = &listed["entries"][0];
+    assert_eq!(folder["kind"], "folder", "{listed}");
+    assert_eq!(folder["size"], Value::Null, "{listed}");
+    assert_eq!(folder["path"], format!("{TASK}/Drafts"), "{listed}");
+    let note = &listed["entries"][1];
+    assert_eq!(note["kind"], "file", "{listed}");
+    assert_eq!(note["path"], format!("{TASK}/notes.md"), "{listed}");
+    assert_eq!(note["size"], NOTES.len(), "{listed}");
+    assert!(
+        note["changed"].as_u64().is_some_and(|changed| changed > 0),
+        "{listed}"
+    );
+    // A page at a time: the first says where the next begins, the last that none follows.
+    let first = list(json!({"folder": TASK, "limit": 3})).await.unwrap();
+    assert_eq!(
+        names_in(&first),
+        ["Drafts", "notes.md", "photo.jpg"],
+        "{first}"
+    );
+    assert_eq!(first["next"], 3, "{first}");
+    assert_eq!(first["total"], 4, "{first}");
+    let rest = list(json!({"folder": TASK, "from": first["next"], "limit": 3}))
+        .await
+        .unwrap();
+    assert_eq!(names_in(&rest), ["sources"], "{rest}");
+    assert_eq!(rest["next"], Value::Null, "{rest}");
+    // The workspace's own folder is listed when none is named.
+    let top = list(json!({})).await.unwrap();
+    assert_eq!(names_in(&top), ["Tasks"], "{top}");
+
+    // The note is read back by the same path, whole and from a place in it.
+    let file = format!("{TASK}/notes.md");
+    let whole = read(json!({"file": file})).await.unwrap();
+    assert_eq!(whole["text"], NOTES, "{whole}");
+    assert_eq!(whole["file"], file, "{whole}");
+    assert_eq!(whole["total"], NOTES.chars().count(), "{whole}");
+    assert_eq!(whole["next"], Value::Null, "{whole}");
+    assert_eq!(whole["size"], NOTES.len(), "{whole}");
+    assert_eq!(whole["id"], note["id"], "the node the folder listed");
+    let tail = read(json!({"file": file, "from": 7})).await.unwrap();
+    assert_eq!(tail["text"], "on Friday.\nBook the hall.\n", "{tail}");
+    assert_eq!(tail["from"], 7, "{tail}");
+    // A picture is no text, and is refused in words.
+    let said = read(json!({"file": format!("{TASK}/photo.jpg")}))
+        .await
+        .unwrap_err();
+    assert!(said.contains("is not text"), "{said}");
+
+    // What the trash holds is listed with the id that brings it back.
+    let gone = asked(
+        &provider,
+        &person,
+        &workspace,
+        "trash",
+        json!({"folder": TASK, "entries": ["Drafts"]}),
+    )
+    .await
+    .unwrap();
+    let trash = list(json!({"trash": true})).await.unwrap();
+    assert_eq!(trash["total"], 1, "{trash}");
+    assert_eq!(
+        trash["entries"][0]["id"], gone["entries"][0]["id"],
+        "{trash}"
+    );
+    assert_eq!(
+        trash["entries"][0]["was"],
+        format!("{TASK}/Drafts"),
+        "{trash}"
+    );
+    assert_eq!(trash["entries"][0]["kind"], "folder", "{trash}");
+    let listed = list(json!({"folder": TASK})).await.unwrap();
+    assert_eq!(
+        names_in(&listed),
+        ["notes.md", "photo.jpg", "sources"],
+        "{listed}"
+    );
+
+    // A path never leaves the workspace's folder, a folder is no file, and no device is named.
+    for (outside, why) in [
+        ("../outside", "no name in the workspace"),
+        ("/etc", "no leading /"),
+        ("Tasks/../..", "no name in the workspace"),
+    ] {
+        let said = list(json!({"folder": outside})).await.unwrap_err();
+        assert!(said.contains(why), "{outside}: {said}");
+    }
+    for (outside, why) in [
+        ("/etc/passwd", "no leading /"),
+        ("Tasks/../../etc/passwd", "no name in the workspace"),
+        (TASK, "is a folder"),
+        ("Tasks/12 Plan the launch/never.md", "has no"),
+    ] {
+        let said = read(json!({"file": outside})).await.unwrap_err();
+        assert!(said.contains(why), "{outside}: {said}");
+    }
+    let said = list(json!({"folder": file})).await.unwrap_err();
+    assert!(said.contains("is a file, not a folder"), "{said}");
+    let said = list(json!({"device": "laptop", "folder": "/home/ada"}))
+        .await
+        .unwrap_err();
+    assert!(said.contains("names no device"), "{said}");
+    let said = read(json!({})).await.unwrap_err();
+    assert!(said.contains("names the file"), "{said}");
+}
+
+/// Call `name` with `arguments` on the tools of a turn the server carries out: the text it
+/// answered, and whether it failed.
+async fn on_turn(
+    tools: &McpServer<WorkspaceActionProvider>,
+    name: &str,
+    arguments: Value,
+) -> (String, bool) {
+    let answer = tokio::time::timeout(
+        Duration::from_secs(30),
+        tools.handle(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{name} answers in time"))
+    .unwrap_or_else(|| panic!("{name} answers"));
+    let result = answer.get("result").cloned().unwrap_or(answer);
+    let failed = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let text = result.get("content").and_then(Value::as_array).map_or_else(
+        || result.to_string(),
+        |content| {
+            content
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    );
+    (text, failed)
+}
+
+/// One of Files' verbs or reads asked through a turn's tools: what it answered, which must
+/// not be a failure.
+async fn done(tools: &McpServer<WorkspaceActionProvider>, verb: &str, arguments: Value) -> String {
+    let (text, failed) = on_turn(
+        tools,
+        "tilo_do",
+        json!({"path": format!("files#{verb}"), "args": arguments}),
+    )
+    .await;
+    assert!(!failed, "files#{verb} failed: {text}");
+    text
+}
+
+/// One of Files' verbs or reads asked through a turn's tools that the agent's rules refuse it:
+/// the words it is refused with.
+async fn not_allowed(
+    tools: &McpServer<WorkspaceActionProvider>,
+    verb: &str,
+    arguments: Value,
+) -> String {
+    let (text, failed) = on_turn(
+        tools,
+        "tilo_do",
+        json!({"path": format!("files#{verb}"), "args": arguments}),
+    )
+    .await;
+    assert!(failed, "files#{verb} was not refused: {text}");
+    assert!(text.contains("may not invoke"), "files#{verb}: {text}");
+    text
+}
+
+/// A rule that answers `deny` for `kinds` of what Files keeps in `workspace`.
+fn files_denied(
+    workspace: &str,
+    kinds: &[tilo_action_policy::ActionKind],
+) -> Vec<tilo_action_policy::Rule> {
+    let kinds = kinds
+        .iter()
+        .fold(tilo_action_policy::KindSet::NONE, |kinds, kind| {
+            kinds.with(*kind)
+        });
+    vec![tilo_action_policy::Rule::new(
+        tilo_action_policy::TreePath::workspace(workspace).app(FILES_APP),
+        kinds,
+        tilo_action_policy::Answer::Deny,
+    )]
+}
+
+/// An agent on a turn the server carries out keeps and reads the workspace's folder through
+/// that turn's tools, with the turn's bound: one nothing narrows makes the task's folder, puts
+/// a note in it, lists it and reads the note back; one held to reading lists and reads and
+/// changes nothing; one its rules refuse Files is refused every verb, the put and both reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
+    use tilo_action_policy::ActionKind::{Read, Undoable};
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (serving, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server.key.clone(),
+            device_cert: server.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = serving.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    // Ada's page keeps her device admitted; nothing is asked through it.
+    let page = Browser::open_at(&serving, &browser, &server, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    // The agent as a turn of Ada's carries it, held to `rules`.
+    let conversation =
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let scout = |rules: Vec<tilo_action_policy::Rule>| {
+        Caller::authenticated(
+            root.verifying_key().to_bytes(),
+            browser.cert.device_public_key,
+        )
+        .in_workspace(&workspace)
+        .delegated_to(SCOUT.to_owned())
+        .named("Scout")
+        .in_agent_session("agent-session:files".to_owned())
+        .on_turn(
+            tilo_action_policy::turn::Turn::new(
+                chat::summons::conversation_address(&conversation),
+                "asked".to_owned(),
+            ),
+            rules,
+        )
+    };
+    let tools = |rules: Vec<tilo_action_policy::Rule>| {
+        McpServer::for_turn(
+            WorkspaceActionProvider::new(actions.clone(), id),
+            scout(rules),
+        )
+        .unwrap()
+    };
+
+    // An agent nothing narrows: the task's folder, a note put into it, the folder listed and
+    // the note read back, all on the turn.
+    let free = tools(Vec::new());
+    let made = done(
+        &free,
+        "new-folder",
+        json!({"parent": "Tasks", "name": "12 Plan the launch"}),
+    )
+    .await;
+    assert!(made.contains(TASK), "{made}");
+    let content = uploaded(&actions, id, &scout(Vec::new()), NOTES.as_bytes()).await;
+    done(
+        &free,
+        "open",
+        json!({"content": content, "name": "notes.md", "dir": TASK}),
+    )
+    .await;
+    let listed = done(&free, "list", json!({"folder": TASK})).await;
+    assert!(listed.contains("notes.md"), "{listed}");
+    let file = format!("{TASK}/notes.md");
+    let read = done(&free, "read-text", json!({"file": file})).await;
+    assert!(read.contains("Book the hall."), "{read}");
+    let renamed = done(
+        &free,
+        "rename",
+        json!({"folder": TASK, "entry": "notes.md", "name": "Notes.md"}),
+    )
+    .await;
+    assert!(renamed.contains("Notes.md"), "{renamed}");
+    let tree = kept_when(&workspaces, &workspace, |tree| {
+        file_at(tree, TASK, "Notes.md").is_some()
+    })
+    .await;
+    assert!(file_at(&tree, TASK, "Notes.md").is_some(), "{renamed}");
+    let file = format!("{TASK}/Notes.md");
+
+    // Held to reading what Files keeps: it lists and reads, and changes nothing.
+    let reader = tools(files_denied(&workspace, &[Undoable]));
+    let listed = done(&reader, "list", json!({"folder": TASK})).await;
+    assert!(listed.contains("Notes.md"), "{listed}");
+    let read = done(&reader, "read-text", json!({"file": file})).await;
+    assert!(read.contains("Book the hall."), "{read}");
+    not_allowed(
+        &reader,
+        "trash",
+        json!({"folder": TASK, "entries": ["Notes.md"]}),
+    )
+    .await;
+    not_allowed(
+        &reader,
+        "new-folder",
+        json!({"parent": "Tasks", "name": "13 Other"}),
+    )
+    .await;
+    not_allowed(
+        &reader,
+        "open",
+        json!({"content": content, "name": "copy.md", "dir": TASK}),
+    )
+    .await;
+
+    // Refused Files by its rules: every verb, the put and both reads.
+    let refused = tools(files_denied(&workspace, &[Read, Undoable]));
+    not_allowed(&refused, "list", json!({"folder": TASK})).await;
+    not_allowed(&refused, "list", json!({})).await;
+    not_allowed(&refused, "read-text", json!({"file": file})).await;
+    not_allowed(
+        &refused,
+        "new-folder",
+        json!({"parent": "Tasks", "name": "13 Other"}),
+    )
+    .await;
+    not_allowed(
+        &refused,
+        "move",
+        json!({"from": TASK, "entries": ["Notes.md"], "to": "Elsewhere"}),
+    )
+    .await;
+    not_allowed(
+        &refused,
+        "rename",
+        json!({"folder": TASK, "entry": "Notes.md", "name": "Taken.md"}),
+    )
+    .await;
+    not_allowed(
+        &refused,
+        "copy-into",
+        json!({"from": TASK, "entries": ["Notes.md"], "to": "Elsewhere"}),
+    )
+    .await;
+    not_allowed(
+        &refused,
+        "trash",
+        json!({"folder": TASK, "entries": ["Notes.md"]}),
+    )
+    .await;
+    not_allowed(&refused, "restore", json!({"entries": ["Notes.md"]})).await;
+    not_allowed(
+        &refused,
+        "open",
+        json!({"content": content, "name": "copy.md", "dir": TASK}),
+    )
+    .await;
+
+    // Nothing either was refused changed the folder; the agent nothing narrows still reads it.
+    let tree = tree_kept(&workspaces, &workspace).await;
+    assert!(file_at(&tree, TASK, "Notes.md").is_some());
+    assert!(file_at(&tree, TASK, "copy.md").is_none());
+    assert!(file_at(&tree, TASK, "Taken.md").is_none());
+    assert!(!folder_at(&tree, "Tasks", "13 Other") && !folder_at(&tree, "", "Elsewhere"));
+    let listed = done(&free, "list", json!({"folder": TASK})).await;
+    assert!(listed.contains("Notes.md"), "{listed}");
 }

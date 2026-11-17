@@ -131,6 +131,22 @@ pub fn is_tree_verb(action: &str) -> bool {
     TREE_VERBS.contains(&action)
 }
 
+/// The read of Files that answers what a folder of the workspace holds, by a path in the
+/// workspace: names, kinds, sizes and changed times, a page at a time; or what its trash holds.
+pub const LIST: &str = "list";
+
+/// The read of Files that answers what a file of the workspace says, by a path in the
+/// workspace, a page at a time.
+pub const READ_TEXT: &str = "read-text";
+
+/// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
+/// ([`LIST`], [`READ_TEXT`]), which whoever holds its tree answers as it carries out
+/// [`TREE_VERBS`]: with no window, and with every device of its people off.
+#[must_use]
+pub fn is_tree_read(action: &str) -> bool {
+    matches!(action, LIST | READ_TEXT)
+}
+
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
 
