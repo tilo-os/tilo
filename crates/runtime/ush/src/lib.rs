@@ -26,6 +26,7 @@ pub mod command_marks;
 pub mod content;
 pub mod environment_browsers;
 pub mod environment_commands;
+pub mod environment_programs;
 pub mod file_actions;
 pub mod fleet;
 pub mod guard;

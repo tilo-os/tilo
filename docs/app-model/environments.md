@@ -518,6 +518,20 @@ person asking the member gets nothing from it, and a workspace the server does
 not govern is refused there and remembered for a while, so nothing that names
 workspaces makes the member ask again and again.
 
+A member also starts the programs its workspaces' server serves
+(`tilo_actions::remote::environment_programs`). A coding agent's program needs
+its person's model and the workspace's actions, which only the server holds,
+and where the workspace's machine is on a VM host the server cannot start it
+beside itself. So it asks that VM host's member to start the program in the
+machine, paid for by the account the server names, and the member holds it for
+the server (`crates/runtime/ush/src/environment_programs.rs`,
+`crates/hosting/tilo-server/src/placed_programs.rs`): what the program sends
+is kept, numbered, until the server says it has taken it, and what the server
+sends is handed to the program in order, each frame once. Only the workspace's
+server may ask, as a device of the member's own operator, and only as the
+program's own workspace. The member ends a program its server cancelled, and
+one its server has not asked after for ninety seconds.
+
 ## Terminal
 
 `terminal.session` gains `target: Target` (`Host | Environment { record } |

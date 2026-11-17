@@ -1,6 +1,12 @@
 //! What the coding agents' tests are built on, here and in the tests of whatever joins coding
 //! agents to a workspace: this computer as a workspace's machine, with the real launcher, and a
 //! scripted stand-in for Claude Code as the harness started in it.
+//!
+//! The machine stands for both kinds a server has. [`Local::new`] is the machine of a server
+//! that starts its workspaces' programs itself. [`Local::placed`] is the machine on another
+//! computer: what is started in it is asked of the dispatcher of a member device that takes the
+//! workspace's work, as a server whose machines are placed asks it, and every frame crosses
+//! by that member's actions both ways.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,8 +22,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_actions::remote::environment_programs::ServeProgram;
+use tilo_actions::remote::{ActionProvider, Caller};
 use tilo_lock::MutexRecover as _;
 use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
+use ush::environment_commands::EnvironmentCommands;
+use ush::environment_programs::Served;
 use ush::served_runs::ServeRun;
 use ush::served_runs::wire::{self, FromRun as FromProcess, ToRun as ToProcess};
 use ush::served_runs::{Heard, Over};
@@ -386,19 +396,84 @@ impl TestMachine {
     }
 }
 
+/// The operator whose device the member of [`Local::placed`] is, and whose server asks it.
+const OPERATOR: [u8; 32] = [7; 32];
+/// That server's own device.
+const SERVER: [u8; 32] = [1; 32];
+
+/// A machine started here, as the member that started it holds it.
+struct OnThisComputer(Arc<TestMachine>);
+
+impl Served for OnThisComputer {
+    fn tell(&self, frame: &ToProcess) -> bool {
+        Machine::tell(self.0.as_ref(), frame)
+    }
+
+    fn hear(&self, wait: Duration) -> Option<Heard> {
+        Machine::hear(self.0.as_ref(), wait)
+    }
+
+    fn cut(&self) {
+        Machine::cut(self.0.as_ref());
+    }
+}
+
 /// This computer as every workspace's machine, and what was started in it.
 pub struct Local {
     files: tempfile::TempDir,
-    started: Mutex<Vec<ServeRun>>,
-    machines: Mutex<Vec<Arc<TestMachine>>>,
+    started: Arc<Mutex<Vec<ServeRun>>>,
+    machines: Arc<Mutex<Vec<Arc<TestMachine>>>>,
+    /// The member device that starts what is started here, when this computer stands for
+    /// one that holds the machines of a server elsewhere.
+    member: Option<Arc<EnvironmentCommands>>,
 }
 
 impl Local {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             files: tempfile::tempdir().unwrap(),
-            started: Mutex::default(),
-            machines: Mutex::default(),
+            started: Arc::default(),
+            machines: Arc::default(),
+            member: None,
+        })
+    }
+
+    /// This computer as the one that holds every workspace's machine for a server elsewhere.
+    /// What is started here is asked of a member's own dispatcher, as a server whose machines
+    /// are placed asks it, and held there for the server: every frame to the program and from
+    /// it crosses by the member's actions.
+    pub fn placed() -> Arc<Self> {
+        let files = tempfile::tempdir().unwrap();
+        let started: Arc<Mutex<Vec<_>>> = Arc::default();
+        let machines: Arc<Mutex<Vec<Arc<TestMachine>>>> = Arc::default();
+        let (root, starts, kept) = (
+            files.path().to_path_buf(),
+            Arc::clone(&started),
+            Arc::clone(&machines),
+        );
+        let shells = ush::workspace_shell::WorkspaceShells::new(files.path().join(".member"), None);
+        let member = EnvironmentCommands::new(shells, OPERATOR).starting_programs_by(Box::new(
+            move |_: &str,
+                  _: &ush::workspace_shell::Payer,
+                  start: ush::environment_programs::Start|
+                  -> std::io::Result<Box<dyn Served>> {
+                let machine = TestMachine::start(
+                    &start.argv,
+                    &start.env,
+                    &start.endpoints,
+                    &root.join(&start.directory),
+                    start.stop_grace,
+                );
+                starts.lock_recover().push(start);
+                kept.lock_recover().push(Arc::clone(&machine));
+                Ok(Box::new(OnThisComputer(machine)) as Box<dyn Served>)
+            },
+        ));
+        Arc::new(Self {
+            files,
+            started,
+            machines,
+            member: Some(Arc::new(member)),
         })
     }
 
@@ -450,7 +525,23 @@ impl Local {
 }
 
 impl Machines for Local {
-    fn serve(&self, _: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
+    fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
+        if let Some(member) = &self.member {
+            let member: Arc<dyn ActionProvider + Send + Sync> = Arc::clone(member) as _;
+            let asked = ServeProgram {
+                argv: start.argv,
+                env: start.env,
+                directory: start.directory.to_string_lossy().into_owned(),
+                endpoints: start.endpoints,
+                stop_grace_ms: u64::try_from(start.stop_grace.as_millis()).unwrap(),
+                agent_program: start.agent_program,
+                account: "the-account-of-the-test".into(),
+                size: "small".into(),
+            };
+            let server = Caller::authenticated(OPERATOR, SERVER).in_workspace(workspace);
+            return crate::placed_programs::serve(member, server, &asked)
+                .map(|carried| carried as Arc<dyn Machine>);
+        }
         let machine = TestMachine::start(
             &start.argv,
             &start.env,

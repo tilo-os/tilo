@@ -21,15 +21,18 @@ use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
+use tilo_actions::remote::environment_programs::{self, ServeProgram, TellProgram};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_runtime::standalone::take_work;
+use tilo_server::placed_programs::{Machine, serve_placed};
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
+use ush::environment_programs::{Heard, Start};
 
 use crate::common::{Hosted, TestUser, device_endpoint, host_on};
 
@@ -320,6 +323,106 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         placed.member.files(&later).to_string_lossy(),
         "the second workspace's shell runs in its own files here"
     );
+
+    stop(placed).await;
+}
+
+/// `asked` at `target`, as the server asks a member about a served program.
+fn program_request(target: RemoteActionTarget, asked: &impl serde::Serialize) -> InvokeRequest {
+    let serde_json::Value::Object(argument) = serde_json::to_value(asked).unwrap() else {
+        panic!("what a member is asked is an object");
+    };
+    InvokeRequest {
+        target,
+        argument: InvokeArgument::Json(argument),
+        invocation: InvocationId::new(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_served_program_is_asked_of_the_member_holding_the_workspaces_machine() {
+    let placed = placed().await;
+
+    // The start crosses to the member as the server's own device, asking as the workspace,
+    // once the placer names it. This member has no machines, so what comes back from it is
+    // the program's end and the member's own words for why: nothing is refused on the way.
+    let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
+    let over = tokio::task::spawn_blocking(move || {
+        let start = Start {
+            argv: vec!["true".into()],
+            env: Vec::new(),
+            directory: std::path::PathBuf::new(),
+            endpoints: Vec::new(),
+            stop_grace: Duration::from_secs(1),
+            agent_program: "/bin/true".into(),
+        };
+        let program = serve_placed(&shells, &workspace, start).unwrap();
+        tilo_test_env::wait_for(
+            "the member to answer for the program",
+            || match Machine::hear(program.as_ref(), Duration::from_millis(100)) {
+                Some(Heard::Over(over)) => Some(over),
+                _ => None,
+            },
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        over.words.contains("no Linux machines"),
+        "the member's own answer is how the program ended: {over:?}"
+    );
+    assert_eq!(
+        placed.asked.load(Ordering::SeqCst),
+        2,
+        "the placer was asked again until it named the member"
+    );
+
+    // A device of another person starts nothing on the member and tells nothing there.
+    let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
+    let stranger_endpoint = device_endpoint(&stranger).await;
+    let asking = ActionService::new(stranger.sk.clone(), Arc::new(NoActions));
+    let member_device = asking.remote(
+        &stranger_endpoint,
+        &member_at(placed.member_device, &placed.member_address),
+        &placed.workspace,
+    );
+    let starting = ServeProgram {
+        argv: vec!["true".into()],
+        env: Vec::new(),
+        directory: String::new(),
+        endpoints: Vec::new(),
+        stop_grace_ms: 1000,
+        agent_program: "/bin/true".into(),
+        account: "acct-1".into(),
+        size: "small".into(),
+    };
+    let telling = TellProgram {
+        program: InvocationId::new(),
+        first: 0,
+        frames: Vec::new(),
+        taken: 0,
+    };
+    for request in [
+        program_request(environment_programs::serve_target(), &starting),
+        program_request(environment_programs::tell_target(), &telling),
+    ] {
+        let Ok(Some(answered)) = member_device
+            .invoke(&Caller::local_app("tilo.server"), request)
+            .wait_timeout(Duration::from_secs(30))
+        else {
+            panic!("the member's action service answers, and refuses it");
+        };
+        assert!(
+            matches!(answered, Err(ActionCallError::NotPermitted)),
+            "the member refuses a device of another person: {answered:?}"
+        );
+    }
 
     stop(placed).await;
 }

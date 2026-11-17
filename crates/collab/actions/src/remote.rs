@@ -53,6 +53,7 @@ pub mod crash_reports;
 pub mod downloaded_apps;
 pub mod environment_commands;
 pub mod environment_machines;
+pub mod environment_programs;
 pub mod feedback;
 pub mod host_account;
 mod nodes;
