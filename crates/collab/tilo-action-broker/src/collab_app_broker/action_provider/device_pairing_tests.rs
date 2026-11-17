@@ -5,8 +5,8 @@ use super::RowScope;
 use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
-    Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
-    RemoteActionMessage, device_pairing, pending,
+    Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
+    device_pairing, pending,
 };
 
 /// The host's pairing, standing in: it records each step it was asked
@@ -90,8 +90,7 @@ fn invoked(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     request: &InvokeRequest,
-) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>
-{
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
     state
         .action_invoke(caller, None, None, request)
         .wait_timeout(tilo_test_env::hang_bound())
@@ -184,9 +183,8 @@ fn settings_pairs_as_its_person_and_the_outcome_follows_the_host() {
         panic!("the settings fixture retains local ownership")
     };
     let certificate = admitted.certificate.as_ref().unwrap();
-    let remote =
-        Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-            .in_workspace(workspace);
+    let remote = Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
+        .in_workspace(workspace);
     assert!(
         state
             .eager_catalogue(&remote, RowScope::Provider(device_pairing::PROVIDER))
