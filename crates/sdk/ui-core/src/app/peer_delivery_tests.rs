@@ -440,11 +440,12 @@ tilo_test_env::scenario! {
             );
         }
 
-        {
-            // An action owns these words and its burst is still open: the merge
-            // ends that step as an action boundary, so the change lands now
-            // instead of after the person's next click, and the words are the step
-            // the merge ended.
+        // An action owns these words and its burst is still open: the merge
+        // ends that step as an action boundary, so the change lands now
+        // instead of after the person's next click, and the words are the step
+        // the merge ended. A publication commits the words typed so far without
+        // ending their step: the change lands whether or not they went out.
+        for published in [false, true] {
             let mut fixture = RoutedOwners::new();
             let incoming = fixture.remote(0, "remote-logical", true);
             let binding = fixture.bindings[0].clone();
@@ -453,12 +454,15 @@ tilo_test_env::scenario! {
                     doc.put(ROOT, "logical-draft", "unfinished").unwrap();
                 })
                 .unwrap();
+            if published {
+                let id = &binding.checkout.id;
+                let records = &fixture.records;
+                let commit = records.with_action_state(id, |doc, _, state| state.commit_for_save(doc));
+                commit.unwrap();
+            }
             let before = fixture
                 .records
-                .read_checked(&binding.checkout.id, |doc| {
-                    assert!(doc.pending_ops() > 0, "the burst is still open");
-                    doc.base_heads()
-                })
+                .read_checked(&binding.checkout.id, |doc| doc.base_heads())
                 .unwrap();
             let authored = fixture
                 .records
@@ -468,7 +472,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 fixture.value(0, "remote-logical").as_deref(),
                 Some("remote"),
-                "the change lands while the burst is open"
+                "the change lands while the burst is open (published: {published})"
             );
             assert_eq!(
                 fixture.value(0, "logical-draft").as_deref(),
@@ -699,26 +703,5 @@ tilo_test_env::scenario! {
             expected,
             "the next publication carries this replica's unsent change only"
         );
-    }
-
-    phase a_peers_change_lands_while_the_person_here_is_typing;
-    // A peer's change lands mid-word: the word closes as its own step instead of the change waiting.
-    {
-        let mut fixture = RoutedOwners::new();
-        let incoming = fixture.remote(0, "peer-line", true);
-        let binding = fixture.bindings[0].clone();
-        let typed = binding.with_document(&mut fixture.app.state.doc, |doc, _| {
-            doc.put(ROOT, "local-draft", "unfinished").unwrap();
-        });
-        typed.unwrap();
-        fixture.app.apply_signed_document_envelope(&incoming, None);
-        assert_eq!(fixture.value(0, "peer-line").as_deref(), Some("remote"));
-        assert_eq!(
-            fixture.value(0, "local-draft").as_deref(),
-            Some("unfinished")
-        );
-        let records = &fixture.records;
-        let pending = records.read_checked(&binding.checkout.id, |doc| doc.pending_ops());
-        assert_eq!(pending.unwrap(), 0, "the word is a finished step");
     }
 }

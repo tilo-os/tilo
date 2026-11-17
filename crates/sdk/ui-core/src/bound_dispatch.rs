@@ -4660,18 +4660,17 @@ impl CallbackBinding {
     /// as [`Self::close_open_step`] makes one, but only for a step an open
     /// action names: an unnamed change is one the identity service refuses
     /// to sign, so its step stays open for its boundary. Whether a
-    /// named step closed.
+    /// named step closed. A publication commits the step's words without
+    /// ending it, so the step is open whether or not they are committed.
     pub(crate) fn close_named_step(
         &self,
         outer: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let pending_named_action = self
+        let pending_action = self
             .records
-            .with_action_state(&self.checkout.id, |doc, _, state| {
-                doc.pending_ops() != 0 && state.pending.is_some()
-            })
+            .with_action_state(&self.checkout.id, |_, _, state| state.pending.is_some())
             .map_err(BoundDispatchError::Record)?;
-        if !pending_named_action {
+        if !pending_action {
             return Ok(false);
         }
         self.with_document(outer, |doc, _| {
