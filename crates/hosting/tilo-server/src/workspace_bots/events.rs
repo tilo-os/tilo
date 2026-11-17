@@ -521,6 +521,7 @@ impl PersonEvents {
         }
         .checked()
         .map_err(refused)?;
+        watched_address(&definition).map_err(refused)?;
         let id = definition.id.clone();
         let event = self.begin(owner, definition).map_err(unavailable)?;
         let note = NoteChange {
@@ -566,6 +567,7 @@ impl PersonEvents {
             definition.instruction = instruction;
         }
         let definition = definition.checked().map_err(refused)?;
+        watched_address(&definition).map_err(refused)?;
         let note = NoteChange {
             instruction: asked.purpose,
             style: asked.style,
@@ -609,6 +611,23 @@ fn listed(theirs: &BTreeMap<String, Running>) -> Events {
     let mut events: Vec<EventView> = theirs.values().map(view).collect();
     events.sort_by(|a, b| (a.set_up_at_ms, &a.id).cmp(&(b.set_up_at_ms, &b.id)));
     Events { events }
+}
+
+/// Why the address `definition` has this server look at on the web is not
+/// one it fetches, when it is not: this server's own network, an address
+/// that is not public, one with a password in it. Said when the event is
+/// described; the fetch refuses the same at every look, a name by what it
+/// resolves to then.
+pub(super) fn watched_address(definition: &Definition) -> Result<(), String> {
+    let Ok(TriggerSpec::SourceChanged { kind, at, .. }) = definition.trigger() else {
+        return Ok(());
+    };
+    if !tilo_automation::source_change::looked_at(&kind) {
+        return Ok(());
+    }
+    let address =
+        tilo_net::Url::parse(&at).map_err(|error| format!("not a web address: {error}"))?;
+    tilo_web_search::check_url(&address).map_err(|refusal| refusal.to_string())
 }
 
 /// `event` as its person reads it now.
@@ -749,8 +768,16 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
              account its person named you for; `at \"ACCOUNT\"` after the kind keeps it to one \
              account, and each `where` names a field of the message and the value it holds, \
              such as `from` for the sender's address; what you are told carries who wrote, \
-             what about and the start of the words, as data), or a change in the workspace as \
-             a Shortcut writes it.",
+             what about and the start of the words, as data), `when something new is in \
+             \"tilo.web.feed\" at \"https://example.org/feed.xml\"` (a feed on the public web \
+             lists an entry it did not list before; you are told its title, link, date and \
+             summary, as data), `when something new is in \"tilo.web.page\" at \
+             \"https://example.org/prices\"` (the text a person reads on a public page \
+             changed; you are told the new lines, as data), or a change in the workspace as \
+             a Shortcut writes it. A feed or a page is looked at by the server every hour, \
+             with no model, and starts you only when something is new; `looked at every 900 \
+             seconds` after the address sets how often, 300 at the least. A page behind a \
+             sign-in is not read. When the source stays unreachable you are told once.",
         ),
         needed(
             "instruction",

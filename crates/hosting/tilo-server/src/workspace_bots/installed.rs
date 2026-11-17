@@ -257,6 +257,15 @@ pub struct BotRunner {
     /// The mail of the person the program is carried out for, heard for as
     /// long as one of its triggers waits on it.
     mail: Option<sources::Mail>,
+    /// What looks at the sources outside the program waits on.
+    outside: sources::Outside,
+    /// The next look at a source outside the program waits on, ms since the
+    /// epoch, so its idle wait ends at it too.
+    next_source_ms: Option<i64>,
+    /// Since when the source that is gone now is, as it was last kept where
+    /// the program's last end is read: kept once, and again only after
+    /// something else was kept there.
+    gone_said: Option<i64>,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
     /// Records of the workspace the bot follows that this host could not read
@@ -360,6 +369,9 @@ impl BotRunner {
             person: None,
             next_time_ms: None,
             mail: None,
+            outside: sources::Outside::default(),
+            next_source_ms: None,
+            gone_said: None,
             kept: Mutex::new(BTreeSet::new()),
             unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
@@ -470,6 +482,7 @@ impl BotRunner {
                 .into_iter()
                 .chain(self.next_schedule_ms)
                 .chain(self.next_time_ms)
+                .chain(self.next_source_ms)
                 .min()
                 .map_or(IDLE, |at| {
                     Duration::from_millis(
@@ -552,11 +565,13 @@ impl BotRunner {
                 }
             };
             self.ran(again, stopped);
+            self.gone_said = None;
             if let Finished::DeadLettered(dead) = finished {
                 self.progress.bury(&self.bot.installation, *dead);
             }
             self.keep()?;
         }
+        self.keep_gone();
         Ok(reports)
     }
 

@@ -114,15 +114,24 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
 }
 
 /// A trigger on something new in a source: the kind of source, which one of
-/// that kind when it names one, and each match that narrows what is new.
-/// Nothing for any other trigger.
+/// that kind when it names one, how often it is looked at when it says so,
+/// and each match that narrows what is new. Nothing for any other trigger.
 fn source_change_text(trigger: &TriggerSpec) -> String {
-    let TriggerSpec::SourceChanged { kind, at, filter } = trigger else {
+    let TriggerSpec::SourceChanged {
+        kind,
+        at,
+        every_secs,
+        filter,
+    } = trigger
+    else {
         return String::new();
     };
     let mut line = format!("when something new is in {}", quoted(kind));
     if !at.is_empty() {
         let _ = write!(line, " at {}", quoted(at));
+    }
+    if let Some(seconds) = every_secs {
+        let _ = write!(line, " looked at every {seconds} seconds");
     }
     for (name, value) in filter {
         let _ = write!(line, " where {name} is {}", literal_text(value));
@@ -322,13 +331,27 @@ fn resource_time(offset_secs: i64, rest: &str) -> Result<TriggerSpec, String> {
 }
 
 /// The rest of a trigger on something new in a source: the kind of source
-/// in quotation marks, which one of that kind after `at`, and the matches
-/// that narrow what is new.
+/// in quotation marks, which one of that kind after `at`, how often it is
+/// looked at after `looked at every`, and the matches that narrow what is
+/// new.
 fn source_change(rest: &str) -> Result<TriggerSpec, String> {
     let (kind, rest) = text_at(rest)?;
     let (at, rest) = match rest.trim_start().strip_prefix("at ") {
         Some(named) => text_at(named)?,
         None => (String::new(), rest),
+    };
+    let (every_secs, rest) = match rest.trim_start().strip_prefix("looked at every ") {
+        Some(period) => {
+            let (seconds, rest) = period.split_once(" seconds").ok_or_else(|| {
+                "write how often a source is looked at as `looked at every N seconds`".to_owned()
+            })?;
+            let seconds: u64 = seconds
+                .trim()
+                .parse()
+                .map_err(|_| format!("`{seconds}` is not a number of seconds"))?;
+            (Some(seconds), rest)
+        }
+        None => (None, rest),
     };
     let mut filter = serde_json::Map::new();
     let mut rest = rest.trim_start().to_owned();
@@ -338,7 +361,12 @@ fn source_change(rest: &str) -> Result<TriggerSpec, String> {
         rest = tail;
     }
     require_nothing_after(&rest, "the source")?;
-    Ok(TriggerSpec::SourceChanged { kind, at, filter })
+    Ok(TriggerSpec::SourceChanged {
+        kind,
+        at,
+        every_secs,
+        filter,
+    })
 }
 
 pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {

@@ -638,11 +638,15 @@ pub enum TriggerSpec {
     /// of what is new ([`crate::resource_time::matches`]). The trigger fires
     /// once for each new thing, never for what the source held before the
     /// trigger was first seen, and what is new goes with the invocation as
-    /// its event.
+    /// its event. A source that tells nobody of what is new is looked at on a
+    /// clock ([`crate::source_change::looked_at`]), every `every_secs`
+    /// seconds, or as often as whoever looks keeps to when it names none.
     SourceChanged {
         kind: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        every_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
     },
