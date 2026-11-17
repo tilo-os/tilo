@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tilo_session_client::{Link, Outbox};
 
+use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use collab_types::{
     DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
@@ -80,6 +81,33 @@ fn held(peer: &Link) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Commit the pending change as the notes app's executor commits an edit of
+/// `page`, one item of the pages collection.
+fn commit_page_edit(document: &mut automerge::AutoCommit, page: &str) {
+    use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, PathStep};
+    let kind = "notes.pages";
+    let context = ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: kind.to_owned(),
+            field: "pages".to_owned(),
+            path: vec![
+                PathStep::Field("pages".to_owned()),
+                PathStep::Item(page.to_owned()),
+            ],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })),
+        ..ActionContext::for_resource(kind, kind, kind)
+    };
+    let mut options = automerge::transaction::CommitOptions::default();
+    if let Some(message) = context.change_message() {
+        options.set_message(message);
+    }
+    document.commit_with(options).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_decides_it() {
     // The page runs no app of its own: every change it receives names a
@@ -124,25 +152,49 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     .await;
     laptop.join().await;
 
-    // The record's history: the record started empty, as an app starts one,
-    // then three page edits, each naming a field of the notes app as its
+    // The record's history: the record as the notes app starts one, its pages
+    // a unit each, then three page edits, each naming the kind and field its
     // executor does, so every edit carries the claim the receiver decides
     // against the app's surface. Every write is sealed with the record's
     // content key.
     let mut document = automerge::AutoCommit::new();
-    let mut writes = vec![(DocumentMutation::Snapshot(document.save()), None)];
+    let units = document
+        .put_object(
+            automerge::ROOT,
+            collab_types::units::UNIT_INDEX,
+            automerge::ObjType::List,
+        )
+        .unwrap();
+    document.insert(&units, 0, "pages/*").unwrap();
+    let pages = document
+        .put_object(automerge::ROOT, "pages", automerge::ObjType::Map)
+        .unwrap();
+    document.commit();
+    let mut writes = vec![(
+        DocumentMutation::Snapshot(document.save()),
+        None,
+        Vec::new(),
+    )];
     for page_number in 1..=3 {
+        let before = document.clone();
+        let page = format!("page-{page_number}");
         document
-            .put(automerge::ROOT, "pages", format!("page {page_number}"))
+            .put(&pages, page.clone(), format!("page {page_number}"))
             .unwrap();
-        collab_types::CommitNamed::commit_edit(&mut document, "notes.notebook", "pages");
-        writes.push((
-            DocumentMutation::Incremental(document.save_incremental()),
-            Some(*blake3::hash(&surface).as_bytes()),
-        ));
+        commit_page_edit(&mut document, &page);
+        let mutation = DocumentMutation::Incremental(document.save_incremental());
+        let claims = collab_types::parse_changes(mutation.data())
+            .unwrap()
+            .iter()
+            .map(|change| {
+                let units = collab_types::units::written_units(&before, change).unwrap();
+                collab_types::ChangeClaim::of_change(change.hash().0, change.message(), units)
+                    .unwrap()
+            })
+            .collect();
+        writes.push((mutation, Some(*blake3::hash(&surface).as_bytes()), claims));
     }
-    for (seq, (mutation, named)) in (1..).zip(writes) {
-        let claims = collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
+    for (seq, (mutation, named, claims)) in (1..).zip(writes) {
         let frame = mutation.encode().unwrap();
         let (metadata, sealed) = laptop.seal(&note, &frame);
         let op = SignedOp::new_unsigned_with_encryption(
@@ -182,9 +234,11 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         }
     })
     .await;
-    assert!(
-        crate::support::said(&page, &note).is_empty(),
-        "no edit of the record is opened before its surface arrives"
+    let opened = crate::support::resource_of(&page, &note).expect("the record's start is opened");
+    assert_eq!(
+        opened.length(&pages),
+        0,
+        "no page edit is opened before its surface arrives"
     );
 
     // The page asked its workspace for that surface. The host answers, and
