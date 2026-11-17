@@ -181,7 +181,7 @@ pub use tilo_server_session::workspaces::{
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
     HostedWorkspace, IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest, UNHOST_WORKSPACE, WorkspaceListing,
-    WorkspaceSummary, ask_host,
+    WorkspaceSummary, ask_host, enter_invitation,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -905,6 +905,9 @@ pub(crate) struct WorkspaceServices {
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
     pub(crate) agents: crate::peer::AgentRegistry,
+    /// The devices this server certified and placed itself, for the windows in its workspaces'
+    /// machines ([`crate::environment`]): none of them is a device of a person's own.
+    pub(crate) environments: crate::environment::EnvironmentRegistry,
     /// The work this device takes: it serves a workspace placed on it only when the setting
     /// takes the placing person's work.
     pub(crate) work: tilo_server_protocol::WorkSetting,

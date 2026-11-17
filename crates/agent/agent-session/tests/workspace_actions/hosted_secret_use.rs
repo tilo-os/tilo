@@ -90,8 +90,9 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
 
 /// A server with one person, their assistant on it, and their own model.
 pub(super) struct Hosted {
-    /// The server itself, kept running until the test ends.
-    _server: Box<dyn std::any::Any>,
+    /// The server itself, kept running until the test ends: a test that needs something of
+    /// the server's own reads it here.
+    server: Box<dyn std::any::Any>,
     pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
@@ -193,7 +194,7 @@ impl Hosted {
         });
         let agents = HostAgents::new(workspaces.clone(), actions.clone(), None).placing(browsers);
         Self {
-            _server: Box::new(server),
+            server: Box::new(server),
             actions,
             workspaces,
             workspace,
@@ -637,6 +638,10 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
 /// What a person's "Always" to a question its agent reworded does: nothing.
 #[path = "hosted_reworded_question.rs"]
 mod reworded;
+
+/// Which device of its person a turn acts as beside the device the server placed for a window.
+#[path = "hosted_placed_window.rs"]
+mod placed_window;
 
 /// The same server, person and assistant, using a service the person connected.
 #[path = "hosted_connections.rs"]
