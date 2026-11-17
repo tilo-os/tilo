@@ -605,6 +605,13 @@ impl DeviceLists {
     fn invitations(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
+        if let Some(asked) = engine.ask_own_service(
+            workspace_id,
+            tilo_workspace_service::workspaces::INVITATIONS,
+            serde_json::Map::new(),
+        ) {
+            return Ok(answered_by_service(asked, Ok));
+        }
         let invitations = engine
             .invitations(&workspace_id.to_string(), std::time::SystemTime::now())
             .map_err(ApiError::Failed)?;
@@ -623,6 +630,15 @@ impl DeviceLists {
     ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("invite".to_owned(), invite.into());
+        if let Some(asked) = engine.ask_own_service(
+            workspace_id,
+            tilo_workspace_service::workspaces::CANCEL_INVITATION,
+            arguments,
+        ) {
+            return Ok(answered_by_service(asked, Ok));
+        }
         let cancelled = engine
             .cancel_invitation(
                 &workspace_id.to_string(),
@@ -647,7 +663,7 @@ impl DeviceLists {
         workspace: Option<&str>,
     ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
-        let room = self.workspace_id(workspace)?;
+        let workspace_id = self.workspace_id(workspace)?;
         let (role, makes_administrator) = match role {
             None => (Role::Editor, false),
             // An administrator joins as an Editor and is made one by the
@@ -675,9 +691,48 @@ impl DeviceLists {
             })
             .transpose()?;
         let invitee_name = match (invitee_name, recipient) {
-            (None, Some(recipient)) => engine.name_of(&room.to_string(), recipient),
+            (None, Some(recipient)) => engine.name_of(&workspace_id.to_string(), recipient),
             (name, _) => name,
         };
+        let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
+        let mut arguments = serde_json::Map::new();
+        let place = if makes_administrator {
+            "administrator"
+        } else {
+            role.key()
+        };
+        arguments.insert("role".to_owned(), place.into());
+        arguments.insert("expires_in_seconds".to_owned(), expires_in.into());
+        if let Some(name) = &invitee_name {
+            arguments.insert("invitee_name".to_owned(), name.clone().into());
+        }
+        if let Some(recipient) = recipient {
+            arguments.insert("recipient".to_owned(), hex::encode(recipient).into());
+        }
+        if let Some(asked) = engine.ask_own_service(
+            workspace_id,
+            tilo_action_policy::roles::governance::INVITE,
+            arguments,
+        ) {
+            let role = role.key();
+            return Ok(answered_by_service(asked, move |issued| {
+                let signed = issued
+                    .get("invitation")
+                    .and_then(Value::as_str)
+                    .map(hex::decode)
+                    .transpose()
+                    .map_err(|_| "the workspace service sent an invalid invitation".to_owned())?
+                    .ok_or("the workspace service answered no invitation")?;
+                let link = tilo_peer_state::join::encode_invitation_text(&signed);
+                Ok(serde_json::json!({
+                    "invite": issued.get("invite"),
+                    "link": link,
+                    "role": role,
+                    "administrator": makes_administrator,
+                    "expires_at_ns": issued.get("expires_at_ns"),
+                }))
+            }));
+        }
         // The link names this device, which answers whoever redeems it: a session taking part in no
         // transport has no address to name, and one that has says where it is reached through its
         // relay, so the link works from behind any network ([`crate::sync::Client::invitation_addr`]).
@@ -694,13 +749,12 @@ impl DeviceLists {
         // device's signer, which may answer only later: the asker hears it once signed, and the
         // loop goes on meanwhile.
         let engine = std::sync::Arc::clone(engine);
-        let room = room.to_string();
-        let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
+        let workspace_id = workspace_id.to_string();
         Ok(Started::Later(crate::landing::off_loop(async move {
             let endpoint = endpoint.await;
             let issued = engine
                 .issue_invitation(
-                    &room,
+                    &workspace_id,
                     tilo_session_client::engine::Part {
                         role,
                         administrator: makes_administrator,
@@ -804,6 +858,20 @@ impl DeviceLists {
 
 /// A pending invitation as listing invitations reports it, in the workspace host's own words: a
 /// client that lists them from a host reads the same fields.
+/// What this device's own workspace service answered `asked`, as `shape` puts it.
+fn answered_by_service(
+    asked: std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>,
+    shape: impl FnOnce(Value) -> Result<Value, String> + Send + 'static,
+) -> Started {
+    Started::Later(crate::landing::off_loop(async move {
+        let value = asked.await.and_then(shape).map_err(ApiError::Failed)?;
+        Ok(tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        })
+    }))
+}
+
 fn invitation_json(invitation: &PendingInvitation) -> Value {
     serde_json::json!({
         "invite": hex::encode(invitation.invite_id),

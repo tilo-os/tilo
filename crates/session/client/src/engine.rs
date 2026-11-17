@@ -246,8 +246,9 @@ pub struct Engine {
     founder: std::sync::OnceLock<Arc<dyn Founder>>,
 }
 
-/// Founds a workspace this device made: places it on this device's own workspace service and
-/// enrolls this device in it as a member.
+/// What this device asks its own workspace service, once it is open: founding a workspace this
+/// device made there, and asking a workspace held there one of its governance actions as this
+/// device, a member of it.
 pub trait Founder: Send + Sync {
     /// Found `workspace` under `name`, answered once this device holds it.
     fn found(
@@ -255,6 +256,19 @@ pub trait Founder: Send + Sync {
         workspace: WorkspaceId,
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+
+    /// Ask `workspace`'s governance action `action` with `arguments`, when the service holds
+    /// `workspace`; `None` when it does not.
+    fn ask(
+        &self,
+        workspace: WorkspaceId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        >,
+    >;
 }
 
 /// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
@@ -1905,6 +1919,22 @@ impl Engine {
         let _ = self.founder.set(founder);
     }
 
+    /// Ask `workspace`'s governance action `action` with `arguments` of this device's own
+    /// workspace service, when it holds `workspace`.
+    #[must_use]
+    pub fn ask_own_service(
+        &self,
+        workspace: WorkspaceId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        >,
+    > {
+        self.founder.get()?.ask(workspace, action, arguments)
+    }
+
     /// Name where this device's own host of each workspace it hosts is reached at `endpoint`:
     /// where members and anyone a link reaches dial it. A record that says nothing gets the
     /// address, and one naming another server gets it again ([`NativeWorkspaceOwner::name_host`]),
@@ -2201,9 +2231,9 @@ mod tests {
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
 
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
             // Again, as every pass over the layout does: one workspace, still the one the layout made.
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             assert!(
                 engine.holds(workspace),
@@ -2235,7 +2265,7 @@ mod tests {
             let host = identity.device_cert.device_public_key;
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             let hint = engine
                 .owner
@@ -2261,7 +2291,7 @@ mod tests {
             let host = identity.device_cert.device_public_key;
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             let hints = engine.host_hints();
             assert_eq!(hints.len(), 1, "one hint for the one workspace held");
@@ -2280,7 +2310,7 @@ mod tests {
             let (identity, _) = identity(DeviceCapabilities::member());
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", None));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             assert!(
                 engine.holds(workspace),
@@ -2308,7 +2338,7 @@ mod tests {
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
 
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             assert!(!engine.holds(workspace));
             assert!(!engine.may_invite(&workspace.to_string()));
@@ -2328,7 +2358,7 @@ mod tests {
             let at = endpoint(&identity);
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             let issued = pollster::block_on(engine.issue_invitation(
                 &workspace.to_string(),
@@ -2365,7 +2395,7 @@ mod tests {
                 .expect("a device endpoint");
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
             let named = || {
                 engine
                     .owner
@@ -2414,7 +2444,7 @@ mod tests {
             let at = endpoint(&identity);
             let engine = engine(state.path(), identity);
             let workspace = WorkspaceId::new();
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
 
             assert!(
                 engine.may_delete(workspace),
@@ -2464,7 +2494,7 @@ mod tests {
         .expect("the group's keys");
         {
             let engine = engine(state.path(), laptop);
-            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office"));
             engine.hand_keys(workspace, keys.clone());
             pollster::block_on(engine.write_resource(
                 workspace,

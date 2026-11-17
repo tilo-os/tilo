@@ -156,4 +156,30 @@ impl tilo_session_client::engine::Founder for Founding {
             .map_err(|failure| failure.to_string())
         })
     }
+
+    fn ask(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        >,
+    > {
+        let engine = self.engine.upgrade()?;
+        let workspace = workspace.to_string();
+        // The service holds a workspace this device is the holder of: it shares this device's key.
+        if !engine.hosts_itself(&workspace) {
+            return None;
+        }
+        let service = self.service.get()?;
+        let caller = self.identity.device_cert.clone();
+        let action = action.to_owned();
+        Some(Box::pin(async move {
+            service
+                .ask_workspace(&caller, &workspace, &action, arguments)
+                .await
+        }))
+    }
 }

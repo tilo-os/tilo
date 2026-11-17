@@ -91,9 +91,9 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
-pub(crate) const INVITATIONS: &str = "invitation.list";
+pub const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
-pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
+pub const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
