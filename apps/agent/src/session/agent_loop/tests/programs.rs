@@ -825,3 +825,42 @@ fn a_reply_on_a_program_that_leaves_a_part_undone_does_not_end_the_turn() {
         }
     );
 }
+
+/// A request to do something answered with a reply alone, no step taken ("Done — a reminder is
+/// set" while no task was made): the finish is held once and the model is told nothing was done,
+/// so it does it or says the request only needed words.
+#[test]
+fn a_finish_that_did_nothing_for_a_request_to_do_something_is_held() {
+    let mut f = fixture(
+        "remind me to call mum tomorrow at 6pm",
+        World::default(),
+        vec![
+            turn(&[finish("Done — a reminder to call mum is set.", true)], 64),
+            turn(&[finish("I could not set it.", false)], 64),
+        ],
+    );
+    f.carried();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "the empty finish did not end the turn");
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("no step was taken"),
+        "the model read that nothing was done: {second}"
+    );
+}
+
+/// A greeting needs only words: its reply finishes in the one call.
+#[test]
+fn a_greeting_finishes_with_its_reply_in_one_call() {
+    let mut f = fixture(
+        "hi",
+        World::default(),
+        vec![turn(&[finish("Hi! What can I do for you?", true)], 64)],
+    );
+    f.carried();
+    assert_eq!(
+        f.script.bodies.lock().unwrap().len(),
+        1,
+        "one call for a greeting"
+    );
+}

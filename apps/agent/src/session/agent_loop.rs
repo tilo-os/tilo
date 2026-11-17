@@ -59,7 +59,9 @@ const MOST_STEPS_TOLD: usize = 64;
 
 mod pictures;
 use pictures::MOST_PICTURES;
+mod empty_finish;
 mod program_steps;
+use empty_finish::EmptyFinish;
 
 mod answer;
 mod compaction;
@@ -428,6 +430,8 @@ pub(super) struct LoopState {
     unable: Vec<String>,
     /// Whether the person asked a question: its answer is the reply, never an operation.
     question: bool,
+    /// What a finish that did nothing is held against ([`Self::hold_empty_finish`]).
+    empty_finish: EmptyFinish,
     /// Finishes refused for undone parts in this task.
     refusals: usize,
     /// Turns so far that only looked things up.
@@ -672,6 +676,7 @@ impl LoopState {
             done_apps: HashMap::new(),
             unable: Vec::new(),
             question: false,
+            empty_finish: EmptyFinish::default(),
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
@@ -1477,6 +1482,7 @@ impl Session {
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 let handling = ui::time::now();
+                state.empty_finish.saw(&call.name);
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
                 stepping += handling.elapsed();
                 let cancelled = fold_settled(state, &mut results, &mut finish);
@@ -1718,6 +1724,7 @@ impl Session {
                 name: call.name.clone(),
                 input: call.input.clone(),
             };
+            state.empty_finish.saw(&streamed.name);
             let handled = self.handle_call(run, state, &streamed, &mut failed)?;
             let cancelled = fold_settled(state, &mut results, &mut finish);
             if let Some(message) =
@@ -2037,6 +2044,38 @@ impl Session {
         })
     }
 
+    /// The turn's finish (`plan`): what it says of the request's parts is kept, and it ends the turn
+    /// unless it is held (a finish that did nothing, an answer view that is refused).
+    fn finish_call(
+        &mut self,
+        asked: &Asked,
+        state: &mut LoopState,
+        call: &StreamedCall,
+    ) -> Result<Handled> {
+        let mut input = call.input.clone();
+        self.name_part_applications(&mut input);
+        state.absorb_parts(&input);
+        let finish = tools::read_finish(&input);
+        // A reply cannot say a request to do something was done when nothing was:
+        // "remind me to call mum tomorrow at 6pm" answered "Done — a reminder is set"
+        // with no step taken, and the turn ended succeeded with no task made.
+        if let Some(held) = state.hold_empty_finish(
+            asked.request(),
+            finish
+                .reply
+                .as_deref()
+                .is_some_and(|reply| !reply.trim().is_empty()),
+        ) {
+            return Ok(Handled::Result(held));
+        }
+        if let Some(view) = &finish.view
+            && let Err(refused) = self.keep_view_answer(asked, state, view)?
+        {
+            return Ok(Handled::Result(refused));
+        }
+        Ok(Handled::Finish(finish))
+    }
+
     fn handle_call(
         &mut self,
         run: &Asked,
@@ -2052,18 +2091,7 @@ impl Session {
         // reads is listed, however many steps share a note.
         self.tell_step(run, state, call)?;
         match call.name.as_str() {
-            tools::PLAN => {
-                let mut input = call.input.clone();
-                self.name_part_applications(&mut input);
-                state.absorb_parts(&input);
-                let finish = tools::read_finish(&input);
-                if let Some(view) = &finish.view
-                    && let Err(refused) = self.keep_view_answer(run, state, view)?
-                {
-                    return Ok(Handled::Result(refused));
-                }
-                Ok(Handled::Finish(finish))
-            }
+            tools::PLAN => self.finish_call(run, state, call),
             crate::programs::TILO => {
                 // A program may be the request's first step: what a step says of the request (the
                 // separate things it asks for, how far it got, what cannot be done) rides on
