@@ -76,7 +76,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         let a_session = ServerCoeditSession::join(a_client, COEDIT_WORKSPACE, a_key).unwrap();
-        let ready = tilo_test_env::within("a message on a_session", async {
+        tilo_test_env::within("a message on a_session", async {
             loop {
                 match a_session.recv().await {
                     Some(tilo_server::Inbound::Ready { .. }) => break,
