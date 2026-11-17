@@ -1887,7 +1887,8 @@ impl<R: Resource> Dispatcher<R> {
 
     /// The dispatcher of a record the app keeps beside its own in the workspace,
     /// published at `id` (the parts of a chain): its queued invocations are
-    /// addressed to `id`, `apply` applies one now, and what an action needs
+    /// addressed to `id`, `apply` applies one now, `apply_group` several
+    /// invoked as one, and what an action needs
     /// is its own declared need, checked against the member's roles in
     /// the workspace as this resource's actions are.
     pub(crate) fn for_workspace_resource<C: Resource>(
@@ -1895,11 +1896,12 @@ impl<R: Resource> Dispatcher<R> {
         id: &str,
         read_only: bool,
         apply: impl Fn(&C::Action) -> Result<(), ActionError> + 'static,
+        apply_group: impl Fn(&tilo_resource::group::ActionGroup<C::Action>) -> Result<(), ActionError>
+        + 'static,
     ) -> Dispatcher<C> {
         let mut core = self.core.for_resource(id, (C::KIND, C::LABEL), read_only);
         core.permissions = Rc::clone(&self.core.permissions);
         let apply = Rc::new(apply);
-        let grouped = Rc::clone(&apply);
         // The step the last gesture written here joined, and the input event
         // it was written in: a gesture that continues it (the next letter of
         // a word) joins it, and so does another opened in the same event (a
@@ -1936,14 +1938,13 @@ impl<R: Resource> Dispatcher<R> {
                 });
                 in_step(step, || (*apply)(action))
             }),
-            // A group's members are written in one step of their own, which
-            // the record's history takes back as one.
+            // A group's members are written together, checked as a whole (a
+            // start and an end that move together never pass through an
+            // event that ends before it starts), in one step of their own
+            // that history takes back as one.
             group_now: Some(Rc::new(move |_, _, group, _| {
                 in_step(Some(tilo_actions::ActionId::default()), || {
-                    group
-                        .actions
-                        .iter()
-                        .try_for_each(|action| (*grouped)(action))
+                    apply_group(group)
                 })
             })),
             last: Rc::default(),

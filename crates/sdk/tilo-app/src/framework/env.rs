@@ -275,9 +275,9 @@ impl<R: Resource> ResourceEnv<R> {
         // member's own record (Mail's) is theirs to write, so its window's
         // dispatcher is not read-only.
         let read_only = self.dispatch.read_only() || self.dispatch.is_past();
-        let dispatch = super::chain::dispatching(&state, &me, |apply| {
+        let dispatch = super::chain::dispatching(&state, &me, |apply, group| {
             self.dispatch
-                .for_workspace_resource::<P>(state.id(), read_only, apply)
+                .for_workspace_resource::<P>(state.id(), read_only, apply, group)
         });
         Some(super::Chain::new(state, dispatch))
     }

@@ -651,3 +651,29 @@ tilo_test_env::scenario! {
         assert_eq!(marked(&chain), [true, false, false, true]);
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_group_submitted_through_the_chains_dispatcher_is_one_step;
+
+    phase undo_takes_back_every_member_at_once;
+    {
+        let store = device();
+        let chain = chain_in(&store, "ada");
+        let group = Invoke::group([
+            LogPart::WRITE.with(log_part::Write { text: "one".into() }),
+            LogPart::WRITE.with(log_part::Write { text: "two".into() }),
+        ]);
+        let mut scratch = tilo_app::automerge::AutoCommit::new();
+        chain
+            .dispatcher()
+            .submit_now(&mut tilo_app::widget::Edits::lend(&mut scratch), group)
+            .unwrap();
+        let written: Vec<String> = texts(&chain.parts()).into_iter().map(|(_, text)| text).collect();
+        assert_eq!(written, ["one", "two"]);
+        // Written as one change, checked as a whole: one step, not one per
+        // member.
+        assert!(chain.undo_last(), "one step");
+        assert!(texts(&chain.parts()).is_empty(), "both members taken back");
+        assert!(!chain.undo_last(), "nothing more to take back");
+    }
+}

@@ -1,5 +1,6 @@
 //! A chain's dispatcher: what applies an action a view submits to the part
-//! it changes, as the window's person or whoever the invocation is for.
+//! it changes, and several submitted as one, as the window's person or
+//! whoever the invocation is for.
 
 use std::any::Any;
 use std::rc::Rc;
@@ -7,7 +8,18 @@ use std::rc::Rc;
 use tilo_actions::ActionError;
 
 use super::super::dispatch::Dispatcher;
-use super::{ChainState, Chained, Later};
+use super::{ChainState, Chained, Later, Write};
+
+/// What a chain's dispatcher applies one action with.
+pub(super) type Applies<P> =
+    Box<dyn Fn(&<P as tilo_resource::Resource>::Action) -> Result<(), ActionError>>;
+
+/// What it applies several actions invoked as one with.
+pub(super) type AppliesGroup<P> = Box<
+    dyn Fn(
+        &tilo_resource::group::ActionGroup<<P as tilo_resource::Resource>::Action>,
+    ) -> Result<(), ActionError>,
+>;
 
 /// The dispatcher of a chain outside any host, applying as `me`.
 pub(super) fn detached_dispatch<P: Chained>(
@@ -15,11 +27,12 @@ pub(super) fn detached_dispatch<P: Chained>(
     state: &Rc<ChainState>,
     me: &tilo_resource::MemberId,
 ) -> Dispatcher<P> {
-    dispatching(state, me, |apply| {
+    dispatching(state, me, |apply, group| {
         Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_resource::<P>(
             state.id(),
             false,
             apply,
+            group,
         )
     })
 }
@@ -29,22 +42,43 @@ pub(super) fn detached_dispatch<P: Chained>(
 type Told = Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::super::dispatch::Refused>>>>;
 
 /// The dispatcher `make` makes of what applies an action to `state`'s parts
-/// as `me` ([`ChainState::apply_as`]): one that waits for its part is taken,
+/// as `me` ([`ChainState::apply_as`]), and of what applies several invoked as
+/// one, as one change per part: one that waits for its part is taken,
 /// as written; refused once its part arrived, it is told in the
 /// dispatcher's [`refused`](Dispatcher::refused) as one the workspace
 /// refused after this device showed it.
 pub(crate) fn dispatching<P: Chained>(
     state: &Rc<ChainState>,
     me: &tilo_resource::MemberId,
-    make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
+    make: impl FnOnce(Applies<P>, AppliesGroup<P>) -> Dispatcher<P>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
+    let grouping = Rc::downgrade(state);
     let me = me.clone();
+    let grouping_me = me.clone();
     let told: Told = Rc::default();
     let telling = Rc::clone(&told);
-    let dispatch = make(Box::new(move |action| {
-        apply_dispatched(&applying, &me, &telling, action)
-    }));
+    let dispatch = make(
+        Box::new(move |action| apply_dispatched(&applying, &me, &telling, action)),
+        Box::new(move |group| {
+            let state = grouping
+                .upgrade()
+                .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
+            let members: Vec<Box<dyn Any>> = group
+                .actions
+                .iter()
+                .map(|member| Box::new(member.clone()) as Box<dyn Any>)
+                .collect();
+            let invoker = super::super::resources::acting(&grouping_me);
+            match state.try_apply_group(&members, &invoker)? {
+                Write::Done(written, _) => {
+                    state.wrote(&invoker, written, true);
+                    Ok(())
+                }
+                Write::Arriving => Ok(()),
+            }
+        }),
+    );
     let _ = told.set(dispatch.refused());
     dispatch
 }
