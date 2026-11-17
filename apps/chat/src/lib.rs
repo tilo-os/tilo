@@ -100,6 +100,7 @@ mod sidebar;
 pub mod summons;
 mod timeline;
 pub mod transcript;
+mod view_alone;
 pub mod views;
 mod window_bar;
 

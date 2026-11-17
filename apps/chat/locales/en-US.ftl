@@ -418,6 +418,7 @@ chat-effects-open-category = Open category
 chat-effects-toggle-category = Fold category
 chat-effects-reveal-message = Reveal message
 chat-effects-reveal-message-range = Reveal messages
+chat-effects-show-view = Show view
 chat-effects-open-agent = Open agent conversation
 chat-effects-open-direct-conversation = Open direct conversation
 chat-effects-send-direct-message = Send direct message
@@ -479,6 +480,17 @@ chat-cause-event = Event: { $label }
 chat-cause-news = News: { $label }
 chat-view-attached = A view is attached
 chat-view-attached-of = A view of { $apps } is attached
+chat-view-alone = View
+chat-view-waiting = This message is not on this device yet
+chat-view-gone = This message carries no view
+chat-view-arriving = Loading the view
+chat-view-unavailable = A view cannot be shown here
+chat-view-refused = You may not read { $apps } here, so the view shows nothing of it
+chat-view-unread = { $apps } could not be read here
+chat-view-asks = { $who } wrote this view. It asks to do this in { $app }
+chat-view-asks-given = { $name }: { $value }
+chat-view-allow = Allow once
+chat-view-dismiss = Dismiss
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = On “{ $resource }”

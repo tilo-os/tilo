@@ -639,6 +639,18 @@ pub(crate) struct Desktop {
     pub(crate) carrying: carry_out::Carrying,
 }
 
+impl Mount {
+    /// The size the one app this mount shows asks for, in CSS pixels, when it says one
+    /// (`Widget::preferred_window_size`); `None` for a desktop, whose windows size themselves.
+    fn content_size(&self) -> Option<serde_json::Value> {
+        if self.desktop.is_some() {
+            return None;
+        }
+        ui::widget::preferred_window_size(self.frame.root_widget())
+            .map(|(width, height)| serde_json::json!({"width": width, "height": height}))
+    }
+}
+
 impl Desktop {
     /// Who the windows ask the session as: this page's person, in its workspace.
     fn caller(&self) -> tilo_actions::remote::Caller {
@@ -3361,6 +3373,9 @@ impl Mount {
             "dpr": applied.dpr,
             "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
             "rootRect": root_rect,
+            // The size what a mount of one app asks for, where its app says one (a
+            // message's view shown alone): whoever holds the mount gives it that much.
+            "content": self.content_size(),
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             // The page titles its tab after it: the workspace in front on the

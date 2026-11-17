@@ -93,6 +93,13 @@ pub enum ChatEffect {
         #[param("Offset unit", choices = ["Chars", "Bytes"])]
         unit: String,
     },
+    /// Show view
+    ///
+    /// Shows the view the message carries, alone, in the caller's own window:
+    /// nothing of the conversation stands around it, and the window says how
+    /// tall the view is.
+    #[effect(view, row, item = messages)]
+    ShowView { message: String },
     /// Open the conversation with an agent: where search's agent hit goes.
     #[effect(view, returns, presence)]
     OpenAgent { agent: String },
@@ -248,6 +255,16 @@ pub enum ChatEffect {
 impl ChatApp {
     /// Answer `effect` for this window.
     pub(crate) fn answer_effect(&mut self, effect: ChatEffect) -> EffectAnswer {
+        // Showing a conversation or a message again ends showing one view alone.
+        if matches!(
+            effect,
+            ChatEffect::OpenChannel { .. }
+                | ChatEffect::OpenCategory { .. }
+                | ChatEffect::RevealMessage { .. }
+                | ChatEffect::RevealMessageRange { .. }
+        ) {
+            self.alone = None;
+        }
         match effect {
             ChatEffect::ModelControl { channel, command } => {
                 return self.model_command(&channel, &command).map(Effected::value);
@@ -264,6 +281,7 @@ impl ChatApp {
                 self.toggle_category(&category);
             }
             ChatEffect::RevealMessage { message } => self.reveal_message(&message)?,
+            ChatEffect::ShowView { message } => self.show_view_alone(&message)?,
             ChatEffect::RevealMessageRange {
                 message,
                 start,
@@ -870,6 +888,14 @@ impl ChatApp {
         }
         for view in item_views("messages", &item) {
             row = row.view(view);
+        }
+        // A message that carries a view opens in it too, alone.
+        if message.view.is_some() {
+            row = row.view(ResourceViewSpec::new(
+                "view",
+                "View",
+                ChatEffect::SHOW_VIEW.id,
+            ));
         }
         if !offers_reasoning
             && message

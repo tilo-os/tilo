@@ -264,6 +264,9 @@ pub struct ChatApp {
     /// The protected field of the question that asks this person for a
     /// secret, and the vault's answer to what they typed on its way.
     pub(crate) secret_entry: crate::secret_ask::SecretEntry,
+    /// The one message whose view the window shows alone, when it was told to
+    /// ([`crate::view_alone`]).
+    pub(crate) alone: Option<crate::view_alone::Alone>,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -716,6 +719,7 @@ impl ChatApp {
             editing: None,
             edit_input: crate::composer::MessageEditor::local(),
             secret_entry: crate::secret_ask::SecretEntry::default(),
+            alone: None,
             attach_open: false,
             attach_entries: Vec::new(),
             attachment_pending: None,
@@ -1994,6 +1998,17 @@ impl Widget for ChatApp {
         // The attachments painted below say when they step on next.
         let _draw_phase = ui::tilo_resource::profiling::Phase::start("chat.draw");
         self.arriving_wake.set(None);
+        // One message's view shown alone is all the window draws.
+        if self.alone.is_some() {
+            let window = self.rect;
+            let mut parts = PaintParts::new(scene);
+            parts.draw(scene, "chat-view-alone", window, |scene| {
+                self.draw_alone(scene, tf, tr, theme);
+            });
+            self.finish_parts(parts, scene, window, tf, theme);
+            self.hits = Vec::new();
+            return;
+        }
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -2097,8 +2112,7 @@ impl Widget for ChatApp {
             }
         }
 
-        let frame = parts.finish(scene, vec![window], tf, theme);
-        self.paint_damage.record(window, frame);
+        self.finish_parts(parts, scene, window, tf, theme);
         self.hits = hits;
     }
 
@@ -2151,6 +2165,10 @@ impl Widget for ChatApp {
                 WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
             )
         {
+            return;
+        }
+        if self.alone.is_some() {
+            self.alone_event(event, ctx);
             return;
         }
         // Embedded inputs request focus with a temporary layout node. Map
@@ -2238,6 +2256,11 @@ impl Widget for ChatApp {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
+
+        // A view shown alone is read through its own widgets, the window's children.
+        if self.alone.is_some() {
+            return Some(AccessNode::new(Role::Group).with_name(crate::i18n::t("chat-view-alone")));
+        }
 
         #[cfg(test)]
         crate::component_tests::ACCESSIBILITY_BUILDS
@@ -2430,6 +2453,24 @@ impl Widget for ChatApp {
         self.rect
     }
 
+    // The widgets of a view shown alone are the window's only children: the window lays
+    // them out itself where it draws them.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.alone_children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.alone_children_mut()
+    }
+
+    fn lays_out_child(&self, _child_index: usize) -> bool {
+        true
+    }
+
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        self.alone_size()
+    }
+
     fn traps_focus(&self) -> bool {
         self.menu
             .as_ref()
@@ -2452,9 +2493,10 @@ impl Widget for ChatApp {
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core: it wakes once a second for the reading its card
     /// and the bar's pill show, and not again until that.
-    fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let workspace_changed = self.take_workspace();
+        let alone_changed = self.update_alone(doc, path);
         // The call's video tile is the one child laid out: dragged, handed
         // off or following the grid, it is placed again where it went.
         if self
@@ -2465,7 +2507,10 @@ impl Widget for ChatApp {
         }
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || workspace_changed
+        std::mem::take(&mut self.read_on_present)
+            || model_changed
+            || workspace_changed
+            || alone_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2483,6 +2528,7 @@ impl Widget for ChatApp {
             // The reader reached the top of what is held, or a message is
             // looked for: the next settle pass opens the part before.
             || self.scrollback.wants_settle()
+            || self.alone_needs_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -2494,6 +2540,7 @@ impl Widget for ChatApp {
             .into_iter()
             .chain(self.call_tick())
             .chain(self.arriving_wake.get())
+            .chain(self.alone_wake())
             .min()
     }
 
@@ -2556,6 +2603,20 @@ impl Widget for ChatApp {
 }
 
 impl ChatApp {
+    /// Close the parts one draw was split into, and keep them for the comparison with the
+    /// next frame's.
+    fn finish_parts(
+        &mut self,
+        parts: PaintParts,
+        scene: &Scene,
+        window: Rect,
+        tf: Affine,
+        theme: &Theme,
+    ) {
+        let frame = parts.finish(scene, vec![window], tf, theme);
+        self.paint_damage.record(window, frame);
+    }
+
     fn perform_editor_semantic_action(
         &mut self,
         hit: Hit,
