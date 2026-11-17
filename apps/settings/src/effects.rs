@@ -600,6 +600,15 @@ mod tests {
 
     struct Flattened(SettingsEffect);
 
+    /// How the palette and agents read `spec` when it is the one action a row
+    /// of a surface offers.
+    fn surveyed(spec: tilo_actions::ActionSpec) -> Vec<tilo_actions::ActionDescriptor> {
+        let row = ui::framework::LiveRow::new("comparison", "comparison", "comparison")
+            .operation(spec)
+            .into_resource();
+        tilo_actions::api::survey(&[row])
+    }
+
     #[test]
     fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
@@ -651,15 +660,7 @@ mod tests {
             let effect = SettingsEffect::from_payload(&published.payload).unwrap();
             let reference = Flattened(effect.clone()).bound_asking_params(spec.params().to_vec());
             let direct = effect.bound_asking_params(spec.params().to_vec());
-            let survey = |spec| {
-                tilo_actions::api::survey(&[tilo_actions::ResourceSpec::new(
-                    "comparison",
-                    "comparison",
-                    "comparison",
-                )
-                .with_action(spec)])
-            };
-            assert_eq!(survey(direct.clone()), survey(reference.clone()));
+            assert_eq!(surveyed(direct.clone()), surveyed(reference.clone()));
             assert_eq!(
                 direct.need_for(Some(&args), None),
                 reference.need_for(Some(&args), None)
@@ -675,8 +676,8 @@ mod tests {
             assert_eq!(actual.payload, published.payload);
             let asking: Vec<_> = spec.params().iter().map(|param| &*param.name).collect();
             assert_eq!(
-                survey(effect.bound_asking(&asking)),
-                survey(Flattened(effect).bound_asking(&asking))
+                surveyed(effect.bound_asking(&asking)),
+                surveyed(Flattened(effect).bound_asking(&asking))
             );
             args.insert("display".to_string(), serde_json::json!("foreign-output"));
             assert!(
@@ -737,18 +738,8 @@ mod tests {
                 let direct = effect.bound();
                 let flattened = Flattened(effect).bound();
                 assert_eq!(
-                    tilo_actions::api::survey(&[tilo_actions::ResourceSpec::new(
-                        "comparison",
-                        "comparison",
-                        "comparison"
-                    )
-                    .with_action(direct.clone())]),
-                    tilo_actions::api::survey(&[tilo_actions::ResourceSpec::new(
-                        "comparison",
-                        "comparison",
-                        "comparison"
-                    )
-                    .with_action(flattened.clone())]),
+                    surveyed(direct.clone()),
+                    surveyed(flattened.clone()),
                     "all published metadata including role/risk/result and confirmation is preserved"
                 );
                 assert_eq!(
