@@ -1,7 +1,5 @@
 //! When a conversation's day changes, and the clock each line carries.
 
-use chrono::Datelike as _;
-
 use crate::format;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -56,8 +54,8 @@ impl ConversationClock {
     pub fn local() -> Self {
         let now = crate::clock::local_now();
         Self {
-            offset: i64::from(now.offset().local_minus_utc()),
-            now: now.timestamp(),
+            offset: i64::from(now.offset().seconds()),
+            now: now.timestamp().as_second(),
         }
     }
 
@@ -133,12 +131,14 @@ impl ConversationClock {
     }
 }
 
-fn date_of(day: ConversationDay) -> Option<chrono::NaiveDate> {
+fn date_of(day: ConversationDay) -> Option<jiff::civil::Date> {
     let secs = day.index().checked_mul(DAY_SECS)?;
-    chrono::DateTime::from_timestamp(secs, 0).map(|at| at.date_naive())
+    jiff::Timestamp::from_second(secs)
+        .ok()
+        .map(|at| at.to_zoned(jiff::tz::TimeZone::UTC).date())
 }
 
-fn weekday_of(day: ConversationDay) -> Option<chrono::Weekday> {
+fn weekday_of(day: ConversationDay) -> Option<jiff::civil::Weekday> {
     date_of(day).map(|date| date.weekday())
 }
 

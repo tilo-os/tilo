@@ -1205,8 +1205,13 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
     // minute the test runs in, the screen changes for what plays and for nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
-            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
-                .expect("a second of the minute"),
+            u64::try_from(
+                ui::clock::local_now()
+                    .timestamp()
+                    .as_second()
+                    .rem_euclid(60),
+            )
+            .expect("a second of the minute"),
         ))
         .expect("the minute the test runs in");
     ui::time::testing::with_wall(at, || {

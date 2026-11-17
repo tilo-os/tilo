@@ -10,7 +10,7 @@ description = "Account-bound messaging protocol codecs; no transport credentials
 default = ["whatsapp-sdk", "sms-dbus", "signal-broker"]
 signal-broker = ["dep:tokio", "dep:tilo-messaging", "dep:tilo-contact-directory", "dep:tilo-resource"]
 whatsapp-sdk = ["dep:whatsapp-rust", "dep:tokio", "dep:futures-util", "dep:reqwest", "dep:tilo-net", "dep:rustls", "dep:rustls-native-certs", "dep:tokio-tungstenite"]
-sms-dbus = ["dep:zbus", "dep:tokio", "dep:chrono", "dep:futures-util"]
+sms-dbus = ["dep:zbus", "dep:tokio", "dep:jiff", "dep:futures-util"]
 
 [dependencies]
 tilo-messaging = { path = "../../platform/tilo-messaging", optional = true }
@@ -35,7 +35,7 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true, features = ["tokio"], optional = true }
-chrono = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tilo-net = { workspace = true, features = ["http"], optional = true }

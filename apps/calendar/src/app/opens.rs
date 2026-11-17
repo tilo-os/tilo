@@ -2,12 +2,12 @@
 //! from another app. Every kind of item the calendar holds names its route
 //! here, and the window shows it.
 
-use super::{Calendar, CalendarApp, Id, ListSel, NaiveDate, ToastKind};
+use super::{Calendar, CalendarApp, Date, Id, ListSel, ToastKind};
 use crate::actions::CalendarCollectionResource;
 
 pub(crate) enum Opened {
-    Event { id: Id, day: NaiveDate },
-    Task { id: Id, due: Option<NaiveDate> },
+    Event { id: Id, day: Date },
+    Task { id: Id, due: Option<Date> },
     Project(Id),
     Calendar(CalendarCollectionResource),
 }
@@ -39,7 +39,7 @@ impl Opened {
                 .map_err(|_| "invalid event id".to_string())?;
             let original_date = original_date
                 .map(|date| {
-                    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    Date::strptime("%Y-%m-%d", date)
                         .map_err(|_| "invalid occurrence date".to_string())
                 })
                 .transpose()?;
@@ -52,7 +52,7 @@ impl Opened {
                     .iter()
                     .find(|edit| edit.original_date == original_date)
                     .and_then(|edit| edit.start)
-                    .map_or(original_date, |start| start.date()),
+                    .map_or(original_date, jiff::civil::DateTime::date),
                 None => event.start.date(),
             };
             return Ok(Self::Event { id, day });

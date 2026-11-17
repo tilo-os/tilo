@@ -144,7 +144,7 @@ fn says_day(fact: &str, heading: &str, days: &[String]) -> bool {
 fn day_words() -> Vec<String> {
     let today = ui::clock::today();
     (-400..=400)
-        .filter_map(|days| today.checked_add_signed(chrono::Duration::days(days)))
+        .filter_map(|days| today.checked_add(jiff::Span::new().days(days)).ok())
         .map(|day| ui::format::day_fact_today(day, None).text)
         .collect()
 }

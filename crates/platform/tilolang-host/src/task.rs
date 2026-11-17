@@ -54,9 +54,9 @@ fn shown_for_a_person(kind: &str, value: &str) -> String {
         kind,
         value,
         ui::format::region::current(),
-        now.date_naive(),
-        now.naive_local(),
-        i64::from(now.offset().local_minus_utc()),
+        now.date(),
+        now.datetime(),
+        i64::from(now.offset().seconds()),
         ui::format::words(),
     )
 }

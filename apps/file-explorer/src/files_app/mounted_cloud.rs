@@ -71,7 +71,7 @@ impl FilesState {
                     entry.path.clone(),
                     (
                         entry.size,
-                        entry.modified.map(|time| time.timestamp_millis()),
+                        entry.modified.map(jiff::Timestamp::as_millisecond),
                     ),
                 )
             })

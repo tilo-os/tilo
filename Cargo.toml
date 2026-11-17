@@ -883,7 +883,10 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
-chrono = { version = "0.4", default-features = false }
+jiff = { version = "0.2.37", default-features = false, features = ["std", "serde", "tz-system"] }
+# The IANA time-zone database, built in so every device resolves a named zone
+# the same way whatever zoneinfo its host has.
+jiff-tzdb = "0.1"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.

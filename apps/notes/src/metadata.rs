@@ -35,20 +35,17 @@ pub fn register_messages() {
 
 impl NoteDates {
     pub fn display_labels(self, compact: bool) -> Vec<String> {
-        self.display_labels_in(compact, &chrono::Local)
+        self.display_labels_in(compact, &jiff::tz::TimeZone::system())
     }
 
     /// The labels with times in `zone`: the person's local time zone in the
     /// app, a fixed one in tests.
-    fn display_labels_in<Tz: chrono::TimeZone>(self, compact: bool, zone: &Tz) -> Vec<String>
-    where
-        Tz::Offset: std::fmt::Display,
-    {
+    fn display_labels_in(self, compact: bool, zone: &jiff::tz::TimeZone) -> Vec<String> {
         let date = |value: Option<i64>| {
             value
-                .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
                 .map(|date| {
-                    let date = date.with_timezone(zone).naive_local();
+                    let date = date.to_zoned(zone.clone()).datetime();
                     let formats = ui::format::Formats::current();
                     if compact {
                         formats.date(date.date())
@@ -83,7 +80,7 @@ impl NoteDates {
     /// The dates as the one line the note header shows, in the local time
     /// zone, read against `now`. A date the history does not know is left
     /// out; a note with no known date shows nothing.
-    pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
+    pub fn labels_at(self, now: &jiff::Zoned) -> Vec<String> {
         let created = self.created.map(|seconds| when(seconds, now));
         let edited = self.edited.map(|seconds| when(seconds, now));
         let line = match (created, edited) {
@@ -105,21 +102,21 @@ impl NoteDates {
 
 /// One moment as a person says it: the time today, else the day (with its
 /// year when it is not this one), in the local time zone.
-fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
-    use chrono::{Datelike, TimeZone};
-    let Some(moment) = chrono::Local.timestamp_opt(seconds, 0).single() else {
+fn when(seconds: i64, now: &jiff::Zoned) -> String {
+    let Ok(moment) = jiff::Timestamp::from_second(seconds) else {
         return String::new();
     };
+    let moment = moment.to_zoned(now.time_zone().clone());
     // A moment the clock has not reached yet (a peer's skewed clock) still
     // reads as today rather than as a date in the future.
-    if moment.date_naive() >= now.date_naive() {
+    if moment.date() >= now.date() {
         let time = ui::clock::time_of_day(&moment);
         return crate::metadata::CATALOG.t_args("notes-date-today", &[("time", time.into())]);
     }
     if moment.year() == now.year() {
-        ui::format::month_day(moment.date_naive())
+        ui::format::month_day(moment.date())
     } else {
-        ui::format::month_day_year(moment.date_naive())
+        ui::format::month_day_year(moment.date())
     }
 }
 
@@ -272,12 +269,12 @@ mod tests {
             created: Some(edited),
             edited: Some(edited),
         };
-        let cest = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let cest = jiff::tz::TimeZone::fixed(jiff::tz::offset(2));
         let labels = dates.display_labels_in(false, &cest);
         assert!(labels[1].contains("Oct 4, 2026, 5:54"), "{labels:?}");
         assert!(!labels[1].contains("UTC"), "{labels:?}");
         let compact =
-            dates.display_labels_in(true, &chrono::FixedOffset::east_opt(-5 * 3600).unwrap());
+            dates.display_labels_in(true, &jiff::tz::TimeZone::fixed(jiff::tz::offset(-5)));
         assert!(compact[0].contains("Oct 3, 2026"), "{compact:?}");
     }
     /// A page's reactions pick from the whole Unicode catalogue: loading the

@@ -820,7 +820,7 @@ fn battery_card(
             &state.history.points,
             Span::ALL.get(span).copied().unwrap_or(Span::Day),
             state.now_minute,
-            i64::from(ui::clock::local_now().offset().local_minus_utc()),
+            i64::from(ui::clock::local_now().offset().seconds()),
         ))),
     ];
     if let Some(cycles) = state.battery.cycle_count {

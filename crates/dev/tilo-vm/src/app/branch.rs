@@ -450,8 +450,7 @@ impl App {
                         image: frozen.image.clone(),
                         image_format: frozen.image_format.clone(),
                         from: src.to_owned(),
-                        frozen: chrono::Utc::now()
-                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        frozen: format!("{:.0}", jiff::Timestamp::now()),
                     },
                 );
                 registry.vms.insert(src.to_owned(), source);

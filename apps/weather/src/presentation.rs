@@ -117,11 +117,13 @@ pub(crate) fn morning_preview(
             ArgValue::from(
                 i64::try_from(snapshot.fetched_at)
                     .ok()
-                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                    .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
                     .map_or_else(
                         || snapshot.fetched_at.to_string(),
                         |time| {
-                            ui::format::timestamp(&time.with_timezone(&chrono::Local).naive_local())
+                            ui::format::timestamp(
+                                &time.to_zoned(jiff::tz::TimeZone::system()).datetime(),
+                            )
                         },
                     ),
             ),

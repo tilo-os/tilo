@@ -39,7 +39,7 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The person's date and time, read in their zone: what `today` is and what a day reads as.
-chrono = { workspace = true, features = ["std", "clock"] }
+jiff.workspace = true
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }

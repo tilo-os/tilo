@@ -307,7 +307,7 @@ fn touched(path: &str, kind: ChangeKind, add: u32, del: u32) -> FileChange {
 /// Newest first; `parents` name ids, structured so the graph uses two columns with a merge. Times are
 /// relative to the toolkit clock, so a capture shows the same ages on every run.
 fn commit_history() -> Vec<Commit> {
-    let now = ui::clock::local_now().timestamp();
+    let now = ui::clock::local_now().timestamp().as_second();
     commit_history_recent()
         .into_iter()
         .chain(commit_history_older())

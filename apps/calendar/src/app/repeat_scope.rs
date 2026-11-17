@@ -1,6 +1,6 @@
 //! Which events a drag on a repeating event changes.
 
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
 use uuid::Uuid;
 use vello::kurbo::Rect;
 
@@ -28,14 +28,14 @@ fn failed(error: &str) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DragChange {
-    Move { day: NaiveDate, start_min: i64 },
-    Resize { end: NaiveDateTime },
+    Move { day: Date, start_min: i64 },
+    Resize { end: DateTime },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PendingRepeatChange {
     pub id: Id,
-    pub original: NaiveDate,
+    pub original: Date,
     pub change: DragChange,
 }
 
@@ -43,7 +43,7 @@ impl CalendarApp {
     pub(super) fn change_occurrence(
         &mut self,
         id: Id,
-        original: NaiveDate,
+        original: Date,
         change: DragChange,
         doc: &mut ui::widget::Edits<'_>,
     ) {
@@ -115,14 +115,14 @@ impl CalendarApp {
     fn changed_interval(
         &self,
         before: &Event,
-        original: NaiveDate,
+        original: Date,
         change: DragChange,
-    ) -> Option<(NaiveDateTime, NaiveDateTime, bool)> {
+    ) -> Option<(DateTime, DateTime, bool)> {
         match change {
             DragChange::Move { day, start_min } => {
                 let start = self
                     .viewer
-                    .to_zone(day.and_time(min_to_time(start_min)), &before.timezone);
+                    .to_zone(day.to_datetime(min_to_time(start_min)), &before.timezone);
                 let (end, later_fold) =
                     Self::end_after(&before.timezone, start, before.elapsed_duration());
                 Some((start, end, later_fold))
@@ -142,7 +142,7 @@ impl CalendarApp {
     fn change_following(
         &mut self,
         id: Id,
-        original: NaiveDate,
+        original: Date,
         change: DragChange,
         doc: &mut ui::widget::Edits<'_>,
     ) {
@@ -196,8 +196,8 @@ impl CalendarApp {
 
 pub(super) fn split_series(
     before: &Event,
-    original: NaiveDate,
-    (start, end, later_fold): (NaiveDateTime, NaiveDateTime, bool),
+    original: Date,
+    (start, end, later_fold): (DateTime, DateTime, bool),
     new_id: Id,
 ) -> (Event, Option<Event>) {
     let seed = before.start.date();
@@ -212,7 +212,7 @@ pub(super) fn split_series(
         whole.start = start;
         whole.end = end;
         whole.end_later_fold = later_fold;
-        if shift != Duration::zero() {
+        if !shift.is_zero() {
             whole.occurrence_overrides = before
                 .occurrence_overrides
                 .iter()
@@ -241,13 +241,10 @@ pub(super) fn split_series(
     let mut old = before.clone();
     // RFC 5545 allows UNTIL or COUNT, never both.
     old.recurrence_count = None;
-    old.recurrence_until = Some(
-        before
-            .recurrence_until
-            .map_or(original - Duration::days(1), |until| {
-                until.min(original - Duration::days(1))
-            }),
-    );
+    old.recurrence_until = Some(before.recurrence_until.map_or_else(
+        || original - jiff::Span::new().days(1),
+        |until| until.min(original - jiff::Span::new().days(1)),
+    ));
     old.occurrence_overrides
         .retain(|edit| edit.original_date < original);
     old.occurrence_overrides.settle();
@@ -288,23 +285,20 @@ pub(super) fn split_series(
 mod tests {
     use super::*;
 
-    fn at(m: u32, d: u32, h: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, m, d)
-            .unwrap()
-            .and_hms_opt(h, 0, 0)
-            .unwrap()
+    fn at(m: i8, d: i8, h: i8) -> DateTime {
+        Date::new(2026, m, d).unwrap().at(h, 0, 0, 0)
     }
 
-    fn date(m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, m, d).unwrap()
+    fn date(m: i8, d: i8) -> Date {
+        Date::new(2026, m, d).unwrap()
     }
 
     fn weekly() -> Event {
-        let moved = |day: NaiveDate| OccurrenceOverride {
+        let moved = |day: Date| OccurrenceOverride {
             original_date: day,
             original_time: Some(at(6, 1, 9).time()),
-            start: Some(day.and_hms_opt(10, 0, 0).unwrap()),
-            end: Some(day.and_hms_opt(11, 0, 0).unwrap()),
+            start: Some(day.at(10, 0, 0, 0)),
+            end: Some(day.at(11, 0, 0, 0)),
             ..OccurrenceOverride::default()
         };
         Event {
@@ -358,7 +352,7 @@ mod tests {
             assert_eq!(carried[0].original_time, Some(at(6, 23, 11).time()));
             assert_eq!(
                 carried[0].start,
-                Some(date(7, 6).and_hms_opt(10, 0, 0).unwrap())
+                Some(date(7, 6).at(10, 0, 0, 0))
             );
             let shown = new.occurrences_in(date(6, 1), date(12, 31));
             assert_eq!(shown.len(), 6, "seven left, one skipped: {shown:?}");

@@ -36,9 +36,9 @@ bounded-zip = { path = "../../doc/bounded-zip" }
 # resolves, so a time of day survives one on every device.
 tilo-recurrence = { path = "../../sdk/tilo-recurrence" }
 # Days and moments.
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 # The zone database, for the person's zone as a named zone.
-chrono-tz = "0.10.4"
+jiff-tzdb.workspace = true
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
 tilo-reference = { path = "../../collab/reference" }
 # Order keys of placed items (`place`): the fractional keys every collection orders by.

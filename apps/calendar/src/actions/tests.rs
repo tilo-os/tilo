@@ -8,8 +8,7 @@ use uuid::Uuid;
 
 fn seeded() -> Replica<Calendar> {
     let mut calendar = Replica::<Calendar>::new();
-    let sample =
-        crate::model::seed_demo(chrono::NaiveDate::from_ymd_opt(2026, 6, 30).expect("a date"));
+    let sample = crate::model::seed_demo(jiff::civil::Date::new(2026, 6, 30).expect("a date"));
     for invoke in crate::resource::sample_invocations(&sample) {
         calendar.apply(invoke).expect("the sample applies");
     }
@@ -73,8 +72,8 @@ ui::action_contract_tests! {
             let event = first_event(doc);
             encoded(&Calendar::RESCHEDULE.with((
                 key(event.id),
-                event.start + chrono::Duration::hours(1),
-                event.end + chrono::Duration::hours(1),
+                event.start + jiff::SignedDuration::from_hours(1),
+                event.end + jiff::SignedDuration::from_hours(1),
             )))
         },
         edit_notes => |doc| encoded(&Invoke::from(
@@ -178,7 +177,7 @@ tilo_test_env::scenario! {
                 .apply(Calendar::RESCHEDULE.with((
                     key(event.id),
                     event.start,
-                    event.start - chrono::Duration::minutes(1),
+                    event.start - jiff::SignedDuration::from_mins(1),
                 )))
                 .is_err()
         );
@@ -189,7 +188,7 @@ tilo_test_env::scenario! {
                         .events
                         .item(&key(event.id))
                         .end
-                        .set(event.start - chrono::Duration::minutes(1)),
+                        .set(event.start - jiff::SignedDuration::from_mins(1)),
                 ))
                 .is_err()
         );
@@ -270,7 +269,7 @@ tilo_test_env::scenario! {
             fields.recurrence_count.set(Some(7)),
             fields
                 .recurrence_exdates
-                .insert(&NaiveDate::from_ymd_opt(2026, 6, 17).unwrap()),
+                .insert(&Date::new(2026, 6, 17).unwrap()),
         ] {
             second.apply(Invoke::from(edit)).unwrap();
         }
@@ -366,10 +365,10 @@ tilo_test_env::scenario! {
             assert_eq!(event.timezone, "Europe/Berlin");
             assert!(event.end_later_fold);
             let end = event.end_instant().unwrap();
-            assert_eq!(start.to_rfc3339(), "2026-10-25T00:45:00+00:00");
+            assert_eq!(start.to_string(), "2026-10-25T00:45:00Z");
             assert_eq!(
-                end.to_rfc3339(),
-                format!("2026-10-25T{expected_end}:00+00:00")
+                end.to_string(),
+                format!("2026-10-25T{expected_end}:00Z")
             );
             let exported = crate::ics::export(&state);
             let mut copy = Replica::<Calendar>::new();
@@ -412,23 +411,23 @@ tilo_test_env::scenario! {
             let original = calendar.state().unwrap();
             let event = &original.events[0];
             assert_eq!(event.timezone, "Europe/Berlin");
-            assert_eq!(event.start.to_string(), "2026-10-25 02:45:00");
-            assert_eq!(event.end.to_string(), "2026-10-25 02:50:00");
-            assert_eq!(event.elapsed_duration(), chrono::Duration::minutes(65));
+            assert_eq!(event.start.to_string(), "2026-10-25T02:45:00");
+            assert_eq!(event.end.to_string(), "2026-10-25T02:50:00");
+            assert_eq!(event.elapsed_duration(), jiff::SignedDuration::from_mins(65));
             assert_eq!(event.hours(), 65.0 / 60.0);
-            let next = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-            let start = next.and_time(event.start.time());
-            assert_eq!(start.to_string(), "2026-11-01 02:45:00");
+            let next = jiff::civil::Date::new(2026, 11, 1).unwrap();
+            let start = next.to_datetime(event.start.time());
+            assert_eq!(start.to_string(), "2026-11-01T02:45:00");
             assert_eq!(
                 event.occurrence_end(start).to_string(),
-                "2026-11-01 03:50:00"
+                "2026-11-01T03:50:00"
             );
             assert_eq!(
                 crate::timezone::wall_to_utc(&event.timezone, start)
                     .unwrap()
                     .0
-                    .to_rfc3339(),
-                "2026-11-01T01:45:00+00:00"
+                    .to_string(),
+                "2026-11-01T01:45:00Z"
             );
             assert_eq!(
                 event.occurrences_in(next, next).is_empty(),
@@ -446,8 +445,8 @@ tilo_test_env::scenario! {
                 let edit = &copied.events[0].occurrence_overrides[0];
                 assert_eq!(edit.original_date, next);
                 assert_eq!(edit.original_time, Some(event.start.time()));
-                assert_eq!(edit.start.unwrap().to_string(), "2026-11-02 04:15:00");
-                assert_eq!(edit.end.unwrap().to_string(), "2026-11-02 05:20:00");
+                assert_eq!(edit.start.unwrap().to_string(), "2026-11-02T04:15:00");
+                assert_eq!(edit.end.unwrap().to_string(), "2026-11-02T05:20:00");
             }
         }
     }
@@ -463,12 +462,12 @@ tilo_test_env::scenario! {
         let event = &state.events[0];
         let edit = &event.occurrence_overrides[0];
         assert!(edit.end_later_fold);
-        assert_eq!(edit.end.unwrap().to_string(), "2026-10-25 02:15:00");
+        assert_eq!(edit.end.unwrap().to_string(), "2026-10-25T02:15:00");
         assert_eq!(
             crate::timezone::endpoint_utc(&event.timezone, edit.end.unwrap(), edit.end_later_fold)
                 .unwrap()
-                .to_rfc3339(),
-            "2026-10-25T01:15:00+00:00"
+                .to_string(),
+            "2026-10-25T01:15:00Z"
         );
         let exported = crate::ics::export(&state);
         let mut copy = Replica::<Calendar>::new();
@@ -500,8 +499,8 @@ tilo_test_env::scenario! {
         let held = state.event(imported.id).unwrap();
         assert_eq!(held.title, "Local title");
         assert_eq!(held.occurrence_overrides, imported.occurrence_overrides);
-        let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-        let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let from = Date::new(2026, 6, 15).unwrap();
+        let to = Date::new(2026, 6, 29).unwrap();
         assert_eq!(held.occurrences_in(from, to).len(), 2);
 
         let mut copy = EventData::from_event(held);

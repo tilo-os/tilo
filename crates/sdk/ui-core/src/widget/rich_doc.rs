@@ -443,7 +443,7 @@ pub use tilo_doc::inline_time::Show as TimeShow;
 /// [`time_label`] reads it for them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InlineTime {
-    pub at: chrono::DateTime<chrono::Utc>,
+    pub at: jiff::Timestamp,
     pub show: TimeShow,
 }
 
@@ -451,9 +451,7 @@ impl InlineTime {
     #[must_use]
     pub fn of_mark(value: &str) -> Option<Self> {
         let written = tilo_doc::inline_time::InlineTime::of_mark(value)?;
-        let at = chrono::DateTime::parse_from_rfc3339(&written.at)
-            .ok()?
-            .with_timezone(&chrono::Utc);
+        let at = written.at.parse::<jiff::Timestamp>().ok()?;
         Some(Self {
             at,
             show: written.show,
@@ -463,7 +461,7 @@ impl InlineTime {
     #[must_use]
     pub fn mark_value(&self) -> String {
         tilo_doc::inline_time::InlineTime {
-            at: self.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            at: format!("{:.0}", self.at),
             show: self.show,
         }
         .mark_value()
@@ -472,8 +470,8 @@ impl InlineTime {
     /// How long until what it reads as changes, at `now`: a countdown each
     /// second, a relative time each minute, an absolute one never.
     #[must_use]
-    pub fn changes_in(&self, now: chrono::DateTime<chrono::Utc>) -> Option<std::time::Duration> {
-        let ahead = self.at.signed_duration_since(now).num_seconds();
+    pub fn changes_in(&self, now: jiff::Timestamp) -> Option<std::time::Duration> {
+        let ahead = self.at.duration_since(now).as_secs();
         match self.show {
             TimeShow::Absolute => None,
             TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
@@ -486,15 +484,15 @@ impl InlineTime {
 
 /// What `time` reads as for a person at `now`, in `zone` and `formats`.
 #[must_use]
-pub fn time_label<Tz: chrono::TimeZone>(
+pub fn time_label(
     time: &InlineTime,
-    now: chrono::DateTime<chrono::Utc>,
-    zone: &Tz,
+    now: jiff::Timestamp,
+    zone: &jiff::tz::TimeZone,
     formats: crate::format::Formats,
 ) -> String {
-    let ahead = time.at.signed_duration_since(now).num_seconds();
+    let ahead = time.at.duration_since(now).as_secs();
     match time.show {
-        TimeShow::Absolute => formats.timestamp(time.at.with_timezone(zone).naive_local()),
+        TimeShow::Absolute => formats.timestamp(time.at.to_zoned(zone.clone()).datetime()),
         TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
             crate::format::timecode(u64::try_from(ahead).unwrap_or_default())
         }
@@ -506,18 +504,18 @@ pub fn time_label<Tz: chrono::TimeZone>(
 }
 
 /// Where, at `now`, a person reads rich text: their zone and formats.
-#[derive(Clone, Copy, Debug)]
-pub struct Reading<Tz: chrono::TimeZone> {
-    pub now: chrono::DateTime<chrono::Utc>,
-    pub zone: Tz,
+#[derive(Clone, Debug)]
+pub struct Reading {
+    pub now: jiff::Timestamp,
+    pub zone: jiff::tz::TimeZone,
     pub formats: crate::format::Formats,
 }
 
 #[must_use]
-pub fn reading_here() -> Reading<chrono::Local> {
+pub fn reading_here() -> Reading {
     Reading {
-        now: crate::clock::local_now().with_timezone(&chrono::Utc),
-        zone: chrono::Local,
+        now: crate::clock::local_now().timestamp(),
+        zone: jiff::tz::TimeZone::system(),
         formats: crate::format::Formats::current(),
     }
 }
@@ -532,10 +530,7 @@ pub fn blocks_of(rich: &tilo_ui_graph::rich::RichText) -> Vec<BlockContent> {
 /// the person ([`reference_label`]), each time as it reads for them ([`time_label`]);
 /// paragraph ids are their places.
 #[must_use]
-pub fn blocks_at<Tz: chrono::TimeZone>(
-    rich: &tilo_ui_graph::rich::RichText,
-    reading: &Reading<Tz>,
-) -> Vec<BlockContent> {
+pub fn blocks_at(rich: &tilo_ui_graph::rich::RichText, reading: &Reading) -> Vec<BlockContent> {
     rich.blocks
         .iter()
         .enumerate()
@@ -558,11 +553,11 @@ pub fn plain_text(rich: &tilo_ui_graph::rich::RichText) -> String {
 }
 
 /// The paragraph `block` (the `index`th of `rich`) as it reads for `reading`.
-fn read_view<Tz: chrono::TimeZone>(
+fn read_view(
     rich: &tilo_ui_graph::rich::RichText,
     index: usize,
     block: &tilo_ui_graph::rich::Block,
-    reading: &Reading<Tz>,
+    reading: &Reading,
 ) -> BlockView {
     let mut view = view_of(block, format!("p{index}"));
     relabel(&mut view, |name, value, run| match name {
@@ -578,7 +573,7 @@ fn read_view<Tz: chrono::TimeZone>(
 #[must_use]
 pub fn changes_in(
     rich: &tilo_ui_graph::rich::RichText,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Option<std::time::Duration> {
     rich.blocks
         .iter()
@@ -651,10 +646,8 @@ mod tests {
     use crate::format::{DateStyle, Formats, RegionFormats};
     use tilo_ui_graph::rich::{Attr, Block, Mark as RichMark, RichText};
 
-    fn at(text: &str) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::parse_from_rfc3339(text)
-            .expect("a moment")
-            .with_timezone(&chrono::Utc)
+    fn at(text: &str) -> jiff::Timestamp {
+        text.parse().expect("a moment")
     }
 
     /// `Standup ⟨time⟩, release ⟨time⟩, launch ⟨time⟩.` with the three ways a time is shown.
@@ -693,7 +686,7 @@ mod tests {
         }
     }
 
-    fn reading<Tz: chrono::TimeZone>(zone: Tz) -> Reading<Tz> {
+    fn reading(zone: jiff::tz::TimeZone) -> Reading {
         Reading {
             now: at("2026-10-29T10:00:00Z"),
             zone,
@@ -721,10 +714,10 @@ mod tests {
                 show: TimeShow::Relative
             })
         );
-        let utc = blocks_at(&rich, &reading(chrono::Utc));
+        let utc = blocks_at(&rich, &reading(jiff::tz::TimeZone::UTC));
         let tokyo = blocks_at(
             &rich,
-            &reading(chrono::FixedOffset::east_opt(9 * 3600).expect("a zone")),
+            &reading(jiff::tz::TimeZone::fixed(jiff::tz::offset(9))),
         );
         let (utc, tokyo) = (utc[0].text.as_str(), tokyo[0].text.as_str());
         assert!(utc.contains("2026-10-29") && utc.contains("23:30"), "{utc}");
@@ -739,7 +732,7 @@ mod tests {
             "nobody reads the writer's words for it"
         );
 
-        let mut later = reading(chrono::Utc);
+        let mut later = reading(jiff::tz::TimeZone::UTC);
         later.now = at("2026-10-29T11:08:00Z");
         assert!(
             blocks_at(&rich, &later)[0]
@@ -767,7 +760,9 @@ mod tests {
         I18nManager::add_resource("de-DE", "window = Fenster".to_owned());
         I18nManager::register_widget_messages();
         I18nManager::set_locale("de-DE");
-        let german = blocks_at(&rich, &reading(chrono::Utc))[0].text.clone();
+        let german = blocks_at(&rich, &reading(jiff::tz::TimeZone::UTC))[0]
+            .text
+            .clone();
         I18nManager::set_locale("en-US");
         assert!(german.contains("in 2 Std."), "{german}");
     }

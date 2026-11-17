@@ -476,13 +476,10 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
 
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
-fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
-    use chrono::TimeZone as _;
-    let at = chrono::Local
-        .with_ymd_and_hms(2026, month, day, hour, minute, second)
-        .earliest()
+fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
+    let at = ui::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
         .expect("the time exists where the person is");
-    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
         .expect("the clock reaches it")

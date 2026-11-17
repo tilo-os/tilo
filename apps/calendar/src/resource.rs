@@ -1,6 +1,6 @@
 //! The calendar's verbs, what it publishes, and the app.
 
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{Dispatcher, Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -167,8 +167,8 @@ impl Calendar {
     pub fn reschedule(
         &mut self,
         event: &Id,
-        #[param("When it starts")] start: NaiveDateTime,
-        #[param("When it ends, at or after the start")] end: NaiveDateTime,
+        #[param("When it starts")] start: DateTime,
+        #[param("When it ends, at or after the start")] end: DateTime,
     ) -> Result<(), Refusal> {
         if end < start {
             return Err(Refusal::new("an event ends after it starts"));
@@ -191,7 +191,7 @@ impl Calendar {
     pub fn set_start(
         &mut self,
         event: &Id,
-        #[param("When it starts (YYYY-MM-DDTHH:MM)")] start: NaiveDateTime,
+        #[param("When it starts (YYYY-MM-DDTHH:MM)")] start: DateTime,
     ) -> Result<(), Refusal> {
         let event = self
             .events
@@ -653,16 +653,16 @@ impl Calendar {
             })
         };
         let Some(item) = item else {
-            let now = chrono::Local::now().naive_local();
+            let now = jiff::Zoned::now().datetime();
             let mut events: Vec<&Event> = self.events.iter().collect();
             events.sort_by_key(|event| {
                 let past = event.end < now;
                 (
                     past,
                     if past {
-                        now - event.start
+                        now.duration_since(event.start)
                     } else {
-                        event.start - now
+                        event.start.duration_since(now)
                     },
                 )
             });
@@ -913,7 +913,7 @@ impl Calendar {
             return Some(match occurrence {
                 Some(date) => crate::actions::occurrence_resource_id(
                     id,
-                    chrono::NaiveDate::parse_from_str(date, crate::actions::DATE_FMT).ok()?,
+                    jiff::civil::Date::strptime(crate::actions::DATE_FMT, date).ok()?,
                 ),
                 None => crate::actions::event_resource_id(id),
             });
@@ -1168,14 +1168,12 @@ pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
 
 /// The moment a capture shows as now: the same day and time on every run,
 /// so the sample calendar, today's highlight and the now line never move.
-pub(crate) struct ShotNow(pub(crate) chrono::NaiveDateTime);
+pub(crate) struct ShotNow(pub(crate) jiff::civil::DateTime);
 
 pub(crate) const SHOT_ZONE: &str = "Europe/Berlin";
 
-pub(crate) fn shot_now() -> chrono::NaiveDateTime {
-    chrono::NaiveDate::from_ymd_opt(2026, 6, 30)
-        .and_then(|day| day.and_hms_opt(10, 30, 0))
-        .unwrap_or_default()
+pub(crate) fn shot_now() -> jiff::civil::DateTime {
+    jiff::civil::date(2026, 6, 30).at(10, 30, 0, 0)
 }
 
 const SAMPLE_NOTES: [(&str, &str); 2] = [
@@ -1436,12 +1434,12 @@ pub(crate) fn read_doc(doc: &Doc) -> Calendar {
 }
 
 #[cfg(test)]
-pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
+pub(crate) fn event_at(title: &str, start: DateTime) -> Event {
     Event {
         id: Uuid::new_v4(),
         title: title.to_owned(),
         start,
-        end: start + chrono::Duration::hours(1),
+        end: start + jiff::SignedDuration::from_hours(1),
         recurrence_interval: 1,
         timezone: "floating".into(),
         ..Event::default()
@@ -1449,8 +1447,8 @@ pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
 }
 
 #[cfg(test)]
-pub(crate) fn at(date: chrono::NaiveDate, hour: u32, minute: u32) -> NaiveDateTime {
-    date.and_hms_opt(hour, minute, 0).expect("a time of day")
+pub(crate) fn at(date: jiff::civil::Date, hour: i8, minute: i8) -> DateTime {
+    date.at(hour, minute, 0, 0)
 }
 
 impl calendar::NewEvent {

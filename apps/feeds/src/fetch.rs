@@ -393,7 +393,7 @@ async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found,
         title: title.clone().unwrap_or_else(|| url.to_string()),
         author: String::new(),
         url: url.to_string(),
-        published: ui::clock::local_now().timestamp(),
+        published: ui::clock::local_now().timestamp().as_second(),
         summary,
         blocks,
     };

@@ -9,7 +9,6 @@ pub mod apply_cache;
 pub mod by_app;
 #[path = "data_enum.rs"]
 pub mod data_enum;
-#[cfg(feature = "chrono")]
 #[path = "dates.rs"]
 pub mod dates;
 #[path = "edit_arguments.rs"]

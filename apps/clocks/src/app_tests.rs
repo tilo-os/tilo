@@ -631,7 +631,7 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
         surface.remember_due(crate::DueEvent::Alarm {
             id: ui::prelude::Id::from_raw("owned-alarm"),
             label: "Wake up".into(),
-            scheduled_for: chrono::Utc::now(),
+            scheduled_for: jiff::Timestamp::now(),
             native_scheduled: true,
         });
         assert!(
@@ -640,7 +640,7 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
         );
         assert!(
             surface
-                .shell_snapshot(chrono::Utc::now())
+                .shell_snapshot(jiff::Timestamp::now())
                 .notification_id
                 .is_none(),
             "the shell must not notify again after the scheduler's delivery"

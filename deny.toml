@@ -76,11 +76,6 @@ ignore = [
     # key-group's one MLS ciphersuite is X25519/Ed25519. The bans below
     # keep crypto-bigint 0.5 behind elliptic-curve and refuse vulnerable 0.7.
     "RUSTSEC-2026-0387",
-    # chrono and its time zones are unmaintained: every date the tree shows,
-    # parses or imports reads through them, and moving to jiff is its own change.
-    # Neither notice names a defect, and no patched release exists.
-    "RUSTSEC-2026-0543",
-    "RUSTSEC-2026-0555",
 ]
 # Maintenance notices remain actionable when Tilo selects the crate directly.
 # Transitive maintenance changes require their owning upstream to migrate, and

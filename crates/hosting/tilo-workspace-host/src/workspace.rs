@@ -1266,9 +1266,9 @@ mod tests {
             Membership::default(),
         )
         .unwrap();
-        let claim = rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap();
-        let other = rt.claim_commit(AUTHOR, [2; 16]).ok().unwrap();
-        let elsewhere = rt.claim_commit([2; 32], [1; 16]).ok().unwrap();
+        let claim = rt.claim_commit(AUTHOR, [1; 16]).unwrap();
+        let other = rt.claim_commit(AUTHOR, [2; 16]).unwrap();
+        let elsewhere = rt.claim_commit([2; 32], [1; 16]).unwrap();
         let Err(copy) = rt.claim_commit(AUTHOR, [1; 16]) else {
             panic!("a copy of a claimed commit was claimed again");
         };
@@ -1281,7 +1281,7 @@ mod tests {
         waiting.await.unwrap();
         // Released: the copy (or a later resend) claims it again, now that
         // the log is the one to answer it.
-        drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
+        drop(rt.claim_commit(AUTHOR, [1; 16]).unwrap());
         drop((other, elsewhere));
     }
 }

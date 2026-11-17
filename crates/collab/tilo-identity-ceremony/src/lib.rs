@@ -99,17 +99,13 @@ impl IdentityRecord {
         created_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let serialisable = SerializableIdentity::from_identity(identity)?;
-        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
-            i64::try_from(
-                created_at
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            )
-            .unwrap_or(i64::MAX),
-            0,
-        )
-        .unwrap_or_default()
-        .to_rfc3339();
+        let ts = created_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| i64::try_from(since.as_secs()).ok())
+            .and_then(|secs| jiff::Timestamp::from_second(secs).ok())
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        let ts = format!("{ts:.0}");
         Ok(Self {
             profile_photo: None,
             display_name: display_name.into(),

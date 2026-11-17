@@ -231,15 +231,16 @@ fn selected_span(feed: &wire::Feed, selection: Option<&wire::Range>) -> Option<(
 #[derive(Clone, PartialEq, Eq)]
 enum Heading {
     Group(String),
-    Day(Option<chrono::NaiveDate>),
+    Day(Option<jiff::civil::Date>),
 }
 
 fn heading(entry: &wire::Entry) -> Heading {
     entry.group.clone().map_or_else(
         || {
             Heading::Day(
-                chrono::DateTime::from_timestamp_millis(entry.at_ms)
-                    .map(|at| at.with_timezone(&chrono::Local).date_naive()),
+                jiff::Timestamp::from_millisecond(entry.at_ms)
+                    .ok()
+                    .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).date()),
             )
         },
         Heading::Group,
@@ -259,7 +260,7 @@ fn list(
         .iter()
         .map(|group| (group.id.as_str(), group))
         .collect();
-    let this_year = chrono::Local::now().date_naive();
+    let this_year = jiff::Zoned::now().date();
     let mut sections: Vec<(Heading, Vec<Element>)> = Vec::new();
     for (index, entry) in feed.entries.iter().enumerate() {
         let mut words: Vec<&str> = vec![entry.summary.as_str(), entry.author.name.as_str()];
@@ -306,12 +307,7 @@ fn list(
             Heading::Day(day) => {
                 Section::new(rows).with_header(SectionHeader::group(day.map_or_else(
                     || tr("activity-day-unknown"),
-                    |day| {
-                        ui::format::day_heading(
-                            day,
-                            chrono::Datelike::year(&day) != chrono::Datelike::year(&this_year),
-                        )
-                    },
+                    |day| ui::format::day_heading(day, day.year() != this_year.year()),
                 )))
             }
         };

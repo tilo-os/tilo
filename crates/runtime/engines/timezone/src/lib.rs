@@ -9,7 +9,7 @@
 extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
-pub use chrono_tz;
+pub use jiff_tzdb;
 
 /// Run the database's own code: look zones up by name and convert fixed
 /// instants through their rules, in and out of daylight saving time and at
@@ -19,36 +19,34 @@ pub use chrono_tz;
 /// proves the library loads and runs against its runtime.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
-    use chrono::{Offset, TimeZone, Utc};
-    use chrono_tz::{TZ_VARIANTS, Tz};
+    use jiff::civil::date;
+    use jiff::tz::TimeZone;
 
-    let cases: [(&str, i32, u32, u32, i32); 4] = [
+    let cases: [(&str, i16, i8, i8, i32); 4] = [
         ("Europe/Vienna", 2026, 1, 15, 3600),
         ("Europe/Vienna", 2026, 7, 1, 7200),
         ("America/New_York", 2026, 7, 1, -14_400),
         ("Australia/Adelaide", 2026, 1, 15, 37_800),
     ];
     for (name, year, month, day, expected) in cases {
-        let zone: Tz = name
-            .parse()
-            .map_err(|error| format!("chrono-tz does not know {name}: {error}"))?;
-        let instant = Utc
-            .with_ymd_and_hms(year, month, day, 12, 0, 0)
-            .single()
-            .ok_or_else(|| format!("{year}-{month:02}-{day:02} is not a date"))?;
-        let offset = zone
-            .offset_from_utc_datetime(&instant.naive_utc())
-            .fix()
-            .local_minus_utc();
+        let (name, data) =
+            jiff_tzdb::get(name).ok_or_else(|| format!("the database does not know {name}"))?;
+        let zone = TimeZone::tzif(name, data).map_err(|error| format!("{name}: {error}"))?;
+        let instant = date(year, month, day)
+            .at(12, 0, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .map_err(|error| format!("{year}-{month:02}-{day:02}: {error}"))?
+            .timestamp();
+        let offset = zone.to_offset(instant).seconds();
         if offset != expected {
             return Err(format!(
-                "chrono-tz puts {name} {offset} s from UTC on {year}-{month:02}-{day:02}, not {expected} s"
+                "the database puts {name} {offset} s from UTC on {year}-{month:02}-{day:02}, not {expected} s"
             ));
         }
     }
     Ok(format!(
         "{} zones, {} instants converted",
-        TZ_VARIANTS.len(),
+        jiff_tzdb::available().count(),
         cases.len()
     ))
 }

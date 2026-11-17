@@ -55,7 +55,7 @@ impl DateStyle {
     /// style, [`DateStyle::Language`] in the language `words` read in.
     #[must_use]
     pub fn example(self, words: &dyn crate::Words) -> String {
-        let day = chrono::NaiveDate::from_ymd_opt(2023, 3, 15).unwrap_or_default();
+        let day = jiff::civil::date(2023, 3, 15);
         crate::date(
             RegionFormats {
                 date: self,
@@ -148,13 +148,13 @@ impl FirstDayOfWeek {
         }
     }
 
-    /// The same day as a `chrono` weekday.
+    /// The same day as a weekday.
     #[must_use]
-    pub fn weekday(self) -> chrono::Weekday {
+    pub fn weekday(self) -> jiff::civil::Weekday {
         match self {
-            Self::Monday => chrono::Weekday::Mon,
-            Self::Sunday => chrono::Weekday::Sun,
-            Self::Saturday => chrono::Weekday::Sat,
+            Self::Monday => jiff::civil::Weekday::Monday,
+            Self::Sunday => jiff::civil::Weekday::Sunday,
+            Self::Saturday => jiff::civil::Weekday::Saturday,
         }
     }
 }

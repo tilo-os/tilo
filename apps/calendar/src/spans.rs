@@ -14,8 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime, Time, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Event, Recurrence};
@@ -166,7 +165,11 @@ impl SpanAsked {
     /// calendar reaches.
     #[must_use]
     pub fn between_ms(from_ms: i64, to_ms: i64) -> Option<Self> {
-        let written = |ms: i64| DateTime::from_timestamp_millis(ms).map(|at| at.to_rfc3339());
+        let written = |ms: i64| {
+            jiff::Timestamp::from_millisecond(ms)
+                .ok()
+                .map(|at| at.to_string())
+        };
         Some(Self {
             from: written(from_ms)?,
             to: written(to_ms)?,
@@ -192,9 +195,9 @@ impl SpanAsked {
         };
         let found = occurrences(events.iter().copied(), &span, &only);
         Ok(SpanAnswer {
-            zone: span.zone.name().to_owned(),
-            from: span.written(span.from.timestamp_millis()),
-            to: span.written(span.to.timestamp_millis()),
+            zone: span.zone.to_owned(),
+            from: span.written(span.from.as_millisecond()),
+            to: span.written(span.to.as_millisecond()),
             entries: found.entries,
             partial: found.partial,
         })
@@ -234,9 +237,9 @@ impl FreeAsked {
         };
         let busy = occurrences(events.iter().copied(), &span, &only).entries;
         Ok(FreeAnswer {
-            zone: span.zone.name().to_owned(),
-            from: span.written(span.from.timestamp_millis()),
-            to: span.written(span.to.timestamp_millis()),
+            zone: span.zone.to_owned(),
+            from: span.written(span.from.as_millisecond()),
+            to: span.written(span.to.as_millisecond()),
             free: free(&busy, &span, &hours),
             busy: busy.len(),
         })
@@ -357,9 +360,10 @@ impl Asked {
 /// Between two instants, read in one zone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
-    pub from: DateTime<Utc>,
-    pub to: DateTime<Utc>,
-    pub zone: Tz,
+    pub from: jiff::Timestamp,
+    pub to: jiff::Timestamp,
+    /// The zone's IANA name.
+    pub zone: &'static str,
 }
 
 /// A text shown back to whoever wrote it, cut where it would not help.
@@ -369,8 +373,23 @@ fn shown(text: &str) -> String {
 
 /// The instant `wall` names in `zone`: the later reading of a time a clock
 /// change skips, the earlier of one it repeats.
-fn instant_in(zone: Tz, wall: NaiveDateTime) -> Option<DateTime<Utc>> {
-    crate::timezone::wall_to_utc(zone.name(), wall).map(|(at, _)| at)
+fn instant_in(zone: &str, wall: DateTime) -> Option<jiff::Timestamp> {
+    crate::timezone::wall_to_utc(zone, wall).map(|(at, _)| at)
+}
+
+/// `at` in the zone named `zone`.
+fn zoned(at: jiff::Timestamp, zone: &str) -> jiff::Zoned {
+    at.to_zoned(crate::timezone::named(zone).unwrap_or(jiff::tz::TimeZone::UTC))
+}
+
+/// `at` as RFC 3339 text in the zone named `zone`, with its offset.
+fn written_in(at: jiff::Timestamp, zone: &str) -> String {
+    zoned(at, zone).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// The database's own spelling of the zone named `name`.
+fn zone_name(name: &str) -> Option<&'static str> {
+    jiff_tzdb::get(name).map(|(name, _)| name)
 }
 
 /// The zone a reader's times are read and answered in: the one they name,
@@ -381,10 +400,10 @@ fn instant_in(zone: Tz, wall: NaiveDateTime) -> Option<DateTime<Utc>> {
 pub fn zone_asked<'a>(
     zone: Option<&str>,
     events: impl IntoIterator<Item = &'a Event>,
-) -> Result<Tz, String> {
+) -> Result<&'static str, String> {
     if let Some(name) = zone.map(str::trim).filter(|name| !name.is_empty()) {
         return crate::timezone::canonical_zone(name)
-            .and_then(|name| name.parse::<Tz>().ok())
+            .and_then(|name| zone_name(&name))
             .ok_or_else(|| {
                 format!(
                     "zone is an IANA time zone such as Europe/Berlin, not `{}`",
@@ -401,8 +420,8 @@ pub fn zone_asked<'a>(
     Ok(zones
         .into_iter()
         .max_by_key(|(name, entries)| (*entries, std::cmp::Reverse(*name)))
-        .and_then(|(name, _)| name.parse().ok())
-        .unwrap_or(Tz::UTC))
+        .and_then(|(name, _)| zone_name(name))
+        .unwrap_or("UTC"))
 }
 
 /// The moment `text` names: with its offset from UTC, or a date and time or
@@ -410,16 +429,14 @@ pub fn zone_asked<'a>(
 ///
 /// # Errors
 /// What `field` should have been, when `text` is none of them.
-pub fn moment(text: &str, zone: Tz, field: &str) -> Result<DateTime<Utc>, String> {
+pub fn moment(text: &str, zone: &str, field: &str) -> Result<jiff::Timestamp, String> {
     let text = text.trim();
-    if let Ok(at) = DateTime::parse_from_rfc3339(text) {
-        return Ok(at.with_timezone(&Utc));
+    if let Ok(at) = text.parse::<jiff::Timestamp>() {
+        return Ok(at);
     }
-    let wall = NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
-        .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M"))
-        .or_else(|_| {
-            NaiveDate::parse_from_str(text, "%Y-%m-%d").map(|date| date.and_time(NaiveTime::MIN))
-        })
+    let wall = DateTime::strptime("%Y-%m-%dT%H:%M:%S", text)
+        .or_else(|_| DateTime::strptime("%Y-%m-%dT%H:%M", text))
+        .or_else(|_| Date::strptime("%Y-%m-%d", text).map(|date| date.to_datetime(Time::MIN)))
         .map_err(|_| {
             format!(
                 "{field} is a date (2026-11-20), a date and time (2026-11-20T09:00) or one with \
@@ -427,7 +444,7 @@ pub fn moment(text: &str, zone: Tz, field: &str) -> Result<DateTime<Utc>, String
                 shown(text)
             )
         })?;
-    instant_in(zone, wall).ok_or_else(|| format!("{field} names no moment in {}", zone.name()))
+    instant_in(zone, wall).ok_or_else(|| format!("{field} names no moment in {zone}"))
 }
 
 impl Span {
@@ -452,7 +469,9 @@ impl Span {
         if span.to <= span.from {
             return Err("to comes after from".into());
         }
-        if span.to - span.from > Duration::days(LONGEST_SPAN_DAYS) {
+        if span.to.duration_since(span.from)
+            > jiff::SignedDuration::from_hours(LONGEST_SPAN_DAYS * 24)
+        {
             return Err(format!(
                 "a span is at most {LONGEST_SPAN_DAYS} days: ask for a shorter one"
             ));
@@ -462,10 +481,10 @@ impl Span {
 
     /// `ms` since the epoch as this span's zone writes it, with its offset.
     fn written(&self, ms: i64) -> String {
-        DateTime::from_timestamp_millis(ms)
-            .unwrap_or_default()
-            .with_timezone(&self.zone)
-            .to_rfc3339()
+        written_in(
+            jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
+            self.zone,
+        )
     }
 }
 
@@ -514,16 +533,19 @@ pub struct Found {
 }
 
 /// The occurrence of `event` on `date`, a date of its own zone it occurs on.
-fn occurrence_of(event: &Event, date: NaiveDate, zone: Tz) -> Option<Occurrence> {
+fn occurrence_of(event: &Event, date: Date, zone: &str) -> Option<Occurrence> {
     let edit = crate::shown::override_on(event, date);
     let original = edit.map_or(date, |edit| edit.original_date);
     let (start, end, from, to) = if event.all_day {
-        let last = date + Duration::days(event.all_day_span_days() - 1);
+        let last = date + jiff::Span::new().days(event.all_day_span_days() - 1);
         (
             date.to_string(),
             last.to_string(),
-            instant_in(zone, date.and_time(NaiveTime::MIN))?,
-            instant_in(zone, (last + Duration::days(1)).and_time(NaiveTime::MIN))?,
+            instant_in(zone, date.to_datetime(Time::MIN))?,
+            instant_in(
+                zone,
+                (last + jiff::Span::new().days(1)).to_datetime(Time::MIN),
+            )?,
         )
     } else {
         let (from, to) = if event.timezone == "floating" {
@@ -533,16 +555,11 @@ fn occurrence_of(event: &Event, date: NaiveDate, zone: Tz) -> Option<Occurrence>
         } else {
             crate::shown::instants(event, date)?
         };
-        (
-            from.with_timezone(&zone).to_rfc3339(),
-            to.with_timezone(&zone).to_rfc3339(),
-            from,
-            to,
-        )
+        (written_in(from, zone), written_in(to, zone), from, to)
     };
     let in_series = |edit: &crate::model::OccurrenceOverride| {
         edit.original_date
-            .and_time(edit.original_time.unwrap_or_else(|| event.start.time()))
+            .to_datetime(edit.original_time.unwrap_or_else(|| event.start.time()))
     };
     Some(Occurrence {
         entry: event.id.to_string(),
@@ -557,8 +574,8 @@ fn occurrence_of(event: &Event, date: NaiveDate, zone: Tz) -> Option<Occurrence>
             .unwrap_or_else(|| event.location.clone()),
         start,
         end,
-        start_ms: from.timestamp_millis(),
-        end_ms: to.timestamp_millis(),
+        start_ms: from.as_millisecond(),
+        end_ms: to.as_millisecond(),
         all_day: event.all_day,
         zone: event.timezone.clone(),
         categories: event.categories.iter().cloned().collect(),
@@ -585,11 +602,11 @@ pub fn occurrences<'a>(
     span: &Span,
     only: &Only,
 ) -> Found {
-    let (from_ms, to_ms) = (span.from.timestamp_millis(), span.to.timestamp_millis());
+    let (from_ms, to_ms) = (span.from.as_millisecond(), span.to.as_millisecond());
     // A date of the reader's zone is at most a day off the same instant's
     // date in any other zone.
-    let first = span.from.with_timezone(&span.zone).date_naive() - Duration::days(2);
-    let last = span.to.with_timezone(&span.zone).date_naive() + Duration::days(2);
+    let first = zoned(span.from, span.zone).date() - jiff::Span::new().days(2);
+    let last = zoned(span.to, span.zone).date() + jiff::Span::new().days(2);
     let mut entries = Vec::new();
     for event in events {
         if !only.takes(event) {
@@ -599,9 +616,16 @@ pub fn occurrences<'a>(
         let reach = if event.all_day {
             event.all_day_span_days()
         } else {
-            (event.end - event.start).num_days().clamp(0, 60) + 1
+            i64::from(
+                event
+                    .end
+                    .since(event.start)
+                    .map_or(0, |span| span.get_days()),
+            )
+            .clamp(0, 60)
+                + 1
         };
-        for date in event.occurrences_in(first - Duration::days(reach), last) {
+        for date in event.occurrences_in(first - jiff::Span::new().days(reach), last) {
             let Some(occurrence) = occurrence_of(event, date, span.zone) else {
                 continue;
             };
@@ -637,7 +661,7 @@ pub struct Hours {
     /// The days that count.
     pub days: Vec<Weekday>,
     /// The shortest gap worth answering.
-    pub at_least: Duration,
+    pub at_least: jiff::SignedDuration,
     /// Whether an all-day entry takes its days.
     pub all_day_busy: bool,
 }
@@ -648,13 +672,13 @@ impl Default for Hours {
             open: 9 * 60,
             close: 17 * 60,
             days: vec![
-                Weekday::Mon,
-                Weekday::Tue,
-                Weekday::Wed,
-                Weekday::Thu,
-                Weekday::Fri,
+                Weekday::Monday,
+                Weekday::Tuesday,
+                Weekday::Wednesday,
+                Weekday::Thursday,
+                Weekday::Friday,
             ],
-            at_least: Duration::minutes(i64::from(USUAL_GAP_MINUTES)),
+            at_least: jiff::SignedDuration::from_mins(i64::from(USUAL_GAP_MINUTES)),
             all_day_busy: false,
         }
     }
@@ -667,8 +691,8 @@ fn minutes_of(text: &str, field: &str) -> Result<i64, String> {
     if text == "24:00" {
         return Ok(24 * 60);
     }
-    NaiveTime::parse_from_str(text, "%H:%M")
-        .map(|time| (time - NaiveTime::MIN).num_minutes())
+    Time::strptime("%H:%M", text)
+        .map(|time| time.duration_since(Time::MIN).as_mins())
         .map_err(|_| {
             format!(
                 "{field} is a time of day such as 09:00, not `{}`",
@@ -680,13 +704,13 @@ fn minutes_of(text: &str, field: &str) -> Result<i64, String> {
 fn weekday_of(text: &str) -> Result<Weekday, String> {
     let name: String = text.trim().to_lowercase().chars().take(3).collect();
     match name.as_str() {
-        "mon" => Ok(Weekday::Mon),
-        "tue" => Ok(Weekday::Tue),
-        "wed" => Ok(Weekday::Wed),
-        "thu" => Ok(Weekday::Thu),
-        "fri" => Ok(Weekday::Fri),
-        "sat" => Ok(Weekday::Sat),
-        "sun" => Ok(Weekday::Sun),
+        "mon" => Ok(Weekday::Monday),
+        "tue" => Ok(Weekday::Tuesday),
+        "wed" => Ok(Weekday::Wednesday),
+        "thu" => Ok(Weekday::Thursday),
+        "fri" => Ok(Weekday::Friday),
+        "sat" => Ok(Weekday::Saturday),
+        "sun" => Ok(Weekday::Sunday),
         _ => Err(format!(
             "days are mon, tue, wed, thu, fri, sat or sun, not `{}`",
             shown(text)
@@ -718,13 +742,17 @@ impl Hours {
                     .map(|day| weekday_of(day))
                     .collect::<Result<_, _>>()?
             },
-            at_least: Duration::minutes(i64::from(at_least_minutes.unwrap_or(USUAL_GAP_MINUTES))),
+            at_least: jiff::SignedDuration::from_mins(i64::from(
+                at_least_minutes.unwrap_or(USUAL_GAP_MINUTES),
+            )),
             all_day_busy,
         };
         if hours.close <= hours.open {
             return Err("dayEnd comes after dayStart".into());
         }
-        if hours.at_least <= Duration::zero() || hours.at_least > Duration::days(1) {
+        if hours.at_least <= jiff::SignedDuration::ZERO
+            || hours.at_least > jiff::SignedDuration::from_hours(24)
+        {
             return Err("atLeastMinutes is between 1 and 1440".into());
         }
         Ok(hours)
@@ -754,8 +782,8 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
         .filter(|(start, end)| end > start)
         .collect();
     taken.sort_unstable();
-    let (from_ms, to_ms) = (span.from.timestamp_millis(), span.to.timestamp_millis());
-    let at_least = hours.at_least.num_milliseconds();
+    let (from_ms, to_ms) = (span.from.as_millisecond(), span.to.as_millisecond());
+    let at_least = i64::try_from(hours.at_least.as_millis()).unwrap_or(i64::MAX);
     let mut gaps = Vec::new();
     let mut keep = |start: i64, end: i64| {
         if end - start >= at_least {
@@ -768,16 +796,21 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
             });
         }
     };
-    let last = span.to.with_timezone(&span.zone).date_naive();
-    let mut day = span.from.with_timezone(&span.zone).date_naive();
+    let last = zoned(span.to, span.zone).date();
+    let mut day = zoned(span.from, span.zone).date();
     while day <= last {
-        let midnight = day.and_time(NaiveTime::MIN);
-        let hours_of_day = instant_in(span.zone, midnight + Duration::minutes(hours.open)).zip(
-            instant_in(span.zone, midnight + Duration::minutes(hours.close)),
-        );
+        let midnight = day.to_datetime(Time::MIN);
+        let hours_of_day = instant_in(
+            span.zone,
+            midnight + jiff::SignedDuration::from_mins(hours.open),
+        )
+        .zip(instant_in(
+            span.zone,
+            midnight + jiff::SignedDuration::from_mins(hours.close),
+        ));
         if let Some((open, close)) = hours_of_day.filter(|_| hours.days.contains(&day.weekday())) {
-            let close = close.timestamp_millis().min(to_ms);
-            let mut at = open.timestamp_millis().max(from_ms);
+            let close = close.as_millisecond().min(to_ms);
+            let mut at = open.as_millisecond().max(from_ms);
             for &(start, end) in &taken {
                 if at >= close || start >= close {
                     break;
@@ -794,7 +827,9 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
                 keep(at, close);
             }
         }
-        let Some(next) = day.succ_opt() else { break };
+        let Some(next) = day.tomorrow().ok() else {
+            break;
+        };
         day = next;
     }
     gaps
@@ -805,23 +840,20 @@ mod tests {
     use super::*;
     use crate::model::OccurrenceOverride;
 
-    fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(y, m, d)
-            .unwrap()
-            .and_hms_opt(h, min, 0)
-            .unwrap()
+    fn at(y: i16, m: i8, d: i8, h: i8, min: i8) -> DateTime {
+        Date::new(y, m, d).unwrap().at(h, min, 0, 0)
     }
 
-    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    fn day(y: i16, m: i8, d: i8) -> Date {
+        Date::new(y, m, d).unwrap()
     }
 
-    fn event(title: &str, zone: &str, start: NaiveDateTime, minutes: i64) -> Event {
+    fn event(title: &str, zone: &str, start: DateTime, minutes: i64) -> Event {
         Event {
             id: uuid::Uuid::new_v4(),
             title: title.into(),
             start,
-            end: start + Duration::minutes(minutes),
+            end: start + jiff::SignedDuration::from_mins(minutes),
             timezone: zone.into(),
             ..Event::default()
         }
@@ -1007,8 +1039,8 @@ mod tests {
             let york = event("C", "America/New_York", at(2026, 11, 17, 10, 0), 60);
             let events = [&berlin, &berlin_too, &york];
             let span = Span::asked("2026-11-17", "2026-11-18", None, events).unwrap();
-            assert_eq!(span.zone.name(), "Europe/Berlin");
-            assert_eq!(Span::asked("2026-11-17", "2026-11-18", None, []).unwrap().zone, Tz::UTC);
+            assert_eq!(span.zone, "Europe/Berlin");
+            assert_eq!(Span::asked("2026-11-17", "2026-11-18", None, []).unwrap().zone, "UTC");
         }
     }
 

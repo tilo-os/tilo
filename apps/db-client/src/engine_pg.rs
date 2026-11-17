@@ -6,7 +6,7 @@
 
 use ui::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use jiff::civil::{Date, DateTime, Time};
 use postgres::fallible_iterator::FallibleIterator as PgFallibleIterator;
 use postgres::types::{FromSql, Kind, Type};
 use postgres::{Client, Config, NoTls};
@@ -205,10 +205,10 @@ fn pg_array_element(
         },
         Type::NUMERIC => Ok(PgNumeric::from_sql(ty, raw)?.0),
         Type::UUID => quoted(uuid::Uuid::from_slice(raw)?.to_string()),
-        Type::DATE => quoted(NaiveDate::from_sql(ty, raw)?.to_string()),
-        Type::TIME => quoted(NaiveTime::from_sql(ty, raw)?.to_string()),
-        Type::TIMESTAMP => quoted(NaiveDateTime::from_sql(ty, raw)?.to_string()),
-        Type::TIMESTAMPTZ => quoted(DateTime::<Utc>::from_sql(ty, raw)?.to_rfc3339()),
+        Type::DATE => quoted(Date::from_sql(ty, raw)?.to_string()),
+        Type::TIME => quoted(Time::from_sql(ty, raw)?.to_string()),
+        Type::TIMESTAMP => quoted(DateTime::from_sql(ty, raw)?.to_string()),
+        Type::TIMESTAMPTZ => quoted(jiff::Timestamp::from_sql(ty, raw)?.to_string()),
         Type::JSON | Type::JSONB => Ok(serde_json::Value::from_sql(ty, raw)?.to_string()),
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
             quoted(std::str::from_utf8(raw)?.to_string())
@@ -378,21 +378,21 @@ fn pg_stream_cell(row: &postgres::Row, index: usize) -> Result<Cell, String> {
             .map_err(|e| e.to_string())
             .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_string()))),
         Type::DATE => row
-            .try_get::<_, Option<NaiveDate>>(index)
+            .try_get::<_, Option<Date>>(index)
             .map_err(|e| e.to_string())
             .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_string()))),
         Type::TIME => row
-            .try_get::<_, Option<NaiveTime>>(index)
+            .try_get::<_, Option<Time>>(index)
             .map_err(|e| e.to_string())
             .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_string()))),
         Type::TIMESTAMP => row
-            .try_get::<_, Option<NaiveDateTime>>(index)
+            .try_get::<_, Option<DateTime>>(index)
             .map_err(|e| e.to_string())
             .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_string()))),
         Type::TIMESTAMPTZ => row
-            .try_get::<_, Option<DateTime<Utc>>>(index)
+            .try_get::<_, Option<jiff::Timestamp>>(index)
             .map_err(|e| e.to_string())
-            .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_rfc3339()))),
+            .map(|v| v.map_or(Cell::Null, |v| Cell::bounded_text(v.to_string()))),
         Type::JSON | Type::JSONB => row
             .try_get::<_, Option<serde_json::Value>>(index)
             .map_err(|e| e.to_string())

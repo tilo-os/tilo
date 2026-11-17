@@ -544,11 +544,9 @@ impl Notifier for SessionNotifier {
                         let last_rung = if date.is_empty() {
                             None
                         } else {
-                            Some(
-                                chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(
-                                    |_| NotifyError::Invalid("invalid delivered alarm date"),
-                                )?,
-                            )
+                            Some(jiff::civil::Date::strptime("%Y-%m-%d", &date).map_err(|_| {
+                                NotifyError::Invalid("invalid delivered alarm date")
+                            })?)
                         };
                         Ok(AlarmState {
                             tag,

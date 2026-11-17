@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 # A report's file name starts with its local time, and a list sorts by it.
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 # The reports are private files of this user's, created and read as such.
 tilo-files = { path = "../../platform/tilo-files" }

@@ -222,7 +222,7 @@ pub(crate) fn is_favorite(item: &SecretItem) -> bool {
 
 /// Seconds since the epoch on the app's clock (pinned in captures).
 pub(crate) fn now_unix() -> u64 {
-    u64::try_from(ui::clock::local_now().timestamp()).unwrap_or(0)
+    u64::try_from(ui::clock::local_now().timestamp().as_second()).unwrap_or(0)
 }
 
 /// What a kind is called in the detail view and the editor.

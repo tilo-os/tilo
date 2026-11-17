@@ -2,7 +2,7 @@
 
 #[must_use]
 pub fn shown(stored: &str) -> String {
-    ui::format::NaiveDate::parse_from_str(stored, "%Y-%m-%d")
+    ui::format::Date::strptime("%Y-%m-%d", stored)
         .map_or_else(|_| stored.to_owned(), ui::format::date)
 }
 
@@ -24,7 +24,7 @@ mod tests {
                 ("2026-12-31", (2026, 12, 31)),
                 ("2024-02-29", (2024, 2, 29)),
             ] {
-                let Some(day) = ui::format::NaiveDate::from_ymd_opt(year, month, day) else {
+                let Some(day) = ui::format::Date::new(year, month, day).ok() else {
                     panic!("{stored} is a day");
                 };
                 assert_eq!(shown(stored), ui::format::date(day), "{stored}");

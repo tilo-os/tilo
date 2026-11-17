@@ -23,7 +23,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike as _, Months, TimeZone as _, Utc};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::meter::{UsageEntry, UsageKind};
 use legacy_vm::hosted::plan::{Plans, Sells};
@@ -161,25 +160,31 @@ pub fn watch_plans(
 /// period start, or the calendar month (UTC), for a month.
 #[must_use]
 pub fn period(plans: &Plans, account: &str, now_ms: u64) -> (u64, u64) {
-    let millis = |at: DateTime<Utc>| u64::try_from(at.timestamp_millis()).unwrap_or(0);
+    let millis = |at: &jiff::Zoned| u64::try_from(at.timestamp().as_millisecond()).unwrap_or(0);
     let at = |ms: u64| {
-        Utc.timestamp_millis_opt(i64::try_from(ms).unwrap_or(i64::MAX))
-            .single()
-            .unwrap_or_default()
+        i64::try_from(ms)
+            .ok()
+            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+            .to_zoned(jiff::tz::TimeZone::UTC)
     };
     let start = plans
         .accounts
         .get(account)
         .and_then(|plan| plan.period_start_ms)
-        .map(at)
-        .or_else(|| {
-            let now = at(now_ms);
-            Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-                .single()
-        })
-        .unwrap_or_default();
-    let end = start.checked_add_months(Months::new(1)).unwrap_or(start);
-    (millis(start), millis(end))
+        .map_or_else(
+            || {
+                let now = at(now_ms);
+                now.start_of_day()
+                    .and_then(|day| day.first_of_month())
+                    .unwrap_or(now)
+            },
+            at,
+        );
+    let end = start
+        .checked_add(jiff::Span::new().months(1))
+        .unwrap_or_else(|_| start.clone());
+    (millis(&start), millis(&end))
 }
 
 /// The usage `records` make, per workspace, most used first; `running` are

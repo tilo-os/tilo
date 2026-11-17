@@ -179,9 +179,9 @@ impl HourPoint {
     pub fn hour_label(&self) -> String {
         self.time
             .get(11..13)
-            .and_then(|hour| hour.parse::<u32>().ok())
-            .and_then(|hour| chrono::NaiveTime::from_hms_opt(hour, 0, 0))
-            .map(|time| ui::format::time(&time))
+            .and_then(|hour| hour.parse::<i8>().ok())
+            .and_then(|hour| jiff::civil::Time::new(hour, 0, 0, 0).ok())
+            .map(ui::format::time)
             .unwrap_or_default()
     }
 }

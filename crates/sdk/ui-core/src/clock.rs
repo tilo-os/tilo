@@ -5,18 +5,31 @@ pub use tilo_formats::TimeStyle;
 
 /// The local date and time every screenshot capture shows:
 /// 30 June 2026, 10:42.
-pub const CAPTURE_LOCAL_TIME: (i32, u32, u32, u32, u32) = (2026, 6, 30, 10, 42);
+pub const CAPTURE_LOCAL_TIME: (i16, i8, i8, i8, i8) = (2026, 6, 30, 10, 42);
 
 /// The current local date and time.
 #[must_use]
-pub fn local_now() -> chrono::DateTime<chrono::Local> {
-    chrono::DateTime::<chrono::Local>::from(crate::time::to_std(crate::time::wall()))
+pub fn local_now() -> jiff::Zoned {
+    jiff::Timestamp::try_from(crate::time::to_std(crate::time::wall()))
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system())
 }
 
 /// Today's local date.
 #[must_use]
-pub fn today() -> chrono::NaiveDate {
-    local_now().date_naive()
+pub fn today() -> jiff::civil::Date {
+    local_now().date()
+}
+
+/// The instant `local` names in the person's zone: the earlier one where the clocks went back,
+/// none where they skipped it.
+#[must_use]
+pub fn instant_of(local: jiff::civil::DateTime) -> Option<jiff::Timestamp> {
+    let local = jiff::tz::TimeZone::system().to_ambiguous_timestamp(local);
+    if matches!(local.offset(), jiff::tz::AmbiguousOffset::Gap { .. }) {
+        return None;
+    }
+    local.earlier().ok()
 }
 
 /// Pin the wall clock to [`CAPTURE_LOCAL_TIME`] in the local time zone for
@@ -36,12 +49,9 @@ pub fn freeze_for_capture() {
 /// [`crate::time::testing::with_wall`]: what [`freeze_for_capture`] pins for the process.
 #[must_use]
 pub fn capture_wall() -> Option<crate::time::SystemTime> {
-    use chrono::TimeZone;
     let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
-    let local = chrono::NaiveDate::from_ymd_opt(year, month, day)
-        .and_then(|date| date.and_hms_opt(hour, minute, 0))
-        .and_then(|naive| chrono::Local.from_local_datetime(&naive).earliest())?;
-    let ms = u64::try_from(local.timestamp_millis()).ok()?;
+    let at = instant_of(jiff::civil::DateTime::new(year, month, day, hour, minute, 0, 0).ok()?)?;
+    let ms = u64::try_from(at.as_millisecond()).ok()?;
     crate::time::UNIX_EPOCH.checked_add(crate::time::Duration::from_millis(ms))
 }
 
@@ -54,8 +64,8 @@ pub fn configured() -> TimeStyle {
 
 /// `time` as the person reads clocks: `14:05` or `2:05 PM`.
 #[must_use]
-pub fn time_of_day(time: &impl chrono::Timelike) -> String {
-    configured().format(time, crate::format::words())
+pub fn time_of_day(time: impl Into<jiff::civil::Time>) -> String {
+    configured().format(time.into(), crate::format::words())
 }
 
 /// [`time_of_day`] for a time kept as an hour (`0..24`) and a minute.
@@ -67,23 +77,22 @@ pub fn hour_minute(hour: u32, minute: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, Timelike};
 
     tilo_test_env::scenario! {
         fn clock_styles_read_their_examples_and_a_capture_keeps_its_time;
 
         phase each_style_reads_its_example;
         {
-            let time = chrono::NaiveTime::from_hms_opt(14, 5, 0).unwrap();
+            let time = jiff::civil::time(14, 5, 0, 0);
             let words = crate::format::words();
             for style in TimeStyle::ALL {
-                assert_eq!(style.format(&time, words), style.example(words));
+                assert_eq!(style.format(time, words), style.example(words));
             }
             assert_eq!(TimeStyle::H24.example(words), "14:05");
             assert_eq!(TimeStyle::H12.example(words), "2:05 PM");
-            let midnight = chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap();
-            assert_eq!(TimeStyle::H24.format(&midnight, words), "00:07");
-            assert_eq!(TimeStyle::H12.format(&midnight, words), "12:07 AM");
+            let midnight = jiff::civil::time(0, 7, 0, 0);
+            assert_eq!(TimeStyle::H24.format(midnight, words), "00:07");
+            assert_eq!(TimeStyle::H12.format(midnight, words), "12:07 AM");
         }
 
         phase a_capture_shows_the_same_local_date_and_time;
@@ -95,7 +104,7 @@ mod tests {
                     (now.year(), now.month(), now.day(), now.hour(), now.minute()),
                     CAPTURE_LOCAL_TIME
                 );
-                assert_eq!(today(), now.date_naive());
+                assert_eq!(today(), now.date());
                 assert_eq!(local_now(), now, "the frozen clock does not move");
             });
         }

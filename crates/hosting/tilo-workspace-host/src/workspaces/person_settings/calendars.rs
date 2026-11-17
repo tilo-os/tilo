@@ -863,7 +863,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
         entry: event.id.to_string(),
         start: format!(
             "{} ({})",
-            event.start.format("%Y-%m-%d %H:%M"),
+            event.start.strftime("%Y-%m-%d %H:%M"),
             event.timezone
         ),
         title: event.title,
@@ -1207,7 +1207,7 @@ fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filin
         entry: asked.entry.clone(),
         start: format!(
             "{} ({})",
-            held.event.start.format("%Y-%m-%d %H:%M"),
+            held.event.start.strftime("%Y-%m-%d %H:%M"),
             held.event.timezone
         ),
         filed: held.event.categories.iter().cloned().collect(),

@@ -13,9 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use chrono::{
-    DateTime, Duration as ChronoDuration, FixedOffset, Local, Offset as _, TimeZone as _, Utc,
-};
+use jiff::SignedDuration;
+use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use settings_store::hardware::KeyChord;
@@ -29,13 +28,13 @@ use tilo_automation::{
 };
 
 /// A fire time this far in the past counts as missed rather than on time.
-pub const MISSED_AFTER: ChronoDuration = tilo_automation::schedule::MISSED_AFTER;
+pub const MISSED_AFTER: SignedDuration = tilo_automation::schedule::MISSED_AFTER;
 
 pub use tilo_action_broker::automation::{readable_folder, validate_trigger};
 
 /// How long each device waits, per device ranked before it, for a fire time to be claimed before it
 /// takes it.
-pub const CLAIM_GRACE: ChronoDuration = ChronoDuration::seconds(45);
+pub const CLAIM_GRACE: SignedDuration = SignedDuration::from_secs(45);
 
 /// The person's certified devices, as this device sees them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -64,25 +63,25 @@ pub trait DeviceDirectory: Send + Sync {
     fn personal_devices(&self) -> PersonalDevices;
 }
 
-/// A clock that moves only when told to, in a fixed offset.
+/// A clock that moves only when told to, in a fixed zone.
 #[cfg(test)]
 #[derive(Debug)]
 pub struct ManualClock {
-    now: Mutex<DateTime<Utc>>,
-    offset: FixedOffset,
+    now: Mutex<jiff::Timestamp>,
+    zone: TimeZone,
 }
 
 #[cfg(test)]
 impl ManualClock {
     #[must_use]
-    pub fn new(now: DateTime<Utc>, offset: FixedOffset) -> Self {
+    pub fn new(now: jiff::Timestamp, zone: TimeZone) -> Self {
         Self {
             now: Mutex::new(now),
-            offset,
+            zone,
         }
     }
 
-    pub fn set(&self, now: DateTime<Utc>) {
+    pub fn set(&self, now: jiff::Timestamp) {
         if let Ok(mut current) = self.now.lock() {
             *current = now;
         }
@@ -91,12 +90,14 @@ impl ManualClock {
 
 #[cfg(test)]
 impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.now.lock().map_or_else(|_| Utc::now(), |now| *now)
+    fn now(&self) -> jiff::Timestamp {
+        self.now
+            .lock()
+            .map_or_else(|_| jiff::Timestamp::now(), |now| *now)
     }
 
-    fn offset_at(&self, _at: DateTime<Utc>) -> FixedOffset {
-        self.offset
+    fn zone(&self) -> TimeZone {
+        self.zone.clone()
     }
 }
 
@@ -127,10 +128,10 @@ impl DeviceDirectory for FixedDevices {
 
 /// Where trigger sources read the time.
 pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> jiff::Timestamp;
 
-    /// The local wall-clock offset in effect at `at` .
-    fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset;
+    /// The zone the local wall clock reads in.
+    fn zone(&self) -> TimeZone;
 }
 
 /// The system clock, in the session's local time zone.
@@ -138,12 +139,12 @@ pub trait Clock: Send + Sync {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> jiff::Timestamp {
+        jiff::Timestamp::now()
     }
 
-    fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset {
-        Local.offset_from_utc_datetime(&at.naive_utc()).fix()
+    fn zone(&self) -> TimeZone {
+        TimeZone::system()
     }
 }
 
@@ -221,10 +222,8 @@ pub fn armed(
 
 /// Nanoseconds since the Unix epoch at `at` , for [`armed`].
 #[must_use]
-pub fn unix_ns(at: DateTime<Utc>) -> u64 {
-    at.timestamp_nanos_opt()
-        .and_then(|ns| u64::try_from(ns).ok())
-        .unwrap_or_default()
+pub fn unix_ns(at: jiff::Timestamp) -> u64 {
+    u64::try_from(at.as_nanosecond()).unwrap_or_default()
 }
 
 /// What a source is shown.
@@ -810,7 +809,7 @@ impl TriggerSource for ScheduleTriggers {
                     .schedules
                     .get(&key)
                     .filter(|entry| entry.trigger == *trigger)
-                    .and_then(|entry| DateTime::from_timestamp_millis(entry.next_fire_ms));
+                    .and_then(|entry| jiff::Timestamp::from_millisecond(entry.next_fire_ms).ok());
                 let next = match current {
                     Some(due) if now < due => continue,
                     Some(due) => 'due: {
@@ -818,13 +817,13 @@ impl TriggerSource for ScheduleTriggers {
                             // Another of the person's devices took it.
                             break 'due next_fire(schedule, now, clock);
                         };
-                        let Some(start) = due.checked_add_signed(wait) else {
+                        let Some(start) = due.checked_add(wait).ok() else {
                             continue 'triggers;
                         };
                         if now < start {
                             continue 'triggers;
                         }
-                        let on_time = now.signed_duration_since(start) <= MISSED_AFTER;
+                        let on_time = now.duration_since(start) <= MISSED_AFTER;
                         if on_time || *catch_up == CatchUp::RunOnce {
                             due_now.push(Firing {
                                 workspace: armed.workspace.clone(),
@@ -835,7 +834,7 @@ impl TriggerSource for ScheduleTriggers {
                                 claim: context.devices.local.as_ref().map(|device| ScheduleClaim {
                                     shortcut: armed.shortcut.id.clone(),
                                     trigger: index,
-                                    due_ms: due.timestamp_millis(),
+                                    due_ms: due.as_millisecond(),
                                     device: device.clone(),
                                 }),
                             });
@@ -851,7 +850,7 @@ impl TriggerSource for ScheduleTriggers {
                     key,
                     LogEntry {
                         trigger: trigger.clone(),
-                        next_fire_ms: next.timestamp_millis(),
+                        next_fire_ms: next.as_millisecond(),
                     },
                 );
                 changed = true;
@@ -893,13 +892,13 @@ fn turn(
     key: &str,
     armed: &Armed,
     index: usize,
-    due: DateTime<Utc>,
+    due: jiff::Timestamp,
     devices: &PersonalDevices,
-) -> Option<ChronoDuration> {
+) -> Option<SignedDuration> {
     let Some(local) = devices.local.as_deref() else {
-        return Some(ChronoDuration::zero());
+        return Some(SignedDuration::ZERO);
     };
-    let due_ms = due.timestamp_millis();
+    let due_ms = due.as_millisecond();
     let claimed = armed.claims.iter().any(|claim| {
         claim.shortcut == armed.shortcut.id && claim.trigger == index && claim.due_ms >= due_ms
     });
@@ -929,11 +928,11 @@ fn runner_rank(key: &str, due_ms: i64, device: &str) -> ([u8; 32], String) {
 /// The invocation a scheduled fire starts: the same for the same fire time, so a
 /// fire that is somehow
 /// handed over twice reuses every invocation id.
-fn scheduled_invocation(key: &str, due: DateTime<Utc>) -> AutomationInvocationId {
+fn scheduled_invocation(key: &str, due: jiff::Timestamp) -> AutomationInvocationId {
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.shortcut.schedule\0");
     hasher.update(key.as_bytes());
-    hasher.update(due.timestamp_millis().to_be_bytes());
+    hasher.update(due.as_millisecond().to_be_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0_u8; 16];
     for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
@@ -945,17 +944,17 @@ fn scheduled_invocation(key: &str, due: DateTime<Utc>) -> AutomationInvocationId
 /// The first fire time of `schedule` strictly after `now`, in the wall-clock time `clock` reads.
 pub(crate) fn next_fire(
     schedule: &Schedule,
-    now: DateTime<Utc>,
+    now: jiff::Timestamp,
     clock: &dyn Clock,
-) -> Option<DateTime<Utc>> {
-    tilo_automation::schedule::next_fire_time(schedule, now, &|at| clock.offset_at(at))
+) -> Option<jiff::Timestamp> {
+    tilo_automation::schedule::next_fire_time(schedule, now, &clock.zone())
 }
 
 /// A record firing this device holds back while devices ranked before it get their turn.
 #[derive(Clone, Debug)]
 struct Held {
     firing: Firing,
-    start: DateTime<Utc>,
+    start: jiff::Timestamp,
 }
 
 /// Where `device` stands for a change; lowest first. Every device of the person ranks the same way,
@@ -1004,18 +1003,18 @@ impl RecordElection {
         }
         let wait = CLAIM_GRACE
             .checked_mul(i32::try_from(rank).unwrap_or(i32::MAX))
-            .unwrap_or(ChronoDuration::MAX);
+            .unwrap_or(SignedDuration::MAX);
         let start = context
             .clock
             .now()
-            .checked_add_signed(wait)
-            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            .checked_add(wait)
+            .unwrap_or(jiff::Timestamp::MAX);
         self.held
             .extend(firings.into_iter().map(|firing| Held { firing, start }));
         Vec::new()
     }
 
-    fn due(&mut self, now: DateTime<Utc>) -> Vec<Firing> {
+    fn due(&mut self, now: jiff::Timestamp) -> Vec<Firing> {
         let (due, waiting): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.held)
             .into_iter()
             .partition(|held| held.start <= now);
@@ -1278,16 +1277,13 @@ impl std::fmt::Debug for TriggerHost {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{FixedOffset, Utc};
     use serde_json::json;
     use tilo_automation::Weekday;
 
     use super::*;
 
-    fn at(text: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(text)
-            .expect("an RFC 3339 instant")
-            .with_timezone(&Utc)
+    fn at(text: &str) -> jiff::Timestamp {
+        text.parse().expect("an RFC 3339 instant")
     }
 
     fn shortcut(trigger: &TriggerSpec) -> Shortcut {
@@ -1301,10 +1297,7 @@ mod tests {
     }
 
     fn utc_clock(now: &str) -> Arc<ManualClock> {
-        Arc::new(ManualClock::new(
-            at(now),
-            FixedOffset::east_opt(0).expect("offset"),
-        ))
+        Arc::new(ManualClock::new(at(now), TimeZone::UTC))
     }
 
     tilo_test_env::scenario! {
@@ -1315,7 +1308,7 @@ mod tests {
             // 2026-09-25 is a Friday; the local clock is two hours ahead.
             let clock = ManualClock::new(
                 at("2026-09-25T10:00:00Z"),
-                FixedOffset::east_opt(2 * 3600).expect("offset"),
+                TimeZone::fixed(jiff::tz::offset(2)),
             );
             let weekday_mornings = Schedule::Calendar {
                 at: tilo_automation::TimeOfDay {

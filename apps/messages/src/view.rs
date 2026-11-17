@@ -1262,7 +1262,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
-    let now_ms = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or(0);
+    let now_ms = u64::try_from(ui::clock::local_now().timestamp().as_millisecond()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
             person: Id::from_raw("00000000-0000-4000-8000-000000000001"),

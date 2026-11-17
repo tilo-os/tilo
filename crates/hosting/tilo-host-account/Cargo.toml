@@ -7,7 +7,7 @@ license.workspace = true
 description = "A host's offers to a person's account, read from what its hosted-VM service admits by and has metered, and followed as they change."
 
 [dependencies]
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 legacy-vm = { path = "../../runtime/legacy-vm" }
 serde.workspace = true
 serde_json.workspace = true

@@ -136,7 +136,7 @@ pub struct AccountStore {
 }
 
 pub fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    format!("{:.0}", jiff::Timestamp::now())
 }
 
 impl AccountStore {

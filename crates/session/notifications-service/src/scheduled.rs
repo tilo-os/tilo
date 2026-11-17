@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_notify::CalendarAlarm;
@@ -77,7 +77,7 @@ pub struct AlarmRequest {
     pub enabled_at_ms: i64,
     /// The local date the app already rang it on, so the daemon does not
     /// ring it again that day.
-    pub last_rung: Option<NaiveDate>,
+    pub last_rung: Option<Date>,
 }
 
 /// One deadline as an app hands it over.
@@ -127,7 +127,7 @@ impl ScheduleRequest {
                     None
                 } else {
                     Some(
-                        NaiveDate::parse_from_str(last_rung, "%Y-%m-%d")
+                        Date::strptime("%Y-%m-%d", last_rung)
                             .map_err(|_| "invalid delivered alarm date".to_owned())?,
                     )
                 },
@@ -204,7 +204,7 @@ struct Entry {
     original_at_ms: i64,
     next_at_ms: Option<i64>,
     calendar: Option<Calendar>,
-    last_rung: Option<NaiveDate>,
+    last_rung: Option<Date>,
     #[serde(default)]
     last_at_ms: Option<i64>,
     #[serde(default)]
@@ -352,7 +352,7 @@ impl Log {
             || activation.len() > 2048
             || activation.chars().any(char::is_control)
             || (!activation.is_empty() && !tilo_notify::valid_activation(&activation))
-            || DateTime::<Utc>::from_timestamp_millis(at_ms).is_none()
+            || jiff::Timestamp::from_millisecond(at_ms).is_err()
         {
             return Err("invalid scheduled notification".into());
         }
@@ -493,7 +493,7 @@ impl Log {
             AlarmAction::Snooze => Some(
                 now_ms
                     .checked_add(SNOOZE_MS)
-                    .filter(|at| DateTime::<Utc>::from_timestamp_millis(*at).is_some())
+                    .filter(|at| jiff::Timestamp::from_millisecond(*at).is_ok())
                     .ok_or("invalid snooze deadline")?,
             ),
             AlarmAction::Dismiss => None,
@@ -506,12 +506,12 @@ impl Log {
     /// over, so a failed write delivers nothing and loses nothing. Each
     /// due deadline as the notification it rings as, made with `alloc`'s
     /// ids.
-    fn take_due<Tz: TimeZone>(
+    fn take_due(
         &mut self,
-        now: &DateTime<Tz>,
+        now: &jiff::Zoned,
         mut alloc: impl FnMut() -> u32,
     ) -> Result<Vec<Notification>, String> {
-        let now_ms = now.timestamp_millis();
+        let now_ms = now.timestamp().as_millisecond();
         let mut entries = self.entries.clone();
         let mut due = Vec::new();
         for entry in &mut entries {
@@ -523,7 +523,7 @@ impl Log {
                 entry.next_at_ms = calendar
                     .alarm()
                     .next_in(entry.last_rung, now)
-                    .map(|date| date.timestamp_millis());
+                    .map(|date| date.timestamp().as_millisecond());
             }
             let calendar_due = entry.next_at_ms.filter(|at| *at <= now_ms);
             let snooze_due = entry.snooze_at_ms.filter(|at| *at <= now_ms);
@@ -540,14 +540,15 @@ impl Log {
             });
             if let Some(at_ms) = calendar_due {
                 entry.last_at_ms = Some(at_ms);
-                entry.last_rung = DateTime::<Utc>::from_timestamp_millis(at_ms)
-                    .map(|date| date.with_timezone(&now.timezone()).date_naive());
+                entry.last_rung = jiff::Timestamp::from_millisecond(at_ms)
+                    .ok()
+                    .map(|date| date.to_zoned(now.time_zone().clone()).date());
                 entry.next_at_ms = entry
                     .calendar
                     .as_ref()
                     .filter(|c| c.weekdays != 0)
                     .and_then(|c| c.alarm().next_in(entry.last_rung, now))
-                    .map(|d| d.timestamp_millis());
+                    .map(|d| d.timestamp().as_millisecond());
             }
             // A new occurrence supersedes a pending snooze of the one
             // before; when both are overdue only one catch-up rings.
@@ -827,9 +828,9 @@ impl Schedules {
     /// # Errors
     /// The log is unavailable or could not be written; nothing was
     /// claimed.
-    pub fn take_due<Tz: TimeZone>(
+    pub fn take_due(
         &self,
-        now: &DateTime<Tz>,
+        now: &jiff::Zoned,
         alloc: impl FnMut() -> u32,
     ) -> Result<Vec<Notification>, String> {
         let due = self.with(|log| log.take_due(now, alloc))?;

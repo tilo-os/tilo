@@ -1,19 +1,19 @@
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::civil::{Date, DateTime, Time, date, time};
 use tilo_resource::{Invoke, Model, Replica, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Diary {
-    pub day: Option<NaiveDate>,
-    pub at: Option<NaiveDateTime>,
-    pub alarm: Option<NaiveTime>,
-    pub days: Vec<NaiveDate>,
+    pub day: Option<Date>,
+    pub at: Option<DateTime>,
+    pub alarm: Option<Time>,
+    pub days: Vec<Date>,
 }
 
 #[resource(kind = "test.diary", params = diary, catalogue = "tests/locales")]
 impl Diary {
     /// Plan a moment
     #[action]
-    pub fn plan(&mut self, #[param("When")] at: NaiveDateTime, #[param("On")] day: NaiveDate) {
+    pub fn plan(&mut self, #[param("When")] at: DateTime, #[param("On")] day: Date) {
         self.at = Some(at);
         self.day = Some(day);
     }
@@ -27,15 +27,15 @@ tilo_test_env::scenario! {
     // merged last writer wins.
     {
         let mut diary = Replica::<Diary>::new();
-        let day = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
-        let at = day.and_hms_opt(9, 30, 0).unwrap();
-        let alarm = NaiveTime::from_hms_opt(7, 0, 0).unwrap();
+        let day = date(2026, 10, 9);
+        let at = day.at(9, 30, 0, 0);
+        let alarm = time(7, 0, 0, 0);
         let paths = Diary::paths();
         for edit in [
             paths.day.set(Some(day)),
             paths.at.set(Some(at)),
             paths.alarm.set(Some(alarm)),
-            paths.days.set(vec![day, day.succ_opt().unwrap()]),
+            paths.days.set(vec![day, day.tomorrow().unwrap()]),
         ] {
             diary.apply(Invoke::edit(&edit).unwrap()).unwrap();
         }
@@ -48,15 +48,15 @@ tilo_test_env::scenario! {
             Model::to_json(&at),
             serde_json::json!("2026-10-09T09:30:00")
         );
-        assert!(NaiveDate::from_json(&serde_json::json!("not a date")).is_err());
+        assert!(Date::from_json(&serde_json::json!("not a date")).is_err());
     }
 
     phase a_verb_takes_dates_and_times_as_their_text;
     // A verb takes a date and a moment as their text, as its schema says.
     {
         let mut diary = Replica::<Diary>::new();
-        let day = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
-        let at = day.and_hms_opt(9, 30, 0).unwrap();
+        let day = date(2026, 10, 9);
+        let at = day.at(9, 30, 0, 0);
         let plan = Diary::PLAN.with(diary::Plan { at, day });
         assert_eq!(plan.arguments["at"], "2026-10-09T09:30:00");
         assert_eq!(plan.arguments["day"], "2026-10-09");

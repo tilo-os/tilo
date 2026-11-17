@@ -211,7 +211,10 @@ fn entry_answer(entry: &Entry) -> serde_json::Value {
         "folder": entry.is_dir,
         "type": entry.mime,
         "size": entry.app.as_ref().map_or(Some(entry.size), |app| app.size),
-        "modified": entry.modified.map(|modified| modified.to_rfc3339()),
+        "modified": entry.modified.map(|modified| {
+            let local = modified.to_zoned(jiff::tz::TimeZone::system());
+            modified.display_with_offset(local.offset()).to_string()
+        }),
         "app": entry.app.as_ref().map(|app| crate::applications::kind_label(app.kind)),
         "content_here": entry.content_is_local(),
         "conflict": entry.is_conflict(),

@@ -297,7 +297,7 @@ pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
         "a file name, which every filesystem accepts and search finds",
         format!(
             "{kind} {}",
-            chrono::Local::now().format("%Y-%m-%d %H.%M.%S")
+            jiff::Zoned::now().strftime("%Y-%m-%d %H.%M.%S")
         )
     );
     let mut path = directory.join(format!("{name}.{extension}"));

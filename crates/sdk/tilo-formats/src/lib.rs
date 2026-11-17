@@ -15,10 +15,10 @@ mod tests;
 
 pub use clock::TimeStyle;
 pub use dates::{
-    date, day_done, day_fact, day_heading, day_heading_short, day_range, duration, language_date,
-    list_date, moment_fact, month_day, month_day_time, month_day_year, month_heading,
-    month_heading_short, month_name, month_short, near_day, time, timestamp, week, weekday_name,
-    weekday_short,
+    date, day_done, day_fact, day_heading, day_heading_short, day_range, days_between, duration,
+    language_date, list_date, moment_fact, month_day, month_day_time, month_day_year,
+    month_heading, month_heading_short, month_name, month_short, near_day, time, timestamp, week,
+    weekday_name, weekday_short,
 };
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 pub use shown::shown;

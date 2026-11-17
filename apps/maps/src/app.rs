@@ -306,8 +306,8 @@ fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(ui::chrome::panel_ground(theme))
 }
 
-fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
-    ui::clock::time_of_day(&at)
+fn clock_label(at: jiff::Timestamp) -> String {
+    ui::format::time_of(&at)
 }
 
 impl MapsApp {

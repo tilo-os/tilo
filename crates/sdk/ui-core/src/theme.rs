@@ -441,20 +441,20 @@ fn with_host_scheme(
 /// toolkit clock.
 #[must_use]
 pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
-    use chrono::{Datelike, Offset, Timelike};
-    // Through the epoch offset: chrono converts only std's clock type, which is not the
-    // toolkit clock in the browser.
-    let since_ms = crate::time::unix_now_ms();
-    let local = chrono::DateTime::from_timestamp(
-        i64::try_from(since_ms / 1000).unwrap_or(i64::MAX),
-        u32::try_from(since_ms % 1000).unwrap_or(0) * 1_000_000,
-    )
-    .unwrap_or_default()
-    .with_timezone(&chrono::Local);
+    // Through the epoch offset: std's clock type is not the toolkit clock in the browser.
+    let since_ms = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
+    let local = jiff::Timestamp::from_millisecond(since_ms)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system());
     settings_store::day_schedule::LocalMoment {
-        day_of_year: u16::try_from(local.ordinal()).unwrap_or(1),
-        minute_of_day: u16::try_from(local.hour() * 60 + local.minute()).unwrap_or(0),
-        utc_offset_minutes: local.offset().fix().local_minus_utc() / 60,
+        day_of_year: u16::try_from(local.day_of_year()).unwrap_or(1),
+        minute_of_day: u16::try_from(
+            i32::from(local.hour())
+                .saturating_mul(60)
+                .saturating_add(i32::from(local.minute())),
+        )
+        .unwrap_or(0),
+        utc_offset_minutes: local.offset().seconds().div_euclid(60),
     }
 }
 

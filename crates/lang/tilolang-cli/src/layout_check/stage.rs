@@ -89,15 +89,13 @@ impl Platform for Packages {
     /// days the app reads and the days its window writes both come
     /// from.
     fn now(&self) -> String {
-        ui::clock::local_now()
-            .to_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     /// The person's zone, as a window knows it: a seed's wall-clock time and every day the window
     /// shows are read in it, so the layout is the one a person in their zone sees.
     fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     fn zone_name(&self) -> Option<String> {

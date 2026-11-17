@@ -1393,9 +1393,7 @@ fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
 /// A moment as a component's `time` takes it: RFC 3339 in UTC, as `Item::time` and `ui.Time`
 /// read it.
 fn moment(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0).map_or_else(String::new, |at| {
-        at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    })
+    jiff::Timestamp::from_second(ts).map_or_else(|_| String::new(), |at| format!("{at:.0}"))
 }
 
 #[cfg(test)]
@@ -1780,7 +1778,7 @@ mod tests {
                     panic!("a time's `at` is text");
                 };
                 assert!(
-                    chrono::DateTime::parse_from_rfc3339(at).is_ok(),
+                    at.parse::<jiff::Timestamp>().is_ok(),
                     "a time's `at` is an instant: {at}"
                 );
             }

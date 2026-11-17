@@ -92,8 +92,9 @@ pub fn strip_rows(theme: &Theme, tr: &mut TextRenderer) -> StripRows {
 pub fn min_column_width(theme: &Theme, tr: &mut TextRenderer) -> f64 {
     let rows = strip_rows(theme, tr);
     let text = StripText::of(theme);
-    let hour = chrono::NaiveTime::from_hms_opt(22, 0, 0)
-        .map(|time| ui::format::time(&time))
+    let hour = jiff::civil::Time::new(22, 0, 0, 0)
+        .ok()
+        .map(ui::format::time)
         .unwrap_or_default();
     let widest = ["-00°", hour.as_str(), "100%"]
         .iter()

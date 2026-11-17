@@ -8,7 +8,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use jiff::civil::{Date, DateTime, Time};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -81,8 +81,8 @@ enum Action {
     Today,
     Prev,
     Next,
-    PickDate(NaiveDate),
-    OpenDay(NaiveDate),
+    PickDate(Date),
+    OpenDay(Date),
     OpenEvent(Id),
     ToggleTask(Id),
     List(ListSel),
@@ -96,7 +96,7 @@ enum Action {
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
     DismissTaskPopover,
-    SetTaskDue(Option<NaiveDate>),
+    SetTaskDue(Option<Date>),
     ShiftTaskDueMonth(i32),
     OpenTask(Id),
     NewTask,
@@ -118,8 +118,8 @@ enum Action {
     DeleteTask(Id),
     MoveEventToDay {
         id: Id,
-        original: NaiveDate,
-        day: NaiveDate,
+        original: Date,
+        day: Date,
     },
     Noop,
 }
@@ -130,9 +130,9 @@ const CHIP_DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
 struct ChipDrag {
     id: Id,
     from: Point,
-    original: NaiveDate,
+    original: Date,
     moved: bool,
-    over: Option<NaiveDate>,
+    over: Option<Date>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,10 +173,10 @@ struct RemindersBasis {
 )]
 pub struct CalendarApp {
     model: Calendar,
-    today: NaiveDate,
-    pinned_now: Option<chrono::NaiveDateTime>,
+    today: Date,
+    pinned_now: Option<jiff::civil::DateTime>,
     viewer: crate::shown::Viewer,
-    anchor: NaiveDate,
+    anchor: Date,
     view: View,
     /// `None` shows every visible collection; a stable local/remote calendar
     /// id is set only by the collection resource's canonical `open` action.
@@ -409,7 +409,7 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    pub(crate) fn pin_now(&mut self, now: chrono::NaiveDateTime) {
+    pub(crate) fn pin_now(&mut self, now: jiff::civil::DateTime) {
         let today = now.date();
         self.pinned_now = Some(now);
         self.viewer = crate::shown::Viewer::named(crate::resource::SHOT_ZONE);
@@ -421,9 +421,9 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    fn now(&self) -> chrono::NaiveDateTime {
+    fn now(&self) -> jiff::civil::DateTime {
         self.pinned_now
-            .unwrap_or_else(|| Local::now().naive_local())
+            .unwrap_or_else(|| jiff::Zoned::now().datetime())
     }
 
     pub(crate) fn attach_framework(
@@ -1343,7 +1343,7 @@ impl CalendarApp {
         }
     }
 
-    fn set_selected_task_due(&mut self, due: Option<NaiveDate>, doc: &mut ui::widget::Edits<'_>) {
+    fn set_selected_task_due(&mut self, due: Option<Date>, doc: &mut ui::widget::Edits<'_>) {
         let Some(Sel::Task(id)) = self.selection else {
             return;
         };
@@ -1401,12 +1401,12 @@ impl CalendarApp {
     fn new_event(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let start = self
             .anchor
-            .and_time(crate::quick_add::next_quarter_hour(self.now()));
+            .to_datetime(crate::quick_add::next_quarter_hour(self.now()));
         let ev = Event {
             id: Uuid::new_v4(),
             title: String::new(),
             start,
-            end: start + Duration::hours(1),
+            end: start + jiff::SignedDuration::from_hours(1),
             color: self.model.next_event_order_color(),
             reminder_min: Some(10),
             timezone: self.authoring_zone(),
@@ -1462,7 +1462,7 @@ impl CalendarApp {
 
     fn create_event_in_range(
         &mut self,
-        day: NaiveDate,
+        day: Date,
         start_min: i64,
         end_min: i64,
         doc: &mut ui::widget::Edits<'_>,
@@ -1473,8 +1473,8 @@ impl CalendarApp {
         // trusting `24 * 60 - dur` to stay non-negative — `clamp` panics if
         // its bounds are inverted.
         let start_min = start_min.clamp(0, (24 * 60 - dur).max(0));
-        let start = day.and_time(min_to_time(start_min));
-        let end = start + Duration::minutes(dur);
+        let start = day.to_datetime(min_to_time(start_min));
+        let end = start + jiff::SignedDuration::from_mins(dur);
         let ev = Event {
             id: Uuid::new_v4(),
             title: String::new(),
@@ -1492,8 +1492,8 @@ impl CalendarApp {
     fn move_event_to_day(
         &mut self,
         id: Id,
-        original: NaiveDate,
-        day: NaiveDate,
+        original: Date,
+        day: Date,
         doc: &mut ui::widget::Edits<'_>,
     ) {
         if day == original {
@@ -1508,8 +1508,11 @@ impl CalendarApp {
             self.move_event(id, original, (day, minutes), doc);
             return;
         }
-        let days = (day - original).num_days();
-        let (start, end) = (start + Duration::days(days), end + Duration::days(days));
+        let days = i64::from(day.since(original).map_or(0, |span| span.get_days()));
+        let (start, end) = (
+            start + jiff::Span::new().days(days),
+            end + jiff::Span::new().days(days),
+        );
         if self
             .try_submit(
                 doc,
@@ -1530,8 +1533,8 @@ impl CalendarApp {
     fn move_event(
         &mut self,
         id: Id,
-        original: NaiveDate,
-        (day, start_min): (NaiveDate, i64),
+        original: Date,
+        (day, start_min): (Date, i64),
         doc: &mut ui::widget::Edits<'_>,
     ) {
         let Some(before) = self.model.event(id).filter(|e| !e.all_day).cloned() else {
@@ -1539,7 +1542,7 @@ impl CalendarApp {
         };
         let start = self
             .viewer
-            .to_zone(day.and_time(min_to_time(start_min)), &before.timezone);
+            .to_zone(day.to_datetime(min_to_time(start_min)), &before.timezone);
         if before.recurrence != crate::model::Recurrence::None {
             self.move_occurrence(&before, original, start, doc);
             return;
@@ -1582,8 +1585,8 @@ impl CalendarApp {
     fn resize_event(
         &mut self,
         id: Id,
-        original: NaiveDate,
-        end: NaiveDateTime,
+        original: Date,
+        end: DateTime,
         doc: &mut ui::widget::Edits<'_>,
     ) {
         let Some(before) = self.model.event(id).filter(|e| !e.all_day).cloned() else {
@@ -1622,12 +1625,12 @@ impl CalendarApp {
         }
     }
 
-    fn end_after(zone: &str, start: NaiveDateTime, duration: Duration) -> (NaiveDateTime, bool) {
+    fn end_after(zone: &str, start: DateTime, duration: jiff::SignedDuration) -> (DateTime, bool) {
         if let Some((instant, _)) = crate::timezone::wall_to_utc(zone, start)
-            && let Ok(tz) = zone.parse::<chrono_tz::Tz>()
-            && let Some(end) = instant.checked_add_signed(duration)
+            && let Some(tz) = crate::timezone::named(zone)
+            && let Ok(end) = instant.checked_add(duration)
         {
-            let wall = end.with_timezone(&tz).naive_local();
+            let wall = end.to_zoned(tz).datetime();
             let later = crate::timezone::endpoint_utc(zone, wall, false)
                 .is_some_and(|earlier| earlier != end);
             return (wall, later);
@@ -1638,13 +1641,15 @@ impl CalendarApp {
     fn move_occurrence(
         &mut self,
         before: &Event,
-        original: NaiveDate,
-        start: NaiveDateTime,
+        original: Date,
+        start: DateTime,
         doc: &mut ui::widget::Edits<'_>,
     ) {
         let (old_start, old_end) = crate::shown::wall_interval(before, original);
-        let duration = crate::shown::instants(before, original)
-            .map_or(old_end - old_start, |(from, to)| to - from);
+        let duration = crate::shown::instants(before, original).map_or_else(
+            || old_end.duration_since(old_start),
+            |(from, to)| to.duration_since(from),
+        );
         let (end, later_fold) = Self::end_after(&before.timezone, start, duration);
         let mut after = before.clone();
         let mut edit = after
@@ -1732,7 +1737,7 @@ impl CalendarApp {
                 id,
                 original,
                 repeat_scope::DragChange::Resize {
-                    end: day.and_time(min_to_time(end_min)),
+                    end: day.to_datetime(min_to_time(end_min)),
                 },
                 doc,
             ),
@@ -2220,53 +2225,52 @@ impl CalendarApp {
             if e.all_day {
                 let last = e.all_day_last_date();
                 e.all_day = false;
-                e.end = last.and_time(NaiveTime::from_hms_opt(17, 0, 0).unwrap_or(NaiveTime::MIN));
+                e.end = last.to_datetime(Time::new(17, 0, 0, 0).ok().unwrap_or(Time::MIN));
             } else {
                 let last = if e.end.date() > e.start.date() {
-                    if e.end.time() == NaiveTime::MIN {
-                        e.end.date() - Duration::days(1)
+                    if e.end.time() == Time::MIN {
+                        e.end.date() - jiff::Span::new().days(1)
                     } else {
                         e.end.date()
                     }
                 } else {
                     e.start.date()
                 };
-                e.start = e.start.date().and_time(NaiveTime::MIN);
-                e.end = (last + Duration::days(1)).and_time(NaiveTime::MIN);
+                e.start = e.start.date().to_datetime(Time::MIN);
+                e.end = (last + jiff::Span::new().days(1)).to_datetime(Time::MIN);
                 e.all_day = true;
             }
         });
         self.event_popovers.close();
     }
 
-    fn set_event_date(
-        &mut self,
-        which: FormPopover,
-        date: NaiveDate,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
+    fn set_event_date(&mut self, which: FormPopover, date: Date, doc: &mut ui::widget::Edits<'_>) {
         self.cycle_event(doc, |e| match which {
             FormPopover::StartDate => {
                 if e.all_day {
-                    let days = (e.all_day_end_exclusive() - e.start.date())
-                        .num_days()
-                        .max(1);
-                    e.start = date.and_time(NaiveTime::MIN);
-                    e.end = (date + Duration::days(days)).and_time(NaiveTime::MIN);
+                    let days = i64::from(
+                        e.all_day_end_exclusive()
+                            .since(e.start.date())
+                            .map_or(0, |span| span.get_days()),
+                    )
+                    .max(1);
+                    e.start = date.to_datetime(Time::MIN);
+                    e.end = (date + jiff::Span::new().days(days)).to_datetime(Time::MIN);
                 } else {
-                    e.start = date.and_time(e.start.time());
+                    e.start = date.to_datetime(e.start.time());
                     if e.end < e.start {
-                        e.end = e.start + Duration::hours(1);
+                        e.end = e.start + jiff::SignedDuration::from_hours(1);
                     }
                 }
             }
             FormPopover::EndDate => {
                 if e.all_day {
-                    e.end = (date.max(e.start.date()) + Duration::days(1)).and_time(NaiveTime::MIN);
+                    e.end = (date.max(e.start.date()) + jiff::Span::new().days(1))
+                        .to_datetime(Time::MIN);
                 } else {
-                    e.end = date.and_time(e.end.time());
+                    e.end = date.to_datetime(e.end.time());
                     if e.end < e.start {
-                        e.end = e.start + Duration::hours(1);
+                        e.end = e.start + jiff::SignedDuration::from_hours(1);
                     }
                 }
             }
@@ -2281,18 +2285,24 @@ impl CalendarApp {
         m: u8,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0).unwrap_or(NaiveTime::MIN);
+        let time = Time::new(
+            i8::try_from(h).unwrap_or(0),
+            i8::try_from(m).unwrap_or(0),
+            0,
+            0,
+        )
+        .unwrap_or(Time::MIN);
         self.cycle_event(doc, |e| match which {
             FormPopover::StartTime => {
-                e.start = e.start.date().and_time(time);
+                e.start = e.start.date().to_datetime(time);
                 if e.end < e.start {
-                    e.end = e.start + Duration::hours(1);
+                    e.end = e.start + jiff::SignedDuration::from_hours(1);
                 }
             }
             FormPopover::EndTime => {
-                e.end = e.end.date().and_time(time);
+                e.end = e.end.date().to_datetime(time);
                 if e.end < e.start {
-                    e.end = e.start + Duration::hours(1);
+                    e.end = e.start + jiff::SignedDuration::from_hours(1);
                 }
             }
             _ => {}
@@ -2318,7 +2328,7 @@ impl CalendarApp {
     }
 
     fn move_anchor(&mut self, days: i64) {
-        self.anchor += Duration::days(days);
+        self.anchor += jiff::Span::new().days(days);
         self.dirty = true;
     }
 
@@ -2365,8 +2375,8 @@ impl CalendarApp {
     fn step_period(&mut self, dir: i32) {
         self.anchor = match self.view {
             View::Month => date::add_months(self.anchor, dir),
-            View::Week | View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
-            View::Day => self.anchor + Duration::days(i64::from(dir)),
+            View::Week | View::Agenda => self.anchor + jiff::Span::new().days(7 * i64::from(dir)),
+            View::Day => self.anchor + jiff::Span::new().days(i64::from(dir)),
             View::Tasks => self.anchor,
         };
         self.dirty = true;
@@ -2389,7 +2399,7 @@ impl CalendarApp {
                         anchor: self.anchor,
                         hidden_calendars: &hidden,
                         calendar_filter: self.calendar_filter.as_deref(),
-                        viewer: self.viewer,
+                        viewer: self.viewer.clone(),
                     },
                     &theme,
                 );
@@ -2441,8 +2451,8 @@ impl CalendarApp {
     /// model; it never claims that a remote participant is available.
     fn local_schedule_conflicts(&self, edited: &Event) -> Vec<String> {
         let (start, end) = Self::event_interval(edited, edited.start.date());
-        let window_start = start.date() - Duration::days(2);
-        let window_end = end.date().max(start.date()) + Duration::days(2);
+        let window_start = start.date() - jiff::Span::new().days(2);
+        let window_end = end.date().max(start.date()) + jiff::Span::new().days(2);
         let resolved = Self::resolved_event_interval(edited, edited.start.date());
         let mut conflicts = Vec::new();
 
@@ -2462,7 +2472,7 @@ impl CalendarApp {
                         found = true;
                         break;
                     }
-                    day += Duration::days(1);
+                    day += jiff::Span::new().days(1);
                 }
                 found
             } else {
@@ -2490,7 +2500,7 @@ impl CalendarApp {
         conflicts
     }
 
-    fn event_interval(event: &Event, occurrence_date: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
+    fn event_interval(event: &Event, occurrence_date: Date) -> (DateTime, DateTime) {
         crate::shown::wall_interval(event, occurrence_date)
     }
 
@@ -2498,8 +2508,8 @@ impl CalendarApp {
     /// have none.
     fn resolved_event_interval(
         event: &Event,
-        date: NaiveDate,
-    ) -> Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
+        date: Date,
+    ) -> Option<(jiff::Timestamp, jiff::Timestamp)> {
         crate::shown::instants(event, date)
     }
 
@@ -2985,11 +2995,7 @@ impl CalendarApp {
         })
     }
 
-    pub(crate) fn visible_between(
-        &self,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Vec<crate::shown::Shown<'_>> {
+    pub(crate) fn visible_between(&self, from: Date, to: Date) -> Vec<crate::shown::Shown<'_>> {
         let hidden = self.hidden_calendar_ids();
         let mut shown: Vec<_> = self
             .model
@@ -3007,7 +3013,7 @@ impl CalendarApp {
         shown
     }
 
-    pub(crate) fn visible_by_day(&self, days: &[NaiveDate]) -> Vec<Vec<crate::shown::Shown<'_>>> {
+    pub(crate) fn visible_by_day(&self, days: &[Date]) -> Vec<Vec<crate::shown::Shown<'_>>> {
         let (Some(&from), Some(&to)) = (days.iter().min(), days.iter().max()) else {
             return Vec::new();
         };
@@ -3021,14 +3027,14 @@ impl CalendarApp {
         self.content_rect
     }
 
-    fn timeline_days(&self) -> Vec<NaiveDate> {
+    fn timeline_days(&self) -> Vec<Date> {
         match self.view {
             View::Day => vec![self.anchor],
             _ => date::week_days(self.anchor),
         }
     }
 
-    fn timeline_spans(&self, days: &[NaiveDate]) -> Vec<TimelineSpan> {
+    fn timeline_spans(&self, days: &[Date]) -> Vec<TimelineSpan> {
         let mut spans = Vec::new();
         for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
             let timed: Vec<_> = shown.iter().filter(|it| !it.event.all_day).collect();
@@ -3052,7 +3058,7 @@ impl CalendarApp {
         spans
     }
 
-    fn block_minutes(shown: &crate::shown::Shown<'_>, day: NaiveDate) -> (i64, i64) {
+    fn block_minutes(shown: &crate::shown::Shown<'_>, day: Date) -> (i64, i64) {
         let (start_min, end_min) = shown.minutes_on(day);
         let start_min = start_min.min(24 * 60 - TIMELINE_SNAP_MIN);
         (
@@ -3061,7 +3067,7 @@ impl CalendarApp {
         )
     }
 
-    fn timeline_render_events<'a>(&'a self, days: &[NaiveDate]) -> Vec<TimelineRenderEvent<'a>> {
+    fn timeline_render_events<'a>(&'a self, days: &[Date]) -> Vec<TimelineRenderEvent<'a>> {
         let mut events = Vec::new();
         for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
             let minutes: Vec<_> = shown
@@ -3544,7 +3550,7 @@ impl CalendarApp {
         }
     }
 
-    fn month_day_at(&self, p: Point) -> Option<NaiveDate> {
+    fn month_day_at(&self, p: Point) -> Option<Date> {
         if self.view != View::Month {
             return None;
         }
@@ -4071,9 +4077,10 @@ impl Widget for CalendarApp {
         let now_line = matches!(self.view, View::Week | View::Day)
             && self.timeline_days().contains(&self.today);
         let seconds = if now_line {
-            60 - u64::from(now.second())
+            60 - u64::from(now.second().unsigned_abs())
         } else {
-            3600 - u64::from(now.minute()) * 60 - u64::from(now.second())
+            3600 - u64::from(now.minute().unsigned_abs()) * 60
+                - u64::from(now.second().unsigned_abs())
         };
         let minute = ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)));
         match (status, minute) {
@@ -4182,7 +4189,7 @@ impl CalendarApp {
                                     anchor: self.anchor,
                                     hidden_calendars: &hidden,
                                     calendar_filter: self.calendar_filter.as_deref(),
-                                    viewer: self.viewer,
+                                    viewer: self.viewer.clone(),
                                 },
                                 self.today,
                                 self.last_mouse,
@@ -4244,14 +4251,15 @@ impl CalendarApp {
         let Some(notifier) = self.notifier.clone() else {
             return;
         };
-        let now = chrono::DateTime::<chrono::Utc>::from(ui::time::to_std(ui::time::wall()));
+        let now = jiff::Timestamp::try_from(ui::time::to_std(ui::time::wall()))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
         let hidden_ids = self.hidden_calendar_ids();
         let mut hidden: Vec<String> = hidden_ids.iter().cloned().collect();
         hidden.sort_unstable();
         let basis = RemindersBasis {
             heads: self.model_heads.clone(),
             hidden,
-            hour: now.timestamp() / 3600,
+            hour: now.as_second() / 3600,
         };
         if self
             .reminders
@@ -4260,7 +4268,7 @@ impl CalendarApp {
         {
             return;
         }
-        let due = crate::reminders::due(&self.model, self.viewer, now, &hidden_ids);
+        let due = crate::reminders::due(&self.model, &self.viewer, now, &hidden_ids);
         if self
             .reminders
             .as_ref()
@@ -4407,9 +4415,15 @@ fn repeat_scope_menu() -> Box<Popover> {
     )
 }
 
-fn min_to_time(min: i64) -> NaiveTime {
+fn min_to_time(min: i64) -> Time {
     let m = min.clamp(0, 24 * 60 - 1);
-    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap_or(NaiveTime::MIN)
+    Time::new(
+        i8::try_from(m / 60).unwrap_or(0),
+        i8::try_from(m % 60).unwrap_or(0),
+        0,
+        0,
+    )
+    .unwrap_or(Time::MIN)
 }
 
 #[cfg(test)]

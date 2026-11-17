@@ -136,7 +136,7 @@ blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.
-chrono = { workspace = true, default-features = true }
+jiff.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }

@@ -604,8 +604,9 @@ impl TreeBrowser {
 
     /// When the entry last changed.
     fn changed_of(node: &TreeEntry) -> Option<String> {
-        chrono::DateTime::from_timestamp_millis(i64::try_from(node.mtime).unwrap_or(i64::MAX))
-            .map(|at| format_datetime(at.with_timezone(&chrono::Local)))
+        jiff::Timestamp::from_millisecond(i64::try_from(node.mtime).unwrap_or(i64::MAX))
+            .ok()
+            .map(format_datetime)
     }
 
     /// The path of `folder` from the workspace's root, as `a / b`.

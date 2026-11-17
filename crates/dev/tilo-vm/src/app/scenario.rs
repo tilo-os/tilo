@@ -973,7 +973,7 @@ impl App {
         };
         let mut cycle = format!(
             "scenario-install-{}-{}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ"),
             std::process::id()
         );
         let out = args

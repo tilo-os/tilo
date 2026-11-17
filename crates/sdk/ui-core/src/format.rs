@@ -3,9 +3,9 @@
 
 pub mod region;
 
-use chrono::Timelike;
-
-pub use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
+pub use jiff::civil::{Date, DateTime, Time, Weekday};
+pub use jiff::tz::TimeZone;
+pub use jiff::{SignedDuration, Span, Timestamp, Zoned};
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 /// Text for a machine rather than a person: [`machine!`] names why it is not written in the person's
 /// formats (see its docs).
@@ -204,7 +204,7 @@ impl Formats {
     /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card reads it,
     /// by how far `day` is from `today`.
     #[must_use]
-    pub fn day_fact(&self, day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
+    pub fn day_fact(&self, day: Date, time: Option<Time>, today: Date) -> DayFact {
         let (text, overdue) = tilo_formats::day_fact(self.region, day, time, today, words());
         DayFact {
             text,
@@ -219,121 +219,121 @@ impl Formats {
     /// The **moment fact** style: a moment told beside words that already name its day, as a choice's
     /// trailing fact reads it.
     #[must_use]
-    pub fn moment_fact(&self, at: NaiveDateTime, today: NaiveDate) -> String {
+    pub fn moment_fact(&self, at: DateTime, today: Date) -> String {
         tilo_formats::moment_fact(self.region, at, today, words())
     }
 
     /// The **day it happened** style.
     #[must_use]
-    pub fn day_done(&self, day: NaiveDate, today: NaiveDate) -> String {
+    pub fn day_done(&self, day: Date, today: Date) -> String {
         tilo_formats::day_done(day, today, words())
     }
 
     /// The **list** style. See `tilo_formats::list_date`.
     #[must_use]
-    pub fn list_date(&self, at: NaiveDateTime, now: NaiveDateTime) -> String {
+    pub fn list_date(&self, at: DateTime, now: DateTime) -> String {
         tilo_formats::list_date(self.region, at, now, words())
     }
 
     /// The **timestamp** style. See `tilo_formats::timestamp`.
     #[must_use]
-    pub fn timestamp(&self, at: NaiveDateTime) -> String {
+    pub fn timestamp(&self, at: DateTime) -> String {
         tilo_formats::timestamp(self.region, at, words())
     }
 
     /// The **date** style. See `tilo_formats::date`.
     #[must_use]
-    pub fn date(&self, day: NaiveDate) -> String {
+    pub fn date(&self, day: Date) -> String {
         tilo_formats::date(self.region, day, words())
     }
 
     /// A calendar day in the language convention.
     #[must_use]
-    pub fn language_date(&self, day: NaiveDate) -> String {
+    pub fn language_date(&self, day: Date) -> String {
         tilo_formats::language_date(day, words())
     }
 
     /// A time of day in the person's clock style: `14:05` or `2:05 PM`.
     #[must_use]
-    pub fn time(&self, time: &impl Timelike) -> String {
+    pub fn time(&self, time: impl Into<Time>) -> String {
         tilo_formats::time(self.region, time, words())
     }
 
     /// The **day heading** style: `Tuesday, June 30`. See `tilo_formats::day_heading`.
     #[must_use]
-    pub fn day_heading(&self, day: NaiveDate, with_year: bool) -> String {
+    pub fn day_heading(&self, day: Date, with_year: bool) -> String {
         tilo_formats::day_heading(day, with_year, words())
     }
 
     /// The short day heading: `Tue, Jun 30`.
     #[must_use]
-    pub fn day_heading_short(&self, day: NaiveDate) -> String {
+    pub fn day_heading_short(&self, day: Date) -> String {
         tilo_formats::day_heading_short(day, words())
     }
 
     /// A span of days: `Jun 23 – 29`. See `tilo_formats::day_range`.
     #[must_use]
-    pub fn day_range(&self, start: NaiveDate, end: NaiveDate) -> String {
+    pub fn day_range(&self, start: Date, end: Date) -> String {
         tilo_formats::day_range(start, end, words())
     }
 
     /// A month in a tight space: `Jun 2026`.
     #[must_use]
-    pub fn month_heading_short(&self, day: NaiveDate) -> String {
+    pub fn month_heading_short(&self, day: Date) -> String {
         tilo_formats::month_heading_short(day, words())
     }
 
     /// The **month heading** style: `June 2026`.
     #[must_use]
-    pub fn month_heading(&self, day: NaiveDate) -> String {
+    pub fn month_heading(&self, day: Date) -> String {
         tilo_formats::month_heading(day, words())
     }
 
     /// Month and day without the year: `Jun 30`.
     #[must_use]
-    pub fn month_day(&self, day: NaiveDate) -> String {
+    pub fn month_day(&self, day: Date) -> String {
         tilo_formats::month_day(day, words())
     }
 
     /// Month, day and year with the month named: `Jun 30, 2025`.
     #[must_use]
-    pub fn month_day_year(&self, day: NaiveDate) -> String {
+    pub fn month_day_year(&self, day: Date) -> String {
         tilo_formats::month_day_year(day, words())
     }
 
     /// A day without its year and a time of day: `Jun 30, 14:05`.
     #[must_use]
-    pub fn month_day_time(&self, at: NaiveDateTime) -> String {
+    pub fn month_day_time(&self, at: DateTime) -> String {
         tilo_formats::month_day_time(self.region, at, words())
     }
 
     /// The abbreviated weekday: `Sun`.
     #[must_use]
-    pub fn weekday_short(&self, day: chrono::Weekday) -> String {
+    pub fn weekday_short(&self, day: Weekday) -> String {
         tilo_formats::weekday_short(day, words())
     }
 
     /// The weekday's name: `Sunday`.
     #[must_use]
-    pub fn weekday_name(&self, day: chrono::Weekday) -> String {
+    pub fn weekday_name(&self, day: Weekday) -> String {
         tilo_formats::weekday_name(day, words())
     }
 
     /// The abbreviated month (`1` = January): `Jun`.
     #[must_use]
-    pub fn month_short(&self, month: u32) -> String {
+    pub fn month_short(&self, month: i8) -> String {
         tilo_formats::month_short(month, words())
     }
 
     /// The month's name (`1` = January): `June`.
     #[must_use]
-    pub fn month_name(&self, month: u32) -> String {
+    pub fn month_name(&self, month: i8) -> String {
         tilo_formats::month_name(month, words())
     }
 
     /// The week as the person's calendars lay it out.
     #[must_use]
-    pub fn week(&self) -> [chrono::Weekday; 7] {
+    pub fn week(&self) -> [Weekday; 7] {
         tilo_formats::week(self.region)
     }
 }
@@ -372,21 +372,27 @@ fn group_digits(digits: &str, separator: &str) -> String {
     out
 }
 
-/// A moment the formatters can show: a `chrono` date and time in any zone, a local [`NaiveDateTime`] or
+/// A moment the formatters can show: an instant, a date and time in a zone, a local [`DateTime`] or
 /// [`UnixSecs`].
 pub trait Moment {
     /// The moment on the local wall clock, or `None` outside the calendar's range.
-    fn local(&self) -> Option<NaiveDateTime>;
+    fn local(&self) -> Option<DateTime>;
 }
 
-impl<Tz: chrono::TimeZone> Moment for chrono::DateTime<Tz> {
-    fn local(&self) -> Option<NaiveDateTime> {
-        Some(self.with_timezone(&chrono::Local).naive_local())
+impl Moment for jiff::Timestamp {
+    fn local(&self) -> Option<DateTime> {
+        Some(self.to_zoned(jiff::tz::TimeZone::system()).datetime())
     }
 }
 
-impl Moment for NaiveDateTime {
-    fn local(&self) -> Option<NaiveDateTime> {
+impl Moment for jiff::Zoned {
+    fn local(&self) -> Option<DateTime> {
+        self.timestamp().local()
+    }
+}
+
+impl Moment for DateTime {
+    fn local(&self) -> Option<DateTime> {
         Some(*self)
     }
 }
@@ -396,9 +402,10 @@ impl Moment for NaiveDateTime {
 pub struct UnixSecs(pub i64);
 
 impl Moment for UnixSecs {
-    fn local(&self) -> Option<NaiveDateTime> {
-        chrono::DateTime::from_timestamp(self.0, 0)
-            .map(|utc| utc.with_timezone(&chrono::Local).naive_local())
+    fn local(&self) -> Option<DateTime> {
+        jiff::Timestamp::from_second(self.0)
+            .ok()
+            .and_then(|at| at.local())
     }
 }
 
@@ -407,7 +414,7 @@ impl Moment for UnixSecs {
 #[must_use]
 pub fn list_date(at: &impl Moment) -> String {
     at.local().map_or_else(String::new, |at| {
-        Formats::current().list_date(at, crate::clock::local_now().naive_local())
+        Formats::current().list_date(at, crate::clock::local_now().datetime())
     })
 }
 
@@ -429,36 +436,36 @@ pub fn date_of(at: &impl Moment) -> String {
 #[must_use]
 pub fn time_of(at: &impl Moment) -> String {
     at.local()
-        .map_or_else(String::new, |at| Formats::current().time(&at))
+        .map_or_else(String::new, |at| Formats::current().time(at))
 }
 
 /// The **date** style: `Jun 30, 2026` by default. See [`Formats::date`].
 #[must_use]
-pub fn date(day: NaiveDate) -> String {
+pub fn date(day: Date) -> String {
     Formats::current().date(day)
 }
 
 /// A time of day: `14:05` or `2:05 PM`.
 #[must_use]
-pub fn time(at: &impl Timelike) -> String {
+pub fn time(at: impl Into<Time>) -> String {
     Formats::current().time(at)
 }
 
 /// The **day heading** style: `Tuesday, June 30`. See [`Formats::day_heading`].
 #[must_use]
-pub fn day_heading(day: NaiveDate, with_year: bool) -> String {
+pub fn day_heading(day: Date, with_year: bool) -> String {
     Formats::current().day_heading(day, with_year)
 }
 
 /// The short day heading: `Tue, Jun 30`. See [`Formats::day_heading_short`].
 #[must_use]
-pub fn day_heading_short(day: NaiveDate) -> String {
+pub fn day_heading_short(day: Date) -> String {
     Formats::current().day_heading_short(day)
 }
 
 /// A span of days: `Jun 23 – 29`. See [`Formats::day_range`].
 #[must_use]
-pub fn day_range(start: NaiveDate, end: NaiveDate) -> String {
+pub fn day_range(start: Date, end: Date) -> String {
     Formats::current().day_range(start, end)
 }
 
@@ -494,11 +501,11 @@ pub fn list(values: &[String]) -> String {
 /// A span of the calendar a view shows: one day, a run of days, or a month.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Period {
-    Day(NaiveDate),
+    Day(Date),
     /// From the first day to the last, both shown.
-    Days(NaiveDate, NaiveDate),
+    Days(Date, Date),
     /// The month holding the day.
-    Month(NaiveDate),
+    Month(Date),
 }
 
 impl Period {
@@ -521,68 +528,68 @@ impl Period {
 
 /// A month in a tight space: `Jun 2026`.
 #[must_use]
-pub fn month_heading_short(day: NaiveDate) -> String {
+pub fn month_heading_short(day: Date) -> String {
     Formats::current().month_heading_short(day)
 }
 
 /// The **month heading** style: `June 2026`.
 #[must_use]
-pub fn month_heading(day: NaiveDate) -> String {
+pub fn month_heading(day: Date) -> String {
     Formats::current().month_heading(day)
 }
 
 /// Month and day: `Jun 30`.
 #[must_use]
-pub fn month_day(day: NaiveDate) -> String {
+pub fn month_day(day: Date) -> String {
     Formats::current().month_day(day)
 }
 
 /// Month, day and year with the month named: `Jun 30, 2025`.
 #[must_use]
-pub fn month_day_year(day: NaiveDate) -> String {
+pub fn month_day_year(day: Date) -> String {
     Formats::current().month_day_year(day)
 }
 
 /// A day without its year and a time of day: `Jun 30, 14:05`. See
 /// [`Formats::month_day_time`].
 #[must_use]
-pub fn month_day_time(at: NaiveDateTime) -> String {
+pub fn month_day_time(at: DateTime) -> String {
     Formats::current().month_day_time(at)
 }
 
 /// The abbreviated weekday: `Sun`.
 #[must_use]
-pub fn weekday_short(day: chrono::Weekday) -> String {
+pub fn weekday_short(day: Weekday) -> String {
     Formats::current().weekday_short(day)
 }
 
 /// The weekday's name: `Sunday`.
 #[must_use]
-pub fn weekday_name(day: chrono::Weekday) -> String {
+pub fn weekday_name(day: Weekday) -> String {
     Formats::current().weekday_name(day)
 }
 
 /// The abbreviated month (`1` = January): `Jun`.
 #[must_use]
-pub fn month_short(month: u32) -> String {
+pub fn month_short(month: i8) -> String {
     Formats::current().month_short(month)
 }
 
 /// The month's name (`1` = January): `June`.
 #[must_use]
-pub fn month_name(month: u32) -> String {
+pub fn month_name(month: i8) -> String {
     Formats::current().month_name(month)
 }
 
 /// The seven weekdays from the first day of the week the person chose.
 #[must_use]
-pub fn week() -> [chrono::Weekday; 7] {
+pub fn week() -> [Weekday; 7] {
     Formats::current().week()
 }
 
 /// The first day of the week the person chose.
 #[must_use]
-pub fn first_weekday() -> chrono::Weekday {
+pub fn first_weekday() -> Weekday {
     Formats::current().region.first_day.weekday()
 }
 
@@ -888,14 +895,14 @@ pub struct DayFact {
 
 /// The day fact [`day_fact_today`] has, against `today`: the person's formats, the language's words.
 #[must_use]
-pub fn day_fact(day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
+pub fn day_fact(day: Date, time: Option<Time>, today: Date) -> DayFact {
     Formats::current().day_fact(day, time, today)
 }
 
 /// [`day_fact`] against the person today ([`crate::clock::today`]): the one call a surface makes when
 /// it shows a date fact.
 #[must_use]
-pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
+pub fn day_fact_today(day: Date, time: Option<Time>) -> DayFact {
     day_fact(day, time, crate::clock::today())
 }
 
@@ -911,13 +918,13 @@ pub fn moment_fact(at: &impl Moment) -> String {
 /// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the person's
 /// formats and the shell's language.
 #[must_use]
-pub fn day_done(day: NaiveDate, today: NaiveDate) -> String {
+pub fn day_done(day: Date, today: Date) -> String {
     Formats::current().day_done(day, today)
 }
 
 /// [`day_done`] against the person today ([`crate::clock::today`]).
 #[must_use]
-pub fn day_done_today(day: NaiveDate) -> String {
+pub fn day_done_today(day: Date) -> String {
     day_done(day, crate::clock::today())
 }
 

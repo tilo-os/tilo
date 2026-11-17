@@ -19,7 +19,7 @@ tilo-content = { path = "../../system/content", default-features = false }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
 # Comment and reply dates as ISO-8601 times.
-chrono = { workspace = true, features = ["alloc"] }
+jiff.workspace = true
 # Hyperlink targets a rich-text action may carry.
 url.workspace = true
 

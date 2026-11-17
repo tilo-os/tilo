@@ -185,7 +185,7 @@ struct Content<'a> {
 #[derive(Clone, Debug, PartialEq)]
 struct Painted {
     forms: Vec<(WidgetId, Form)>,
-    day: chrono::NaiveDate,
+    day: jiff::civil::Date,
     people: Vec<String>,
     reading: Reading,
     playing: Option<NowPlaying>,
@@ -1222,7 +1222,7 @@ impl Widget for WidgetLayer {
         let now = ui::time::now();
         self.motion = theme.motion();
         self.tick(now);
-        let today = ui::clock::local_now().date_naive();
+        let today = ui::clock::local_now().date();
         let playing = self.music.get();
         let painted = Painted {
             forms: self
@@ -1571,9 +1571,11 @@ impl Widget for WidgetLayer {
             .filter(|at| *at > now);
         // A showing calendar turns the page at midnight.
         let day = (self.board.form(WidgetId::Calendar) != Form::Away).then(|| {
-            use chrono::Timelike as _;
-            let secs = ui::clock::local_now().num_seconds_from_midnight();
-            let left = u64::from(86_400_u32.saturating_sub(secs).max(1));
+            let secs = ui::clock::local_now()
+                .time()
+                .duration_since(ui::format::Time::MIN)
+                .as_secs();
+            let left = u64::try_from(86_400_i64.saturating_sub(secs).max(1)).unwrap_or(1);
             now.checked_add(Duration::from_secs(left)).unwrap_or(now)
         });
         // A showing system monitor is sent a reading every [`system_monitor::SAMPLE_EVERY`]: the

@@ -64,8 +64,10 @@ thread_local! {
 
 /// The person's date and time now: the device's clock, which is the one their window reads, so a
 /// day an instance writes and a day their window heads a row by are the same day.
-fn local_now() -> chrono::DateTime<chrono::Local> {
-    chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
+fn local_now() -> jiff::Zoned {
+    jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system())
 }
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
@@ -443,16 +445,13 @@ impl Platform for HostPlatform {
     }
 
     fn now(&self) -> String {
-        local_now()
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string()
+        format!("{:.0}", local_now().timestamp())
     }
 
     /// The zone the person's clock stands in, which their day begins in: the device's, as their
     /// window's dates read it, so a day an action writes is the day their window shows it under.
     fn zone(&self) -> i64 {
-        i64::from(local_now().offset().local_minus_utc())
+        i64::from(local_now().offset().seconds())
     }
 
     /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
@@ -469,7 +468,7 @@ impl Platform for HostPlatform {
                 .get()
                 .first_day
                 .weekday()
-                .num_days_from_monday(),
+                .to_monday_zero_offset(),
         )
     }
 
@@ -490,9 +489,9 @@ impl Platform for HostPlatform {
             kind,
             value,
             self.formats.get(),
-            now.date_naive(),
-            now.naive_local(),
-            i64::from(now.offset().local_minus_utc()),
+            now.date(),
+            now.datetime(),
+            i64::from(now.offset().seconds()),
             &*self.phrases,
         )
     }

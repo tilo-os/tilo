@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn a_row_under_the_heading_its_list_says_keeps_only_its_time() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
+        let day = today.strftime("%Y-%m-%d").to_string();
         let mut rows = RemoteRows::new(
             Level::Root,
             "list",
@@ -622,13 +622,9 @@ mod tests {
             Rc::default(),
         );
         let at_nine = {
-            use chrono::TimeZone;
-            chrono::Local
-                .with_ymd_and_hms(2026, 6, 30, 9, 0, 0)
-                .single()
-                .expect("nine in the morning exists")
-                .to_utc()
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            let at = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(9, 0, 0, 0))
+                .expect("nine in the morning exists");
+            format!("{at:.0}")
         };
         let mut item = UiNode::empty(&kind("ListItem"), "list/v/a");
         let mut row = UiNode::empty(&kind("ListRow"), "list/v/a/row");
@@ -662,7 +658,7 @@ mod tests {
             said(meta(&mut rows)),
             ui::format::day_fact_today(
                 today,
-                Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine"))
+                Some(jiff::civil::Time::new(9, 0, 0, 0).expect("nine"))
             )
             .text,
             "under no heading the row says the day it is due, with the time"
@@ -670,7 +666,7 @@ mod tests {
         rows.under(Some(ui::format::day_fact_today(today, None).text));
         assert_eq!(
             said(meta(&mut rows)),
-            ui::format::time(&chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine")),
+            ui::format::time(jiff::civil::Time::new(9, 0, 0, 0).expect("nine")),
             "the heading says the day: the row keeps the time of day it is due"
         );
     }

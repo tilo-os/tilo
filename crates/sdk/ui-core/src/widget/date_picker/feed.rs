@@ -3,15 +3,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 
 use super::DatePicker;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DateShown {
-    pub selected: NaiveDate,
-    pub today: NaiveDate,
-    pub marked: Vec<NaiveDate>,
+    pub selected: Date,
+    pub today: Date,
+    pub marked: Vec<Date>,
 }
 
 #[derive(Clone, Default)]
@@ -23,7 +23,7 @@ struct Feed {
     /// Bumped whenever `shown` changes: each picker reading the feed
     /// keeps the revision it last read.
     revision: u64,
-    chosen: Vec<NaiveDate>,
+    chosen: Vec<Date>,
 }
 
 impl DateFeed {
@@ -58,7 +58,7 @@ impl DateFeed {
     }
 
     #[must_use]
-    pub fn take_chosen(&self) -> Vec<NaiveDate> {
+    pub fn take_chosen(&self) -> Vec<Date> {
         std::mem::take(&mut self.0.borrow_mut().chosen)
     }
 

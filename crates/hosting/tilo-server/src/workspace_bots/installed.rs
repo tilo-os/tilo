@@ -27,7 +27,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use automerge::AutoCommit;
-use chrono::{DateTime, FixedOffset, Offset as _, TimeZone as _, Utc};
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -718,7 +717,7 @@ impl BotRunner {
                 u64::try_from(now_ms).unwrap_or_default(),
             ))
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let zone = |at: DateTime<Utc>| local_offset(at);
+        let zone = jiff::tz::TimeZone::system();
         let mut firings = Vec::new();
         let mut next: Option<i64> = None;
         for (index, trigger) in shortcut.triggers.iter().enumerate() {
@@ -1167,21 +1166,13 @@ fn stopped_at(report: &tilo_automation::InvocationReport) -> Option<(Ended, Stri
 /// trigger that is not on the clock.
 #[must_use]
 pub fn next_fire_ms(trigger: &TriggerSpec, now_ms: i64) -> Option<i64> {
-    let now = DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
-    Timed::of(trigger)?.first_ms(now, &|at: DateTime<Utc>| local_offset(at))
+    let now = jiff::Timestamp::from_millisecond(now_ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    Timed::of(trigger)?.first_ms(now, &jiff::tz::TimeZone::system())
 }
 
 /// `record` of `app`, as the runner names one record across passes.
 fn named(app: &str, record: &str) -> (String, String) {
     (app.to_owned(), record.to_owned())
-}
-
-/// This host's wall clock at `at`, as a calendar schedule reads it: the time
-/// a person on this host would read.
-fn local_offset(at: DateTime<Utc>) -> FixedOffset {
-    chrono::Local
-        .offset_from_utc_datetime(&at.naive_utc())
-        .fix()
 }
 
 fn read_progress(path: &Path) -> Result<Progress, String> {

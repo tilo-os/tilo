@@ -518,7 +518,6 @@ pub(super) fn paint_calendar_glance(
     rect: Rect,
     month: &Month,
 ) {
-    use chrono::Datelike as _;
     let colors = &theme.tokens.colors;
     let weekday = ui::format::weekday_short(month.today.weekday());
     draw_centered(

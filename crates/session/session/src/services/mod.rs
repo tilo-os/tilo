@@ -503,7 +503,7 @@ mod data_usage {
                     let mut counter = Counter::default();
                     loop {
                         let at = tilo_clock::unix_now_i64();
-                        let offset = chrono::Local::now().offset().local_minus_utc();
+                        let offset = jiff::Zoned::now().offset().seconds();
                         let readings = read();
                         let idle = readings.is_empty();
                         for due in counter.take(Taken {
@@ -556,7 +556,7 @@ mod data_usage {
     }
 
     impl Taken {
-        fn day(&self) -> Option<chrono::NaiveDate> {
+        fn day(&self) -> Option<jiff::civil::Date> {
             settings_sections::network_usage::local_day(self.at, self.offset)
         }
 

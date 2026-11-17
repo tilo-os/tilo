@@ -210,8 +210,8 @@ pub fn told(
     now_ms: i64,
 ) -> Map<String, Value> {
     let fires_ms = held.at_ms.saturating_add(offset_ms(offset_secs));
-    let at = chrono::DateTime::from_timestamp_millis(held.at_ms)
-        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    let at = jiff::Timestamp::from_millisecond(held.at_ms)
+        .map(|at| format!("{at:.0}"))
         .unwrap_or_default();
     let told = json!({
         "kind": kind,

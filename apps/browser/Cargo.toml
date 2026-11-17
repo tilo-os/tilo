@@ -52,7 +52,7 @@ base64.workspace = true
 ring = "0.17"
 uuid.workspace = true
 browser-continuity = { workspace = true, features = ["native"] }
-chrono.workspace = true
+jiff.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the

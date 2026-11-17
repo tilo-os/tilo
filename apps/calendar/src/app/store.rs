@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use tilo_contact_directory::ContactDirectory;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow, PersonResource,
@@ -51,7 +51,7 @@ pub(crate) struct Store {
     pub(super) display: Option<Setting<CalendarDisplay>>,
     pub(super) calendars: Vec<CalendarCollectionResource>,
     pub(super) has_accounts: bool,
-    pub(super) anchor: NaiveDate,
+    pub(super) anchor: Date,
     pub(super) syncing: bool,
     pub(super) sync_requested: bool,
     pub(super) sync_reply: Option<EffectReply>,
@@ -63,7 +63,7 @@ pub(crate) struct Store {
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
-    pub(super) fn new(anchor: NaiveDate, accounts: AccountStore) -> Self {
+    pub(super) fn new(anchor: Date, accounts: AccountStore) -> Self {
         Self {
             live: None,
             device_accounts: Rc::new(RefCell::new(accounts)),
@@ -368,7 +368,7 @@ fn invitation(
         "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
         event.display_title(),
         ui::format::day_heading(event.start.date(), true),
-        ui::clock::time_of_day(&event.start),
+        ui::clock::time_of_day(event.start),
         event.timezone
     );
     let calendar_ics = ics::invitation_request(event);

@@ -213,12 +213,18 @@ fn calendar_text(
 /// four digits holds is written as its milliseconds since 1970
 /// (`253402300800000 ms`), so every stored trigger has a line that reads back.
 fn moment_text(at_ms: i64) -> String {
-    use chrono::Datelike as _;
-    chrono::DateTime::from_timestamp_millis(at_ms)
-        .filter(|at| (1..=9999).contains(&at.year()))
+    jiff::Timestamp::from_millisecond(at_ms)
+        .ok()
+        .filter(|at| at.to_zoned(jiff::tz::TimeZone::UTC).year() >= 1)
         .map_or_else(
             || format!("{at_ms} ms"),
-            |at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+            |at| {
+                if at_ms.rem_euclid(1000) == 0 {
+                    format!("{at:.0}")
+                } else {
+                    format!("{at:.3}")
+                }
+            },
         )
 }
 
@@ -633,9 +639,9 @@ fn once_of(rest: &str) -> Result<TriggerSpec, String> {
             .map_err(|_| format!("`{ms}` is not a number of milliseconds"))?;
         return Ok(TriggerSpec::Once { at_ms });
     }
-    chrono::DateTime::parse_from_rfc3339(rest)
+    rest.parse::<jiff::Timestamp>()
         .map(|at| TriggerSpec::Once {
-            at_ms: at.timestamp_millis(),
+            at_ms: at.as_millisecond(),
         })
         .map_err(|_| {
             "write the moment as a date and time with its offset from UTC: `once at 2026-11-17T11:32:00Z`"

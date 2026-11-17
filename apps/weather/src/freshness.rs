@@ -2,7 +2,7 @@
 //! recent, the clock time after, a date from another day, and "last updated" once
 //! it can no longer be the current hour.
 
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 
 use crate::i18n::{arg, t_args};
 
@@ -21,19 +21,20 @@ pub(crate) struct Updated {
 
 /// The line for a snapshot fetched at `fetched_at` (epoch seconds), or `None`
 /// for a capture fixture's zero timestamp.
-pub(crate) fn updated(fetched_at: u64, now: NaiveDateTime) -> Option<Updated> {
+pub(crate) fn updated(fetched_at: u64, now: DateTime) -> Option<Updated> {
     if fetched_at == 0 {
         return None;
     }
-    let at = chrono::DateTime::from_timestamp(i64::try_from(fetched_at).ok()?, 0)?
-        .with_timezone(&chrono::Local)
-        .naive_local();
+    let at = jiff::Timestamp::from_second(i64::try_from(fetched_at).ok()?)
+        .ok()?
+        .to_zoned(jiff::tz::TimeZone::system())
+        .datetime();
     Some(updated_at(at, now))
 }
 
-pub(crate) fn updated_at(at: NaiveDateTime, now: NaiveDateTime) -> Updated {
+pub(crate) fn updated_at(at: DateTime, now: DateTime) -> Updated {
     // A stamp ahead of the clock reads as "just now", not as a negative age.
-    let age = (now - at).num_seconds().max(0);
+    let age = now.duration_since(at).as_secs().max(0);
     let stale = age >= STALE_AFTER_SECS;
     let (key, when) = if age < RECENT_SECS {
         (
@@ -51,7 +52,7 @@ pub(crate) fn updated_at(at: NaiveDateTime, now: NaiveDateTime) -> Updated {
             } else {
                 "weather-updated-clock"
             },
-            ui::format::time(&at.time()),
+            ui::format::time(at.time()),
         )
     } else {
         (
@@ -73,9 +74,10 @@ pub(crate) fn updated_at(at: NaiveDateTime, now: NaiveDateTime) -> Updated {
 mod tests {
     use super::*;
 
-    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(y, mo, d)
-            .and_then(|date| date.and_hms_opt(h, mi, 0))
+    fn at(y: i16, mo: i8, d: i8, h: i8, mi: i8) -> DateTime {
+        jiff::civil::Date::new(y, mo, d)
+            .ok()
+            .map(|date| date.at(h, mi, 0, 0))
             .expect("a real moment")
     }
 
@@ -102,7 +104,7 @@ mod tests {
             let older = updated_at(fetched, now);
             assert_eq!(
                 older.text,
-                format!("Updated at {}", ui::format::time(&fetched.time()))
+                format!("Updated at {}", ui::format::time(fetched.time()))
             );
             assert!(!older.stale, "ninety minutes is still current");
         }
@@ -119,7 +121,7 @@ mod tests {
                 morning.text,
                 format!(
                     "Last updated at {}, and out of date",
-                    ui::format::time(&at(2026, 6, 30, 7, 0).time())
+                    ui::format::time(at(2026, 6, 30, 7, 0).time())
                 )
             );
             let days = updated_at(at(2026, 6, 27, 9, 15), now);

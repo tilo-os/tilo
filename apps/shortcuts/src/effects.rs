@@ -461,7 +461,7 @@ impl EffectsCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: InvocationStatus::Running,
-                    started: ui::clock::time_of_day(&ui::clock::local_now()),
+                    started: ui::clock::time_of_day(ui::clock::local_now()),
                 },
             );
         });

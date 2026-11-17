@@ -133,19 +133,25 @@ impl Within {
     #[must_use]
     pub fn moment(text: &str) -> Option<i64> {
         let text = text.trim();
-        if let Ok(moment) = chrono::DateTime::parse_from_rfc3339(text) {
-            return Some(moment.timestamp());
+        if let Ok(moment) = text.parse::<jiff::Timestamp>() {
+            return Some(moment.as_second());
         }
-        let day = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
-        Some(day.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+        let day = jiff::civil::Date::strptime("%Y-%m-%d", text).ok()?;
+        Some(
+            day.to_zoned(jiff::tz::TimeZone::UTC)
+                .ok()?
+                .timestamp()
+                .as_second(),
+        )
     }
 
     /// How the moment `when` reads in an answer, as [`Self::moment`] reads it back:
     /// `2026-11-10T14:02:00Z`.
     #[must_use]
     pub fn said_at(when: i64) -> Option<String> {
-        chrono::DateTime::from_timestamp(when, 0)
-            .map(|moment| moment.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        jiff::Timestamp::from_second(when)
+            .ok()
+            .map(|moment| format!("{moment:.0}"))
     }
 }
 

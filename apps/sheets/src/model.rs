@@ -521,14 +521,14 @@ fn serial_to_unix_days(serial: f64) -> i64 {
     days.saturating_add(EXCEL_EPOCH_UNIX_DAY)
 }
 
-/// A serial date in `style`, through a civil-calendar algorithm so centuries come out right
-/// without a chrono dependency.
+/// A serial date in `style`, through a civil-calendar algorithm so centuries come out right.
 pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
     let (y, m, d) = civil_from_days(serial_to_unix_days(serial));
     match style {
-        DateStyle::Language => i32::try_from(y)
+        DateStyle::Language => i16::try_from(y)
             .ok()
-            .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, m, d))
+            .zip(i8::try_from(m).ok().zip(i8::try_from(d).ok()))
+            .and_then(|(year, (m, d))| ui::format::Date::new(year, m, d).ok())
             .map_or_else(
                 || format!("{y:04}-{m:02}-{d:02}"),
                 |day| ui::format::Formats::current().language_date(day),
@@ -607,8 +607,12 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
 /// The local date and time as an Excel serial, read through the toolkit clock so a capture
 /// agrees on every run.
 pub fn now_serial() -> f64 {
-    let local = ui::clock::local_now().naive_local().and_utc();
-    let secs = local.timestamp() as f64 + f64::from(local.timestamp_subsec_millis()) / 1000.0;
+    let now = ui::clock::local_now();
+    let local_ms = now
+        .timestamp()
+        .as_millisecond()
+        .saturating_add(i64::from(now.offset().seconds()).saturating_mul(1000));
+    let secs = local_ms as f64 / 1000.0;
     secs / 86400.0 + 25569.0
 }
 

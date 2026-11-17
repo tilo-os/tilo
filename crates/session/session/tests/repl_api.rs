@@ -827,8 +827,13 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading(session: &mut Sessio
 fn this_minute() -> ui::time::SystemTime {
     ui::time::wall()
         .checked_sub(Duration::from_secs(
-            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
-                .expect("a second of the minute"),
+            u64::try_from(
+                ui::clock::local_now()
+                    .timestamp()
+                    .as_second()
+                    .rem_euclid(60),
+            )
+            .expect("a second of the minute"),
         ))
         .expect("the minute the test runs in")
 }

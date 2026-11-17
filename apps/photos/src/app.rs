@@ -1580,7 +1580,7 @@ pub(crate) fn dimensions_label(width: u32, height: u32) -> String {
 }
 
 fn captured_label(captured_at: &str) -> String {
-    if let Ok(at) = ui::format::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%dT%H:%M") {
+    if let Ok(at) = ui::format::DateTime::strptime("%Y-%m-%dT%H:%M", captured_at) {
         return ui::format::timestamp(&at);
     }
     let date = timeline_date_label(captured_at);
@@ -1703,11 +1703,12 @@ fn timeline_date_label(captured_at: &str) -> String {
         && ("01"..="12").contains(&month);
     let date = known_month
         .then(|| {
-            ui::format::NaiveDate::from_ymd_opt(
+            ui::format::Date::new(
                 year.parse().ok()?,
                 month.parse().ok()?,
                 day_of_month.parse().ok()?,
             )
+            .ok()
         })
         .flatten();
     date.map_or(day, ui::format::month_day_year)

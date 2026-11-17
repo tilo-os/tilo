@@ -221,9 +221,10 @@ fn now_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    chrono::DateTime::from_timestamp(secs, 0)
+    jiff::Timestamp::from_second(secs)
+        .ok()
         .unwrap_or_default()
-        .format("%Y-%m-%dT%H:%M:%SZ")
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
         .to_string()
 }
 

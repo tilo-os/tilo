@@ -56,7 +56,7 @@ const DAY: i64 = 24 * HOUR;
               relocate the sample data, not shrink what a reader must trace for one entry"
 )]
 pub fn store() -> (Library, ArticlePart) {
-    let now = ui::clock::local_now().timestamp();
+    let now = ui::clock::local_now().timestamp().as_second();
     let mut s = Library::new();
     let mut part = ArticlePart::default();
 

@@ -388,7 +388,7 @@ mod tests {
             // San Francisco now_hour = 14.
             assert_eq!(
                 snap.hourly[0].hour_label(),
-                ui::format::time(&chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap())
+                ui::format::time(jiff::civil::Time::new(14, 0, 0, 0).unwrap())
             );
         }
         {

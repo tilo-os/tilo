@@ -11,7 +11,7 @@ pub(crate) const SCENARIOS: &[&str] = &["whats-new", "history", "detail", "repla
 const MINUTE_MS: i64 = 60_000;
 
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    jiff::Timestamp::now().as_millisecond()
 }
 
 /// When it was `minutes` ago, in milliseconds since the epoch.

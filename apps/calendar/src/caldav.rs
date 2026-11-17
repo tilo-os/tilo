@@ -1,6 +1,6 @@
 //! `CalDAV` sync — the real protocol edge of the Calendar app.
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 
 use crate::account::{CalDavConfig, RemoteCalendar};
 use crate::ics;
@@ -206,11 +206,7 @@ pub fn hrefs_equal(left: &str, right: &str) -> bool {
 
 /// Sample pull for one remote calendar (demo and tests only): real iCalendar through [`ics::parse`],
 /// never the live transport.
-pub fn pull_calendar(
-    _config: &CalDavConfig,
-    calendar: &RemoteCalendar,
-    today: NaiveDate,
-) -> SyncResult {
+pub fn pull_calendar(_config: &CalDavConfig, calendar: &RemoteCalendar, today: Date) -> SyncResult {
     let payload = sample_calendar_ics(calendar, today);
     let (mut events, tasks) = ics::parse(&payload);
     let palette = calendar.palette();
@@ -227,7 +223,7 @@ pub fn pull_calendar(
 
 pub fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-    today: NaiveDate,
+    today: Date,
     checkpoints: &[(String, String)],
 ) -> impl std::future::Future<Output = (SyncResult, SyncOutcome)> {
     #[cfg(feature = "live")]
@@ -243,7 +239,7 @@ pub fn sync_all_with_checkpoints(
 
 pub fn sample_pull_all(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-    today: NaiveDate,
+    today: Date,
 ) -> (SyncResult, SyncOutcome) {
     let mut merged = SyncResult::default();
     let mut count = 0usize;
@@ -268,15 +264,15 @@ pub fn sample_pull_all(
     )
 }
 
-fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
+fn sample_calendar_ics(calendar: &RemoteCalendar, today: Date) -> String {
     use crate::model::Recurrence;
-    use chrono::{Duration, NaiveDateTime, NaiveTime};
+    use jiff::civil::{DateTime, Time};
 
     // Every call passes a literal valid (h, m): a wrong sample time beats panicking the sync.
-    let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
+    let at = |date: Date, h: i8, m: i8| -> DateTime {
+        date.to_datetime(Time::new(h, m, 0, 0).unwrap_or(Time::MIN))
     };
-    let d = |delta: i64| today + Duration::days(delta);
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
 
     let events = match calendar.id.as_str() {
         "work/oncall" => vec![Event {
@@ -414,7 +410,7 @@ fn sync_collection_body(token: &str) -> String {
 /// the default build.
 #[cfg(feature = "live")]
 mod live {
-    use chrono::NaiveDate;
+    use jiff::civil::Date;
     use std::collections::HashMap;
     use tilo_dav::net::{Depth, Error as DavError, Precondition, StatusCode};
     use tilo_dav::oauth::{AuthorisedClient, Service};
@@ -471,7 +467,7 @@ mod live {
 
     pub async fn sync_all_live_with_checkpoints(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-        today: NaiveDate,
+        today: Date,
         checkpoints: &[(String, String)],
     ) -> (SyncResult, SyncOutcome) {
         let client = client();
@@ -483,7 +479,7 @@ mod live {
         pub(crate) async fn sync_all(
             &self,
             accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-            today: NaiveDate,
+            today: Date,
             checkpoints: &[(String, String)],
         ) -> (SyncResult, SyncOutcome) {
             let client = self;
@@ -539,7 +535,7 @@ mod live {
         client: &CalDavClient,
         config: &CalDavConfig,
         cal: &RemoteCalendar,
-        _today: NaiveDate,
+        _today: Date,
         checkpoint: Option<&str>,
     ) -> Result<SyncResult, String> {
         let url = collection_url(config, cal);
@@ -804,7 +800,7 @@ mod live {
             client: &CalDavClient,
             config: &CalDavConfig,
             cal: &RemoteCalendar,
-            today: NaiveDate,
+            today: Date,
             checkpoint: Option<&str>,
         ) -> Result<SyncResult, String> {
             run(super::pull_calendar_live(
@@ -856,8 +852,8 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
             )
         }
 
-        fn today() -> NaiveDate {
-            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+        fn today() -> Date {
+            Date::new(2026, 6, 15).unwrap()
         }
 
         tilo_test_env::scenario! {
@@ -1101,13 +1097,13 @@ mod tests {
 
     fn sync_all(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-        today: NaiveDate,
+        today: Date,
     ) -> (SyncResult, SyncOutcome) {
         run(super::sync_all_with_checkpoints(accounts, today, &[]))
     }
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+    fn today() -> Date {
+        Date::new(2026, 6, 15).unwrap()
     }
 
     tilo_test_env::scenario! {
@@ -1184,21 +1180,19 @@ mod tests {
         {
             {
                 use crate::model::Event;
-                use chrono::NaiveDate;
+                use jiff::civil::Date;
                 let store = AccountStore::sample();
                 let (account, cal) = store
                     .all_calendars()
                     .find(|(_, c)| c.id == "work/default")
                     .unwrap();
-                let start = NaiveDate::from_ymd_opt(2026, 6, 15)
-                    .unwrap()
-                    .and_hms_opt(9, 0, 0)
-                    .unwrap();
+                let start = Date::new(2026, 6, 15).unwrap()
+                    .at(9, 0, 0, 0);
                 let ev = Event {
                     id: uuid::Uuid::new_v4(),
                     title: "Kickoff".into(),
                     start,
-                    end: start + chrono::Duration::hours(1),
+                    end: start + jiff::SignedDuration::from_hours(1),
                     location: "Room 1".into(),
                     calendar_id: Some(cal.id.clone()),
                     ..Event::default()
@@ -1245,10 +1239,8 @@ mod tests {
             {
                 let store = AccountStore::sample();
                 let (account, cal) = store.all_calendars().next().unwrap();
-                let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
-                    .unwrap()
-                    .and_hms_opt(9, 0, 0)
-                    .unwrap();
+                let start = jiff::civil::Date::new(2026, 6, 15).unwrap()
+                    .at(9, 0, 0, 0);
                 let ev = crate::model::Event {
                     id: uuid::Uuid::new_v4(),
                     title: "x".into(),

@@ -17,8 +17,6 @@ description = "The Tilo resource layer: typed, hierarchical app resources."
 [features]
 # The store a replica without a window records into is the actions' own.
 test-support = ["tilo-actions/test-support"]
-# Dates and times of `chrono` as model values.
-chrono = ["dep:chrono"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -35,7 +33,7 @@ serde_path_to_error.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
-chrono = { workspace = true, optional = true, features = ["alloc"] }
+jiff.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # A capability names the app its sandbox belongs to.

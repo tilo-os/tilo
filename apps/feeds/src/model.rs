@@ -681,11 +681,11 @@ mod tests {
             assert_eq!(relative_time(0, now), "—");
             assert_eq!(
                 relative_time(now - 30, now),
-                ui::format::time(&local(now - 30))
+                ui::format::time(local(now - 30))
             );
             assert_eq!(
                 relative_time(now - 3 * 86400, now),
-                ui::format::weekday_short(chrono::Datelike::weekday(&local(now - 3 * 86400)))
+                ui::format::weekday_short((local(now - 3 * 86400)).weekday())
             );
             assert_eq!(
                 relative_time(now - 400 * 86400, now),

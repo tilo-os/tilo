@@ -1,6 +1,6 @@
 //! What a clock and a day read as, in the person's formats and their language.
 
-use chrono::{NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
 
 use crate::{DateStyle, RegionFormats, TimeStyle, Word, Words};
 
@@ -112,11 +112,11 @@ fn a_clock_reads_in_the_style_the_person_chose() {
     let words = English;
     let twelve = formats(TimeStyle::H12, DateStyle::Language);
     let twenty_four = formats(TimeStyle::H24, DateStyle::Language);
-    assert_eq!(crate::time(twelve, &at(10, 41), &words), "10:41 AM");
-    assert_eq!(crate::time(twenty_four, &at(10, 41), &words), "10:41");
-    assert_eq!(crate::time(twelve, &at(15, 9), &words), "3:09 PM");
+    assert_eq!(crate::time(twelve, at(10, 41), &words), "10:41 AM");
+    assert_eq!(crate::time(twenty_four, at(10, 41), &words), "10:41");
+    assert_eq!(crate::time(twelve, at(15, 9), &words), "3:09 PM");
     assert_eq!(
-        crate::time(twelve, &at(0, 7), &words),
+        crate::time(twelve, at(0, 7), &words),
         "12:07 AM",
         "midnight is twelve, not nothing"
     );
@@ -167,13 +167,11 @@ fn a_day_in_a_sentence_reads_as_the_person_reads_it() {
 }
 
 /// The instant the test's time of day is: UTC, as a host without the person's zone reads it.
-fn at(hour: u32, minute: u32) -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(2026, 6, 30)
-        .and_then(|day| day.and_hms_opt(hour, minute, 0))
-        .expect("a time of day")
+fn at(hour: i8, minute: i8) -> DateTime {
+    DateTime::new(2026, 6, 30, hour, minute, 0, 0).expect("a time of day")
 }
 
 /// The day `year`-`month`-`day`.
-fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).expect("a day")
+fn date(year: i16, month: i8, day: i8) -> Date {
+    Date::new(year, month, day).expect("a day")
 }

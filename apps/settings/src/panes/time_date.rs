@@ -266,7 +266,7 @@ impl Clock for SystemClock {
 
     fn now(&self, formats: &ui::format::Formats) -> (String, String) {
         let moment = ui::clock::local_now();
-        (formats.time(&moment), formats.date(moment.date_naive()))
+        (formats.time(&moment), formats.date(moment.date()))
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {

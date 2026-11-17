@@ -317,8 +317,10 @@ impl TimelineViewport {
 }
 
 pub(crate) fn hour_label(hour: u32) -> String {
-    chrono::NaiveTime::from_hms_opt(hour, 0, 0)
-        .map(|time| ui::format::time(&time))
+    i8::try_from(hour)
+        .ok()
+        .and_then(|hour| jiff::civil::Time::new(hour, 0, 0, 0).ok())
+        .map(ui::format::time)
         .unwrap_or_default()
 }
 

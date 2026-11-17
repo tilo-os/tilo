@@ -36,7 +36,7 @@ tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
 tilo-automerge.workspace = true
 serde_json.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -101,12 +101,6 @@ pub fn parse_http_date(value: &str) -> Option<SystemTime> {
     cloud_source::http::parse_http_date(value)
 }
 
-pub fn format_http_date(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time)
-        .format("%a, %d %b %Y %H:%M:%S GMT")
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,7 +159,10 @@ mod tests {
                 .as_secs(),
             784_111_777
         );
-        assert_eq!(format_http_date(time), "Sun, 06 Nov 1994 08:49:37 GMT");
+        assert_eq!(
+            cloud_source::http::format_http_date(time),
+            "Sun, 06 Nov 1994 08:49:37 GMT"
+        );
         assert!(parse_http_date("yesterday").is_none());
     }
 }

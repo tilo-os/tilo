@@ -42,7 +42,7 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 # app store, and this build's copy only stands in where the store holds none (shell.md §6).
 app-catalogue = { path = "../../packaging/app-catalogue" }
 package-store = { path = "../../packaging/package-store" }
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 # Files dropped on an app arrive as `file:` URIs.
 url.workspace = true
 workspace-hack = { version = "0.1" }

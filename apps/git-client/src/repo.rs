@@ -459,7 +459,12 @@ fn short_id(full: &str) -> String {
 }
 
 fn relative_time(seconds: i64) -> String {
-    ui::format::relative(ui::clock::local_now().timestamp().saturating_sub(seconds))
+    ui::format::relative(
+        ui::clock::local_now()
+            .timestamp()
+            .as_second()
+            .saturating_sub(seconds),
+    )
 }
 
 // ----------------------------------- write actions ----------------------------------- These

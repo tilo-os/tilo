@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::component::{Described, ResourceId};
 use tilo_ui::i18n::I18nManager;
@@ -135,7 +135,7 @@ fn build_tree() -> Box<dyn Widget> {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(DatePicker::new(
-                            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap_or_default(),
+                            Date::new(2026, 5, 22).ok().unwrap_or_default(),
                         )))
                         .push(Box::new(TimePicker::new(14, 30)))
                         .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),

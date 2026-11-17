@@ -47,7 +47,7 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "socke
 # picker + per-cluster sandbox prompt is the security boundary. The D-Bus call
 # runs off the UI thread on its own small Tokio runtime and the chosen path is
 # handed back over a channel.
-chrono = { workspace = true, features = ["clock", "std", "alloc"] }
+jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

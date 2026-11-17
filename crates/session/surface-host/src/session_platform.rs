@@ -46,14 +46,11 @@ impl<L: Loads> Platform for OnSession<L> {
     }
 
     fn now(&self) -> String {
-        ui::clock::local_now()
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string()
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     fn zone_name(&self) -> Option<String> {
@@ -64,7 +61,7 @@ impl<L: Loads> Platform for OnSession<L> {
     /// package's views run in the session, which holds their formats, so a day's
     /// `start_of_week()` goes back to the day their calendar starts a week on.
     fn week_start(&self) -> i64 {
-        i64::from(ui::format::first_weekday().num_days_from_monday())
+        i64::from(ui::format::first_weekday().to_monday_zero_offset())
     }
 
     fn waker(&self) -> Waker {

@@ -292,15 +292,11 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
 
     eprintln!("phase unknown_dates_show_nothing_and_known_dates_read_in_the_local_time_zone");
     {
-        use chrono::{Local, TimeZone};
         use notes::metadata::NoteDates;
         notes::metadata::register_messages();
-        let now = Local
-            .with_ymd_and_hms(2026, 6, 30, 10, 42, 0)
-            .single()
-            .unwrap();
+        let now = local(2026, 6, 30, 10, 42, 0);
         assert!(
-            NoteDates::default().labels_at(now).is_empty(),
+            NoteDates::default().labels_at(&now).is_empty(),
             "a note with no known date shows no header placeholder"
         );
         assert_eq!(
@@ -308,22 +304,16 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             1,
             "the detailed resource display retains its unavailable-date label"
         );
-        let created = Local
-            .with_ymd_and_hms(2023, 11, 14, 10, 42, 0)
-            .single()
-            .unwrap();
-        let edited = Local
-            .with_ymd_and_hms(2023, 11, 17, 11, 40, 0)
-            .single()
-            .unwrap();
+        let created = local(2023, 11, 14, 10, 42, 0);
+        let edited = local(2023, 11, 17, 11, 40, 0);
         let edited_only = NoteDates {
             created: None,
-            edited: Some(edited.timestamp()),
+            edited: Some(edited.timestamp().as_second()),
         };
-        let lines = edited_only.labels_at(now);
+        let lines = edited_only.labels_at(&now);
         assert_eq!(lines, vec!["Edited Nov 17, 2023".to_string()]);
         let both = NoteDates {
-            created: Some(created.timestamp()),
+            created: Some(created.timestamp().as_second()),
             edited: edited_only.edited,
         };
         let detailed = both.display_labels(false);
@@ -333,7 +323,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                 .iter()
                 .all(|label| label.contains("Nov 14, 2023, ") || label.contains("Nov 17, 2023, "))
         );
-        let lines = both.labels_at(now);
+        let lines = both.labels_at(&now);
         assert_eq!(
             lines,
             vec!["Created Nov 14, 2023, edited Nov 17, 2023".to_string()],
@@ -347,12 +337,20 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             "dates are the reader's local time, never labelled UTC: {lines:?}, {detailed:?}"
         );
         let today = NoteDates {
-            created: Some(now.timestamp()),
-            edited: Some(now.timestamp()),
+            created: Some(now.timestamp().as_second()),
+            edited: Some(now.timestamp().as_second()),
         };
         assert_eq!(
-            today.labels_at(now),
+            today.labels_at(&now),
             vec!["Created today at 10:42 AM".to_string()]
         );
     }
+}
+
+/// The wall clock at `h`:`mi`:`s` on `y`-`mo`-`d` in the zone this process reads as the person's.
+fn local(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> jiff::Zoned {
+    jiff::civil::date(y, mo, d)
+        .at(h, mi, s, 0)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .unwrap()
 }

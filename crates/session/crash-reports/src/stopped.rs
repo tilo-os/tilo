@@ -14,7 +14,6 @@
 use std::io::Read as _;
 use std::path::Path;
 
-use chrono::TimeZone as _;
 use tilo_actions::remote::crash_reports::StopReason;
 
 use super::FILE_TIMESTAMP;
@@ -290,12 +289,13 @@ pub fn keep_stops(dir: &Path, stops: &[Stop], found_at: i64) -> std::io::Result<
             continue;
         }
         let at = stop.written.unwrap_or(found_at);
-        let Some(when) = chrono::Local.timestamp_opt(at, 0).earliest() else {
+        let Ok(when) = jiff::Timestamp::from_second(at) else {
             continue;
         };
+        let when = when.to_zoned(jiff::tz::TimeZone::system());
         let stamp = tilo_formats::machine!(
             "the report's file name, which programs sort by",
-            when.format(FILE_TIMESTAMP).to_string()
+            when.strftime(FILE_TIMESTAMP).to_string()
         );
         let name = format!("{stamp}{tail}");
         match super::write_report(dir, &name, &render_stop(stop, &stamp)) {
@@ -319,7 +319,7 @@ pub fn take_in(dir: &Path) -> usize {
     if found.is_empty() {
         return 0;
     }
-    match keep_stops(dir, &found, chrono::Local::now().timestamp()) {
+    match keep_stops(dir, &found, jiff::Timestamp::now().as_second()) {
         Ok(written) => written.len(),
         Err(error) => {
             tracing::warn!(%error, "the reports of the computer stopping were not kept");

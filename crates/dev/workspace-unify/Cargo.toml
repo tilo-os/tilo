@@ -561,8 +561,9 @@ doc = false
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itoa-1_0_17" = { package = "itoa", version = "^1.0.17", default-features = false, features = [] }
-"jiff-0_2_37" = { package = "jiff", version = "^0.2.37", default-features = false, features = ["alloc", "std"] }
+"jiff-0_2_37" = { package = "jiff", version = "^0.2.37", default-features = false, features = ["alloc", "serde", "std", "tz-system"] }
 "jiff-core-0_1_1" = { package = "jiff-core", version = "^0.1.1", default-features = false, features = ["alloc", "std"] }
+"jiff-tzdb-0_1_10" = { package = "jiff-tzdb", version = "^0.1.10", default-features = false, features = [] }
 "k256-0_13_4" = { package = "k256", version = "^0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
 "kamadak-exif-0_6_1" = { package = "kamadak-exif", version = "^0.6.1", default-features = false, features = [] }
 "keccak-0_2_2" = { package = "keccak", version = "^0.2.2", default-features = false, features = [] }
@@ -806,9 +807,9 @@ doc = false
 "portmapper-0_19_1" = { package = "portmapper", version = "^0.19.1", default-features = false, features = [] }
 "positioned-io-0_3_5" = { package = "positioned-io", version = "^0.3.5", default-features = false, features = [] }
 "postcard-1_1_3" = { package = "postcard", version = "^1.1.3", default-features = false, features = ["alloc", "default", "experimental-derive", "heapless", "heapless-cas", "postcard-derive", "use-std"] }
-"postgres-0_19_14" = { package = "postgres", version = "^0.19.14", default-features = false, features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"postgres-0_19_14" = { package = "postgres", version = "^0.19.14", default-features = false, features = ["with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "postgres-protocol-0_6_12" = { package = "postgres-protocol", version = "^0.6.12", default-features = false, features = ["default"] }
-"postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["chrono-04", "serde-1", "serde_json-1", "uuid-1", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["jiff-02", "serde-1", "serde_json-1", "uuid-1", "with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "potential_utf-0_1_4" = { package = "potential_utf", version = "^0.1.4", default-features = false, features = ["alloc", "serde", "writeable", "zerovec"] }
 "powerfmt-0_2_0" = { package = "powerfmt", version = "^0.2.0", default-features = false, features = [] }
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
@@ -1125,7 +1126,7 @@ doc = false
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = [] }
 "tilo-agent-web-tools" = { path = "../../../crates/agent/agent-web-tools", default-features = false, features = ["fixture-servers"] }
 "tilo-api" = { path = "../../../crates/hosting/tilo-api", default-features = false, features = [] }
-"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
+"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-keeper" = { path = "../../../crates/session/app-keeper", default-features = false, features = ["test-support"] }
@@ -1294,7 +1295,7 @@ doc = false
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
@@ -1398,7 +1399,7 @@ doc = false
 "tinyvec_macros-0_1_1" = { package = "tinyvec_macros", version = "^0.1.1", default-features = false, features = [] }
 "tls_codec-0_5_0" = { package = "tls_codec", version = "^0.5.0", default-features = false, features = ["default", "derive", "mls", "serde", "std", "tls_codec_derive"] }
 "tokio-1_53_3" = { package = "tokio", version = "^1.53.3", default-features = false, features = ["bytes", "default", "fs", "full", "io-std", "io-util", "libc", "macros", "mio", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "signal-hook-registry", "socket2", "sync", "test-util", "time", "tokio-macros", "tracing"] }
-"tokio-postgres-0_7_18" = { package = "tokio-postgres", version = "^0.7.18", default-features = false, features = ["default", "runtime", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"tokio-postgres-0_7_18" = { package = "tokio-postgres", version = "^0.7.18", default-features = false, features = ["default", "runtime", "with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "tokio-rustls-0_26_4" = { package = "tokio-rustls", version = "^0.26.4", default-features = false, features = ["early-data", "logging", "ring", "tls12"] }
 "tokio-rustls-acme-0_9_1" = { package = "tokio-rustls-acme", version = "^0.9.1", default-features = false, features = ["default", "rustls-tls-webpki-roots"] }
 "tokio-stream-0_1_18" = { package = "tokio-stream", version = "^0.1.18", default-features = false, features = ["default", "sync", "time", "tokio-util"] }
@@ -2026,6 +2027,8 @@ doc = false
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itoa-1_0_17" = { package = "itoa", version = "^1.0.17", default-features = false, features = [] }
+"jiff-0_2_37" = { package = "jiff", version = "^0.2.37", default-features = false, features = ["alloc", "serde", "std", "tz-system"] }
+"jiff-core-0_1_1" = { package = "jiff-core", version = "^0.1.1", default-features = false, features = ["alloc", "std"] }
 "jobserver-0_1_34" = { package = "jobserver", version = "^0.1.34", default-features = false, features = [] }
 "k256-0_13_4" = { package = "k256", version = "^0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
 "keccak-0_2_2" = { package = "keccak", version = "^0.2.2", default-features = false, features = [] }
@@ -2450,7 +2453,7 @@ doc = false
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
@@ -3172,8 +3175,9 @@ doc = false
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_15_0" = { package = "itertools", version = "^0.15.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itoa-1_0_17" = { package = "itoa", version = "^1.0.17", default-features = false, features = [] }
-"jiff-0_2_37" = { package = "jiff", version = "^0.2.37", default-features = false, features = ["alloc", "std"] }
+"jiff-0_2_37" = { package = "jiff", version = "^0.2.37", default-features = false, features = ["alloc", "serde", "std", "tz-system"] }
 "jiff-core-0_1_1" = { package = "jiff-core", version = "^0.1.1", default-features = false, features = ["alloc", "std"] }
+"jiff-tzdb-0_1_10" = { package = "jiff-tzdb", version = "^0.1.10", default-features = false, features = [] }
 "k256-0_13_4" = { package = "k256", version = "^0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
 "kamadak-exif-0_6_1" = { package = "kamadak-exif", version = "^0.6.1", default-features = false, features = [] }
 "keccak-0_2_2" = { package = "keccak", version = "^0.2.2", default-features = false, features = [] }
@@ -3417,9 +3421,9 @@ doc = false
 "portmapper-0_19_1" = { package = "portmapper", version = "^0.19.1", default-features = false, features = [] }
 "positioned-io-0_3_5" = { package = "positioned-io", version = "^0.3.5", default-features = false, features = [] }
 "postcard-1_1_3" = { package = "postcard", version = "^1.1.3", default-features = false, features = ["alloc", "default", "experimental-derive", "heapless", "heapless-cas", "postcard-derive", "use-std"] }
-"postgres-0_19_14" = { package = "postgres", version = "^0.19.14", default-features = false, features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"postgres-0_19_14" = { package = "postgres", version = "^0.19.14", default-features = false, features = ["with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "postgres-protocol-0_6_12" = { package = "postgres-protocol", version = "^0.6.12", default-features = false, features = ["default"] }
-"postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["chrono-04", "serde-1", "serde_json-1", "uuid-1", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["jiff-02", "serde-1", "serde_json-1", "uuid-1", "with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "potential_utf-0_1_4" = { package = "potential_utf", version = "^0.1.4", default-features = false, features = ["alloc", "serde", "writeable", "zerovec"] }
 "powerfmt-0_2_0" = { package = "powerfmt", version = "^0.2.0", default-features = false, features = [] }
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
@@ -3734,7 +3738,7 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = [] }
 "tilo-api" = { path = "../../../crates/hosting/tilo-api", default-features = false, features = [] }
-"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
+"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-keeper" = { path = "../../../crates/session/app-keeper", default-features = false, features = ["test-support"] }
@@ -3905,7 +3909,7 @@ doc = false
 "tilo-server-store" = { path = "../../../crates/hosting/tilo-server-store", default-features = false, features = ["test-support"] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
@@ -4002,7 +4006,7 @@ doc = false
 "tinyvec_macros-0_1_1" = { package = "tinyvec_macros", version = "^0.1.1", default-features = false, features = [] }
 "tls_codec-0_5_0" = { package = "tls_codec", version = "^0.5.0", default-features = false, features = ["default", "derive", "mls", "serde", "std", "tls_codec_derive"] }
 "tokio-1_53_3" = { package = "tokio", version = "^1.53.3", default-features = false, features = ["bytes", "default", "fs", "full", "io-std", "io-util", "libc", "macros", "mio", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "signal-hook-registry", "socket2", "sync", "test-util", "time", "tokio-macros", "tracing"] }
-"tokio-postgres-0_7_18" = { package = "tokio-postgres", version = "^0.7.18", default-features = false, features = ["default", "runtime", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+"tokio-postgres-0_7_18" = { package = "tokio-postgres", version = "^0.7.18", default-features = false, features = ["default", "runtime", "with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
 "tokio-rustls-0_26_4" = { package = "tokio-rustls", version = "^0.26.4", default-features = false, features = ["early-data", "logging", "ring", "tls12"] }
 "tokio-rustls-acme-0_9_1" = { package = "tokio-rustls-acme", version = "^0.9.1", default-features = false, features = ["default", "rustls-tls-webpki-roots"] }
 "tokio-stream-0_1_18" = { package = "tokio-stream", version = "^0.1.18", default-features = false, features = ["default", "sync", "time", "tokio-util"] }
@@ -5068,7 +5072,7 @@ doc = false
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
+"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }
@@ -5134,7 +5138,7 @@ doc = false
 "tilo-server-protocol" = { path = "../../../crates/hosting/tilo-server-protocol", default-features = false, features = [] }
 "tilo-server-session" = { path = "../../../crates/hosting/tilo-server-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "gpu-video", "mpris"] }

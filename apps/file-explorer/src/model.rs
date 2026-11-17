@@ -1,4 +1,3 @@
-use chrono::{DateTime, Local};
 use host_fs::attributes as xattr;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
@@ -757,7 +756,7 @@ pub struct Entry {
     pub path: PathBuf,
     pub is_dir: bool,
     pub size: u64,
-    pub modified: Option<DateTime<Local>>,
+    pub modified: Option<jiff::Timestamp>,
     pub mime: String,
     pub sync_state: Option<SyncState>,
     pub content_hash: Option<[u8; 32]>,
@@ -799,7 +798,7 @@ pub fn human_size(entry: &Entry) -> String {
     }
 }
 
-pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
+pub fn format_modified(modified: Option<jiff::Timestamp>) -> String {
     match modified {
         Some(t) => crate::i18n::format_datetime(t),
         None => "—".to_string(),
@@ -968,7 +967,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             path,
             is_dir,
             size: shown.map_or(0, std::fs::Metadata::len),
-            modified: shown.and_then(|m| m.modified().ok()).map(DateTime::from),
+            modified: shown
+                .and_then(|m| m.modified().ok())
+                .and_then(|at| jiff::Timestamp::try_from(at).ok()),
             mime,
             sync_state,
             content_hash,

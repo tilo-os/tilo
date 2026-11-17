@@ -1998,7 +1998,7 @@ impl ChatApp {
 
 /// The local time of `ts` as `HH:MM`.
 fn clock_label(ts: i64) -> String {
-    model::clock(ts + i64::from(ui::clock::local_now().offset().local_minus_utc()))
+    model::clock(ts + i64::from(ui::clock::local_now().offset().seconds()))
 }
 
 /// Greedy-pack buttons `widths` wide into rows that each fit `max_row_w`.

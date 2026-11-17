@@ -18,7 +18,7 @@ tilo_test_env::scenario! {
         let mut replica = Replica::<Calendar>::new();
         let mut held = crate::resource::event_at(
             "Standup",
-            crate::resource::at(chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap(), 9, 0),
+            crate::resource::at(jiff::civil::Date::new(2026, 9, 8).unwrap(), 9, 0),
         );
         held.calendar_id = Some(calendar.id.clone());
         let mut elsewhere = held.clone();
@@ -114,7 +114,7 @@ tilo_test_env::scenario! {
         let mut replica = Replica::<Calendar>::new();
         let mut event = crate::resource::event_at(
             "Review",
-            crate::resource::at(chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap(), 9, 0),
+            crate::resource::at(jiff::civil::Date::new(2026, 9, 8).unwrap(), 9, 0),
         );
         event.calendar_id = Some(first.clone());
         apply(
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
         let mut replica = Replica::<Calendar>::new();
         let mut event = crate::resource::event_at(
             "Standup",
-            crate::resource::at(chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap(), 9, 0),
+            crate::resource::at(jiff::civil::Date::new(2026, 9, 8).unwrap(), 9, 0),
         );
         event.calendar_id = Some(calendar.id.clone());
         apply(

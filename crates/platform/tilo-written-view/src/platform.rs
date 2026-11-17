@@ -57,13 +57,11 @@ impl Platform for ViewPlatform {
     }
 
     fn now(&self) -> String {
-        ui::clock::local_now()
-            .to_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     fn zone_name(&self) -> Option<String> {

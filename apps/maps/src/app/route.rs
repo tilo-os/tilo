@@ -100,8 +100,13 @@ impl MapsApp {
         let time = if tt.is_now() {
             None
         } else {
-            let when = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
-            Some(when.to_rfc3339())
+            let when =
+                &ui::clock::local_now() + jiff::SignedDuration::from_mins(i64::from(tt.offset_min));
+            Some(
+                when.timestamp()
+                    .display_with_offset(when.offset())
+                    .to_string(),
+            )
         };
         net::TransitQuery {
             arrive_by: tt.arrive_by(),

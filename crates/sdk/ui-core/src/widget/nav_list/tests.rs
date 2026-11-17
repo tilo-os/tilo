@@ -2289,9 +2289,9 @@ tilo_test_env::scenario! {
         .with_header(crate::widget::SectionHeader::group("Connections"))
         .collapsible();
         let month = crate::widget::DatePicker::new(
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
+            jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default(),
         )
-        .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
+        .with_today(jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default());
         assert_sidebar_hovers_damage_only_their_rows(Box::new(
             crate::widget::Column::new()
                 .push(Box::new(section))

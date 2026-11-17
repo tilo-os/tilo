@@ -17,7 +17,7 @@ use settings_store::system_sounds::SystemSoundEvent;
 use tilo_files::native::ChangeWatch;
 use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
-use ui::format::NaiveDate;
+use ui::format::Date;
 
 use crate::drives::Medium;
 use crate::i18n::{t, t_args};
@@ -388,7 +388,7 @@ pub fn codec_notice(
 /// The notice for `news`, a session or computer that stopped and started again; `today` decides
 /// whether it names the time of day or the date too.
 #[must_use]
-pub fn news_notice(news: &tilo_crash_reports::News, today: NaiveDate) -> Notice {
+pub fn news_notice(news: &tilo_crash_reports::News, today: Date) -> Notice {
     let time = if news.at.date() == today {
         ui::format::time_of(&news.at)
     } else {
@@ -655,7 +655,7 @@ pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
     let Some(news) = tilo_crash_reports::take_news(dir) else {
         return;
     };
-    let today = ui::clock::local_now().date_naive();
+    let today = ui::clock::local_now().date();
     tell_daemon(&news_notice(&news, today), notifications);
 }
 
@@ -1065,8 +1065,7 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].summary, "The desktop restarted");
         let at =
-            ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
-                .unwrap();
+            ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap();
         assert!(
             live[0].body.contains(&ui::format::timestamp(&at)),
             "{}",
@@ -1153,13 +1152,10 @@ mod tests {
         {
             let news = tilo_crash_reports::News {
                 ended: tilo_crash_reports::Ended::Stopped,
-                at: ui::format::NaiveDateTime::parse_from_str(
-                    "2026-10-24 22:52:01",
-                    "%Y-%m-%d %H:%M:%S",
-                )
+                at: ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
                 .unwrap(),
             };
-            let notice = news_notice(&news, news.at.date().succ_opt().unwrap());
+            let notice = news_notice(&news, news.at.date().tomorrow().unwrap());
             assert_eq!(notice.title, "The computer restarted");
             assert!(notice.body.contains("stays on this computer"));
         }

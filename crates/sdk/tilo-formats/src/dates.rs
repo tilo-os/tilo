@@ -1,7 +1,7 @@
 //! Dates and times as a person reads them, in the formats they chose and the language their words
 //! resolve.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
+use jiff::civil::{Date, DateTime, Time, Weekday};
 
 use crate::region::DateStyle;
 use crate::{RegionFormats, Word, Words};
@@ -19,12 +19,12 @@ use crate::{RegionFormats, Word, Words};
 #[must_use]
 pub fn day_fact(
     formats: RegionFormats,
-    day: NaiveDate,
-    time: Option<NaiveTime>,
-    today: NaiveDate,
+    day: Date,
+    time: Option<Time>,
+    today: Date,
     words: &dyn Words,
 ) -> (String, bool) {
-    let days = day.signed_duration_since(today).num_days();
+    let days = days_between(today, day);
     if days < 0 {
         let named = if day.year() == today.year() {
             month_day(day, words)
@@ -36,7 +36,7 @@ pub fn day_fact(
                 "day-at-time",
                 &[
                     ("day", named.into()),
-                    ("time", crate::time(formats, &time, words).into()),
+                    ("time", crate::time(formats, time, words).into()),
                 ],
             ),
             None => named,
@@ -75,7 +75,7 @@ pub fn day_fact(
             "day-at-time",
             &[
                 ("day", named.unwrap_or_default().into()),
-                ("time", crate::time(formats, &time, words).into()),
+                ("time", crate::time(formats, time, words).into()),
             ],
         ),
         false,
@@ -87,14 +87,9 @@ pub fn day_fact(
 /// it when it is not today (`Sat 09:00`), the month and day past the week ahead
 /// (`Jun 29 09:00`), and the year with another year's day (`Jan 2, 2027 09:00`).
 #[must_use]
-pub fn moment_fact(
-    formats: RegionFormats,
-    at: NaiveDateTime,
-    today: NaiveDate,
-    words: &dyn Words,
-) -> String {
+pub fn moment_fact(formats: RegionFormats, at: DateTime, today: Date, words: &dyn Words) -> String {
     let day = at.date();
-    let days = day.signed_duration_since(today).num_days();
+    let days = days_between(today, day);
     let named = match days {
         0 => None,
         -6..=6 => Some(weekday_short(day.weekday(), words)),
@@ -102,13 +97,13 @@ pub fn moment_fact(
         _ => Some(month_day_year(day, words)),
     };
     named.map_or_else(
-        || time(formats, &at, words),
+        || time(formats, at, words),
         |day| {
             words.word(
                 "day-at-time",
                 &[
                     ("day", day.into()),
-                    ("time", time(formats, &at, words).into()),
+                    ("time", time(formats, at, words).into()),
                 ],
             )
         },
@@ -121,8 +116,8 @@ pub fn moment_fact(
 /// (`Jun 21`), other years the full date (`Jun 21, 2025`). A day gone by is never `Overdue` here:
 /// what was finished is history, not a problem.
 #[must_use]
-pub fn day_done(day: NaiveDate, today: NaiveDate, words: &dyn Words) -> String {
-    let days = day.signed_duration_since(today).num_days();
+pub fn day_done(day: Date, today: Date, words: &dyn Words) -> String {
+    let days = days_between(today, day);
     match days {
         0 | -1 => near_day(days, words).unwrap_or_default(),
         -6..=-2 => weekday_name(day.weekday(), words),
@@ -136,15 +131,10 @@ pub fn day_done(day: NaiveDate, today: NaiveDate, words: &dyn Words) -> String {
 /// rest of the past week its weekday (`Sun`), this year the month and day (`Jun 30`), and other
 /// years the full date (`Jun 30, 2025`).
 #[must_use]
-pub fn list_date(
-    formats: RegionFormats,
-    at: NaiveDateTime,
-    now: NaiveDateTime,
-    words: &dyn Words,
-) -> String {
-    let days = at.date().signed_duration_since(now.date()).num_days();
+pub fn list_date(formats: RegionFormats, at: DateTime, now: DateTime, words: &dyn Words) -> String {
+    let days = days_between(now.date(), at.date());
     match days {
-        0 => time(formats, &at, words),
+        0 => time(formats, at, words),
         -1 | 1 => near_day(days, words).unwrap_or_default(),
         -6..=-2 => weekday_short(at.weekday(), words),
         _ if at.year() == now.year() => month_day(at.date(), words),
@@ -156,7 +146,7 @@ pub fn list_date(
 /// style. By default the language's convention (`Jun 30, 2026, 13:42`, `30.06.2026, 13:42`), or
 /// the style they chose (`2026-06-30 13:42`, `30 Jun 2026, 1:42 PM`).
 #[must_use]
-pub fn timestamp(formats: RegionFormats, at: NaiveDateTime, words: &dyn Words) -> String {
+pub fn timestamp(formats: RegionFormats, at: DateTime, words: &dyn Words) -> String {
     let key = match formats.date {
         DateStyle::Language => "format-date-time-language",
         DateStyle::Long => "format-date-time-worded",
@@ -166,7 +156,7 @@ pub fn timestamp(formats: RegionFormats, at: NaiveDateTime, words: &dyn Words) -
         key,
         &[
             ("date", date(formats, at.date(), words).into()),
-            ("time", time(formats, &at, words).into()),
+            ("time", time(formats, at, words).into()),
         ],
     )
 }
@@ -175,7 +165,7 @@ pub fn timestamp(formats: RegionFormats, at: NaiveDateTime, words: &dyn Words) -
 /// convention (`Jun 30, 2026`, `30.06.2026`), or the style they chose (`2026-06-30`,
 /// `06/30/2026`, `30/06/2026`, `30 Jun 2026`).
 #[must_use]
-pub fn date(formats: RegionFormats, day: NaiveDate, words: &dyn Words) -> String {
+pub fn date(formats: RegionFormats, day: Date, words: &dyn Words) -> String {
     let (y, m, d) = (day.year(), day.month(), day.day());
     match formats.date {
         DateStyle::Language => language_date(day, words),
@@ -197,7 +187,7 @@ pub fn date(formats: RegionFormats, day: NaiveDate, words: &dyn Words) -> String
 /// `Jun 30, 2026` in English, `30.06.2026` in German. For values that carry "follow the
 /// language" as their own format (a spreadsheet cell's).
 #[must_use]
-pub fn language_date(day: NaiveDate, words: &dyn Words) -> String {
+pub fn language_date(day: Date, words: &dyn Words) -> String {
     let (y, m, d) = (day.year(), day.month(), day.day());
     words.word(
         "format-date-language",
@@ -213,14 +203,14 @@ pub fn language_date(day: NaiveDate, words: &dyn Words) -> String {
 
 /// A time of day in the person's clock style: `14:05` or `2:05 PM`.
 #[must_use]
-pub fn time(formats: RegionFormats, at: &impl Timelike, words: &dyn Words) -> String {
-    formats.time.format(at, words)
+pub fn time(formats: RegionFormats, at: impl Into<Time>, words: &dyn Words) -> String {
+    formats.time.format(at.into(), words)
 }
 
 /// The **day heading** style, for the top of a day, a lock screen or a detail view:
 /// `Tuesday, June 30` (`Tuesday, June 30, 2026` with `with_year`).
 #[must_use]
-pub fn day_heading(day: NaiveDate, with_year: bool, words: &dyn Words) -> String {
+pub fn day_heading(day: Date, with_year: bool, words: &dyn Words) -> String {
     let key = if with_year {
         "format-day-heading-year"
     } else {
@@ -239,7 +229,7 @@ pub fn day_heading(day: NaiveDate, with_year: bool, words: &dyn Words) -> String
 
 /// The short day heading, for a day column or a compact header: `Tue, Jun 30`.
 #[must_use]
-pub fn day_heading_short(day: NaiveDate, words: &dyn Words) -> String {
+pub fn day_heading_short(day: Date, words: &dyn Words) -> String {
     words.word(
         "format-day-heading-short",
         &[
@@ -253,7 +243,7 @@ pub fn day_heading_short(day: NaiveDate, words: &dyn Words) -> String {
 /// A span of days, its month named once when it is the same: `Jun 23 – 29`, `Jun 29 – Jul 5`,
 /// `Dec 29, 2025 – Jan 4, 2026`.
 #[must_use]
-pub fn day_range(start: NaiveDate, end: NaiveDate, words: &dyn Words) -> String {
+pub fn day_range(start: Date, end: Date, words: &dyn Words) -> String {
     if start.year() != end.year() {
         return words.word(
             "format-range",
@@ -284,7 +274,7 @@ pub fn day_range(start: NaiveDate, end: NaiveDate, words: &dyn Words) -> String 
 
 /// A month in a tight space: `Jun 2026`.
 #[must_use]
-pub fn month_heading_short(day: NaiveDate, words: &dyn Words) -> String {
+pub fn month_heading_short(day: Date, words: &dyn Words) -> String {
     words.word(
         "format-month-heading",
         &[
@@ -296,7 +286,7 @@ pub fn month_heading_short(day: NaiveDate, words: &dyn Words) -> String {
 
 /// The **month heading** style, for a month grid: `June 2026`.
 #[must_use]
-pub fn month_heading(day: NaiveDate, words: &dyn Words) -> String {
+pub fn month_heading(day: Date, words: &dyn Words) -> String {
     words.word(
         "format-month-heading",
         &[
@@ -308,7 +298,7 @@ pub fn month_heading(day: NaiveDate, words: &dyn Words) -> String {
 
 /// Month and day without the year: `Jun 30`.
 #[must_use]
-pub fn month_day(day: NaiveDate, words: &dyn Words) -> String {
+pub fn month_day(day: Date, words: &dyn Words) -> String {
     words.word(
         "format-month-day",
         &[
@@ -320,7 +310,7 @@ pub fn month_day(day: NaiveDate, words: &dyn Words) -> String {
 
 /// Month, day and year with the month named: `Jun 30, 2025`.
 #[must_use]
-pub fn month_day_year(day: NaiveDate, words: &dyn Words) -> String {
+pub fn month_day_year(day: Date, words: &dyn Words) -> String {
     words.word(
         "format-month-day-year",
         &[
@@ -335,13 +325,13 @@ pub fn month_day_year(day: NaiveDate, words: &dyn Words) -> String {
 /// English, `30. Jun 14:05` in German. The year is left out because the list says which year it
 /// covers.
 #[must_use]
-pub fn month_day_time(formats: RegionFormats, at: NaiveDateTime, words: &dyn Words) -> String {
+pub fn month_day_time(formats: RegionFormats, at: DateTime, words: &dyn Words) -> String {
     words.word(
         "format-month-day-time",
         &[
             ("day", at.day().to_string().into()),
             ("month", month_short(at.month(), words).into()),
-            ("time", time(formats, &at, words).into()),
+            ("time", time(formats, at, words).into()),
         ],
     )
 }
@@ -351,7 +341,7 @@ pub fn month_day_time(formats: RegionFormats, at: NaiveDateTime, words: &dyn Wor
 pub fn weekday_short(day: Weekday, words: &dyn Words) -> String {
     words.word(
         "format-weekday-short",
-        &[("weekday", day.number_from_monday().into())],
+        &[("weekday", i64::from(day.to_monday_one_offset()).into())],
     )
 }
 
@@ -360,13 +350,13 @@ pub fn weekday_short(day: Weekday, words: &dyn Words) -> String {
 pub fn weekday_name(day: Weekday, words: &dyn Words) -> String {
     words.word(
         "format-weekday-name",
-        &[("weekday", day.number_from_monday().into())],
+        &[("weekday", i64::from(day.to_monday_one_offset()).into())],
     )
 }
 
 /// The abbreviated month (`1` = January): `Jun`.
 #[must_use]
-pub fn month_short(month: u32, words: &dyn Words) -> String {
+pub fn month_short(month: i8, words: &dyn Words) -> String {
     words.word(
         "format-month-short",
         &[("month", i64::from(month.clamp(1, 12)).into())],
@@ -375,7 +365,7 @@ pub fn month_short(month: u32, words: &dyn Words) -> String {
 
 /// The month's name (`1` = January): `June`.
 #[must_use]
-pub fn month_name(month: u32, words: &dyn Words) -> String {
+pub fn month_name(month: i8, words: &dyn Words) -> String {
     words.word(
         "format-month-name",
         &[("month", i64::from(month.clamp(1, 12)).into())],
@@ -389,9 +379,15 @@ pub fn week(formats: RegionFormats) -> [Weekday; 7] {
     let mut day = first;
     std::array::from_fn(|_| {
         let this = day;
-        day = day.succ();
+        day = day.next();
         this
     })
+}
+
+/// How many days `to` is after `from`; negative when it is before.
+#[must_use]
+pub fn days_between(from: Date, to: Date) -> i64 {
+    i64::from(to.since(from).map_or(0, |span| span.get_days()))
 }
 
 /// Name a calendar day next to today — `Yesterday`, `Today`, `Tomorrow` — or `None` further out,

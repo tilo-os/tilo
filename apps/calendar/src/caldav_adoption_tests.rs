@@ -135,7 +135,7 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
     let client = CalDavClient::new(service);
     let (pulled, outcome) = run(client.sync_all(
         &[(adopted.config.clone(), adopted.calendars.clone())],
-        NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(),
+        Date::new(2026, 10, 10).unwrap(),
         &[],
     ));
     assert!(

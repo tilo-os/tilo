@@ -193,7 +193,7 @@ mod tests {
                 .clone()
                 .expect("a report says when it happened and what stopped it");
             let at =
-                ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
+                ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
                     .expect("the report's time");
             let when = ui::format::timestamp(&at);
             assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));

@@ -6,12 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Local};
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Key {
     path: PathBuf,
-    modified: Option<DateTime<Local>>,
+    modified: Option<jiff::Timestamp>,
     hidden: bool,
 }
 
@@ -49,7 +47,7 @@ impl FolderCounts {
     pub fn count(
         &self,
         folder: &Path,
-        modified: Option<DateTime<Local>>,
+        modified: Option<jiff::Timestamp>,
         hidden: bool,
     ) -> Option<u64> {
         let key = Key {
@@ -73,7 +71,7 @@ impl FolderCounts {
         None
     }
 
-    pub fn settle(&self, folders: &[(PathBuf, Option<DateTime<Local>>)], hidden: bool) {
+    pub fn settle(&self, folders: &[(PathBuf, Option<jiff::Timestamp>)], hidden: bool) {
         for (path, modified) in folders {
             if let Some(count) = count_entries(path, hidden) {
                 let key = Key {
@@ -188,7 +186,7 @@ mod tests {
         assert_eq!(counts.count(dir.path(), None, true), Some(4));
 
         std::fs::write(dir.path().join("c.txt"), b"x").unwrap();
-        let later = Some(Local::now());
+        let later = Some(jiff::Timestamp::now());
         assert_eq!(counts.count(dir.path(), later, false), None);
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(counts.count(dir.path(), later, false), Some(4));

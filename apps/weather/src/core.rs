@@ -1472,7 +1472,7 @@ impl Core {
     pub fn seed_fetched(&mut self, ago: std::time::Duration) {
         // The toolkit's clock, which the page reads the age back with; the process clock
         // would read as "just now" in a capture.
-        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let now = u64::try_from(ui::clock::local_now().timestamp().as_second()).unwrap_or_default();
         let fetched_at = now.saturating_sub(ago.as_secs());
         for snapshot in self.model.snapshots.values_mut() {
             snapshot.fetched_at = fetched_at;

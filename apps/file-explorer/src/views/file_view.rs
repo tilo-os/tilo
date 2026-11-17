@@ -509,7 +509,7 @@ impl FileView {
         }
         let mtime_ms = entry
             .modified
-            .map_or(0, |t| t.timestamp_millis().max(0) as u64);
+            .map_or(0, |t| t.as_millisecond().max(0) as u64);
         ThumbKey::of_path_meta(&entry.path, mtime_ms, entry.size, ctx.service.edge())
     }
 
@@ -1909,7 +1909,7 @@ mod tests {
         let mut b = a.clone();
         b.name = "after.png".into();
         b.path = PathBuf::from("/var/workspace/after.png");
-        b.modified = Some(ui::clock::local_now());
+        b.modified = Some(jiff::Timestamp::now());
         assert_eq!(
             FileView::thumb_key(&ctx, &a),
             FileView::thumb_key(&ctx, &b),

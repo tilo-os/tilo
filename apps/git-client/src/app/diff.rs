@@ -170,7 +170,7 @@ impl GitClientState {
             author_name: self.model.author_name.clone(),
             author_email: self.model.author_email.clone(),
             when: "just now".into(),
-            time: chrono::Utc::now().timestamp(),
+            time: jiff::Timestamp::now().as_second(),
             parents: parent.into_iter().collect(),
             refs: vec![
                 crate::model::RefLabel {

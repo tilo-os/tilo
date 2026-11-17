@@ -262,19 +262,20 @@ fn walk_zip<R: Read + Seek>(
 }
 
 fn zip_time(time: zip::DateTime) -> Option<SystemTime> {
-    let local = chrono::NaiveDate::from_ymd_opt(
-        i32::from(time.year()),
-        u32::from(time.month()),
-        u32::from(time.day()),
-    )?
-    .and_hms_opt(
-        u32::from(time.hour()),
-        u32::from(time.minute()),
-        u32::from(time.second()),
-    )?;
-    local
-        .and_local_timezone(chrono::Local)
-        .earliest()
+    let local = jiff::civil::DateTime::new(
+        i16::try_from(time.year()).ok()?,
+        i8::try_from(time.month()).ok()?,
+        i8::try_from(time.day()).ok()?,
+        i8::try_from(time.hour()).ok()?,
+        i8::try_from(time.minute()).ok()?,
+        i8::try_from(time.second()).ok()?,
+        0,
+    )
+    .ok()?;
+    jiff::tz::TimeZone::system()
+        .to_ambiguous_timestamp(local)
+        .earlier()
+        .ok()
         .map(SystemTime::from)
 }
 

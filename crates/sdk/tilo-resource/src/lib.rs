@@ -118,7 +118,6 @@ pub mod collection;
 mod concurrent_text_tests;
 pub mod content;
 mod cow;
-#[cfg(feature = "chrono")]
 mod dates;
 mod search_preview;
 pub use search_preview::SearchPreview;

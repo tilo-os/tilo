@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveTime, Utc, Weekday};
+use jiff::civil::{Time, Weekday};
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 
@@ -85,7 +85,7 @@ fn valid_label(label: &str) -> Result<(), Refusal> {
 impl WorldClock {
     fn valid(&self) -> Result<(), Refusal> {
         valid_label(&self.city)?;
-        if self.timezone.0.parse::<chrono_tz::Tz>().is_err() {
+        if jiff_tzdb::get(&self.timezone.0).is_none() {
             return Err(Refusal::new(format!(
                 "`{}` is not a time zone",
                 self.timezone.0
@@ -153,13 +153,13 @@ impl WeekdayKey {
 
     pub fn weekday(self) -> Weekday {
         match self {
-            Self::Mon => Weekday::Mon,
-            Self::Tue => Weekday::Tue,
-            Self::Wed => Weekday::Wed,
-            Self::Thu => Weekday::Thu,
-            Self::Fri => Weekday::Fri,
-            Self::Sat => Weekday::Sat,
-            Self::Sun => Weekday::Sun,
+            Self::Mon => Weekday::Monday,
+            Self::Tue => Weekday::Tuesday,
+            Self::Wed => Weekday::Wednesday,
+            Self::Thu => Weekday::Thursday,
+            Self::Fri => Weekday::Friday,
+            Self::Sat => Weekday::Saturday,
+            Self::Sun => Weekday::Sunday,
         }
     }
 }
@@ -167,13 +167,13 @@ impl WeekdayKey {
 impl From<Weekday> for WeekdayKey {
     fn from(day: Weekday) -> Self {
         match day {
-            Weekday::Mon => Self::Mon,
-            Weekday::Tue => Self::Tue,
-            Weekday::Wed => Self::Wed,
-            Weekday::Thu => Self::Thu,
-            Weekday::Fri => Self::Fri,
-            Weekday::Sat => Self::Sat,
-            Weekday::Sun => Self::Sun,
+            Weekday::Monday => Self::Mon,
+            Weekday::Tuesday => Self::Tue,
+            Weekday::Wednesday => Self::Wed,
+            Weekday::Thursday => Self::Thu,
+            Weekday::Friday => Self::Fri,
+            Weekday::Saturday => Self::Sat,
+            Weekday::Sunday => Self::Sun,
         }
     }
 }
@@ -184,8 +184,10 @@ pub fn repeat_mask(days: &BTreeSet<WeekdayKey>) -> u8 {
 }
 
 #[must_use]
-pub fn instant(ms: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(ms).unwrap_or_default()
+pub fn instant(ms: i64) -> jiff::Timestamp {
+    jiff::Timestamp::from_millisecond(ms)
+        .ok()
+        .unwrap_or_default()
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -198,8 +200,14 @@ fn after(now_ms: i64, ms: u64) -> i64 {
 
 impl Alarm {
     #[must_use]
-    pub fn local_time(&self) -> NaiveTime {
-        NaiveTime::from_hms_opt(self.hour.into(), self.minute.into(), 0).unwrap_or_default()
+    pub fn local_time(&self) -> Time {
+        Time::new(
+            i8::try_from(self.hour).unwrap_or(0),
+            i8::try_from(self.minute).unwrap_or(0),
+            0,
+            0,
+        )
+        .unwrap_or_default()
     }
 
     /// The weekdays it repeats on; empty when it rings once.
@@ -214,29 +222,29 @@ impl Alarm {
 
 impl Timer {
     #[must_use]
-    pub fn is_running(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_running(&self, now: jiff::Timestamp) -> bool {
         self.ends_at_ms
-            .is_some_and(|end| end > now.timestamp_millis())
+            .is_some_and(|end| end > now.as_millisecond())
     }
 
     #[must_use]
-    pub fn is_finished(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_finished(&self, now: jiff::Timestamp) -> bool {
         self.ends_at_ms
-            .is_some_and(|end| end <= now.timestamp_millis())
+            .is_some_and(|end| end <= now.as_millisecond())
     }
 
     #[must_use]
-    pub fn remaining(&self, now: DateTime<Utc>) -> Duration {
+    pub fn remaining(&self, now: jiff::Timestamp) -> Duration {
         if let Some(ms) = self.paused_remaining_ms {
             return Duration::from_millis(ms);
         }
         self.ends_at_ms
-            .and_then(|end| instant(end).signed_duration_since(now).to_std().ok())
+            .and_then(|end| Duration::try_from(instant(end).duration_since(now)).ok())
             .unwrap_or_default()
     }
 
     #[must_use]
-    pub fn ends_at(&self) -> Option<DateTime<Utc>> {
+    pub fn ends_at(&self) -> Option<jiff::Timestamp> {
         self.ends_at_ms.map(instant)
     }
 
@@ -248,10 +256,10 @@ impl Timer {
 
 impl Stopwatch {
     #[must_use]
-    pub fn elapsed(&self, now: DateTime<Utc>) -> Duration {
+    pub fn elapsed(&self, now: jiff::Timestamp) -> Duration {
         let running = self
             .started_at_ms
-            .and_then(|start| now.signed_duration_since(instant(start)).to_std().ok())
+            .and_then(|start| Duration::try_from(now.duration_since(instant(start))).ok())
             .unwrap_or_default();
         Duration::from_millis(self.accumulated_ms).saturating_add(running)
     }

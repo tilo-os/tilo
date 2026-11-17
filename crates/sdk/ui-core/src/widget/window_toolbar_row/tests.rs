@@ -1006,7 +1006,7 @@ fn calendar() -> WindowToolbar {
 }
 
 fn a_week() -> crate::format::Period {
-    let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap_or_default();
+    let day = |d| jiff::civil::Date::new(2026, 10, d).ok().unwrap_or_default();
     crate::format::Period::Days(day(19), day(25))
 }
 
@@ -1242,7 +1242,7 @@ tilo_test_env::scenario! {
 
     phase a_wider_row_never_names_the_period_in_a_narrower_form;
     {
-        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap_or_default();
+        let day = |d| jiff::civil::Date::new(2026, 10, d).ok().unwrap_or_default();
         for period in [
             a_week(),
             crate::format::Period::Day(day(21)),

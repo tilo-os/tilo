@@ -1,12 +1,12 @@
 //! One line that becomes an event: "Lunch with Sam Friday 1pm".
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use jiff::civil::{Date, DateTime, Time};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QuickEvent {
     pub title: String,
-    pub start: NaiveDateTime,
-    pub end: NaiveDateTime,
+    pub start: DateTime,
+    pub end: DateTime,
     pub read: Read,
 }
 
@@ -22,7 +22,7 @@ impl QuickEvent {
     /// title, the day and the hours. The day is named whenever it is not
     /// today, so a line that lands elsewhere says so before anything is
     /// written.
-    pub(crate) fn summary(&self, anchor: NaiveDate) -> String {
+    pub(crate) fn summary(&self, anchor: Date) -> String {
         let title = self.title.trim();
         let title = if title.is_empty() {
             crate::model::untitled_event()
@@ -34,8 +34,8 @@ impl QuickEvent {
             return format!("{title}, {day}");
         }
         let hours = ui::format::range(
-            &crate::date::fmt_time(&self.start),
-            &crate::date::fmt_time(&self.end),
+            &crate::date::fmt_time(self.start),
+            &crate::date::fmt_time(self.end),
         );
         let mut line = format!("{title}, {day}, {hours}");
         if self.end.date() != self.start.date() {
@@ -46,7 +46,7 @@ impl QuickEvent {
     }
 
     fn all_day_like(&self) -> bool {
-        self.start.time() == NaiveTime::MIN && self.end.time() == NaiveTime::MIN
+        self.start.time() == Time::MIN && self.end.time() == Time::MIN
     }
 }
 
@@ -55,40 +55,40 @@ enum DayWord {
     Today,
     Tomorrow,
     Tonight,
-    Weekday(chrono::Weekday),
-    NextWeekday(chrono::Weekday),
-    Date(NaiveDate),
+    Weekday(jiff::civil::Weekday),
+    NextWeekday(jiff::civil::Weekday),
+    Date(Date),
 }
 
-const WEEKDAYS: [(&str, chrono::Weekday); 18] = [
-    ("mon", chrono::Weekday::Mon),
-    ("monday", chrono::Weekday::Mon),
-    ("mo", chrono::Weekday::Mon),
-    ("tue", chrono::Weekday::Tue),
-    ("tuesday", chrono::Weekday::Tue),
-    ("tues", chrono::Weekday::Tue),
-    ("wed", chrono::Weekday::Wed),
-    ("wednesday", chrono::Weekday::Wed),
-    ("thu", chrono::Weekday::Thu),
-    ("thursday", chrono::Weekday::Thu),
-    ("thur", chrono::Weekday::Thu),
-    ("thurs", chrono::Weekday::Thu),
-    ("fri", chrono::Weekday::Fri),
-    ("friday", chrono::Weekday::Fri),
-    ("sat", chrono::Weekday::Sat),
-    ("saturday", chrono::Weekday::Sat),
-    ("sun", chrono::Weekday::Sun),
-    ("sunday", chrono::Weekday::Sun),
+const WEEKDAYS: [(&str, jiff::civil::Weekday); 18] = [
+    ("mon", jiff::civil::Weekday::Monday),
+    ("monday", jiff::civil::Weekday::Monday),
+    ("mo", jiff::civil::Weekday::Monday),
+    ("tue", jiff::civil::Weekday::Tuesday),
+    ("tuesday", jiff::civil::Weekday::Tuesday),
+    ("tues", jiff::civil::Weekday::Tuesday),
+    ("wed", jiff::civil::Weekday::Wednesday),
+    ("wednesday", jiff::civil::Weekday::Wednesday),
+    ("thu", jiff::civil::Weekday::Thursday),
+    ("thursday", jiff::civil::Weekday::Thursday),
+    ("thur", jiff::civil::Weekday::Thursday),
+    ("thurs", jiff::civil::Weekday::Thursday),
+    ("fri", jiff::civil::Weekday::Friday),
+    ("friday", jiff::civil::Weekday::Friday),
+    ("sat", jiff::civil::Weekday::Saturday),
+    ("saturday", jiff::civil::Weekday::Saturday),
+    ("sun", jiff::civil::Weekday::Sunday),
+    ("sunday", jiff::civil::Weekday::Sunday),
 ];
 
-const DEFAULT_LENGTH: Duration = Duration::hours(1);
+const DEFAULT_LENGTH: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
 
-pub(crate) fn parse(text: &str, now: NaiveDateTime, anchor: NaiveDate) -> QuickEvent {
+pub(crate) fn parse(text: &str, now: DateTime, anchor: Date) -> QuickEvent {
     let mut words: Vec<&str> = text.split_whitespace().collect();
     let mut read = Read::default();
     let mut day: Option<DayWord> = None;
-    let mut time: Option<NaiveTime> = None;
-    let mut length: Option<Duration> = None;
+    let mut time: Option<Time> = None;
+    let mut length: Option<jiff::SignedDuration> = None;
 
     for index in 0..words.len() {
         if day.is_none()
@@ -123,10 +123,10 @@ pub(crate) fn parse(text: &str, now: NaiveDateTime, anchor: NaiveDate) -> QuickE
         None => anchor,
     };
     let start_time = time.unwrap_or_else(|| match day {
-        Some(DayWord::Tonight) => NaiveTime::from_hms_opt(20, 0, 0).unwrap_or(NaiveTime::MIN),
+        Some(DayWord::Tonight) => Time::new(20, 0, 0, 0).ok().unwrap_or(Time::MIN),
         _ => next_quarter_hour(now),
     });
-    let start = date.and_time(start_time);
+    let start = date.to_datetime(start_time);
     let end = start + length.unwrap_or(DEFAULT_LENGTH);
     QuickEvent {
         title: title_of(&words),
@@ -136,31 +136,31 @@ pub(crate) fn parse(text: &str, now: NaiveDateTime, anchor: NaiveDate) -> QuickE
     }
 }
 
-fn day_of(word: DayWord, today: NaiveDate) -> NaiveDate {
+fn day_of(word: DayWord, today: Date) -> Date {
     match word {
         DayWord::Today | DayWord::Tonight => today,
-        DayWord::Tomorrow => today + Duration::days(1),
-        DayWord::Weekday(want) => today + Duration::days(ahead_of(want, today.weekday())),
+        DayWord::Tomorrow => today + jiff::Span::new().days(1),
+        DayWord::Weekday(want) => today + jiff::Span::new().days(ahead_of(want, today.weekday())),
         DayWord::NextWeekday(want) => {
             // "Next friday" is the one in the week after this one, so it is
             // never the day the person is standing on.
-            today + Duration::days(ahead_of(want, today.weekday()) + 7)
+            today + jiff::Span::new().days(ahead_of(want, today.weekday()) + 7)
         }
         DayWord::Date(date) => date,
     }
 }
 
-fn ahead_of(want: chrono::Weekday, from: chrono::Weekday) -> i64 {
-    let ahead = i64::from(want.num_days_from_monday()) - i64::from(from.num_days_from_monday());
+fn ahead_of(want: jiff::civil::Weekday, from: jiff::civil::Weekday) -> i64 {
+    let ahead = i64::from(want.to_monday_zero_offset()) - i64::from(from.to_monday_zero_offset());
     ahead.rem_euclid(7)
 }
 
-pub(crate) fn next_quarter_hour(now: NaiveDateTime) -> NaiveTime {
-    let minute = now.minute();
+pub(crate) fn next_quarter_hour(now: DateTime) -> Time {
+    let minute = i64::from(now.minute());
     let rounded = minute - minute % 15 + 15;
-    (now - Duration::minutes(i64::from(minute)) + Duration::minutes(i64::from(rounded))).time()
-        - Duration::seconds(i64::from(now.second()))
-        - Duration::nanoseconds(i64::from(now.nanosecond()))
+    Time::new(now.hour(), 0, 0, 0)
+        .unwrap_or(Time::MIN)
+        .wrapping_add(jiff::SignedDuration::from_mins(rounded))
 }
 
 fn day_at(words: &[&str], index: usize) -> Option<(DayWord, std::ops::Range<usize>)> {
@@ -193,18 +193,18 @@ fn day_at(words: &[&str], index: usize) -> Option<(DayWord, std::ops::Range<usiz
     Some((DayWord::Weekday(want), index..index + 1))
 }
 
-fn iso_date(word: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(word, "%Y-%m-%d").ok()
+fn iso_date(word: &str) -> Option<Date> {
+    Date::strptime("%Y-%m-%d", word).ok()
 }
 
-fn weekday_named(word: &str) -> Option<chrono::Weekday> {
+fn weekday_named(word: &str) -> Option<jiff::civil::Weekday> {
     WEEKDAYS
         .iter()
         .find(|(name, _)| *name == word)
         .map(|(_, day)| *day)
 }
 
-fn time_at(words: &[&str], index: usize) -> Option<(NaiveTime, std::ops::Range<usize>)> {
+fn time_at(words: &[&str], index: usize) -> Option<(Time, std::ops::Range<usize>)> {
     let raw = words.get(index)?.to_lowercase();
     if raw == "at" {
         let word = words.get(index + 1)?.to_lowercase();
@@ -215,10 +215,10 @@ fn time_at(words: &[&str], index: usize) -> Option<(NaiveTime, std::ops::Range<u
     Some((clock_time(&raw, false)?, index..index + 1))
 }
 
-fn clock_time(word: &str, bare_hour: bool) -> Option<NaiveTime> {
+fn clock_time(word: &str, bare_hour: bool) -> Option<Time> {
     match word {
-        "noon" | "midday" => return NaiveTime::from_hms_opt(12, 0, 0),
-        "midnight" => return NaiveTime::from_hms_opt(0, 0, 0),
+        "noon" | "midday" => return Time::new(12, 0, 0, 0).ok(),
+        "midnight" => return Time::new(0, 0, 0, 0).ok(),
         _ => {}
     }
     let (rest, afternoon) = match word.strip_suffix("pm") {
@@ -235,14 +235,10 @@ fn clock_time(word: &str, bare_hour: bool) -> Option<NaiveTime> {
             if minutes.len() != 2 {
                 return None;
             }
-            (
-                hours.parse::<u32>().ok()?,
-                minutes.parse::<u32>().ok()?,
-                true,
-            )
+            (hours.parse::<i8>().ok()?, minutes.parse::<i8>().ok()?, true)
         }
         None => (
-            rest.parse::<u32>().ok()?,
+            rest.parse::<i8>().ok()?,
             0,
             afternoon.is_some() || bare_hour,
         ),
@@ -259,10 +255,13 @@ fn clock_time(word: &str, bare_hour: bool) -> Option<NaiveTime> {
     if hours > 23 || minutes > 59 {
         return None;
     }
-    NaiveTime::from_hms_opt(hours, minutes, 0)
+    Time::new(hours, minutes, 0, 0).ok()
 }
 
-fn length_at(words: &[&str], index: usize) -> Option<(Duration, std::ops::Range<usize>)> {
+fn length_at(
+    words: &[&str],
+    index: usize,
+) -> Option<(jiff::SignedDuration, std::ops::Range<usize>)> {
     if !words.get(index)?.eq_ignore_ascii_case("for") {
         return None;
     }
@@ -273,14 +272,14 @@ fn length_at(words: &[&str], index: usize) -> Option<(Duration, std::ops::Range<
         if (article.eq_ignore_ascii_case("an") || article.eq_ignore_ascii_case("a"))
             && is_hour_word(&unit.to_lowercase())
         {
-            return Some((Duration::minutes(30), index..index + 4));
+            return Some((jiff::SignedDuration::from_mins(30), index..index + 4));
         }
         return None;
     }
     if second == "an" || second == "a" {
         let unit = words.get(index + 2)?;
         if is_hour_word(&unit.to_lowercase()) {
-            return Some((Duration::hours(1), index..index + 3));
+            return Some((jiff::SignedDuration::from_hours(1), index..index + 3));
         }
         return None;
     }
@@ -298,7 +297,7 @@ fn is_hour_word(word: &str) -> bool {
 }
 
 /// How long `amount` of `unit` is, in the minutes a calendar can hold.
-fn minutes_of(amount: f64, unit: &str) -> Option<Duration> {
+fn minutes_of(amount: f64, unit: &str) -> Option<jiff::SignedDuration> {
     let minutes = match unit {
         "min" | "mins" | "minute" | "minutes" | "m" => amount,
         "h" | "hr" | "hrs" | "hour" | "hours" => amount * 60.0,
@@ -312,7 +311,7 @@ fn minutes_of(amount: f64, unit: &str) -> Option<Duration> {
         clippy::cast_possible_truncation,
         reason = "clamped to 15..=1440 just above"
     )]
-    Some(Duration::minutes(minutes as i64))
+    Some(jiff::SignedDuration::from_mins(minutes as i64))
 }
 
 /// `90`, `1.5` and whatever unit follows the number in the same word.
@@ -346,19 +345,16 @@ fn blank(words: &mut [&str], taken: std::ops::Range<usize>) {
 mod tests {
     use super::*;
 
-    fn now() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 10, 28)
-            .unwrap()
-            .and_hms_opt(14, 7, 0)
-            .unwrap()
+    fn now() -> DateTime {
+        Date::new(2026, 10, 28).unwrap().at(14, 7, 0, 0)
     }
 
     fn parse_now(text: &str) -> QuickEvent {
         parse(text, now(), now().date())
     }
 
-    fn at(date: NaiveDate, hour: u32, minute: u32) -> NaiveDateTime {
-        date.and_hms_opt(hour, minute, 0).unwrap()
+    fn at(date: Date, hour: i8, minute: i8) -> DateTime {
+        date.at(hour, minute, 0, 0)
     }
 
     tilo_test_env::scenario! {
@@ -371,9 +367,9 @@ mod tests {
             assert_eq!(event.title, "Lunch with Sam");
             assert_eq!(
                 event.start,
-                at(NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(), 13, 0)
+                at(Date::new(2026, 10, 30).unwrap(), 13, 0)
             );
-            assert_eq!(event.end, event.start + Duration::hours(1));
+            assert_eq!(event.end, event.start + jiff::SignedDuration::from_hours(1));
             assert_eq!(
                 event.read,
                 Read {
@@ -391,21 +387,16 @@ mod tests {
         // minute, and a start with a stray second in it never reads back as the
         // one just written.
         {
-            let at_14_07_31 = NaiveDate::from_ymd_opt(2026, 10, 28)
-                .unwrap()
-                .and_hms_nano_opt(14, 7, 31, 978_144_743)
-                .unwrap();
+            let at_14_07_31 = jiff::civil::date(2026, 10, 28).at(14, 7, 31, 978_144_743);
             assert_eq!(
                 next_quarter_hour(at_14_07_31),
-                NaiveTime::from_hms_opt(14, 15, 0).unwrap()
+                Time::new(14, 15, 0, 0).unwrap()
             );
-            let at_14_59_59 = NaiveDate::from_ymd_opt(2026, 10, 28)
-                .unwrap()
-                .and_hms_opt(14, 59, 59)
-                .unwrap();
+            let at_14_59_59 = Date::new(2026, 10, 28).unwrap()
+                .at(14, 59, 59, 0);
             assert_eq!(
                 next_quarter_hour(at_14_59_59),
-                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+                Time::new(15, 0, 0, 0).unwrap()
             );
         }
 
@@ -419,7 +410,7 @@ mod tests {
 
         phase the_day_being_looked_at_is_the_default_day;
         {
-            let friday = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
+            let friday = Date::new(2026, 10, 30).unwrap();
             let event = parse("Standup 9:30", now(), friday);
             assert_eq!(event.start, at(friday, 9, 30));
         }
@@ -430,7 +421,7 @@ mod tests {
             assert_eq!(parse_now("Dinner tonight").start, at(now().date(), 20, 0));
             assert_eq!(
                 parse_now("Review tomorrow 15:00").start,
-                at(now().date() + Duration::days(1), 15, 0)
+                at(now().date() + jiff::Span::new().days(1), 15, 0)
             );
         }
 
@@ -438,7 +429,7 @@ mod tests {
         {
             assert_eq!(
                 parse_now("Sync next friday 10am").start,
-                at(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(), 10, 0)
+                at(Date::new(2026, 11, 6).unwrap(), 10, 0)
             );
             assert_eq!(
                 parse_now("Lunch wednesday 12:30").start,
@@ -450,7 +441,7 @@ mod tests {
         {
             assert_eq!(
                 parse_now("Trip on 2026-11-03 at 8:00").start,
-                at(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(), 8, 0)
+                at(Date::new(2026, 11, 3).unwrap(), 8, 0)
             );
             assert_eq!(parse_now("Trip 2026-11-03").title, "Trip");
         }
@@ -458,17 +449,17 @@ mod tests {
         phase a_length_sets_the_end_and_leaves_the_hours_alone;
         {
             let event = parse_now("Workshop tomorrow at 10 for 90 min");
-            assert_eq!(event.start, at(now().date() + Duration::days(1), 10, 0));
-            assert_eq!(event.end, event.start + Duration::minutes(90));
+            assert_eq!(event.start, at(now().date() + jiff::Span::new().days(1), 10, 0));
+            assert_eq!(event.end, event.start + jiff::SignedDuration::from_mins(90));
             assert_eq!(event.title, "Workshop");
             assert!(event.read.length);
             assert_eq!(
                 parse_now("Yoga at 7 for half an hour").end,
-                parse_now("Yoga at 7 for half an hour").start + Duration::minutes(30)
+                parse_now("Yoga at 7 for half an hour").start + jiff::SignedDuration::from_mins(30)
             );
             assert_eq!(
                 parse_now("Deep work for 2h").end,
-                parse_now("Deep work for 2h").start + Duration::hours(2)
+                parse_now("Deep work for 2h").start + jiff::SignedDuration::from_hours(2)
             );
         }
 
@@ -476,43 +467,43 @@ mod tests {
         {
             assert_eq!(
                 parse_now("Call at 3pm").start.time(),
-                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+                Time::new(15, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 3:30pm").start.time(),
-                NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+                Time::new(15, 30, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 15:30").start.time(),
-                NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+                Time::new(15, 30, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 12am").start.time(),
-                NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                Time::new(0, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at noon").start.time(),
-                NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+                Time::new(12, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at midnight").start.time(),
-                NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                Time::new(0, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 7").start.time(),
-                NaiveTime::from_hms_opt(7, 0, 0).unwrap()
+                Time::new(7, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 3").start.time(),
-                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+                Time::new(15, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 21").start.time(),
-                NaiveTime::from_hms_opt(21, 0, 0).unwrap()
+                Time::new(21, 0, 0, 0).unwrap()
             );
             assert_eq!(
                 parse_now("Call at 16").start.time(),
-                NaiveTime::from_hms_opt(16, 0, 0).unwrap()
+                Time::new(16, 0, 0, 0).unwrap()
             );
         }
 
@@ -522,7 +513,7 @@ mod tests {
             assert_eq!(event.title, "Dinner at Joe's");
             assert_eq!(
                 event.start.time(),
-                NaiveTime::from_hms_opt(19, 0, 0).unwrap()
+                Time::new(19, 0, 0, 0).unwrap()
             );
             let event = parse_now("1:1 with Sam about 5 things");
             assert_eq!(event.title, "1:1 with Sam about 5 things");
@@ -534,7 +525,7 @@ mod tests {
             assert_eq!(event.title, "Party at 25:99");
             assert_eq!(
                 event.start.time(),
-                NaiveTime::from_hms_opt(14, 15, 0).unwrap()
+                Time::new(14, 15, 0, 0).unwrap()
             );
             assert!(!event.read.time);
         }
@@ -545,7 +536,7 @@ mod tests {
             let summary = event.summary(now().date());
             assert!(summary.starts_with("Lunch with Sam, "), "{summary}");
             assert!(
-                summary.contains(&crate::date::fmt_time(&event.start)),
+                summary.contains(&crate::date::fmt_time(event.start)),
                 "the hours are named: {summary}"
             );
             assert!(
@@ -567,7 +558,7 @@ mod tests {
             assert!(
                 event
                     .summary(now().date())
-                    .contains(&crate::date::fmt_time(&event.start)),
+                    .contains(&crate::date::fmt_time(event.start)),
                 "{}",
                 event.summary(now().date())
             );

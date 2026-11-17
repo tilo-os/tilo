@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
 
     phase entries_nest_under_the_declared_scopes;
     {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 30).expect("date");
+        let today = jiff::civil::Date::new(2026, 6, 30).expect("date");
         let model = crate::model::seed_demo(today);
         let scopes = model.scopes();
         let entries = model.search_entries();
@@ -302,7 +302,7 @@ tilo_test_env::scenario! {
         for (edit, why) in [
             (
                 fields.end.set(at(
-                    chrono::NaiveDate::from_ymd_opt(2026, 9, 8).unwrap(),
+                    jiff::civil::Date::new(2026, 9, 8).unwrap(),
                     11,
                     0,
                 )),
@@ -449,7 +449,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .unwrap();
         assert_eq!(full["notes"], "Bring the mockups");
-        assert_eq!(full["start"], "2026-09-08 09:00:00");
+        assert_eq!(full["start"], "2026-09-08T09:00:00");
         assert!(
             app.call("read", serde_json::json!({ "item": "nothing" }))
                 .is_err()
@@ -473,7 +473,7 @@ tilo_test_env::scenario! {
         )
         .expect("set-start");
         let moved = state_of(&app).event(event.id).expect("event").clone();
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        let day = jiff::civil::Date::new(2026, 9, 10).unwrap();
         assert_eq!(moved.start, at(day, 14, 0));
         assert_eq!(moved.end, at(day, 15, 30));
     }
@@ -837,11 +837,11 @@ fn agents_reach_every_item_verb_and_the_calendars() {
     let moved = app.state().event(event.id).expect("event").clone();
     assert_eq!(
         moved.start,
-        at(chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(), 9, 0)
+        at(jiff::civil::Date::new(2026, 7, 1).unwrap(), 9, 0)
     );
     assert_eq!(
         moved.end,
-        at(chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(), 10, 30)
+        at(jiff::civil::Date::new(2026, 7, 1).unwrap(), 10, 30)
     );
     app.call_on(
         &crate::actions::event_resource_id(event.id),
@@ -932,7 +932,7 @@ tilo_test_env::scenario! {
     phase a_past_version_reads_and_shows_its_event;
     {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        let day = ui::clock::today().format("%Y-%m-%d");
+        let day = ui::clock::today().strftime("%Y-%m-%d");
         app.call(
             "new-event",
             serde_json::json!({ "event": {
@@ -1111,7 +1111,7 @@ mod tasks_screen {
 
     fn sample_calendar() -> TestApp<CalendarShell> {
         let mut app = TestApp::<CalendarShell>::new().expect("live test app");
-        let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
+        let sample = crate::model::seed_demo(jiff::Zoned::now().date());
         app.invoke(Invoke::group(sample_invocations(&sample)))
             .expect("seed through the calendar api");
         app.call("show-month", serde_json::json!({}))
@@ -1292,7 +1292,7 @@ mod tasks_screen {
                 .state()
                 .tasks_for(
                     &crate::model::ListSel::Inbox,
-                    chrono::Local::now().date_naive(),
+                    jiff::Zoned::now().date(),
                 )
                 .iter()
                 .map(|task| task.title.clone())
@@ -1625,7 +1625,7 @@ tilo_test_env::scenario! {
         let held = state_of(&app).event(id).cloned().expect("the event it made");
         assert_eq!(held.title, "Quarterly review");
         assert_eq!(held.timezone, "Europe/Berlin");
-        assert_eq!(held.start.to_string(), "2026-11-20 14:00:00");
+        assert_eq!(held.start.to_string(), "2026-11-20T14:00:00");
         assert_eq!(held.attendees.len(), 2, "its organizer and its guest");
         assert_eq!(held.reminder_min, None, "its sender's alarm is not its person's");
 
@@ -1648,7 +1648,7 @@ tilo_test_env::scenario! {
         let state = state_of(&app);
         assert_eq!(state.events.len(), 1, "still one event");
         let held = state.event(id).expect("the same event");
-        assert_eq!(held.start.to_string(), "2026-11-20 16:00:00");
+        assert_eq!(held.start.to_string(), "2026-11-20T16:00:00");
         assert_eq!(held.categories.iter().collect::<Vec<_>>(), ["Board"]);
 
         let cancelled = add(&mut app, invitation_ics("CANCEL", "Quarterly review", "20261120T160000", ""))

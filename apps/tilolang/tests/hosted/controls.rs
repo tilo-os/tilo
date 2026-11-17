@@ -440,7 +440,7 @@ fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
 
 /// Today's date, as the window's own clock reads it: a task due by then stands in the day's list.
 fn today() -> String {
-    ui::clock::today().format("%Y-%m-%d").to_string()
+    ui::clock::today().to_string()
 }
 
 /// The document the card `title` on a window shows, as an argument names a resource: the place of

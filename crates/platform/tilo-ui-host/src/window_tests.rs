@@ -1184,7 +1184,7 @@ fn a_bound_control_shows_the_value_the_app_bound() {
         let day = shown(
             "ui.DateField",
             &labelled,
-            Value::some(Value::text(today.format("%Y-%m-%d").to_string())),
+            Value::some(Value::text(today.strftime("%Y-%m-%d").to_string())),
             &bound,
         );
         assert_eq!(
@@ -1242,7 +1242,7 @@ fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
         let day = |day: &str| {
             ui::widget::DateField::spoken(
                 Some("Due"),
-                chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok(),
+                jiff::civil::Date::strptime("%Y-%m-%d", day).ok(),
                 None,
             )
         };

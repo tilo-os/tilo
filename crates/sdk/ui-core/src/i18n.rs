@@ -1734,7 +1734,7 @@ mod tests {
             "the settings' language, not the machine's"
         );
         assert_eq!(I18nManager::lookup_plain("greeting"), "Hello");
-        let day = chrono::NaiveDate::from_ymd_opt(2025, 11, 5).unwrap();
+        let day = jiff::civil::Date::new(2025, 11, 5).unwrap();
         assert_eq!(
             crate::format::day_heading(day, false),
             "Wednesday, November 5"

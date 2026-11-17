@@ -952,9 +952,11 @@ impl MainPanel {
         // in the header's provenance row; its history here still says who
         // moved it.
         let now = self.clock.map_or_else(ui::clock::local_now, |at| {
-            chrono::DateTime::<chrono::Local>::from(ui::time::to_std(at))
+            jiff::Timestamp::try_from(ui::time::to_std(at))
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                .to_zoned(jiff::tz::TimeZone::system())
         });
-        lines.extend(self.dates.labels_at(now));
+        lines.extend(self.dates.labels_at(&now));
         lines
     }
 

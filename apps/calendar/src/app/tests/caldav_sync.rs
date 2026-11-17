@@ -42,7 +42,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
     }
     {
         use crate::model::{Event, Palette};
-        use chrono::NaiveTime;
+        use jiff::civil::Time;
 
         let mut app = CalendarApp::new_demo();
         app.sample_accounts = false;
@@ -50,14 +50,12 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         let before = app.model.events.len();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let start = app
-            .today
-            .and_time(NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+        let start = app.today.to_datetime(Time::new(8, 0, 0, 0).unwrap());
         let synced = Event {
             id: uuid::Uuid::new_v4(),
             title: "Pulled from server".into(),
             start,
-            end: start + Duration::hours(1),
+            end: start + jiff::SignedDuration::from_hours(1),
             location: "Remote".into(),
             color: Palette::Blue,
             ..Event::default()
@@ -147,15 +145,13 @@ tilo_test_env::scenario! {
         {
             let mut app = CalendarApp::new_demo();
             let mut doc = demo_document(&app);
-            let start = NaiveDate::from_ymd_opt(2026, 8, 3)
-                .unwrap()
-                .and_hms_opt(9, 0, 0)
-                .unwrap();
+            let start = Date::new(2026, 8, 3).unwrap()
+                .at(9, 0, 0, 0);
             let remote_event = |title: &str| Event {
                 id: Uuid::new_v4(),
                 title: title.into(),
                 start,
-                end: start + Duration::hours(1),
+                end: start + jiff::SignedDuration::from_hours(1),
                 color: Palette::Blue,
                 calendar_id: Some("work/default".into()),
                 ..Event::default()
@@ -250,7 +246,7 @@ tilo_test_env::scenario! {
                 id: uid,
                 title: "Server task".into(),
                 done,
-                due: NaiveDate::from_ymd_opt(2026, 8, 3),
+                due: Date::new(2026, 8, 3).ok(),
                 priority: Priority::High,
                 project: None,
                 parent: None,
@@ -334,7 +330,7 @@ tilo_test_env::scenario! {
 
         let start = app
             .today
-            .and_time(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+            .to_datetime(jiff::civil::Time::new(8, 0, 0, 0).unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((
             caldav::SyncResult {
@@ -346,7 +342,7 @@ tilo_test_env::scenario! {
                         id: Uuid::new_v4(),
                         title: "Pulled into a broken calendar".into(),
                         start,
-                        end: start + Duration::hours(1),
+                        end: start + jiff::SignedDuration::from_hours(1),
                         ..crate::model::Event::default()
                     }],
                     tasks: Vec::new(),

@@ -1462,7 +1462,7 @@ mod tests {
 
     /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to Sun, Jul 5, 2026.
     fn week_across_a_month() -> crate::format::Period {
-        let day = |m, d| chrono::NaiveDate::from_ymd_opt(2026, m, d).unwrap_or_default();
+        let day = |m, d| jiff::civil::Date::new(2026, m, d).ok().unwrap_or_default();
         crate::format::Period::Days(day(6, 29), day(7, 5))
     }
 

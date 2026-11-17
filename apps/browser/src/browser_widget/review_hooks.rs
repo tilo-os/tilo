@@ -122,7 +122,7 @@ impl BrowserWidget {
     }
 
     pub fn debug_show_library(&mut self, section: &str) {
-        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let now = u64::try_from(ui::clock::local_now().timestamp().as_second()).unwrap_or_default();
         for (url, title, ago) in [
             (
                 "https://en.wikipedia.org/wiki/Web_browser",

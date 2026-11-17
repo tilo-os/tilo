@@ -496,7 +496,12 @@ fn with_nothing_changing_the_bar_does_no_work() {
     for _ in 0..20 {
         session.step(Duration::from_millis(1)).unwrap();
     }
-    let minute = || ui::clock::local_now().timestamp().div_euclid(60);
+    let minute = || {
+        ui::clock::local_now()
+            .timestamp()
+            .as_second()
+            .div_euclid(60)
+    };
     loop {
         let before = session.shell_work().expect("the shell's bar runs");
         let at = minute();

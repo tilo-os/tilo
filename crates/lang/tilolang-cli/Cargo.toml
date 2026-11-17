@@ -25,7 +25,7 @@ path = "tests/it.rs"
 
 [dependencies]
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true

@@ -69,7 +69,7 @@ YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
 Music and Tube; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
 reaches ownership: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
-Imager and the Spotify engine; the time-zone database, chrono-tz:
+Imager and the Spotify engine; the time-zone database, jiff-tzdb:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
 PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and

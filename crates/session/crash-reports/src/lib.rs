@@ -198,7 +198,7 @@ pub fn directory() -> Option<PathBuf> {
 pub fn file_timestamp() -> String {
     tilo_formats::machine!(
         "the report's file name, which programs sort by",
-        chrono::Local::now().format(FILE_TIMESTAMP).to_string()
+        jiff::Zoned::now().strftime(FILE_TIMESTAMP).to_string()
     )
 }
 

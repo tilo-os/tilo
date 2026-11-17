@@ -3269,7 +3269,7 @@ impl ui::widget::controls::ActionControls for CameraApp {
 // ====================================================================
 
 fn now_secs() -> i64 {
-    ui::clock::local_now().timestamp()
+    ui::clock::local_now().timestamp().as_second()
 }
 
 #[cfg(test)]

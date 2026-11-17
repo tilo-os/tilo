@@ -80,10 +80,10 @@ impl ClockSnapshot {
     pub fn now() -> Self {
         let now = ui::clock::local_now();
         Self {
-            unix_seconds: now.timestamp(),
+            unix_seconds: now.timestamp().as_second(),
             clock: ui::clock::time_of_day(&now),
-            weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
-            date: ui::format::month_day(now.date_naive()),
+            weekday: ui::format::weekday_short(now.weekday()),
+            date: ui::format::month_day(now.date()),
         }
     }
 }

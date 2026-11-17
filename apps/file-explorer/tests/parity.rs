@@ -6,17 +6,21 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use chrono::{Local, TimeZone};
 use file_explorer::model::{Entry, SortBy, SortOrder, format_path, sort_entries};
 use std::path::PathBuf;
 
-fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
+fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i16) -> Entry {
     Entry {
         name: name.into(),
         path: PathBuf::from(name),
         is_dir,
         size,
-        modified: Some(Local.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap()),
+        modified: Some(
+            jiff::civil::date(year, 1, 1)
+                .to_zoned(jiff::tz::TimeZone::system())
+                .unwrap()
+                .timestamp(),
+        ),
         mime: mime.into(),
         sync_state: None,
         content_hash: None,

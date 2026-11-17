@@ -11,7 +11,7 @@
 //! and is refused with both readings rather than guessed. Anything else
 //! not read whole is refused with the forms that are.
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 
 use super::dates;
 use super::expr::{self, Value, lenient_number};
@@ -342,7 +342,7 @@ enum Reading {
 enum Token {
     Number(f64),
     /// A date, and the time written after it (`T09:00`), kept as written.
-    Date(NaiveDate, Option<String>),
+    Date(Date, Option<String>),
     /// `+ - * / % ( ) ,`
     Mark(char),
     /// A word, lower case.
@@ -543,7 +543,7 @@ fn join_written_dates(tokens: &[Token]) -> Vec<Token> {
 
 /// The date written with its month by name at the start of `tokens`, and
 /// how many tokens it takes.
-fn written_at(tokens: &[Token]) -> Option<(NaiveDate, usize)> {
+fn written_at(tokens: &[Token]) -> Option<(Date, usize)> {
     let month = |token: &Token| match token {
         Token::Word(word) => dates::month_number(word),
         _ => None,
@@ -654,7 +654,7 @@ fn count(token: &Token) -> Option<i64> {
 }
 
 /// `date` moved by `count` of `unit`.
-fn moved(date: NaiveDate, count: i64, unit: Unit) -> Option<NaiveDate> {
+fn moved(date: Date, count: i64, unit: Unit) -> Option<Date> {
     match unit {
         Unit::Days => dates::add_days(date, count),
         Unit::BusinessDays => dates::add_business_days(date, count),
@@ -667,7 +667,7 @@ fn moved(date: NaiveDate, count: i64, unit: Unit) -> Option<NaiveDate> {
 /// The date `tokens` are, whole: a date alone, `<n> <unit> after|before
 /// <date>`, or `<date> +|- <n> <unit>`; with the time written after the
 /// date.
-fn date_form(tokens: &[Token]) -> Option<(NaiveDate, Option<String>)> {
+fn date_form(tokens: &[Token]) -> Option<(Date, Option<String>)> {
     let date = |token: Option<&Token>| match token {
         Some(Token::Date(date, clock)) => Some((*date, clock.clone())),
         Some(Token::Word(word)) if word == "today" => Some((dates::today(), None)),

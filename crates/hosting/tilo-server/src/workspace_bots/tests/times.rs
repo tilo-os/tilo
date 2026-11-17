@@ -12,12 +12,7 @@ use super::*;
 
 /// The moment `text` names, ms since the epoch.
 fn at(text: &str) -> u64 {
-    u64::try_from(
-        chrono::DateTime::parse_from_rfc3339(text)
-            .unwrap()
-            .timestamp_millis(),
-    )
-    .unwrap()
+    u64::try_from(text.parse::<jiff::Timestamp>().unwrap().as_millisecond()).unwrap()
 }
 
 /// One entry as a calendar server holds it, half an hour long, at `start`

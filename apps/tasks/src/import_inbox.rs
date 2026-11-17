@@ -275,9 +275,10 @@ fn origin(
         return None;
     }
     let millis = |at: &str| {
-        chrono::DateTime::parse_from_rfc3339(at.trim())
+        at.trim()
+            .parse::<jiff::Timestamp>()
             .ok()
-            .map(|at| at.timestamp_millis())
+            .map(jiff::Timestamp::as_millisecond)
     };
     let created_ms = millis(created);
     let source = match text(entry, "source") {

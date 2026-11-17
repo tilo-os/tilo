@@ -1,9 +1,13 @@
-use chrono::FixedOffset;
-
 use super::*;
 
-fn at(value: &str) -> DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(value).expect("valid test instant")
+/// The instant `value` names, read in the offset it is written with.
+fn at(value: &str) -> jiff::Zoned {
+    let offset = jiff::fmt::temporal::Pieces::parse(value)
+        .ok()
+        .and_then(|pieces| pieces.to_numeric_offset())
+        .expect("an offset");
+    let instant: jiff::Timestamp = value.parse().expect("valid test instant");
+    instant.to_zoned(jiff::tz::TimeZone::fixed(offset))
 }
 
 fn owner(workspace: &str, app: &str) -> Owner {
@@ -13,13 +17,13 @@ fn owner(workspace: &str, app: &str) -> Owner {
     }
 }
 
-fn alarm(tag: &str, due: DateTime<FixedOffset>, weekdays: u8) -> ScheduleRequest {
+fn alarm(tag: &str, due: &jiff::Zoned, weekdays: u8) -> ScheduleRequest {
     ScheduleRequest {
         tag: tag.into(),
         title: "Alarm".into(),
         body: "Wake up".into(),
         activation: "tilo-clocks:alarms".into(),
-        at_ms: due.timestamp_millis(),
+        at_ms: due.timestamp().as_millisecond(),
         alarm: Some(AlarmRequest {
             hour: 12,
             minute: 0,
@@ -40,14 +44,14 @@ fn ids() -> impl FnMut() -> u32 {
 
 /// An alarm scheduled and rung once at `due`: the log and the ringing
 /// occurrence.
-fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Log, Occurrence) {
+fn rung(due: &jiff::Zoned, weekdays: u8, path: Option<PathBuf>) -> (Log, Occurrence) {
     let mut log = Log::open(path).expect("log");
     log.schedule(
         &owner("studio", "so.tilo.clocks"),
         alarm("alarm", due, weekdays),
     )
     .expect("handoff");
-    let ringing = log.take_due(&due, ids()).expect("rung");
+    let ringing = log.take_due(due, ids()).expect("rung");
     let [notification] = ringing.as_slice() else {
         panic!("one ring, not {}", ringing.len());
     };
@@ -61,7 +65,7 @@ fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Log
     );
     let occurrence = notification.scheduled.clone().expect("its deadline");
     assert!(occurrence.calendar_alarm);
-    assert_eq!(occurrence.occurrence_ms, due.timestamp_millis());
+    assert_eq!(occurrence.occurrence_ms, due.timestamp().as_millisecond());
     (log, occurrence)
 }
 
@@ -78,7 +82,7 @@ fn the_wire_arguments_make_a_request() {
     .expect("request");
     assert_eq!(
         request.alarm.and_then(|alarm| alarm.last_rung),
-        NaiveDate::from_ymd_opt(2026, 4, 14)
+        Date::new(2026, 4, 14).ok()
     );
     assert!(
         ScheduleRequest::from_wire((
@@ -123,7 +127,7 @@ tilo_test_env::scenario! {
         let due = at("2026-04-14T12:00:00+00:00");
         let mut log = Log::open(Some(path.clone())).expect("new log");
         log
-            .schedule(&caller, alarm("alarm", due, 0))
+            .schedule(&caller, alarm("alarm", &due, 0))
             .expect("handoff");
         drop(log); // The app and the daemon may both exit before the deadline.
         let mut restarted = Log::open(Some(path.clone())).expect("restart");
@@ -138,7 +142,7 @@ tilo_test_env::scenario! {
         );
         // Reopening the app hands the same deadline over again: it is not rearmed.
         restarted
-            .schedule(&caller, alarm("alarm", due, 0))
+            .schedule(&caller, alarm("alarm", &due, 0))
             .expect("idempotent reopen");
         drop(restarted);
         let mut restarted = Log::open(Some(path)).expect("second restart");
@@ -159,7 +163,7 @@ tilo_test_env::scenario! {
         let due = at("2026-04-14T12:00:00+00:00");
         let mut log = Log::open(Some(path.clone())).expect("log");
         log
-            .schedule(&caller, alarm("alarm", due, 0))
+            .schedule(&caller, alarm("alarm", &due, 0))
             .expect("schedule");
         std::fs::remove_file(&path).expect("remove the file");
         std::fs::create_dir(&path).expect("block its replacement with a directory");
@@ -179,7 +183,7 @@ tilo_test_env::scenario! {
             schedules
                 .schedule(
                     &owner("studio", "app"),
-                    alarm("a", at("2026-04-14T12:00:00+00:00"), 0)
+                    alarm("a", &at("2026-04-14T12:00:00+00:00"), 0)
                 )
                 .is_err()
         );
@@ -196,7 +200,7 @@ tilo_test_env::scenario! {
     phase a_ringing_occurrence_carries_its_workspace;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (_log, occurrence) = rung(due, 127, None);
+        let (_log, occurrence) = rung(&due, 127, None);
         let written = serde_json::to_value(&occurrence).expect("its data");
         assert_eq!(written["workspace"], "studio");
     }
@@ -206,29 +210,29 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(due, 127, Some(path.clone()));
+        let (mut log, occurrence) = rung(&due, 127, Some(path.clone()));
         let original = log.alarm_states(&owner("studio", "so.tilo.clocks"));
         log
             .act(
                 "so.tilo.clocks",
                 &occurrence,
                 AlarmAction::Snooze,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("snooze");
         drop(log);
         let mut restarted = Log::open(Some(path)).expect("restart");
-        let snoozed = due + chrono::Duration::minutes(5);
+        let snoozed = due + jiff::SignedDuration::from_mins(5);
         assert!(
             restarted
-                .take_due(&(snoozed - chrono::Duration::seconds(1)), ids())
+                .take_due(&(&snoozed - jiff::SignedDuration::from_secs(1)), ids())
                 .expect("before")
                 .is_empty()
         );
         assert_eq!(restarted.take_due(&snoozed, ids()).expect("rings").len(), 1);
         assert!(
             restarted
-                .take_due(&(snoozed + chrono::Duration::hours(1)), ids())
+                .take_due(&(&snoozed + jiff::SignedDuration::from_hours(1)), ids())
                 .expect("no duplicate")
                 .is_empty()
         );
@@ -243,7 +247,7 @@ tilo_test_env::scenario! {
                     "so.tilo.clocks",
                     &occurrence,
                     AlarmAction::Snooze,
-                    snoozed.timestamp_millis()
+                    snoozed.timestamp().as_millisecond()
                 )
                 .is_err(),
             "an old card cannot snooze the new ring"
@@ -255,14 +259,14 @@ tilo_test_env::scenario! {
         let due = at("2026-04-14T12:00:00+00:00");
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
-        let (mut log, occurrence) = rung(due, 0, Some(path.clone()));
+        let (mut log, occurrence) = rung(&due, 0, Some(path.clone()));
         let app = "so.tilo.clocks";
         log
             .act(
                 app,
                 &occurrence,
                 AlarmAction::Snooze,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("snooze");
         let deadline = log.next_at_ms();
@@ -271,7 +275,7 @@ tilo_test_env::scenario! {
                 app,
                 &occurrence,
                 AlarmAction::Snooze,
-                (due + chrono::Duration::minutes(2)).timestamp_millis(),
+                (&due + jiff::SignedDuration::from_mins(2)).timestamp().as_millisecond(),
             )
             .expect("idempotent retry");
         assert_eq!(
@@ -284,7 +288,7 @@ tilo_test_env::scenario! {
                 app,
                 &occurrence,
                 AlarmAction::Dismiss,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("dismiss the pending snooze");
         log
@@ -292,7 +296,7 @@ tilo_test_env::scenario! {
                 app,
                 &occurrence,
                 AlarmAction::Dismiss,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("idempotent dismiss");
         assert!(log.next_at_ms().is_none());
@@ -302,7 +306,7 @@ tilo_test_env::scenario! {
                     app,
                     &occurrence,
                     AlarmAction::Snooze,
-                    due.timestamp_millis()
+                    due.timestamp().as_millisecond()
                 )
                 .is_err()
         );
@@ -311,7 +315,7 @@ tilo_test_env::scenario! {
         assert!(restarted.next_at_ms().is_none());
         assert!(
             restarted
-                .take_due(&(due + chrono::Duration::hours(1)), ids())
+                .take_due(&(due + jiff::SignedDuration::from_hours(1)), ids())
                 .expect("after the cancelled snooze")
                 .is_empty()
         );
@@ -322,14 +326,14 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(due, 0, Some(path.clone()));
+        let (mut log, occurrence) = rung(&due, 0, Some(path.clone()));
         let app = "so.tilo.clocks";
         log
             .act(
                 app,
                 &occurrence,
                 AlarmAction::Snooze,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("snooze");
         log
@@ -343,7 +347,7 @@ tilo_test_env::scenario! {
                     app,
                     &occurrence,
                     AlarmAction::Snooze,
-                    due.timestamp_millis()
+                    due.timestamp().as_millisecond()
                 )
                 .is_err()
         );
@@ -352,12 +356,12 @@ tilo_test_env::scenario! {
                 app,
                 &occurrence,
                 AlarmAction::Dismiss,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("a stale card's dismissal");
         assert!(
             restarted
-                .take_due(&(due + chrono::Duration::hours(1)), ids())
+                .take_due(&(due + jiff::SignedDuration::from_hours(1)), ids())
                 .expect("past the cancelled deadline")
                 .is_empty()
         );
@@ -367,7 +371,7 @@ tilo_test_env::scenario! {
     phase foreign_app_workspace_token_and_stale_occurrence_cannot_change_an_alarm;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(due, 127, None);
+        let (mut log, occurrence) = rung(&due, 127, None);
         let original = log.alarm_states(&owner("studio", "so.tilo.clocks"));
         for changed in 0..4 {
             let mut target = occurrence.clone();
@@ -380,7 +384,7 @@ tilo_test_env::scenario! {
             }
             assert!(
                 log
-                    .act(app, &target, AlarmAction::Snooze, due.timestamp_millis())
+                    .act(app, &target, AlarmAction::Snooze, due.timestamp().as_millisecond())
                     .is_err()
             );
         }
@@ -393,16 +397,16 @@ tilo_test_env::scenario! {
     phase snooze_stays_in_utc_across_time_zone_and_wall_clock_changes;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(due, 127, None);
+        let (mut log, occurrence) = rung(&due, 127, None);
         log
             .act(
                 "so.tilo.clocks",
                 &occurrence,
                 AlarmAction::Snooze,
-                due.timestamp_millis(),
+                due.timestamp().as_millisecond(),
             )
             .expect("snooze");
-        let expected = (due + chrono::Duration::minutes(5)).timestamp_millis();
+        let expected = (&due + jiff::SignedDuration::from_mins(5)).timestamp().as_millisecond();
         assert_eq!(log.next_at_ms(), Some(expected));
         assert!(
             log
@@ -418,7 +422,7 @@ tilo_test_env::scenario! {
                 .is_empty()
         );
         assert_eq!(log.next_at_ms(), Some(expected));
-        let forward = due + chrono::Duration::minutes(7);
+        let forward = due + jiff::SignedDuration::from_mins(7);
         assert_eq!(log.take_due(&forward, ids()).expect("forward").len(), 1);
         assert!(
             log
@@ -433,7 +437,7 @@ tilo_test_env::scenario! {
         let schedules = Schedules::in_memory();
         let due = at("2026-04-14T12:00:00+00:00");
         schedules
-            .schedule(&owner("studio", "so.tilo.clocks"), alarm("alarm", due, 0))
+            .schedule(&owner("studio", "so.tilo.clocks"), alarm("alarm", &due, 0))
             .expect("schedule");
         let rung = schedules.take_due(&due, ids()).expect("rung");
         let id = rung.first().expect("one").id;
@@ -464,19 +468,19 @@ tilo_test_env::scenario! {
             minute: 0,
             weekdays: 0,
         }
-        .next_in(Some(now.date_naive()), &now)
+        .next_in(Some(now.date()), &now)
         .expect("next unconsumed occurrence");
         let caller = owner("studio", "so.tilo.clocks");
         let mut log = Log::open(None).expect("log");
-        let mut request = alarm("reopened", tomorrow, 0);
+        let mut request = alarm("reopened", &tomorrow, 0);
         if let Some(alarm) = request.alarm.as_mut() {
-            alarm.last_rung = Some(now.date_naive());
+            alarm.last_rung = Some(now.date());
         }
         log.schedule(&caller, request).expect("handoff");
         assert!(log.take_due(&now, ids()).expect("tick").is_empty());
         assert_eq!(
             log.pending(&caller),
-            vec![("reopened".into(), tomorrow.timestamp_millis())],
+            vec![("reopened".into(), tomorrow.timestamp().as_millisecond())],
             "recomputing must not move an already rung date back into the schedule"
         );
     }
@@ -490,7 +494,7 @@ tilo_test_env::scenario! {
         let c = owner("one", "so.tilo.other");
         for caller in [&a, &b, &c] {
             log
-                .schedule(caller, alarm("same-tag", due, 0))
+                .schedule(caller, alarm("same-tag", &due, 0))
                 .expect("schedule");
         }
         log.cancel(&a, "same-tag").expect("cancel its own");
@@ -514,7 +518,7 @@ tilo_test_env::scenario! {
         log
             .schedule(
                 &caller,
-                alarm("daily", at("2026-04-14T12:00:00+00:00"), 127),
+                alarm("daily", &at("2026-04-14T12:00:00+00:00"), 127),
             )
             .expect("schedule");
         let late = at("2026-04-17T15:00:00+00:00");
@@ -535,7 +539,7 @@ tilo_test_env::scenario! {
             log.pending(&caller),
             vec![(
                 "daily".into(),
-                at("2026-04-18T12:00:00+02:00").timestamp_millis()
+                at("2026-04-18T12:00:00+02:00").timestamp().as_millisecond()
             )]
         );
         let local_noon = at("2026-04-18T12:00:00+02:00");

@@ -121,8 +121,9 @@ fn mode_of(meta: &fs::Metadata) -> u32 {
 /// `time` as zip keeps it: the local time, to the even second; none
 /// before 1980, which zip cannot hold.
 fn zip_time(time: std::time::SystemTime) -> Option<zip::DateTime> {
-    use chrono::{Datelike as _, Timelike as _};
-    let local = chrono::DateTime::<chrono::Local>::from(time).naive_local();
+    let local = jiff::Timestamp::try_from(time)
+        .ok()?
+        .to_zoned(jiff::tz::TimeZone::system());
     zip::DateTime::from_date_and_time(
         u16::try_from(local.year()).ok()?,
         u8::try_from(local.month()).ok()?,

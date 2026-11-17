@@ -660,9 +660,9 @@ impl Landing<'_, '_> {
         let due_ms = issue
             .due
             .as_deref()
-            .and_then(|due| chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d").ok())
-            .and_then(|day| day.and_hms_opt(12, 0, 0))
-            .map(|noon| noon.and_utc().timestamp_millis());
+            .and_then(|due| jiff::civil::Date::strptime("%Y-%m-%d", due).ok())
+            .and_then(|day| day.at(12, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).ok())
+            .map(|noon| noon.timestamp().as_millisecond());
         let title = if issue.title.trim().is_empty() {
             issue.identifier.as_str()
         } else {
@@ -802,9 +802,10 @@ fn origin_of(
 
 /// An RFC 3339 time as milliseconds since the epoch.
 fn millis(at: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(at.trim())
+    at.trim()
+        .parse::<jiff::Timestamp>()
         .ok()
-        .map(|at| at.timestamp_millis())
+        .map(jiff::Timestamp::as_millisecond)
 }
 
 /// Whether `error` is the refusal that says a note from this source is in the notebook already.

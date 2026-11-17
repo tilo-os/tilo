@@ -1,6 +1,6 @@
 //! Retention policy, sources, snapshots and the sample catalog captures show.
 
-use chrono::{Datelike, Duration, NaiveDateTime, Timelike, Weekday};
+use jiff::civil::{DateTime, Weekday};
 use ui::tilo_resource::{self, Model, Path, Refusal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,17 +43,21 @@ pub enum Schedule {
 
 impl Schedule {
     /// The next run strictly after `now`, or `None` for an on-demand source.
-    pub fn next_after(self, now: NaiveDateTime) -> Option<NaiveDateTime> {
-        let at =
-            |date: chrono::NaiveDate, hour: u32, minute: u32| date.and_hms_opt(hour, minute, 0);
+    pub fn next_after(self, now: DateTime) -> Option<DateTime> {
+        let at = |date: jiff::civil::Date, hour: u32, minute: u32| -> Option<DateTime> {
+            let time =
+                jiff::civil::Time::new(i8::try_from(hour).ok()?, i8::try_from(minute).ok()?, 0, 0)
+                    .ok()?;
+            Some(date.to_datetime(time))
+        };
         match self {
             Self::OnDemand => None,
             Self::Hourly { minute } => {
-                let this_hour = at(now.date(), now.hour(), minute)?;
+                let this_hour = at(now.date(), u32::from(now.hour().unsigned_abs()), minute)?;
                 Some(if this_hour > now {
                     this_hour
                 } else {
-                    this_hour + Duration::hours(1)
+                    this_hour + jiff::SignedDuration::from_hours(1)
                 })
             }
             Self::Daily { hour, minute } => {
@@ -61,7 +65,7 @@ impl Schedule {
                 Some(if today > now {
                     today
                 } else {
-                    today + Duration::days(1)
+                    today + jiff::Span::new().days(1)
                 })
             }
             Self::Weekly {
@@ -69,7 +73,7 @@ impl Schedule {
                 hour,
                 minute,
             } => (0..=7).find_map(|ahead| {
-                let date = now.date() + Duration::days(ahead);
+                let date = now.date() + jiff::Span::new().days(ahead);
                 let run = at(date, hour, minute)?;
                 (date.weekday() == weekday && run > now).then_some(run)
             }),
@@ -229,7 +233,7 @@ pub struct Snapshot {
     pub id: String,
     pub source_id: String,
     pub dest_id: String,
-    pub taken: NaiveDateTime,
+    pub taken: DateTime,
     pub label: Option<String>,
     pub kind: SnapType,
     pub retention: Retention,
@@ -257,12 +261,12 @@ struct SampleSnapshot<'a> {
 }
 
 impl SampleSnapshot<'_> {
-    fn at(self, now: NaiveDateTime) -> Snapshot {
+    fn at(self, now: DateTime) -> Snapshot {
         Snapshot {
             id: self.id.into(),
             source_id: self.source_id.into(),
             dest_id: self.dest_id.into(),
-            taken: now - Duration::minutes(self.minutes_ago),
+            taken: now - jiff::SignedDuration::from_mins(self.minutes_ago),
             label: self.label.map(Into::into),
             kind: self.kind,
             retention: self.retention,
@@ -407,10 +411,10 @@ const MB: u64 = 1_000 * KB;
 const GB: u64 = 1_000 * MB;
 const TB: u64 = 1_000 * GB;
 
-fn local_time(unix_seconds: u64) -> Option<NaiveDateTime> {
+fn local_time(unix_seconds: u64) -> Option<DateTime> {
     let seconds = i64::try_from(unix_seconds).ok()?;
-    let utc = chrono::DateTime::from_timestamp(seconds, 0)?;
-    Some(utc.with_timezone(&chrono::Local).naive_local())
+    let utc = jiff::Timestamp::from_second(seconds).ok()?;
+    Some(utc.to_zoned(jiff::tz::TimeZone::system()).datetime())
 }
 
 impl Catalog {
@@ -429,7 +433,7 @@ impl Catalog {
             || destination.to_string_lossy().into_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let now = ui::clock::local_now().naive_local();
+        let now = ui::clock::local_now().datetime();
         let snapshots = manifests
             .iter()
             .map(|manifest| Snapshot {
@@ -496,7 +500,7 @@ impl Catalog {
 
     /// A realistic week of backups across three sources and three destinations, laid out
     /// backwards from `now`.
-    pub fn sample(now: NaiveDateTime) -> Self {
+    pub fn sample(now: DateTime) -> Self {
         let sources = vec![
             Source {
                 id: "home".into(),
@@ -516,7 +520,7 @@ impl Catalog {
                 path: "/etc".into(),
                 kind: SourceKind::System,
                 schedule: Schedule::Weekly {
-                    weekday: Weekday::Sun,
+                    weekday: Weekday::Sunday,
                     hour: 4,
                     minute: 0,
                 },
@@ -636,7 +640,7 @@ impl Catalog {
             .max_by_key(|s| s.taken)
     }
 
-    pub fn next_run(&self, filter: Filter<'_>, now: NaiveDateTime) -> Option<NaiveDateTime> {
+    pub fn next_run(&self, filter: Filter<'_>, now: DateTime) -> Option<DateTime> {
         self.sources
             .iter()
             .filter(|s| s.enabled && filter.admits_source(&s.id))
@@ -888,10 +892,11 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
 mod tests {
     use super::*;
 
-    fn capture_now() -> NaiveDateTime {
+    fn capture_now() -> DateTime {
         let (y, mo, d, h, mi) = ui::clock::CAPTURE_LOCAL_TIME;
-        chrono::NaiveDate::from_ymd_opt(y, mo, d)
-            .and_then(|date| date.and_hms_opt(h, mi, 0))
+        jiff::civil::Date::new(y, mo, d)
+            .ok()
+            .map(|date| date.at(h, mi, 0, 0))
             .expect("the capture time is a valid date")
     }
 
@@ -953,14 +958,16 @@ mod tests {
     fn weekly_schedule_runs_on_its_weekday() {
         let now = capture_now(); // Tuesday 30 June 2026
         let sunday = Schedule::Weekly {
-            weekday: Weekday::Sun,
+            weekday: Weekday::Sunday,
             hour: 4,
             minute: 0,
         }
         .next_after(now)
         .expect("weekly");
-        assert_eq!(sunday.weekday(), Weekday::Sun);
-        assert!(sunday > now && sunday - now < Duration::days(7));
+        assert_eq!(sunday.weekday(), Weekday::Sunday);
+        assert!(
+            sunday > now && sunday.duration_since(now) < jiff::SignedDuration::from_hours(7 * 24)
+        );
         assert_eq!(Schedule::OnDemand.next_after(now), None);
     }
 }

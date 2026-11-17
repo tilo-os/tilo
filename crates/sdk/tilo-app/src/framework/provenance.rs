@@ -65,9 +65,11 @@ impl Provenance {
     /// The day it was written, as a person reads a date.
     #[must_use]
     pub fn date(&self) -> String {
-        let days = i32::try_from(self.at_ms.div_euclid(86_400_000)).unwrap_or_default();
-        ui_core::format::NaiveDate::from_num_days_from_ce_opt(days.saturating_add(719_163))
-            .map(|day| ui_core::format::Formats::current().date(day))
+        jiff::Timestamp::from_millisecond(self.at_ms)
+            .map(|at| {
+                let day = at.to_zoned(jiff::tz::TimeZone::UTC).date();
+                ui_core::format::Formats::current().date(day)
+            })
             .unwrap_or_default()
     }
 

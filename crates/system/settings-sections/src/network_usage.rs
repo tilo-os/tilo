@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Datelike as _, NaiveDate};
+use jiff::civil::Date;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema, Refusal};
@@ -75,23 +75,24 @@ impl ResetDay {
 
     /// The first day of the period `today` falls in.
     #[must_use]
-    pub fn period_start(self, today: NaiveDate) -> NaiveDate {
-        let this_month = today.with_day(self.0).unwrap_or(today);
-        if today.day() >= self.0 {
+    pub fn period_start(self, today: Date) -> Date {
+        let day = i8::try_from(self.0).unwrap_or(1);
+        let this_month = today.with().day(day).build().unwrap_or(today);
+        if today.day() >= day {
             this_month
         } else {
             this_month
-                .checked_sub_months(chrono::Months::new(1))
+                .checked_sub(jiff::Span::new().months(1))
                 .unwrap_or(this_month)
         }
     }
 
     /// The first day of the period after the one `today` falls in.
     #[must_use]
-    pub fn next_period(self, today: NaiveDate) -> NaiveDate {
+    pub fn next_period(self, today: Date) -> Date {
         let start = self.period_start(today);
         start
-            .checked_add_months(chrono::Months::new(1))
+            .checked_add(jiff::Span::new().months(1))
             .unwrap_or(start)
     }
 }
@@ -166,7 +167,7 @@ pub struct ConnectionUsage {
 impl ConnectionUsage {
     /// What moved from `from` to `to`, both included.
     #[must_use]
-    pub fn between(&self, from: NaiveDate, to: NaiveDate) -> Bytes {
+    pub fn between(&self, from: Date, to: Date) -> Bytes {
         let mut sum = Bytes::default();
         for (_, bytes) in self.days.range(day_key(from)..=day_key(to)) {
             sum.add(*bytes);
@@ -176,14 +177,14 @@ impl ConnectionUsage {
 
     /// What moved on `day`.
     #[must_use]
-    pub fn on(&self, day: NaiveDate) -> Bytes {
+    pub fn on(&self, day: Date) -> Bytes {
         self.days.get(&day_key(day)).copied().unwrap_or_default()
     }
 
     /// Bytes moved since `from` up to `today`, less what came before the
     /// person last started the count again.
     #[must_use]
-    pub fn used_since(&self, from: NaiveDate, today: NaiveDate) -> u64 {
+    pub fn used_since(&self, from: Date, today: Date) -> u64 {
         match &self.restart {
             Some(restart) if restart.day >= day_key(from) => {
                 let Some(day) = parse_day(&restart.day) else {
@@ -313,20 +314,21 @@ impl NetworkUsage {
 
 /// `day` as the history keys it.
 #[must_use]
-pub fn day_key(day: NaiveDate) -> String {
-    day.format("%Y-%m-%d").to_string()
+pub fn day_key(day: Date) -> String {
+    day.strftime("%Y-%m-%d").to_string()
 }
 
-fn parse_day(key: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(key, "%Y-%m-%d").ok()
+fn parse_day(key: &str) -> Option<Date> {
+    Date::strptime("%Y-%m-%d", key).ok()
 }
 
 /// The local day at `at` (seconds since the epoch, UTC) `offset` seconds
 /// east of UTC.
 #[must_use]
-pub fn local_day(at: i64, offset: i32) -> Option<NaiveDate> {
-    chrono::DateTime::from_timestamp(at.saturating_add(i64::from(offset)), 0)
-        .map(|moment| moment.date_naive())
+pub fn local_day(at: i64, offset: i32) -> Option<Date> {
+    jiff::Timestamp::from_second(at.saturating_add(i64::from(offset)))
+        .ok()
+        .map(|moment| moment.to_zoned(jiff::tz::TimeZone::UTC).date())
 }
 
 impl NetworkUsage {
@@ -381,9 +383,9 @@ impl NetworkUsage {
         if boot.is_some() {
             self.boot = boot.map(str::to_owned);
         }
-        if let Some(oldest) = today.and_then(|today| {
-            today.checked_sub_days(chrono::Days::new(u64::try_from(HORIZON_DAYS).unwrap_or(0)))
-        }) {
+        if let Some(oldest) =
+            today.and_then(|today| today.checked_sub(jiff::Span::new().days(HORIZON_DAYS)).ok())
+        {
             let oldest = day_key(oldest);
             for usage in self.connections.values_mut() {
                 usage.days.retain(|day, _| *day > oldest);
@@ -402,7 +404,7 @@ impl NetworkUsage {
 
     /// The mobile data used in the period `today` falls in, on every SIM.
     #[must_use]
-    pub fn mobile_used(&self, today: NaiveDate) -> u64 {
+    pub fn mobile_used(&self, today: Date) -> u64 {
         let from = self.reset_day.period_start(today);
         self.connections
             .values()
@@ -444,7 +446,7 @@ mod tests {
         }
     }
 
-    fn date(text: &str) -> NaiveDate {
+    fn date(text: &str) -> Date {
         parse_day(text).unwrap()
     }
 

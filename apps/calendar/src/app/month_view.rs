@@ -2,7 +2,7 @@
 //! chips inside each cell. Genuine content drawing: every value comes from
 //! the theme, every label from a text role.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use jiff::civil::{Date, DateTime};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
 
@@ -60,7 +60,7 @@ struct CellEvent {
     title: String,
     color: Palette,
     all_day: bool,
-    start: NaiveDateTime,
+    start: DateTime,
 }
 
 impl CellEvent {
@@ -158,8 +158,8 @@ impl CalendarApp {
         ctx: &mut PaintCtx<'_>,
         m: &MonthMetrics,
         cell: Rect,
-        (day, events): (NaiveDate, Vec<CellEvent>),
-        dropped_on: Option<NaiveDate>,
+        (day, events): (Date, Vec<CellEvent>),
+        dropped_on: Option<Date>,
         hits: &mut Vec<(Rect, Action)>,
     ) {
         let theme = ctx.theme;
@@ -174,7 +174,7 @@ impl CalendarApp {
         let in_month = day.month() == self.anchor.month();
         let is_today = day == self.today;
         let is_anchor = day == self.anchor;
-        let weekend = day.weekday().num_days_from_monday() >= 5;
+        let weekend = day.weekday().to_monday_zero_offset() >= 5;
 
         let cell_ground = if is_anchor || dropped_on == Some(day) {
             ctx.fill_rect(cell, c.intent.selection);
@@ -213,7 +213,7 @@ impl CalendarApp {
         ctx: &mut PaintCtx<'_>,
         m: &MonthMetrics,
         (cell, cell_ground): (Rect, vello::peniko::Color),
-        (day, events): (NaiveDate, &[CellEvent]),
+        (day, events): (Date, &[CellEvent]),
         hits: &mut Vec<(Rect, Action)>,
     ) {
         let theme = ctx.theme;
@@ -285,7 +285,7 @@ impl CalendarApp {
                 } else {
                     chip.x0 + pad
                 };
-                let timed = format!("{} {}", date::fmt_time(&event.start), event.title);
+                let timed = format!("{} {}", date::fmt_time(event.start), event.title);
                 let room = chip.x1 - pad - text_x;
                 let label = if density.chip_marker()
                     && f64::from(ctx.text.measure_style(&timed, None, &m.chip).0) <= room

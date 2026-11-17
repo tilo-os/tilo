@@ -1,6 +1,6 @@
 //! Tasks list component.
 
-use chrono::{Duration, NaiveDate};
+use jiff::civil::Date;
 use ui::Widget;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -28,7 +28,7 @@ pub(crate) enum TasksAction {
 pub(crate) struct TasksSource<'a> {
     pub(crate) model: &'a Calendar,
     pub(crate) list: &'a ListSel,
-    pub(crate) today: NaiveDate,
+    pub(crate) today: Date,
 }
 
 pub(crate) struct TaskRow<'a> {
@@ -72,11 +72,11 @@ impl<'a> TasksSource<'a> {
         !matches!(self.list, ListSel::Completed)
     }
 
-    pub(crate) fn placement(&self) -> (Option<Id>, Option<NaiveDate>) {
+    pub(crate) fn placement(&self) -> (Option<Id>, Option<Date>) {
         match self.list {
             ListSel::Project(id) => (Some(*id), None),
             ListSel::Today => (None, Some(self.today)),
-            ListSel::Upcoming => (None, Some(self.today + Duration::days(1))),
+            ListSel::Upcoming => (None, Some(self.today + jiff::Span::new().days(1))),
             ListSel::Inbox | ListSel::Completed => (None, None),
         }
     }
@@ -373,8 +373,8 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn day(d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 8, d).expect("valid fixture date")
+    fn day(d: i8) -> Date {
+        Date::new(2026, 8, d).expect("valid fixture date")
     }
 
     fn task(title: &str, parent: Option<Id>, project: Option<Id>) -> Task {

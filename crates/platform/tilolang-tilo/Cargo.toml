@@ -12,7 +12,7 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 automerge.workspace = true
 # The id a run's changes name, one for every change of the action and its calls.
 uuid.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 crc32fast.workspace = true
 # The index each package's documents are listed and searched from: B-trees in one file, read
 # from snapshots that later commits leave as they were.

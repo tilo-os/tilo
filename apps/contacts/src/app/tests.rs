@@ -3647,7 +3647,7 @@ fn form_choice_semantics() {
         "Choose from calendar",
         &ui::a11y::Action::Activate,
     );
-    let date = ui::clock::today().format("%Y-%m-01").to_string();
+    let date = ui::clock::today().strftime("%Y-%m-01").to_string();
     let calendar = app
         .harness_mut()
         .a11y_node_named("Birthday calendar")

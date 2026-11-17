@@ -1251,7 +1251,7 @@ impl MobileModel {
             "roaming": self.profile.as_ref().map(|profile| profile.roaming),
             "apn": self.profile.as_ref().map(|profile| profile.apn.clone().unwrap_or_else(|| "automatic".into())),
             "metered": self.profile.as_ref().map(|profile| metered_key(profile.metered)),
-            "data_used_bytes": usage.mobile_used(ui::clock::local_now().date_naive()),
+            "data_used_bytes": usage.mobile_used(ui::clock::local_now().date()),
             "data_limit_bytes": usage.limit(),
             "data_period_starts_on_day": usage.reset_day.get(),
             "modems": modems,

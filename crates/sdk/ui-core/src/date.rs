@@ -1,11 +1,12 @@
-//! Proleptic-Gregorian day counts for apps that label dates, on `chrono`. Day `0` is 1970-01-01.
+//! Proleptic-Gregorian day counts for apps that label dates. Day `0` is 1970-01-01.
 
-use chrono::{Datelike, Days, Months, NaiveDate};
+use jiff::Span;
+use jiff::civil::{Date, date};
 
-const EPOCH: NaiveDate = NaiveDate::from_ymd_opt(1970, 1, 1).expect("the epoch is a valid date");
+const EPOCH: Date = date(1970, 1, 1);
 
-fn days_since_epoch(date: NaiveDate) -> i64 {
-    date.signed_duration_since(EPOCH).num_days()
+fn days_since_epoch(date: Date) -> i64 {
+    i64::from(date.since(EPOCH).map_or(0, |span| span.get_days()))
 }
 
 /// Days since 1970-01-01 for a proleptic-Gregorian `year`/`month`/`day`
@@ -21,20 +22,17 @@ fn days_since_epoch(date: NaiveDate) -> i64 {
 /// ```
 #[must_use]
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let clamped_year = year.clamp(
-        i64::from(NaiveDate::MIN.year()),
-        i64::from(NaiveDate::MAX.year()),
-    );
-    let first = i32::try_from(clamped_year)
+    let clamped_year = year.clamp(i64::from(Date::MIN.year()), i64::from(Date::MAX.year()));
+    let month = i8::try_from(month.clamp(1, 12)).unwrap_or(1);
+    let first = i16::try_from(clamped_year)
         .ok()
-        .and_then(|year| NaiveDate::from_ymd_opt(year, month.clamp(1, 12), 1));
+        .and_then(|year| Date::new(year, month, 1).ok());
     let date = first
-        .and_then(|first| first.checked_add_days(Days::new(u64::from(day.saturating_sub(1)))))
-        .unwrap_or(if year < 0 {
-            NaiveDate::MIN
-        } else {
-            NaiveDate::MAX
-        });
+        .and_then(|first| {
+            let days = Span::new().try_days(day.saturating_sub(1)).ok()?;
+            first.checked_add(days).ok()
+        })
+        .unwrap_or(if year < 0 { Date::MIN } else { Date::MAX });
     days_since_epoch(date)
 }
 
@@ -49,13 +47,16 @@ pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 /// ```
 #[must_use]
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let offset = Days::new(days.unsigned_abs());
-    let date = if days < 0 {
-        EPOCH.checked_sub_days(offset).unwrap_or(NaiveDate::MIN)
-    } else {
-        EPOCH.checked_add_days(offset).unwrap_or(NaiveDate::MAX)
-    };
-    (i64::from(date.year()), date.month(), date.day())
+    let date = Span::new()
+        .try_days(days)
+        .ok()
+        .and_then(|span| EPOCH.checked_add(span).ok())
+        .unwrap_or(if days < 0 { Date::MIN } else { Date::MAX });
+    (
+        i64::from(date.year()),
+        u32::from(date.month().unsigned_abs()),
+        u32::from(date.day().unsigned_abs()),
+    )
 }
 
 /// Day of the week for a count of days since 1970-01-01, `0` = Sunday …
@@ -69,10 +70,9 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[must_use]
 pub fn weekday(days: i64) -> u32 {
     // Weekdays repeat every 7 days, so reduce first: every day count has one,
-    // even outside `chrono`'s range.
-    EPOCH
-        .checked_add_days(Days::new(days.rem_euclid(7).unsigned_abs()))
-        .map_or(0, |date| date.weekday().num_days_from_sunday())
+    // even outside the range of dates.
+    let thursday = 4;
+    u32::try_from(days.rem_euclid(7).saturating_add(thursday).rem_euclid(7)).unwrap_or(0)
 }
 
 /// Number of days in `month` (1..=12) of `year`. A month outside 1..=12
@@ -86,16 +86,13 @@ pub fn weekday(days: i64) -> u32 {
 /// ```
 #[must_use]
 pub fn days_in_month(year: i64, month: u32) -> u32 {
-    // The Gregorian cycle repeats every 400 years, so any year outside
-    // `chrono`'s range has the same answer as its residue.
-    i32::try_from(year.rem_euclid(400))
-        .ok()
-        .and_then(|year| NaiveDate::from_ymd_opt(year, month, 1))
-        .and_then(|first| {
-            let next = first.checked_add_months(Months::new(1))?;
-            u32::try_from(next.signed_duration_since(first).num_days()).ok()
-        })
-        .unwrap_or(30)
+    // The Gregorian cycle repeats every 400 years, so any year outside the
+    // range of dates has the same answer as its residue.
+    let year = i16::try_from(year.rem_euclid(400)).ok();
+    let month = i8::try_from(month).ok();
+    year.zip(month)
+        .and_then(|(year, month)| Date::new(year, month, 1).ok())
+        .map_or(30, |first| u32::from(first.days_in_month().unsigned_abs()))
 }
 
 #[cfg(test)]
@@ -149,11 +146,11 @@ mod tests {
         }
 
         {
-            assert!(days_from_civil(i64::MAX, 12, 31) >= days_from_civil(200_000, 1, 1));
-            assert!(days_from_civil(i64::MIN, 1, 1) <= days_from_civil(-200_000, 1, 1));
+            assert!(days_from_civil(i64::MAX, 12, 31) >= days_from_civil(9_999, 1, 1));
+            assert!(days_from_civil(i64::MIN, 1, 1) <= days_from_civil(-9_999, 1, 1));
             for days in [i64::MIN, i64::MAX] {
                 let (y, m, d) = civil_from_days(days);
-                assert!(y.abs() > 200_000, "{days}: {y}");
+                assert!(y.abs() >= 9_999, "{days}: {y}");
                 assert!((1..=12).contains(&m) && (1..=31).contains(&d));
             }
         }

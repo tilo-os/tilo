@@ -649,7 +649,7 @@ fn without_terminal_escapes(text: &str) -> String {
 /// scatter of warnings and errors so the severity colouring and filters have something to
 /// bite on.
 pub fn sample_entries() -> Vec<LogEntry> {
-    let now_us = u64::try_from(ui::clock::local_now().timestamp_micros()).unwrap_or(0);
+    let now_us = u64::try_from(ui::clock::local_now().timestamp().as_microsecond()).unwrap_or(0);
     let base: u64 = now_us.saturating_sub(4 * 60 * 1_000_000) / 1_000_000 * 1_000_000;
     let host = "tilo-station";
     let boot_a = "9f2c1e7b4a6d4c0fb1e3a8d5c2f70a11";

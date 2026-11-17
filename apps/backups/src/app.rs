@@ -8,7 +8,7 @@ use crate::model::PolicyField;
 use crate::model::{Catalog, Filter, RetentionPolicy};
 use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use std::cell::{Cell, RefCell};
 
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
@@ -172,8 +172,8 @@ fn pick_folder(title: &str, accept: &str) -> Picked {
             ui::portal::PortalOutcome::Failed("The folder chooser closed unexpectedly".into())
         })
 }
-fn now() -> NaiveDateTime {
-    ui::clock::local_now().naive_local()
+fn now() -> DateTime {
+    ui::clock::local_now().datetime()
 }
 
 /// A verification under way, for a capture: the window's band says what it is doing, how

@@ -12,7 +12,6 @@
 use std::io::Read as _;
 use std::path::Path;
 
-use chrono::{Local, TimeZone as _};
 use tilo_actions::remote::crash_reports::{CrashKind, CrashReport, CrashReportText, StopReason};
 
 use super::{FILE_TIMESTAMP, FREEZE_SUFFIX};
@@ -33,9 +32,9 @@ const FILE_TIMESTAMP_LEN: usize = 17;
 
 /// The local time a report's file name starts with.
 #[must_use]
-pub fn written_at(name: &str) -> Option<chrono::NaiveDateTime> {
+pub fn written_at(name: &str) -> Option<jiff::civil::DateTime> {
     let stamp = name.get(..FILE_TIMESTAMP_LEN)?;
-    chrono::NaiveDateTime::parse_from_str(stamp, FILE_TIMESTAMP).ok()
+    jiff::civil::DateTime::strptime(FILE_TIMESTAMP, stamp).ok()
 }
 
 /// Whether `name` is a record's: a file name the crash log writes.
@@ -75,10 +74,11 @@ pub fn summarize(name: &str, head: &str) -> Option<CrashReport> {
     if !is_report_name(name) {
         return None;
     }
-    let at = Local
-        .from_local_datetime(&written_at(name)?)
-        .earliest()?
-        .timestamp();
+    let at = jiff::tz::TimeZone::system()
+        .to_ambiguous_timestamp(written_at(name)?)
+        .earlier()
+        .ok()?
+        .as_second();
     let reason = name
         .ends_with(STOPPED_SUFFIX)
         .then(|| field(head, "reason").and_then(reason_named))

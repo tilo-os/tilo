@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use tilo_actions::remote::crash_reports::CrashKind;
 
 use super::reports::{is_report_name, read_start, summarize, written_at};
@@ -59,7 +59,7 @@ impl Ended {
 pub struct News {
     pub ended: Ended,
     /// Local wall-clock time of the report.
-    pub at: NaiveDateTime,
+    pub at: DateTime,
 }
 
 /// Look at the reports in `dir` written since the last look, move the marker
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(news.ended, Ended::Froze);
         assert_eq!(
             news.at,
-            NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S").unwrap()
+            DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap()
         );
 
         assert_eq!(take_news(dir.path()), None, "told once");

@@ -1,7 +1,7 @@
 //! The event and task editor: a modal sheet in the window's top layer, through the shared modal
 //! chrome (`ui::widget::modal_dialog`).
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -223,7 +223,7 @@ fn repeat_phrase(
     recurrence: Recurrence,
     interval: u32,
     count: Option<u32>,
-    until: Option<NaiveDate>,
+    until: Option<Date>,
 ) -> String {
     let every = match recurrence {
         Recurrence::None => return crate::resource::t("calendar-repeat-none"),
@@ -768,10 +768,10 @@ impl CalendarApp {
         let sp = &theme.tokens.spacing;
         let row_h = ControlSize::Regular.height(theme);
         let mut f = FormRects::default();
-        let date_w = |text: &mut TextRenderer, d: NaiveDate| {
+        let date_w = |text: &mut TextRenderer, d: Date| {
             ButtonFace::new(Rect::ZERO, &date::fmt_day_long(d)).intrinsic_width(text, theme)
         };
-        let time_labels = [date::fmt_time(&event.start), date::fmt_time(&event.end)];
+        let time_labels = [date::fmt_time(event.start), date::fmt_time(event.end)];
         let time_w = |text: &mut TextRenderer| {
             time_labels
                 .iter()
@@ -1132,7 +1132,7 @@ impl CalendarApp {
             ),
             (
                 f.start_time,
-                date::fmt_time(&event.start),
+                date::fmt_time(event.start),
                 FormPopover::StartTime,
             ),
             (
@@ -1144,7 +1144,7 @@ impl CalendarApp {
                 }),
                 FormPopover::EndDate,
             ),
-            (f.end_time, date::fmt_time(&event.end), FormPopover::EndTime),
+            (f.end_time, date::fmt_time(event.end), FormPopover::EndTime),
         ] {
             if rect.area() <= 0.0 {
                 continue;
@@ -1416,7 +1416,7 @@ impl CalendarApp {
         self.hits.push((clear, Action::SetTaskDue(None)));
     }
 
-    pub(super) fn task_due_seed(&self) -> NaiveDate {
+    pub(super) fn task_due_seed(&self) -> Date {
         self.selected_task()
             .and_then(|id| self.model.task(id))
             .and_then(|task| task.due)

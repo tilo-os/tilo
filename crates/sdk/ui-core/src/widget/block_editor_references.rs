@@ -1344,7 +1344,7 @@ mod tests {
                 "no time, nothing to wake for"
             );
             let soon = crate::widget::rich_doc::InlineTime {
-                at: crate::clock::local_now().with_timezone(&chrono::Utc) + chrono::Duration::hours(1),
+                at: crate::clock::local_now().timestamp() + jiff::SignedDuration::from_hours(1),
                 show: crate::widget::rich_doc::TimeShow::Countdown,
             };
             rich.blocks[0].marks.push(RichMark {

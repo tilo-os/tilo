@@ -3,7 +3,7 @@
 
 use std::cell::Cell;
 
-use chrono::{Datelike, NaiveDateTime, TimeZone as _};
+use jiff::civil::DateTime;
 
 use crate::component::{Component, Described, Moment};
 use crate::time::{Duration, Instant};
@@ -15,28 +15,25 @@ const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
 
 /// The local wall clock at `secs` since 1970.
-fn local(secs: i64) -> Option<NaiveDateTime> {
-    chrono::DateTime::from_timestamp(secs, 0)
-        .map(|at| at.with_timezone(&chrono::Local).naive_local())
+fn local(secs: i64) -> Option<DateTime> {
+    jiff::Timestamp::from_second(secs)
+        .ok()
+        .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).datetime())
 }
 
 fn next_midnight(secs: i64) -> Option<i64> {
-    let day = local(secs)?.date().succ_opt()?;
-    let midnight = day.and_hms_opt(0, 0, 0)?;
-    chrono::Local
-        .from_local_datetime(&midnight)
-        .earliest()
-        .map(|at| at.timestamp())
+    let day = local(secs)?.date().tomorrow().ok()?;
+    crate::clock::instant_of(day.to_datetime(jiff::civil::Time::midnight()))
+        .map(jiff::Timestamp::as_second)
 }
 
 /// The first local midnight of the year after the one `secs` is in.
 fn next_new_year(secs: i64) -> Option<i64> {
     let year = local(secs)?.year().checked_add(1)?;
-    let midnight = chrono::NaiveDate::from_ymd_opt(year, 1, 1)?.and_hms_opt(0, 0, 0)?;
-    chrono::Local
-        .from_local_datetime(&midnight)
-        .earliest()
-        .map(|at| at.timestamp())
+    let midnight = jiff::civil::Date::new(year, 1, 1)
+        .ok()?
+        .to_datetime(jiff::civil::Time::midnight());
+    crate::clock::instant_of(midnight).map(jiff::Timestamp::as_second)
 }
 
 /// `at` (seconds since 1970) as the clock the person reads shows it: the time of day in their
@@ -47,8 +44,8 @@ pub fn clock_text(at: i64) -> String {
         return String::new();
     };
     crate::clock::hour_minute(
-        u32::try_from(chrono::Timelike::hour(&local)).unwrap_or(0),
-        u32::try_from(chrono::Timelike::minute(&local)).unwrap_or(0),
+        u32::from(local.hour().unsigned_abs()),
+        u32::from(local.minute().unsigned_abs()),
     )
 }
 
@@ -88,7 +85,12 @@ fn candidate(at: i64, now: i64) -> Option<i64> {
     let (then, today) = (local(at)?, local(now)?);
     let midnight = next_midnight(now);
     if ago >= HOUR && then.date() != today.date() {
-        let days = today.date().signed_duration_since(then.date()).num_days();
+        let days = i64::from(
+            today
+                .date()
+                .since(then.date())
+                .map_or(0, |span| span.get_days()),
+        );
         return if days < 7 {
             midnight
         } else if then.year() == today.year() {
@@ -300,12 +302,10 @@ mod tests {
     use crate::time::{SystemTime, UNIX_EPOCH};
 
     /// The local wall clock at `hour:minute:second` on `day` of June 2026, as seconds since 1970.
-    fn local_secs(day: u32, (hour, minute, second): (u32, u32, u32)) -> i64 {
-        chrono::Local
-            .with_ymd_and_hms(2026, 6, day, hour, minute, second)
-            .earliest()
+    fn local_secs(day: i8, (hour, minute, second): (i8, i8, i8)) -> i64 {
+        crate::clock::instant_of(jiff::civil::date(2026, 6, day).at(hour, minute, second, 0))
             .expect("the time exists where the test runs")
-            .timestamp()
+            .as_second()
     }
 
     fn wall(secs: i64) -> SystemTime {

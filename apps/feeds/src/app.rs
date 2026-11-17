@@ -504,7 +504,7 @@ impl Core {
             filter: Filter::All,
             selected: None,
             settings: ReadSettings::default(),
-            now: ui::clock::local_now().timestamp(),
+            now: ui::clock::local_now().timestamp().as_second(),
             list: ListState::default(),
             reader: ReaderState::default(),
             pending_modal: None,
@@ -1426,7 +1426,7 @@ impl Core {
     /// persist queued writes, drain portals and follow out-of-band changes.
     fn sync_document(&mut self, _doc: &AutoCommit) {
         self.background_poll_deadline.set(None);
-        self.now = ui::clock::local_now().timestamp();
+        self.now = ui::clock::local_now().timestamp().as_second();
         self.synced = true;
         self.adopt_read_settings();
         self.drain_fetches_live();

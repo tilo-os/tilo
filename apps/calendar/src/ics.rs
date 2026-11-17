@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
+use jiff::SignedDuration;
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::TimeZone;
 use pim_lines::{ContentLine, escape_text as escape, fold_into, unescape_text as unescape};
 use uuid::Uuid;
 
@@ -15,7 +17,7 @@ use ui::tilo_resource::Keyed;
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
 const D_ONLY: &str = "%Y%m%d";
-type RecurrenceIdentity = (NaiveDate, Option<NaiveTime>);
+type RecurrenceIdentity = (Date, Option<Time>);
 type ParsedEvent = (Event, Option<RecurrenceIdentity>, bool);
 
 #[allow(
@@ -37,33 +39,33 @@ pub fn export(model: &Calendar) -> String {
             raw(
                 &mut out,
                 "DTSTART;VALUE=DATE",
-                &e.start.format(D_ONLY).to_string(),
+                &e.start.strftime(D_ONLY).to_string(),
             );
             raw(
                 &mut out,
                 "DTEND;VALUE=DATE",
-                &e.all_day_end_exclusive().format(D_ONLY).to_string(),
+                &e.all_day_end_exclusive().strftime(D_ONLY).to_string(),
             );
         } else if e.end_later_fold {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
             raw(
                 &mut out,
                 "DURATION",
-                &format!("PT{}S", e.elapsed_duration().num_seconds()),
+                &format!("PT{}S", e.elapsed_duration().as_secs()),
             );
         } else if e.timezone == "UTC" {
             raw(
                 &mut out,
                 "DTSTART",
-                &format!("{}Z", e.start.format(DT_LOCAL)),
+                &format!("{}Z", e.start.strftime(DT_LOCAL)),
             );
-            raw(&mut out, "DTEND", &format!("{}Z", e.end.format(DT_LOCAL)));
+            raw(&mut out, "DTEND", &format!("{}Z", e.end.strftime(DT_LOCAL)));
         } else if e.timezone != "floating" {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
             emit_datetime(&mut out, "DTEND", e.end, &e.timezone);
         } else {
-            raw(&mut out, "DTSTART", &e.start.format(DT_LOCAL).to_string());
-            raw(&mut out, "DTEND", &e.end.format(DT_LOCAL).to_string());
+            raw(&mut out, "DTSTART", &e.start.strftime(DT_LOCAL).to_string());
+            raw(&mut out, "DTEND", &e.end.strftime(DT_LOCAL).to_string());
         }
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
@@ -87,13 +89,13 @@ pub fn export(model: &Calendar) -> String {
                 raw(
                     &mut out,
                     "EXDATE;VALUE=DATE",
-                    &date.format(D_ONLY).to_string(),
+                    &date.strftime(D_ONLY).to_string(),
                 );
             } else {
                 emit_datetime(
                     &mut out,
                     "EXDATE",
-                    date.and_time(e.start.time()),
+                    date.to_datetime(e.start.time()),
                     &e.timezone,
                 );
             }
@@ -122,14 +124,14 @@ pub fn export(model: &Calendar) -> String {
                 emit_datetime(
                     &mut out,
                     "RECURRENCE-ID",
-                    edit.original_date.and_time(time),
+                    edit.original_date.to_datetime(time),
                     &e.timezone,
                 );
             } else {
                 raw(
                     &mut out,
                     "RECURRENCE-ID;VALUE=DATE",
-                    &edit.original_date.format(D_ONLY).to_string(),
+                    &edit.original_date.strftime(D_ONLY).to_string(),
                 );
             }
             if edit.cancelled {
@@ -137,14 +139,14 @@ pub fn export(model: &Calendar) -> String {
             }
             let edit_start = edit.start.or_else(|| {
                 edit.end_later_fold
-                    .then(|| edit.original_date.and_time(e.start.time()))
+                    .then(|| edit.original_date.to_datetime(e.start.time()))
             });
             if let Some(start) = edit_start {
                 if e.all_day {
                     raw(
                         &mut out,
                         "DTSTART;VALUE=DATE",
-                        &start.date().format(D_ONLY).to_string(),
+                        &start.date().strftime(D_ONLY).to_string(),
                     );
                 } else {
                     emit_datetime(&mut out, "DTSTART", start, &e.timezone);
@@ -152,17 +154,17 @@ pub fn export(model: &Calendar) -> String {
             }
             if let Some(end) = edit.end {
                 if e.all_day {
-                    let exclusive = if end.time() == NaiveTime::MIN
+                    let exclusive = if end.time() == Time::MIN
                         && edit.start.is_some_and(|start| end.date() > start.date())
                     {
                         end.date()
                     } else {
-                        end.date() + chrono::Duration::days(1)
+                        end.date().tomorrow().unwrap_or_else(|_| end.date())
                     };
                     raw(
                         &mut out,
                         "DTEND;VALUE=DATE",
-                        &exclusive.format(D_ONLY).to_string(),
+                        &exclusive.strftime(D_ONLY).to_string(),
                     );
                 } else if edit.end_later_fold {
                     if let Some(start) = edit_start
@@ -173,7 +175,7 @@ pub fn export(model: &Calendar) -> String {
                         raw(
                             &mut out,
                             "DURATION",
-                            &format!("PT{}S", (end - start).num_seconds()),
+                            &format!("PT{}S", end.duration_since(start).as_secs()),
                         );
                     }
                 } else {
@@ -195,7 +197,11 @@ pub fn export(model: &Calendar) -> String {
         raw(&mut out, "UID", &format!("{}@tilo", t.id));
         line(&mut out, "SUMMARY", &t.title);
         if let Some(due) = t.due {
-            raw(&mut out, "DUE;VALUE=DATE", &due.format(D_ONLY).to_string());
+            raw(
+                &mut out,
+                "DUE;VALUE=DATE",
+                &due.strftime(D_ONLY).to_string(),
+            );
         }
         if t.done {
             raw(&mut out, "STATUS", "COMPLETED");
@@ -506,17 +512,19 @@ fn recurrence_rule(event: &Event) -> String {
     rule
 }
 
-fn series_until_value(event: &Event, until: NaiveDate) -> String {
+fn series_until_value(event: &Event, until: Date) -> String {
     if event.all_day {
-        return until.format(D_ONLY).to_string();
+        return until.strftime(D_ONLY).to_string();
     }
-    let last = until.and_time(event.start.time());
+    let last = until.to_datetime(event.start.time());
     if event.timezone == "floating" {
-        return last.format(DT_LOCAL).to_string();
+        return last.strftime(DT_LOCAL).to_string();
     }
     let instant = crate::timezone::wall_to_utc(&event.timezone, last)
-        .map_or(last, |(instant, _)| instant.naive_utc());
-    format!("{}Z", instant.format(DT_LOCAL))
+        .map_or(last, |(instant, _)| {
+            instant.to_zoned(jiff::tz::TimeZone::UTC).datetime()
+        });
+    format!("{}Z", instant.strftime(DT_LOCAL))
 }
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
@@ -615,7 +623,7 @@ pub fn parse_calendar(text: &str) -> Parsed {
 #[derive(Default)]
 struct Zones {
     defined: HashMap<String, DefinedZone>,
-    resolved: HashMap<(String, i32), Option<String>>,
+    resolved: HashMap<(String, i16), Option<String>>,
     unknown: Vec<String>,
 }
 
@@ -642,7 +650,7 @@ impl Zones {
             } else if let Some((tzid, zone)) = zone.as_mut() {
                 if line.begins("STANDARD") || line.begins("DAYLIGHT") {
                     observance = Some(Observance {
-                        onset: NaiveDateTime::default(),
+                        onset: DateTime::default(),
                         offset_from: i32::MIN,
                         offset_to: i32::MIN,
                         rule: None,
@@ -672,7 +680,7 @@ impl Zones {
         }
     }
 
-    fn of(&mut self, line: &ContentLine, year: i32) -> String {
+    fn of(&mut self, line: &ContentLine, year: i16) -> String {
         if line.value.ends_with('Z') {
             return "UTC".into();
         }
@@ -732,7 +740,7 @@ fn observance_property(observance: &mut Observance, line: &ContentLine) {
         "RDATE" => observance
             .rdates
             .extend(value.split(',').filter_map(|part| {
-                NaiveDateTime::parse_from_str(part.trim().trim_end_matches('Z'), DT_LOCAL).ok()
+                DateTime::strptime(DT_LOCAL, part.trim().trim_end_matches('Z')).ok()
             })),
         _ => {}
     }
@@ -758,10 +766,13 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     if !rrule_value(rule, "FREQ")?.eq_ignore_ascii_case("YEARLY") {
         return None;
     }
-    let month = rrule_u32(rule, "BYMONTH").filter(|month| (1..=12).contains(month))?;
+    let month = rrule_value(rule, "BYMONTH")?
+        .parse::<i8>()
+        .ok()
+        .filter(|month| (1..=12).contains(month))?;
     let first_month_day = rrule_value(rule, "BYMONTHDAY").and_then(|days| {
         days.split(',')
-            .filter_map(|day| day.trim().parse::<u32>().ok())
+            .filter_map(|day| day.trim().parse::<i8>().ok())
             .filter(|day| (1..=31).contains(day))
             .min()
     });
@@ -771,13 +782,13 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
             let split = byday.len().checked_sub(2)?;
             let (ordinal, weekday) = (byday.get(..split)?, byday.get(split..)?);
             let weekday = match weekday.to_ascii_uppercase().as_str() {
-                "MO" => chrono::Weekday::Mon,
-                "TU" => chrono::Weekday::Tue,
-                "WE" => chrono::Weekday::Wed,
-                "TH" => chrono::Weekday::Thu,
-                "FR" => chrono::Weekday::Fri,
-                "SA" => chrono::Weekday::Sat,
-                "SU" => chrono::Weekday::Sun,
+                "MO" => jiff::civil::Weekday::Monday,
+                "TU" => jiff::civil::Weekday::Tuesday,
+                "WE" => jiff::civil::Weekday::Wednesday,
+                "TH" => jiff::civil::Weekday::Thursday,
+                "FR" => jiff::civil::Weekday::Friday,
+                "SA" => jiff::civil::Weekday::Saturday,
+                "SU" => jiff::civil::Weekday::Sunday,
                 _ => return None,
             };
             match (ordinal, month_day) {
@@ -797,9 +808,9 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     };
     let until = rrule_value(rule, "UNTIL").and_then(|until| {
         let until = until.trim().trim_end_matches('Z');
-        NaiveDateTime::parse_from_str(until, DT_LOCAL)
+        DateTime::strptime(DT_LOCAL, until)
             .ok()
-            .or_else(|| parse_cal_date(until).and_then(|date| date.and_hms_opt(23, 59, 59)))
+            .or_else(|| parse_cal_date(until).map(|date| date.at(23, 59, 59, 0)))
     });
     Some(YearlyRule { month, day, until })
 }
@@ -815,8 +826,8 @@ fn parse_vevent(
 ) -> (Option<ParsedEvent>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
-    let mut start: Option<NaiveDateTime> = None;
-    let mut end: Option<NaiveDateTime> = None;
+    let mut start: Option<DateTime> = None;
+    let mut end: Option<DateTime> = None;
     let mut duration = None;
     let mut all_day = false;
     let mut location = String::new();
@@ -934,9 +945,9 @@ fn parse_vevent(
         i += 1;
     }
 
-    let Some(mut start) = start.or_else(|| {
-        recurrence_id.map(|(date, time)| date.and_time(time.unwrap_or(NaiveTime::MIN)))
-    }) else {
+    let Some(mut start) = start
+        .or_else(|| recurrence_id.map(|(date, time)| date.to_datetime(time.unwrap_or(Time::MIN))))
+    else {
         return (None, i);
     };
     let recurrence_until =
@@ -967,7 +978,11 @@ fn parse_vevent(
         (None, None) => start,
     };
     if all_day && end.date() <= start.date() {
-        end = (start.date() + chrono::Duration::days(1)).and_time(NaiveTime::MIN);
+        end = start
+            .date()
+            .tomorrow()
+            .unwrap_or_else(|_| start.date())
+            .to_datetime(Time::MIN);
     }
     if timezone != "floating" {
         let Some((normalized, _)) = crate::timezone::normalize_wall(&timezone, start) else {
@@ -996,7 +1011,7 @@ fn parse_vevent(
                 recurrence_count,
                 recurrence_exdates: exdates
                     .iter()
-                    .filter_map(|value| recurrence_wall(value, &timezone).map(|wall| wall.date()))
+                    .filter_map(|value| recurrence_wall(value, &timezone).map(DateTime::date))
                     .collect(),
                 occurrence_overrides: Keyed::default(),
                 timezone,
@@ -1017,7 +1032,7 @@ fn parse_vevent(
 fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
-    let mut due: Option<NaiveDate> = None;
+    let mut due: Option<Date> = None;
     let mut done = false;
     let mut priority = Priority::None;
 
@@ -1078,22 +1093,22 @@ fn raw(out: &mut String, key: &str, val: &str) {
     fold_into(out, &format!("{key}:{val}"));
 }
 
-fn emit_datetime(out: &mut String, property: &str, value: NaiveDateTime, timezone: &str) {
+fn emit_datetime(out: &mut String, property: &str, value: DateTime, timezone: &str) {
     if timezone == "UTC" {
-        raw(out, property, &format!("{}Z", value.format(DT_LOCAL)));
+        raw(out, property, &format!("{}Z", value.strftime(DT_LOCAL)));
     } else if timezone == "floating" {
-        raw(out, property, &value.format(DT_LOCAL).to_string());
+        raw(out, property, &value.strftime(DT_LOCAL).to_string());
     } else {
         pim_lines::write_property(
             out,
             property,
             &[("TZID", timezone)],
-            &value.format(DT_LOCAL).to_string(),
+            &value.strftime(DT_LOCAL).to_string(),
         );
     }
 }
 
-fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
+fn parse_cal_datetime(line: &ContentLine) -> Option<(DateTime, bool)> {
     let val = line.value.as_str();
     let date_valued = line
         .param_value("VALUE")
@@ -1101,19 +1116,19 @@ fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
     if (date_valued || val.len() == 8)
         && let Some(d) = parse_cal_date(val)
     {
-        return Some((d.and_time(NaiveTime::MIN), true));
+        return Some((d.to_datetime(Time::MIN), true));
     }
     let clean = val.trim_end_matches('Z');
-    if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
+    if let Ok(dt) = DateTime::strptime(DT_LOCAL, clean) {
         return Some((dt, false));
     }
     if let Some(d) = parse_cal_date(val) {
-        return Some((d.and_time(NaiveTime::MIN), true));
+        return Some((d.to_datetime(Time::MIN), true));
     }
     None
 }
 
-fn parse_recurrence_id(line: &ContentLine) -> Option<(NaiveDate, Option<NaiveTime>)> {
+fn parse_recurrence_id(line: &ContentLine) -> Option<(Date, Option<Time>)> {
     let (datetime, date_only) = parse_cal_datetime(line)?;
     Some((datetime.date(), (!date_only).then_some(datetime.time())))
 }
@@ -1185,22 +1200,26 @@ fn rrule_u32(rule: &str, name: &str) -> Option<u32> {
     rrule_value(rule, name)?.parse().ok()
 }
 
-fn recurrence_wall(value: &str, zone: &str) -> Option<NaiveDateTime> {
+fn recurrence_wall(value: &str, zone: &str) -> Option<DateTime> {
     let value = value.trim();
     if let Some(date) = parse_cal_date(value) {
-        return Some(date.and_time(NaiveTime::MIN));
+        return Some(date.to_datetime(Time::MIN));
     }
     let Some(utc) = value.strip_suffix('Z') else {
-        return NaiveDateTime::parse_from_str(value, DT_LOCAL).ok();
+        return DateTime::strptime(DT_LOCAL, value).ok();
     };
-    let instant = NaiveDateTime::parse_from_str(utc, DT_LOCAL).ok()?.and_utc();
-    Some(match zone.parse::<chrono_tz::Tz>() {
-        Ok(zone) => instant.with_timezone(&zone).naive_local(),
-        Err(_) => instant.naive_utc(),
+    let wall = DateTime::strptime(DT_LOCAL, utc).ok()?;
+    Some(match crate::timezone::named(zone) {
+        Some(zone) => wall
+            .to_zoned(TimeZone::UTC)
+            .ok()?
+            .with_time_zone(zone)
+            .datetime(),
+        None => wall,
     })
 }
 
-fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDate> {
+fn series_until(value: &str, start: DateTime, zone: &str) -> Option<Date> {
     if let Some(date) = parse_cal_date(value) {
         return Some(date);
     }
@@ -1208,19 +1227,19 @@ fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDa
     if until.time() >= start.time() {
         Some(until.date())
     } else {
-        until.date().pred_opt()
+        until.date().yesterday().ok()
     }
 }
 
-fn parse_cal_date(val: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
+fn parse_cal_date(val: &str) -> Option<Date> {
+    Date::strptime(D_ONLY, val.trim()).ok()
 }
 
-fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
-    duration_parts(value).filter(|(days, time)| *days > 0 || *time > chrono::Duration::zero())
+fn parse_event_duration(value: &str) -> Option<(i64, SignedDuration)> {
+    duration_parts(value).filter(|(days, time)| *days > 0 || *time > SignedDuration::ZERO)
 }
 
-fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
+fn duration_parts(value: &str) -> Option<(i64, SignedDuration)> {
     let value = value.trim();
     let value = value.strip_prefix('+').unwrap_or(value);
     let mut rest = value.strip_prefix('P')?;
@@ -1229,7 +1248,7 @@ fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
             return None;
         }
         let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
-        return Some((days, chrono::Duration::zero()));
+        return Some((days, SignedDuration::ZERO));
     }
     let mut days = 0_i64;
     let mut seconds = 0_i64;
@@ -1267,30 +1286,30 @@ fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
         }
         rest = rest.get(digits + 1..)?;
     }
-    Some((days, chrono::Duration::try_seconds(seconds)?))
+    Some((days, SignedDuration::from_secs(seconds)))
 }
 
 fn duration_span(
-    start: NaiveDateTime,
+    start: DateTime,
     zone: &str,
     days: i64,
-    time: chrono::Duration,
-) -> Option<(NaiveDateTime, bool)> {
-    let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
+    time: SignedDuration,
+) -> Option<(DateTime, bool)> {
+    let wall = start
+        .checked_add(jiff::Span::new().try_days(days).ok()?)
+        .ok()?;
     if zone == "floating" {
-        return Some((wall.checked_add_signed(time)?, false));
+        return Some((wall.checked_add(time).ok()?, false));
     }
     let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
-    wall_in(zone, instant.checked_add_signed(time)?)
+    wall_in(zone, instant.checked_add(time).ok()?)
 }
 
-fn wall_in(zone: &str, instant: chrono::DateTime<chrono::Utc>) -> Option<(NaiveDateTime, bool)> {
+fn wall_in(zone: &str, instant: jiff::Timestamp) -> Option<(DateTime, bool)> {
     let wall = if zone == "UTC" {
-        instant.naive_utc()
+        instant.to_zoned(TimeZone::UTC).datetime()
     } else {
-        instant
-            .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
-            .naive_local()
+        instant.to_zoned(crate::timezone::named(zone)?).datetime()
     };
     let later_fold = crate::timezone::wall_to_utc(zone, wall)?.0 != instant;
     Some((wall, later_fold))
@@ -1303,7 +1322,7 @@ fn parse_trigger_minutes(v: &str) -> Option<i64> {
         None => (false, v.strip_prefix('+').unwrap_or(v)),
     };
     let (days, time) = duration_parts(duration)?;
-    let minutes = days.checked_mul(24 * 60)?.checked_add(time.num_minutes())?;
+    let minutes = days.checked_mul(24 * 60)?.checked_add(time.as_mins())?;
     (before || minutes == 0).then_some(minutes)
 }
 
@@ -1315,15 +1334,15 @@ fn color_from_name(name: &str) -> Palette {
         .unwrap_or(Palette::Indigo)
 }
 
-pub fn suggested_filename(anchor: NaiveDate) -> String {
+pub fn suggested_filename(anchor: Date) -> String {
     format!("tilo-calendar-{}-{:02}.ics", anchor.year(), anchor.month())
 }
 
-pub fn sample_ics(today: NaiveDate) -> String {
-    let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
+pub fn sample_ics(today: Date) -> String {
+    let at = |date: Date, h: i8, m: i8| -> DateTime {
+        date.to_datetime(Time::new(h, m, 0, 0).unwrap_or(Time::MIN))
     };
-    let d = |delta: i64| today + chrono::Duration::days(delta);
+    let d = |delta: i64| today + jiff::Span::new().days(delta);
     let model = Calendar {
         projects: Keyed::default(),
         events: vec![
@@ -1366,7 +1385,6 @@ pub fn sample_ics(today: NaiveDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Timelike as _;
 
     tilo_test_env::scenario! {
         /// Import: what an iCalendar file says becomes the events it names, at their instants.
@@ -1401,7 +1419,7 @@ mod tests {
                 assert_eq!(events.len(), 1, "{duration}");
                 assert_eq!(
                     events[0].end,
-                    expected.parse::<NaiveDateTime>().unwrap(),
+                    expected.parse::<DateTime>().unwrap(),
                     "{duration}"
                 );
                 let model = Calendar {
@@ -1439,8 +1457,8 @@ mod tests {
             assert_eq!(tasks[0].id, tasks_again[0].id);
             assert_ne!(events[0].id, tasks[0].id);
             assert_eq!(events[0].occurrence_overrides.len(), 1);
-            let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-            let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+            let from = Date::new(2026, 6, 15).unwrap();
+            let cancelled = Date::new(2026, 6, 22).unwrap();
             assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
         }
 
@@ -1467,7 +1485,7 @@ mod tests {
 
         phase date_time_series_ends_exclusions_and_due_times_import;
         {
-            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
+            let date = |day| Date::new(2026, 10, day).expect("valid date");
             let weekly = |until: &str, exdate: &str| {
                 let payload = format!(
                     "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
@@ -1477,7 +1495,7 @@ mod tests {
                  {exdate}\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
                 );
                 let (events, _) = parse(&payload);
-                events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
+                events[0].occurrences_in(date(1), date(31) + jiff::Span::new().days(90))
             };
             assert_eq!(
                 weekly(
@@ -1522,16 +1540,16 @@ mod tests {
              RRULE:FREQ=YEARLY;INTERVAL=1;UNTIL=20320301T000000Z",
             ];
             let (from, to) = (
-                NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-                NaiveDate::from_ymd_opt(2033, 1, 1).expect("valid date"),
+                Date::new(2024, 1, 1).expect("valid date"),
+                Date::new(2033, 1, 1).expect("valid date"),
             );
             for lines in series {
                 let set: rrule::RRuleSet = lines.parse().expect("valid series");
-                let expected: Vec<NaiveDateTime> = set
+                let expected: Vec<DateTime> = set
                     .all(u16::MAX)
                     .dates
                     .into_iter()
-                    .map(|at| at.naive_local())
+                    .map(|at| at.naive_local().to_string().replace(' ', "T").parse().unwrap())
                     .collect();
                 let payload = format!(
                     "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
@@ -1539,10 +1557,10 @@ mod tests {
                 );
                 let (events, _) = parse(&payload);
                 let event = &events[0];
-                let imported: Vec<NaiveDateTime> = event
+                let imported: Vec<DateTime> = event
                     .occurrences_in(from, to)
                     .into_iter()
-                    .map(|date| date.and_time(event.start.time()))
+                    .map(|date| date.to_datetime(event.start.time()))
                     .collect();
                 assert_eq!(imported, expected, "{lines}");
             }
@@ -1550,7 +1568,7 @@ mod tests {
 
         phase outlook_invites_import_at_their_instant;
         {
-            let at_ten = "2026-11-03T09:00:00+00:00".to_string();
+            let at_ten = "2026-11-03T09:00:00Z".to_string();
             for zone in [String::new(), outlook_zone("W. Europe Standard Time")] {
                 let payload = outlook_invite(
                     &zone,
@@ -1577,7 +1595,7 @@ mod tests {
                 )),
                 (
                     "America/Los_Angeles".to_string(),
-                    "2026-07-10T16:00:00+00:00".to_string()
+                    "2026-07-10T16:00:00Z".to_string()
                 )
             );
             // A zone Outlook names after its cities, or a customised one, is
@@ -1600,17 +1618,15 @@ mod tests {
                 "20260710T100000",
                 "20260710T110000",
             ));
-            assert_eq!(instant, "2026-07-10T08:00:00+00:00");
-            let winter = NaiveDate::from_ymd_opt(2026, 1, 15)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap();
+            assert_eq!(instant, "2026-07-10T08:00:00Z");
+            let winter = Date::new(2026, 1, 15).unwrap()
+                .at(12, 0, 0, 0);
             assert_eq!(
                 crate::timezone::wall_to_utc(&zone, winter)
                     .unwrap()
                     .0
-                    .to_rfc3339(),
-                "2026-01-15T11:00:00+00:00",
+                    .to_string(),
+                "2026-01-15T11:00:00Z",
                 "{zone} keeps Central European winter time"
             );
             let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
@@ -1629,7 +1645,7 @@ mod tests {
                 )),
                 (
                     "Australia/Sydney".to_string(),
-                    "2026-11-30T22:00:00+00:00".to_string()
+                    "2026-11-30T22:00:00Z".to_string()
                 )
             );
             let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
@@ -1664,7 +1680,7 @@ mod tests {
                 )),
                 (
                     "America/New_York".to_string(),
-                    "2026-07-10T13:00:00+00:00".to_string()
+                    "2026-07-10T13:00:00Z".to_string()
                 )
             );
         }
@@ -1683,8 +1699,8 @@ mod tests {
                 assert_eq!(parsed.unknown_zones, vec![tzid.to_string()]);
                 let event = &parsed.events[0];
                 assert_eq!(event.timezone, "floating");
-                assert_eq!(event.start.to_string(), "2026-11-03 10:00:00");
-                assert_eq!(event.end.to_string(), "2026-11-03 11:00:00");
+                assert_eq!(event.start.to_string(), "2026-11-03T10:00:00");
+                assert_eq!(event.end.to_string(), "2026-11-03T11:00:00");
                 let (import, unknown) =
                     crate::resource::import_reporting(&payload).expect("the event is imported");
                 assert_eq!(unknown, vec![tzid.to_string()]);
@@ -1708,10 +1724,10 @@ mod tests {
              END:VCALENDAR\r\n";
             let (events, _) = parse(payload);
             assert_eq!(events[0].timezone, "Europe/Berlin");
-            assert_eq!(events[0].end.to_string(), "2026-07-10 18:30:00");
+            assert_eq!(events[0].end.to_string(), "2026-07-10T18:30:00");
             assert_eq!(
-                events[0].end_instant().unwrap().to_rfc3339(),
-                "2026-07-10T16:30:00+00:00"
+                events[0].end_instant().unwrap().to_string(),
+                "2026-07-10T16:30:00Z"
             );
         }
     }
@@ -1726,7 +1742,7 @@ mod tests {
 
         phase an_events_notes_are_exported_as_its_description;
         {
-            let mut model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
             let id = model.events.iter().next().unwrap().id;
             model.notes.insert(
                 id.to_string(),
@@ -1742,7 +1758,7 @@ mod tests {
         phase export_envelope_and_event_task_all_day_round_trips;
         {
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let ics = export(&model);
                 assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
                 assert!(ics.contains("BEGIN:VEVENT"));
@@ -1750,7 +1766,7 @@ mod tests {
                 assert!(ics.trim_end().ends_with("END:VCALENDAR"));
             }
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let ics = export(&model);
                 let (events, tasks) = parse(&ics);
                 assert_eq!(events.len(), model.events.len());
@@ -1769,15 +1785,15 @@ mod tests {
                 assert!(offsite.all_day);
             }
             {
-                let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+                let start = Date::new(2026, 6, 15).unwrap();
                 let model = Calendar {
                     projects: Keyed::default(),
                     tasks: Keyed::default(),
                     events: vec![Event {
                         id: Uuid::new_v4(),
                         title: "Conference".into(),
-                        start: start.and_time(NaiveTime::MIN),
-                        end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
+                        start: start.to_datetime(Time::MIN),
+                        end: (start + jiff::Span::new().days(3)).to_datetime(Time::MIN),
                         all_day: true,
                         ..Event::default()
                     }]
@@ -1791,11 +1807,11 @@ mod tests {
                 let (events, _) = parse(&calendar);
                 let event = events.first().expect("round-tripped event");
                 assert!(event.all_day);
-                assert!(event.occurs_on(start + chrono::Duration::days(2)));
-                assert!(!event.occurs_on(start + chrono::Duration::days(3)));
+                assert!(event.occurs_on(start + jiff::Span::new().days(2)));
+                assert!(!event.occurs_on(start + jiff::Span::new().days(3)));
             }
             {
-                let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+                let model = crate::model::seed_demo(Date::new(2026, 6, 15).unwrap());
                 let (_, tasks) = parse(&export(&model));
                 assert!(tasks.iter().any(|t| t.done));
                 assert!(tasks.iter().any(|t| t.priority == Priority::High));
@@ -1811,7 +1827,7 @@ mod tests {
         {
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 let event = model
                     .events
                     .iter_mut()
@@ -1827,16 +1843,16 @@ mod tests {
                 event.organizer = Some(guest.id);
                 event.attendees.push(guest.clone());
                 event.recurrence_interval = 2;
-                event.recurrence_until = NaiveDate::from_ymd_opt(2026, 12, 31);
+                event.recurrence_until = Date::new(2026, 12, 31).ok();
                 event.recurrence_count = Some(8);
-                event.recurrence_exdates = [NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date")]
+                event.recurrence_exdates = [Date::new(2026, 6, 17).expect("valid date")]
                     .into_iter()
                     .collect();
                 event.occurrence_overrides.clear();
                 event
                     .occurrence_overrides
                     .push(crate::model::OccurrenceOverride {
-                        original_date: NaiveDate::from_ymd_opt(2026, 6, 19).expect("valid date"),
+                        original_date: Date::new(2026, 6, 19).expect("valid date"),
                         original_time: None,
                         cancelled: true,
                         start: None,
@@ -1872,7 +1888,7 @@ mod tests {
                 assert_eq!(event.recurrence_count, Some(8));
                 assert_eq!(
                     event.recurrence_until,
-                    NaiveDate::from_ymd_opt(2026, 12, 31)
+                    Date::new(2026, 12, 31).ok()
                 );
                 assert_eq!(event.recurrence_exdates.len(), 1);
                 assert_eq!(event.occurrence_overrides.len(), 1);
@@ -1886,9 +1902,9 @@ mod tests {
                 let edit = &first[0].occurrence_overrides[0];
                 assert_eq!(
                     edit.original_date,
-                    NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
+                    Date::new(2026, 10, 27).unwrap()
                 );
-                assert_eq!(edit.original_time, NaiveTime::from_hms_opt(9, 0, 0));
+                assert_eq!(edit.original_time, Time::new(9, 0, 0, 0).ok());
 
                 let exported = export(&Calendar {
                     events: first.into(),
@@ -1900,7 +1916,7 @@ mod tests {
                 let (round_tripped, _) = parse(&exported);
                 assert_eq!(
                     round_tripped[0].occurrence_overrides[0].original_time,
-                    NaiveTime::from_hms_opt(9, 0, 0)
+                    Time::new(9, 0, 0, 0).ok()
                 );
             }
             {
@@ -1908,11 +1924,11 @@ mod tests {
                 let (events, _) = parse(payload);
                 assert_eq!(
                     events[0].start.time(),
-                    NaiveTime::from_hms_opt(3, 0, 0).unwrap()
+                    Time::new(3, 0, 0, 0).unwrap()
                 );
                 assert_eq!(
                     events[0].end.time(),
-                    NaiveTime::from_hms_opt(3, 30, 0).unwrap()
+                    Time::new(3, 30, 0, 0).unwrap()
                 );
             }
             {
@@ -1930,7 +1946,7 @@ mod tests {
             }
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 let event = model.events.first_mut().expect("demo event");
                 let guest = Attendee {
                     id: Uuid::new_v4(),
@@ -1976,7 +1992,7 @@ mod tests {
             }
             {
                 let mut model =
-                    crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+                    crate::model::seed_demo(Date::new(2026, 6, 15).expect("valid date"));
                 model.events.first_mut().expect("demo event").title = "Line one\r\nLine two".into();
                 let exported = export(&model);
                 assert!(
@@ -2001,14 +2017,10 @@ mod tests {
                 let event = Event {
                     id: Uuid::new_v4(),
                     title: title.clone(),
-                    start: NaiveDate::from_ymd_opt(2026, 9, 15)
-                        .unwrap()
-                        .and_hms_opt(9, 0, 0)
-                        .unwrap(),
-                    end: NaiveDate::from_ymd_opt(2026, 9, 15)
-                        .unwrap()
-                        .and_hms_opt(10, 0, 0)
-                        .unwrap(),
+                    start: Date::new(2026, 9, 15).unwrap()
+                        .at(9, 0, 0, 0),
+                    end: Date::new(2026, 9, 15).unwrap()
+                        .at(10, 0, 0, 0),
                     ..Event::default()
                 };
                 let ics = export(&Calendar {
@@ -2028,7 +2040,7 @@ mod tests {
 
         phase a_timed_series_exports_its_end_and_exclusions_as_date_times;
         {
-            let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
+            let date = |day| Date::new(2026, 10, day).unwrap();
             for (zone, all_day, until, exdate) in [
                 (
                     "Europe/Berlin",
@@ -2056,13 +2068,12 @@ mod tests {
                 ),
             ] {
                 let start = date(5)
-                    .and_hms_opt(if all_day { 0 } else { 9 }, 0, 0)
-                    .unwrap();
+                    .at(if all_day { 0 } else { 9 }, 0, 0, 0);
                 let event = Event {
                     id: Uuid::new_v4(),
                     title: "Standup".into(),
                     start,
-                    end: start + chrono::Duration::minutes(if all_day { 24 * 60 } else { 30 }),
+                    end: start + jiff::SignedDuration::from_mins(if all_day { 24 * 60 } else { 30 }),
                     all_day,
                     recurrence: Recurrence::Weekly,
                     recurrence_until: Some(date(26)),
@@ -2093,7 +2104,7 @@ mod tests {
                         &event.timezone
                     )
                 );
-                let window = (date(1), date(31) + chrono::Duration::days(60));
+                let window = (date(1), date(31) + jiff::Span::new().days(60));
                 assert_eq!(
                     back.occurrences_in(window.0, window.1),
                     vec![date(5), date(19), date(26)]
@@ -2207,7 +2218,7 @@ mod tests {
         assert_eq!(parsed.events.len(), 1, "the invite's event is kept");
         let event = &parsed.events[0];
         let instant = crate::timezone::wall_to_utc(&event.timezone, event.start)
-            .map(|(instant, _)| instant.to_rfc3339())
+            .map(|(instant, _)| instant.to_string())
             .unwrap_or_default();
         (event.timezone.clone(), instant)
     }

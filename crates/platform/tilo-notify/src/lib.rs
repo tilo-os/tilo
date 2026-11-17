@@ -309,7 +309,7 @@ pub struct AlarmState {
     pub enabled_at_ms: i64,
     pub next_at: Option<SystemTime>,
     pub last_at: Option<SystemTime>,
-    pub last_rung: Option<chrono::NaiveDate>,
+    pub last_rung: Option<jiff::civil::Date>,
 }
 
 pub trait Notifier: Send + Sync {

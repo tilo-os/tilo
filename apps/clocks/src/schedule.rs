@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 
@@ -150,7 +150,7 @@ pub struct ArmedAlarm {
     /// The occurrence, not only its time of day: reopening after midnight still
     /// rings the alarm armed yesterday.
     pub next_due_ms: Option<i64>,
-    pub last_rung: Option<NaiveDate>,
+    pub last_rung: Option<Date>,
 }
 
 pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
@@ -186,7 +186,7 @@ pub enum DueEvent {
     Alarm {
         id: Id,
         label: String,
-        scheduled_for: DateTime<Utc>,
+        scheduled_for: jiff::Timestamp,
         native_scheduled: bool,
     },
     Timer {
@@ -236,11 +236,11 @@ fn ring_snoozes(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &m
 pub fn tick(
     clocks: &Clocks,
     delivery: &mut Delivery,
-    now_utc: DateTime<Utc>,
-    now_local: DateTime<Local>,
+    now_utc: jiff::Timestamp,
+    now_local: &jiff::Zoned,
 ) -> Tick {
     let mut found = Tick::default();
-    let now_ms = now_utc.timestamp_millis();
+    let now_ms = now_utc.as_millisecond();
     ring_snoozes(clocks, delivery, now_ms, &mut found);
     delivery
         .alarms
@@ -267,7 +267,7 @@ pub fn tick(
             // Local time, so future deadlines follow time zone changes; a passed
             // one stays due, even after days closed.
             armed.next_due_ms = next_occurrence(alarm, armed.last_rung, now_local)
-                .map(|deadline| deadline.timestamp_millis());
+                .map(|deadline| deadline.timestamp().as_millisecond());
         }
         let Some(deadline) = armed
             .next_due_ms
@@ -289,7 +289,7 @@ pub fn tick(
             scheduled_for,
             native_scheduled,
         });
-        armed.last_rung = Some(scheduled_for.with_timezone(&Local).date_naive());
+        armed.last_rung = Some(scheduled_for.to_zoned(jiff::tz::TimeZone::system()).date());
         if alarm.repeat == 0 {
             armed.next_due_ms = None;
             found.finished_alarms.push(id.clone());
@@ -297,7 +297,7 @@ pub fn tick(
             // Catch up once, then arm the next occurrence instead of replaying
             // the missed days.
             armed.next_due_ms = next_occurrence(alarm, armed.last_rung, now_local)
-                .map(|deadline| deadline.timestamp_millis());
+                .map(|deadline| deadline.timestamp().as_millisecond());
         }
     }
     delivery
@@ -326,17 +326,9 @@ pub fn tick(
 #[must_use]
 pub fn next_occurrence(
     alarm: &Alarm,
-    last_rung: Option<NaiveDate>,
-    after: DateTime<Local>,
-) -> Option<DateTime<Local>> {
-    next_occurrence_in(alarm, last_rung, &after)
-}
-
-pub(crate) fn next_occurrence_in<Tz: TimeZone>(
-    alarm: &Alarm,
-    last_rung: Option<NaiveDate>,
-    after: &DateTime<Tz>,
-) -> Option<DateTime<Tz>> {
+    last_rung: Option<Date>,
+    after: &jiff::Zoned,
+) -> Option<jiff::Zoned> {
     if !alarm.enabled {
         return None;
     }
@@ -363,7 +355,7 @@ pub struct ShellActivity {
 pub fn shell_activity(
     clocks: &Clocks,
     device: &OnThisDevice,
-    now: DateTime<Utc>,
+    now: jiff::Timestamp,
 ) -> Option<ShellActivity> {
     let stopwatch = &clocks.stopwatch;
     if device.floating_stopwatch && (stopwatch.is_running() || stopwatch.accumulated_ms > 0) {

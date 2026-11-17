@@ -174,7 +174,7 @@ name = "activity"
 version = "0.1.0"
 dependencies = [
  "activity",
- "chrono",
+ "jiff",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1176,9 +1176,9 @@ dependencies = [
 name = "backups"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "hex",
  "host-fs",
+ "jiff",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1567,10 +1567,10 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "browser-continuity",
- "chrono",
  "fnv",
  "hex",
  "host-info",
+ "jiff",
  "reqwest 0.13.4",
  "ring",
  "runtime-dylib",
@@ -1851,10 +1851,10 @@ version = "0.1.0"
 dependencies = [
  "account-credentials",
  "accounts",
- "chrono",
- "chrono-tz",
  "fnv",
  "hex",
+ "jiff",
+ "jiff-tzdb",
  "mail",
  "pim-lines",
  "rrule",
@@ -2156,11 +2156,11 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "chat",
- "chrono",
  "durable-store",
  "emoji",
  "fnv",
  "image",
+ "jiff",
  "moderation-model",
  "neighbour-wire",
  "runtime-dylib",
@@ -2404,8 +2404,8 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "chrono-tz",
+ "jiff",
+ "jiff-tzdb",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2413,6 +2413,7 @@ dependencies = [
  "tilo-app",
  "tilo-clock",
  "tilo-history",
+ "tilo-recurrence",
  "tilo-test-env",
  "tilo-timezone-engine",
  "tracing",
@@ -2424,7 +2425,7 @@ dependencies = [
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2438,7 +2439,6 @@ name = "cloud-source-dav"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "cloud-source",
  "cloud-source-dav",
  "percent-encoding",
@@ -2475,7 +2475,6 @@ dependencies = [
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "cloud-source",
  "cloud-source-gdrive",
  "hex",
@@ -3717,9 +3716,9 @@ dependencies = [
 name = "db-client"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "db-client",
  "hex",
+ "jiff",
  "mysql",
  "postgres",
  "runtime-dylib",
@@ -4964,10 +4963,10 @@ name = "feeds"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
  "feed-rs",
  "feeds",
  "fnv",
+ "jiff",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
@@ -5027,7 +5026,6 @@ dependencies = [
  "accounts",
  "cap-fs-ext",
  "cap-std",
- "chrono",
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "file-explorer",
@@ -5037,6 +5035,7 @@ dependencies = [
  "host-fs",
  "image",
  "iroh",
+ "jiff",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -5843,11 +5842,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bounded-command",
- "chrono",
  "futures-util",
  "git-client",
  "git2",
  "hex",
+ "jiff",
  "rcgen",
  "reqwest 0.13.4",
  "runtime-dylib",
@@ -6137,10 +6136,10 @@ name = "greeter"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
- "chrono",
  "console-control",
  "greetd-client",
  "greetd_ipc",
+ "jiff",
  "rustix 1.1.6",
  "serde_json",
  "settings-store",
@@ -8290,10 +8289,14 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb-platform",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -8316,6 +8319,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0980fca2cc272465bd60e82397607ba9f33add9e48defd77923301bbd03808f2"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
 ]
 
 [[package]]
@@ -9675,8 +9693,8 @@ dependencies = [
 name = "maps"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "fnv",
+ "jiff",
  "lru 0.18.3",
  "maps",
  "runtime-dylib",
@@ -9850,8 +9868,8 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
- "chrono",
  "hex",
+ "jiff",
  "libc",
  "mail-parser",
  "pim-lines",
@@ -10642,9 +10660,9 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "chrono",
  "collab-types",
  "image",
+ "jiff",
  "notes",
  "runtime-dylib",
  "serde",
@@ -12786,8 +12804,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
- "chrono",
  "fallible-iterator 0.2.0",
+ "jiff",
  "postgres-protocol",
  "serde_core",
  "serde_json",
@@ -15382,7 +15400,6 @@ dependencies = [
  "agent-provider-config",
  "bounded-command",
  "calendar",
- "chrono",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",
@@ -15392,6 +15409,7 @@ dependencies = [
  "desktop-policy",
  "file-explorer",
  "hex",
+ "jiff",
  "launcher",
  "os-actions",
  "package-store",
@@ -15451,8 +15469,8 @@ name = "settings-sections"
 version = "0.1.0"
 dependencies = [
  "agent-provider-config",
- "chrono",
  "desktop-policy",
+ "jiff",
  "serde",
  "serde_json",
  "settings-store",
@@ -16925,7 +16943,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 name = "tasks"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -17333,8 +17351,8 @@ name = "tilo-actions"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
  "hex",
+ "jiff",
  "postcard",
  "regex-lite",
  "serde",
@@ -17407,7 +17425,6 @@ dependencies = [
  "canvas",
  "chat",
  "chip-design",
- "chrono",
  "clocks",
  "collab-types",
  "contacts",
@@ -17428,6 +17445,7 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
+ "jiff",
  "key-group",
  "libc",
  "mail",
@@ -17598,6 +17616,7 @@ dependencies = [
  "collab-types",
  "durable-store",
  "fs-protocol",
+ "jiff",
  "neighbour-wire",
  "registry-types",
  "serde",
@@ -17882,8 +17901,8 @@ name = "tilo-archive"
 version = "0.1.0"
 dependencies = [
  "bzip2",
- "chrono",
  "flate2",
+ "jiff",
  "lzma-rust2",
  "ruzstd",
  "sevenz-rust2",
@@ -17919,9 +17938,9 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "chrono",
  "futures-util",
  "image",
+ "jiff",
  "libc",
  "percent-encoding",
  "serde",
@@ -17973,7 +17992,7 @@ name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -18365,7 +18384,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "chrono",
  "clap",
  "clap_complete",
  "collab-types",
@@ -18377,6 +18395,7 @@ dependencies = [
  "http-body-util",
  "iroh",
  "iroh-blobs",
+ "jiff",
  "mail-parser",
  "migration-sources",
  "neighbour-wire",
@@ -18468,8 +18487,8 @@ version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
- "chrono",
  "host-fs",
+ "jiff",
  "serde",
  "serde_json",
  "tilo-fs-client",
@@ -18693,7 +18712,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bounded-command",
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",
@@ -18793,13 +18812,13 @@ dependencies = [
  "calculator",
  "calendar",
  "chat",
- "chrono",
  "collab-types",
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "emoji",
  "hex",
+ "jiff",
  "notes",
  "serde",
  "serde_json",
@@ -18934,10 +18953,10 @@ name = "tilo-desktop-surface"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
  "collab-types",
  "fs-protocol",
  "hex",
+ "jiff",
  "neighbour-wire",
  "postcard",
  "serde",
@@ -19167,7 +19186,7 @@ dependencies = [
 name = "tilo-document"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -19482,7 +19501,7 @@ dependencies = [
 name = "tilo-formats"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "tilo-failure",
@@ -19724,7 +19743,7 @@ dependencies = [
 name = "tilo-host-account"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "legacy-vm",
  "serde",
  "serde_json",
@@ -19767,10 +19786,10 @@ dependencies = [
 name = "tilo-identity-ceremony"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
+ "jiff",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -20175,8 +20194,8 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "buffa-build",
- "chrono",
  "futures-util",
+ "jiff",
  "messages",
  "reqwest 0.13.4",
  "rustls",
@@ -20551,11 +20570,11 @@ name = "tilo-notifications-service"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
  "image",
+ "jiff",
  "libc",
  "resvg",
  "serde",
@@ -20586,7 +20605,7 @@ name = "tilo-notify"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
- "chrono",
+ "jiff",
  "js-sys",
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",
@@ -21161,8 +21180,8 @@ dependencies = [
 name = "tilo-recurrence"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "chrono-tz",
+ "jiff",
+ "jiff-tzdb",
  "rrule",
  "tilo-resource",
  "workspace-hack",
@@ -21229,8 +21248,8 @@ name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chrono",
  "hex",
+ "jiff",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -21333,7 +21352,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "chrono",
  "collab-types",
  "console-control",
  "ed25519-dalek 3.0.0",
@@ -21344,6 +21362,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-blobs",
+ "jiff",
  "key-group",
  "launcher",
  "launcher-macos",
@@ -21608,7 +21627,6 @@ dependencies = [
  "bounded-command",
  "bytes",
  "chat",
- "chrono",
  "clap",
  "collab-types",
  "crc32fast",
@@ -21629,6 +21647,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-relay",
+ "jiff",
  "key-group",
  "launcher",
  "legacy-vm",
@@ -21856,7 +21875,6 @@ dependencies = [
  "bounded-command",
  "browser-continuity",
  "chat",
- "chrono",
  "collab-types",
  "collaboration",
  "desktop-policy",
@@ -21871,6 +21889,7 @@ dependencies = [
  "host-fs",
  "image",
  "iroh",
+ "jiff",
  "key-group",
  "launcher",
  "libc",
@@ -22382,7 +22401,7 @@ name = "tilo-surface-host"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
- "chrono",
+ "jiff",
  "package-store",
  "serde",
  "serde_json",
@@ -22459,10 +22478,10 @@ dependencies = [
 name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "getrandom 0.4.3",
  "iroh",
  "iroh-relay",
+ "jiff",
  "libc",
  "serde_json",
  "tempfile",
@@ -22540,8 +22559,8 @@ dependencies = [
 name = "tilo-timezone-engine"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "chrono-tz",
+ "jiff",
+ "jiff-tzdb",
  "runtime-dylib",
  "workspace-hack",
 ]
@@ -22611,7 +22630,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "browser-continuity-core",
- "chrono",
  "collab-types",
  "collaboration",
  "cosmic-text",
@@ -22629,6 +22647,7 @@ dependencies = [
  "hypher",
  "icu_segmenter",
  "image",
+ "jiff",
  "jni 0.21.1",
  "libc",
  "naga",
@@ -22764,7 +22783,7 @@ dependencies = [
 name = "tilo-ui-host"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -22986,9 +23005,9 @@ name = "tilo-vm"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "clap",
  "hex",
+ "jiff",
  "libc",
  "quick-xml 0.41.0",
  "regex",
@@ -23028,10 +23047,10 @@ name = "tilo-vmd"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "clap",
  "console-control",
  "hex",
+ "jiff",
  "launcher",
  "libc",
  "onboarding-walk",
@@ -23458,7 +23477,7 @@ name = "tilo-written-view"
 version = "0.1.0"
 dependencies = [
  "app-fleet",
- "chrono",
+ "jiff",
  "serde_json",
  "tilo-actions",
  "tilo-app",
@@ -23515,9 +23534,9 @@ dependencies = [
 name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "collab-types",
  "collaboration",
+ "jiff",
  "js-sys",
  "libc",
  "mail",
@@ -23553,11 +23572,11 @@ name = "tilolang-cli"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
- "chrono",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "jiff",
  "launcher",
  "registry-types",
  "runtime-portal",
@@ -23590,10 +23609,10 @@ name = "tilolang-host"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "collab-types",
  "collaboration",
  "durable-store",
+ "jiff",
  "libc",
  "runtime-portal",
  "serde_json",
@@ -23643,7 +23662,7 @@ dependencies = [
 name = "tilolang-mail"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "mail",
  "runtime-portal",
  "serde",
@@ -23665,10 +23684,10 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bounded-zip",
- "chrono",
- "chrono-tz",
  "foldhash 0.1.5",
  "getrandom 0.4.3",
+ "jiff",
+ "jiff-tzdb",
  "regex",
  "serde",
  "serde_json",
@@ -23699,11 +23718,11 @@ version = "0.1.0"
 dependencies = [
  "bounded-zip",
  "calculator",
- "chrono",
  "collab-types",
  "collaboration",
  "crc32fast",
  "durable-store",
+ "jiff",
  "redb",
  "serde",
  "serde_json",
@@ -24899,9 +24918,9 @@ name = "ui-examples"
 version = "0.1.0"
 dependencies = [
  "accesskit",
- "chrono",
  "collab-types",
  "image",
+ "jiff",
  "serde_json",
  "taffy",
  "tempfile",
@@ -26300,7 +26319,7 @@ dependencies = [
 name = "weather"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "jiff",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -28365,6 +28384,7 @@ dependencies = [
  "itoa",
  "jiff",
  "jiff-core",
+ "jiff-tzdb",
  "jobserver",
  "k256",
  "kamadak-exif",

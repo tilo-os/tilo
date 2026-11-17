@@ -79,24 +79,23 @@ pub struct ListDraw {
 }
 
 pub fn age(time: i64) -> String {
-    let now = ui::clock::local_now().timestamp();
+    let now = ui::clock::local_now().timestamp().as_second();
     ui::format::relative(now.saturating_sub(time))
 }
 
 /// A commit's date and time in the local zone, in the active locale: `30 June 2026, 08:12`.
 pub fn date(time: i64) -> String {
-    use chrono::Datelike;
-    let Some(utc) = chrono::DateTime::from_timestamp(time, 0) else {
+    let Some(utc) = jiff::Timestamp::from_second(time).ok() else {
         return String::new();
     };
-    let local = utc.with_timezone(&chrono::Local);
+    let local = utc.to_zoned(jiff::tz::TimeZone::system());
     t_args(
         "git-date",
         &[
             ("day", local.day().to_string().into()),
             ("month", local.month().into()),
             ("year", local.year().to_string().into()),
-            ("time", ui::clock::time_of_day(&local).into()),
+            ("time", ui::clock::time_of_day(local).into()),
         ],
     )
 }

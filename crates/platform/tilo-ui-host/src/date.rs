@@ -7,7 +7,7 @@
 //! edit every bound input reports.
 
 use crate::{UiNode, Value};
-use chrono::{DateTime, Local, NaiveDate, NaiveTime, Utc};
+use jiff::civil::{Date, Time};
 use ui::LocalState;
 use ui::widget::{DateField, Decorator, Tone, Widget};
 
@@ -24,7 +24,7 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
         && let Some(day) = day_of(&text)
         && let Some(time) = paired_time(node, name)
     {
-        return Some(ui::format::timestamp(&day.and_time(time)));
+        return Some(ui::format::timestamp(&day.to_datetime(time)));
     }
     formatted(node, name, ui::format::date, ui::format::timestamp)
 }
@@ -44,7 +44,7 @@ pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<Str
     };
     let done = done_day(node, name);
     if under.is_some_and(|heading| said_by_heading(node, name, heading)) {
-        return paired_time(node, name).map(|time| ui::format::time(&time));
+        return paired_time(node, name).map(ui::format::time);
     }
     Some(match kind.as_str() {
         "date" if done => day_of(&text).map_or(text, ui::format::day_done_today),
@@ -97,7 +97,7 @@ fn day_heading(node: &UiNode, name: &str) -> Option<String> {
     Some(ui::format::day_fact_today(day, None).text)
 }
 
-fn says_day(heading: &str, day: NaiveDate) -> bool {
+fn says_day(heading: &str, day: Date) -> bool {
     heading
         .trim()
         .eq_ignore_ascii_case(&ui::format::day_fact_today(day, None).text)
@@ -132,7 +132,7 @@ pub fn under_headings(node: UiNode) -> UiNode {
             match paired_time(&node, name) {
                 Some(time) => {
                     node.props
-                        .insert(name.to_owned(), Value::text(ui::format::time(&time)));
+                        .insert(name.to_owned(), Value::text(ui::format::time(time)));
                 }
                 None => {
                     node.props.remove(name);
@@ -182,9 +182,9 @@ pub fn shown_text(kind: &str, value: &str) -> String {
         kind,
         value,
         ui::format::region::current(),
-        now.date_naive(),
-        now.naive_local(),
-        i64::from(now.offset().local_minus_utc()),
+        now.date(),
+        now.datetime(),
+        i64::from(now.offset().seconds()),
         ui::format::words(),
     )
 }
@@ -211,16 +211,16 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
 
 /// The time of day paired with the day `name` holds, in the person's zone: the sibling prop
 /// `<name>:time`.
-fn paired_time(node: &UiNode, name: &str) -> Option<NaiveTime> {
+fn paired_time(node: &UiNode, name: &str) -> Option<Time> {
     let text = display(node.props.get(&format!("{name}:time"))?);
-    moment_of(&text).map(|at| at.with_timezone(&Local).time())
+    moment_of(&text).map(|at| at.to_zoned(jiff::tz::TimeZone::system()).time())
 }
 
 fn formatted(
     node: &UiNode,
     name: &str,
-    date: impl Fn(NaiveDate) -> String,
-    time: impl Fn(&DateTime<Utc>) -> String,
+    date: impl Fn(Date) -> String,
+    time: impl Fn(&jiff::Timestamp) -> String,
 ) -> Option<String> {
     let value = node.props.get(name)?;
     let text = display(value);
@@ -235,10 +235,10 @@ fn formatted(
     })
 }
 
-fn day_of(text: &str) -> Option<NaiveDate> {
+fn day_of(text: &str) -> Option<Date> {
     tilo_failure::ignored!(
         "a value that is not a day is shown as the text it is",
-        NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+        Date::strptime("%Y-%m-%d", text).ok()
     )
 }
 
@@ -252,12 +252,10 @@ fn duration_of(text: &str) -> Option<std::time::Duration> {
     )
 }
 
-fn moment_of(text: &str) -> Option<DateTime<Utc>> {
+fn moment_of(text: &str) -> Option<jiff::Timestamp> {
     tilo_failure::ignored!(
         "a value that is not an instant is shown as the text it is",
-        DateTime::parse_from_rfc3339(text)
-            .ok()
-            .map(|at| at.with_timezone(&Utc))
+        text.parse::<jiff::Timestamp>().ok()
     )
 }
 
@@ -276,7 +274,7 @@ impl DateControl {
         let edited = key.to_owned();
         let field = DateField::new(key, day, optional).on_change(move |day| {
             let text = day
-                .map(|day| day.format("%Y-%m-%d").to_string())
+                .map(|day| day.strftime("%Y-%m-%d").to_string())
                 .unwrap_or_default();
             reported.set(text.clone());
             sink.push(UiEvent::Edit(edited.clone(), text));
@@ -346,7 +344,7 @@ mod tests {
         let day = node(&[("value", "2026-10-24"), ("value:as", "date")]);
         assert_eq!(
             shown(&day, "value").as_deref(),
-            Some(ui::format::date(NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()).as_str())
+            Some(ui::format::date(Date::new(2026, 10, 24).unwrap()).as_str())
         );
         let none = node(&[("value", ""), ("value:as", "date")]);
         assert_eq!(shown(&none, "value").as_deref(), Some(""));
@@ -361,25 +359,21 @@ mod tests {
         let mut control = DateControl::new("due", &value, &sink, true);
         value.set("2026-11-02".to_owned());
         assert!(control.follow_value());
-        assert_eq!(control.field.value(), NaiveDate::from_ymd_opt(2026, 11, 2));
+        assert_eq!(control.field.value(), Date::new(2026, 11, 2).ok());
         assert!(sink.is_empty(), "showing a value reports no edit");
     }
 
-    fn at(hour: u32) -> String {
-        use chrono::TimeZone;
-        Local
-            .with_ymd_and_hms(2026, 6, 30, hour, 0, 0)
-            .single()
-            .expect("nine in the morning exists")
-            .to_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    fn at(hour: i8) -> String {
+        let at = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(hour, 0, 0, 0))
+            .expect("nine in the morning exists");
+        format!("{at:.0}")
     }
 
     #[test]
     fn a_day_reads_as_briefly_as_a_list_states_it() {
         let today = ui::clock::today();
-        let yesterday = today - chrono::Days::new(1);
-        let day = yesterday.format("%Y-%m-%d").to_string();
+        let yesterday = today - jiff::Span::new().days(1);
+        let day = yesterday.strftime("%Y-%m-%d").to_string();
         let row = node(&[("value", &day), ("value:as", "date")]);
         assert_eq!(
             shown_brief(&row, "value", None),
@@ -398,8 +392,8 @@ mod tests {
     #[test]
     fn a_done_day_reads_as_the_day_it_happened_and_is_never_overdue() {
         let today = ui::clock::today();
-        let done = today - chrono::Days::new(40);
-        let day = done.format("%Y-%m-%d").to_string();
+        let done = today - jiff::Span::new().days(40);
+        let day = done.strftime("%Y-%m-%d").to_string();
         let mut row = node(&[("group", &day), ("group:as", "date")]);
         row.props.insert("group_done".to_owned(), Value::Int(1));
         assert_eq!(
@@ -433,14 +427,14 @@ mod tests {
         }
     }
 
-    fn heading(day: NaiveDate) -> String {
+    fn heading(day: Date) -> String {
         ui::format::day_fact_today(day, None).text
     }
 
     #[test]
     fn a_day_fact_a_heading_over_the_row_says_is_the_headings_to_say() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
+        let day = today.strftime("%Y-%m-%d").to_string();
         let fact = row("ListRow", &[("meta", &day), ("meta:as", "date")]);
         assert_eq!(
             shown_brief(&fact, "meta", Some(&heading(today))),
@@ -453,7 +447,11 @@ mod tests {
             "under no heading the row says the day"
         );
         assert_eq!(
-            shown_brief(&fact, "meta", Some(&heading(today + chrono::Days::new(1)))),
+            shown_brief(
+                &fact,
+                "meta",
+                Some(&heading(today + jiff::Span::new().days(1)))
+            ),
             Some(heading(today)),
             "a heading naming another day leaves the row its own"
         );
@@ -467,15 +465,15 @@ mod tests {
     #[test]
     fn a_row_under_its_day_keeps_the_time_of_day_it_is_due() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
-        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let day = today.strftime("%Y-%m-%d").to_string();
+        let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         let timed = row(
             "ListRow",
             &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))],
         );
         assert_eq!(
             shown_brief(&timed, "meta", Some(&heading(today))).as_deref(),
-            Some(ui::format::time(&at_nine).as_str()),
+            Some(ui::format::time(at_nine).as_str()),
             "the day is the heading's, and the time of day is the row's"
         );
         assert_eq!(
@@ -492,9 +490,9 @@ mod tests {
     #[test]
     fn the_tree_drops_a_rows_day_fact_a_heading_over_it_says() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
-        let later = (today + chrono::Days::new(2))
-            .format("%Y-%m-%d")
+        let day = today.strftime("%Y-%m-%d").to_string();
+        let later = (today + jiff::Span::new().days(2))
+            .strftime("%Y-%m-%d")
             .to_string();
         let mut card = row("Card", &[("title", &heading(today))]);
         card.children.push(row(
@@ -525,7 +523,7 @@ mod tests {
         );
         assert_eq!(
             shown_brief(&shown.children[1], "meta", Some(&heading(today))),
-            Some(heading(today + chrono::Days::new(2))),
+            Some(heading(today + jiff::Span::new().days(2))),
             "and reads as that day under the card"
         );
     }
@@ -547,15 +545,15 @@ mod tests {
     #[test]
     fn a_card_naming_the_day_shows_no_day_on_its_rows() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
-        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let day = today.strftime("%Y-%m-%d").to_string();
+        let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         assert_eq!(
             card_row_facts(
                 &heading(today),
                 &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))]
             )
             .as_deref(),
-            Some(ui::format::time(&at_nine).as_str()),
+            Some(ui::format::time(at_nine).as_str()),
             "the card says the day, so its row keeps the time of day it is due"
         );
         assert_eq!(
@@ -565,7 +563,7 @@ mod tests {
         );
         assert_eq!(
             card_row_facts(
-                &heading(today + chrono::Days::new(2)),
+                &heading(today + jiff::Span::new().days(2)),
                 &[("meta", &day), ("meta:as", "date")]
             )
             .as_deref(),
@@ -577,8 +575,8 @@ mod tests {
     #[test]
     fn the_tree_drops_a_rows_day_fact_a_group_over_it_says() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
-        let at_nine = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let day = today.strftime("%Y-%m-%d").to_string();
+        let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         let mut item = node(&[("group", &day), ("group:as", "date")]);
         item.kind = crate::adapter::kind("ListItem");
         item.children.push(row(
@@ -593,7 +591,7 @@ mod tests {
         let shown = under_headings(item.clone());
         assert_eq!(
             shown.children[0].props.get("meta"),
-            Some(&Value::text(ui::format::time(&at_nine))),
+            Some(&Value::text(ui::format::time(at_nine))),
             "the group says the day: the row keeps the time of day it is due"
         );
 
@@ -610,8 +608,8 @@ mod tests {
     #[test]
     fn a_day_and_the_time_it_is_due_read_as_one_fact() {
         let today = ui::clock::today();
-        let day = today.format("%Y-%m-%d").to_string();
-        let time = NaiveTime::from_hms_opt(9, 0, 0).expect("nine");
+        let day = today.strftime("%Y-%m-%d").to_string();
+        let time = Time::new(9, 0, 0, 0).expect("nine");
         let alone = node(&[("value", &day), ("value:as", "date")]);
         let paired = node(&[
             ("value", &day),
@@ -629,7 +627,7 @@ mod tests {
         );
         assert_eq!(
             shown(&paired, "value"),
-            Some(ui::format::timestamp(&today.and_time(time))),
+            Some(ui::format::timestamp(&today.to_datetime(time))),
             "a form states the day and its time together"
         );
         assert_eq!(

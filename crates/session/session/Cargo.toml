@@ -166,7 +166,7 @@ tilo-live = { path = "../../collab/tilo-live", features = ["live_session"] }
 # every host.
 
 zeroize.workspace = true
-chrono = { workspace = true, default-features = true }
+jiff.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

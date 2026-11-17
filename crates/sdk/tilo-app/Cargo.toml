@@ -34,8 +34,6 @@ test-support = [
     "tilo-resource/test-support",
     "tilo-actions/test-support",
 ]
-# `chrono`'s dates and times as model values (`tilo_resource`'s `chrono`).
-chrono = ["tilo-resource/chrono"]
 # Backend features of the native runner; on wasm32 they have no effect.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
 # X11 windows and clipboard for development builds on an X11 host; see
@@ -55,6 +53,7 @@ dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+jiff.workspace = true
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Scratch directories for test and capture profiles.

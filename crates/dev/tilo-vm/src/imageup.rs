@@ -385,16 +385,15 @@ pub fn check_base_age(
     if digest(vm_base).is_some() && digest(vm_base) == digest(image_base) {
         return Ok(None);
     }
-    let created =
-        |v| text(v, "base_created").and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok());
+    let created = |v| text(v, "base_created").and_then(|t| t.parse::<jiff::Timestamp>().ok());
     match (created(vm_base), created(image_base)) {
         (Some(running), Some(new)) if new < running => Err(CliError::BaseOlder {
             image: image.to_owned(),
             base: text(image_base, "base_image")
                 .unwrap_or("its base")
                 .to_owned(),
-            new: new.to_rfc3339(),
-            running: running.to_rfc3339(),
+            new: new.to_string(),
+            running: running.to_string(),
         }),
         (Some(_), Some(_)) => Ok(None),
         (running, new) => Ok(Some(format!(

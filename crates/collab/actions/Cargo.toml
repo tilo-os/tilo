@@ -34,7 +34,7 @@ tilo-words = { version = "0.1.0", path = "../../text/tilo-words" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 # JSON Schema patterns are ECMA-262, whose `\d`, `\w` and `\b` are ASCII as

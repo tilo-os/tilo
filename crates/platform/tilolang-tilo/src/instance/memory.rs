@@ -165,13 +165,11 @@ fn resource_of(edit: &DynEdit) -> &str {
 
 /// The moment a second before `at` (an RFC 3339 time), written as the document writes one.
 fn second_before(at: &str) -> String {
-    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(at) else {
+    let Ok(parsed) = at.parse::<jiff::Timestamp>() else {
         return at.to_owned();
     };
-    let Some(earlier) = parsed.checked_sub_signed(chrono::Duration::seconds(1)) else {
+    let Ok(earlier) = parsed.checked_sub(jiff::SignedDuration::from_secs(1)) else {
         return at.to_owned();
     };
-    earlier
-        .to_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    format!("{earlier:.0}")
 }

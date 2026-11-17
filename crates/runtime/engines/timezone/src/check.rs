@@ -4,7 +4,7 @@
 //! so the engine exists, and is known to resolve against this exact
 //! `libruntime_dylib.so`, whichever apps the release selects. The self-check
 //! looks zones up by name and converts fixed instants through their rules,
-//! which reach into the runtime (`chrono`, `phf`).
+//! which reach into the runtime (`jiff`).
 
 use std::process::ExitCode;
 

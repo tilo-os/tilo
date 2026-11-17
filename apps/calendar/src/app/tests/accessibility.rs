@@ -7,7 +7,7 @@ use super::*;
 fn a_chip_dragged_to_another_day_reads_out_in_the_person_s_language() {
     let h = Harness::new(1280, 800);
     let event = selected_event_id(&h.app);
-    let day = NaiveDate::from_ymd_opt(2026, 5, 4).expect("a day");
+    let day = Date::new(2026, 5, 4).expect("a day");
     let action = Action::MoveEventToDay {
         id: event,
         original: day,

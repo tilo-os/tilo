@@ -2720,7 +2720,7 @@ fn data_usage_is_charted_per_connection_and_forgotten() {
     app.harness().resize((1280, 1400)).unwrap();
     let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
     let now = tilo_clock::unix_now_i64();
-    let offset = ui::clock::local_now().offset().local_minus_utc();
+    let offset = ui::clock::local_now().offset().seconds();
     for received in [1_000_u64, 2_001_000] {
         invoke_section(
             &mut app,

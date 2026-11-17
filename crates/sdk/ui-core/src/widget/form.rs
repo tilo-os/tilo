@@ -217,7 +217,7 @@ mod tests {
         }
 
         fn composite_inputs_share_the_contract() {
-            use chrono::NaiveDate;
+            use jiff::civil::Date;
             use vello::peniko::Color;
 
             let controls = vec![
@@ -235,7 +235,7 @@ mod tests {
                 (
                     labeled_field(
                         "advanced-label",
-                        DatePicker::new(NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()),
+                        DatePicker::new(Date::new(2026, 9, 1).unwrap()),
                     ),
                     Role::ComboBox,
                 ),

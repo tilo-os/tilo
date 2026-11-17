@@ -40,7 +40,7 @@ taffy.workspace = true
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 # The tile worker's job queue, awaited on the app runtime.
 # RFC-3339 timestamps for the transit depart/arrive time picker.
-chrono = { workspace = true, default-features = true }
+jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

@@ -99,7 +99,7 @@ pub fn timestamp_name() -> String {
     let now_ms = ui::time::unix_now_ms();
     let secs = now_ms / 1_000;
     let millis = now_ms % 1_000;
-    // Civil-date conversion (proleptic Gregorian) — avoids pulling in chrono.
+    // Civil-date conversion (proleptic Gregorian).
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;
     let (y, mo, d) = ui::date::civil_from_days(days);

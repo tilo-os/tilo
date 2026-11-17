@@ -66,7 +66,7 @@ impl FileRow for ListRow {
             .unwrap_or_default()
     }
 
-    fn modified(&self) -> Option<chrono::DateTime<chrono::Local>> {
+    fn modified(&self) -> Option<jiff::Timestamp> {
         self.entry.modified
     }
 

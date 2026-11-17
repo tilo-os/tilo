@@ -2,7 +2,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use chrono::{NaiveTime, Timelike};
+use jiff::civil::Time;
 
 use crate::icons::Icon;
 use crate::widget::arrange::Stack;
@@ -14,11 +14,11 @@ use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, TimePick
 mod component;
 pub use component::TimeFieldProps;
 
-type Picked = Rc<Cell<Option<Option<NaiveTime>>>>;
+type Picked = Rc<Cell<Option<Option<Time>>>>;
 
 #[must_use]
-pub fn morning() -> NaiveTime {
-    NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(NaiveTime::MIN)
+pub fn morning() -> Time {
+    Time::new(9, 0, 0, 0).ok().unwrap_or(Time::MIN)
 }
 
 /// A time set elsewhere while the spinners were being stepped: shown once the step is taken, so
@@ -26,24 +26,24 @@ pub fn morning() -> NaiveTime {
 #[derive(Clone, Copy)]
 enum Waiting {
     Nothing,
-    At(Option<NaiveTime>),
+    At(Option<Time>),
 }
 
 pub struct TimeField {
     inner: Stack,
     id: String,
     source: Option<crate::LocalState<String>>,
-    value: Option<NaiveTime>,
+    value: Option<Time>,
     picked: Picked,
-    on_change: Option<Box<dyn FnMut(Option<NaiveTime>)>>,
-    bound: Option<BoxedBinding<Option<NaiveTime>>>,
+    on_change: Option<Box<dyn FnMut(Option<Time>)>>,
+    bound: Option<BoxedBinding<Option<Time>>>,
     waiting: Waiting,
     accessible_name: String,
 }
 
 impl TimeField {
     #[must_use]
-    pub fn new(id: &str, value: Option<NaiveTime>) -> Self {
+    pub fn new(id: &str, value: Option<Time>) -> Self {
         let picked: Picked = Rc::default();
         let accessible_name = crate::i18n::widget_format("time-field-name", &[]);
         Self {
@@ -68,17 +68,17 @@ impl TimeField {
     }
 
     #[must_use]
-    pub fn on_change<F: FnMut(Option<NaiveTime>) + 'static>(mut self, f: F) -> Self {
+    pub fn on_change<F: FnMut(Option<Time>) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
         self
     }
 
     #[must_use]
-    pub fn value(&self) -> Option<NaiveTime> {
+    pub fn value(&self) -> Option<Time> {
         self.value
     }
 
-    pub fn set_value(&mut self, value: Option<NaiveTime>) {
+    pub fn set_value(&mut self, value: Option<Time>) {
         if value == self.value {
             return;
         }
@@ -112,7 +112,7 @@ impl TimeField {
     }
 }
 
-fn row(id: &str, value: Option<NaiveTime>, picked: &Picked, accessible_name: &str) -> Stack {
+fn row(id: &str, value: Option<Time>, picked: &Picked, accessible_name: &str) -> Stack {
     let mut row = Stack::row();
     let Some(time) = value else {
         let on_add = Rc::clone(picked);
@@ -134,7 +134,13 @@ fn row(id: &str, value: Option<NaiveTime>, picked: &Picked, accessible_name: &st
     .with_id(id)
     .with_accessible_name(accessible_name)
     .on_change(move |hours, minutes, _| {
-        let at = NaiveTime::from_hms_opt(u32::from(hours), u32::from(minutes), 0);
+        let at = Time::new(
+            i8::try_from(hours).unwrap_or(0),
+            i8::try_from(minutes).unwrap_or(0),
+            0,
+            0,
+        )
+        .ok();
         on_step.set(Some(at));
     });
     row = row.push(Box::new(picker));
@@ -185,7 +191,7 @@ impl Decorator for TimeField {
 mod tests {
     use super::*;
 
-    fn nine() -> NaiveTime {
+    fn nine() -> Time {
         morning()
     }
 
@@ -194,7 +200,7 @@ mod tests {
 
         phase adding_a_time_starts_in_the_morning_and_removing_it_reports_none;
         {
-            let reported: Rc<Cell<Option<Option<NaiveTime>>>> = Rc::default();
+            let reported: Rc<Cell<Option<Option<Time>>>> = Rc::default();
             let seen = Rc::clone(&reported);
             let mut field = TimeField::new("at", None).on_change(move |value| {
                 seen.set(Some(value));
@@ -215,8 +221,8 @@ mod tests {
             let reported: Rc<Cell<bool>> = Rc::default();
             let seen = Rc::clone(&reported);
             let mut field = TimeField::new("at", None).on_change(move |_| seen.set(true));
-            field.set_value(NaiveTime::from_hms_opt(14, 30, 0));
-            assert_eq!(field.value(), NaiveTime::from_hms_opt(14, 30, 0));
+            field.set_value(Time::new(14, 30, 0, 0).ok());
+            assert_eq!(field.value(), Time::new(14, 30, 0, 0).ok());
             assert!(!field.take_pick());
             assert!(!reported.get());
         }
@@ -239,7 +245,7 @@ mod tests {
             assert!(Decorator::update(&mut field, &(), &()));
             assert_eq!(
                 field.value(),
-                NaiveTime::from_hms_opt(14, 30, 0),
+                Time::new(14, 30, 0, 0).ok(),
                 "a time set elsewhere shows in place"
             );
         }

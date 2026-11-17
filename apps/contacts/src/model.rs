@@ -347,13 +347,11 @@ impl Birthday {
     pub fn pretty(&self) -> String {
         match *self {
             Birthday::Full { year, month, day } => {
-                ui::format::NaiveDate::from_ymd_opt(year, month, day)
-                    .map_or_else(|| self.iso(), ui::format::month_day_year)
+                civil_date(year, month, day).map_or_else(|| self.iso(), ui::format::month_day_year)
             }
             // Any leap year holds every month and day a year-less date can name.
             Birthday::MonthDay { month, day } => {
-                ui::format::NaiveDate::from_ymd_opt(2000, month, day)
-                    .map_or_else(|| self.iso(), ui::format::month_day)
+                civil_date(2000, month, day).map_or_else(|| self.iso(), ui::format::month_day)
             }
         }
     }
@@ -599,7 +597,9 @@ impl Contact {
             hay.push_str(&birthday.pretty());
             hay.push(' ');
             // The month's whole name too, so "december" finds the birthday.
-            hay.push_str(&ui::format::month_name(birthday.month()));
+            hay.push_str(&ui::format::month_name(
+                i8::try_from(birthday.month()).unwrap_or_default(),
+            ));
             hay.push(' ');
         }
         hay.push_str(&self.notes);
@@ -895,6 +895,16 @@ pub fn sample_contacts() -> Vec<Contact> {
         contact.id = Uuid::from_u128(0x5a3e_c0de_0000_4000_8000_0000_0000_0000 | index);
     }
     out
+}
+
+/// The calendar day `year`-`month`-`day`, when there is one.
+fn civil_date(year: i32, month: u32, day: u32) -> Option<ui::format::Date> {
+    ui::format::Date::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
+    )
+    .ok()
 }
 
 #[cfg(test)]

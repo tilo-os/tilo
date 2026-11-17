@@ -141,7 +141,7 @@ fn now_ms() -> i64 {
 }
 
 fn today_ymd() -> String {
-    ui::clock::today().format("%Y-%m-%d").to_string()
+    ui::clock::today().to_string()
 }
 
 pub(crate) fn ymd_from_unix_ms(ms: i64) -> String {

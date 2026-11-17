@@ -107,7 +107,9 @@ pub(super) fn archive_rows(archive: &Path, rows: Vec<crate::archive::Entry>) -> 
                 path: synthetic_path.clone(),
                 is_dir,
                 size: entry.size,
-                modified: entry.modified.map(chrono::DateTime::<chrono::Local>::from),
+                modified: entry
+                    .modified
+                    .and_then(|at| jiff::Timestamp::try_from(at).ok()),
                 mime: if is_dir {
                     "inode/directory".into()
                 } else {

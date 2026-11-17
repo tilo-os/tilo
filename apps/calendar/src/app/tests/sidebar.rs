@@ -63,14 +63,12 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
 
-        let start = app
-            .anchor
-            .and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        let start = app.anchor.to_datetime(Time::new(10, 0, 0, 0).unwrap());
         let ev = Event {
             id: Uuid::new_v4(),
             title: "Remote sync marker".into(),
             start,
-            end: start + Duration::hours(1),
+            end: start + jiff::SignedDuration::from_hours(1),
             color: Palette::Blue,
             calendar_id: Some("work/default".into()),
             ..Event::default()

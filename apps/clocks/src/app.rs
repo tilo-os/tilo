@@ -11,7 +11,6 @@ use crate::native_timers::{
 use crate::resource::ClocksEffect;
 use crate::schedule::{DeviceChoices, DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
-use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Live};
 use ui::i18n::ArgValue;
@@ -29,46 +28,43 @@ use ui::widget::{
 pub(crate) struct Shown {
     pub(crate) clocks: Clocks,
     pub(crate) device: OnThisDevice,
-    pub(crate) pinned_now: Option<chrono::DateTime<Utc>>,
+    pub(crate) pinned_now: Option<jiff::Timestamp>,
     pub(crate) selected_alarm: Option<Id>,
 }
 
 impl Shown {
-    fn now(&self) -> chrono::DateTime<Utc> {
+    fn now(&self) -> jiff::Timestamp {
         self.pinned_now.unwrap_or_else(wall_now)
     }
 
-    fn here(&self) -> chrono::NaiveDateTime {
+    fn here(&self) -> jiff::civil::DateTime {
         self.pinned_now.map_or_else(
-            || chrono::Local::now().naive_local(),
-            |pinned| pinned.naive_utc(),
+            || jiff::Zoned::now().datetime(),
+            |pinned| pinned.to_zoned(jiff::tz::TimeZone::UTC).datetime(),
         )
     }
 
-    fn local_now(&self) -> chrono::DateTime<chrono::Local> {
-        self.pinned_now.map_or_else(chrono::Local::now, |pinned| {
-            chrono::Local.from_utc_datetime(&pinned.naive_utc())
+    fn local_now(&self) -> jiff::Zoned {
+        self.pinned_now.map_or_else(jiff::Zoned::now, |pinned| {
+            pinned.to_zoned(jiff::tz::TimeZone::system())
         })
     }
 }
 
-pub(crate) fn next_ring(
-    alarm: &crate::model::Alarm,
-    now: chrono::DateTime<chrono::Local>,
-) -> String {
+pub(crate) fn next_ring(alarm: &crate::model::Alarm, now: &jiff::Zoned) -> String {
     if !alarm.enabled {
         return crate::locales::CATALOG.t("clocks-alert-off");
     }
     let Some(next) = crate::schedule::next_occurrence(alarm, None, now) else {
         return crate::locales::CATALOG.t("clocks-no-next-ring");
     };
-    let today = now.date_naive();
-    let day = if next.date_naive() == today {
+    let today = now.date();
+    let day = if next.date() == today {
         crate::locales::CATALOG.t("clocks-today")
-    } else if next.date_naive() == today.succ_opt().unwrap_or(today) {
+    } else if next.date() == today.tomorrow().ok().unwrap_or(today) {
         crate::locales::CATALOG.t("clocks-tomorrow")
     } else {
-        ui::format::weekday_short(next.date_naive().weekday())
+        ui::format::weekday_short(next.date().weekday())
     };
     crate::locales::CATALOG.t_args(
         "clocks-next-ring",
@@ -76,7 +72,7 @@ pub(crate) fn next_ring(
             ("day", ui::i18n::ArgValue::Text(day)),
             (
                 "time",
-                ui::i18n::ArgValue::Text(ui::clock::time_of_day(&next.time())),
+                ui::i18n::ArgValue::Text(ui::clock::time_of_day(next.time())),
             ),
         ],
     )
@@ -167,26 +163,23 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
         .join(", ")
 }
 
-pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<Fact>) {
-    let Ok(zone) = zone.parse::<chrono_tz::Tz>() else {
+pub(crate) fn city_time(zone: &str, now: jiff::Timestamp) -> (String, Vec<Fact>) {
+    let Some(zone) = tilo_recurrence::zone::named(zone) else {
         return (
             crate::locales::CATALOG.t("clocks-time-unavailable"),
             Vec::new(),
         );
     };
-    let there = now.with_timezone(&zone);
-    let here = now.with_timezone(&chrono::Local);
+    let there = now.to_zoned(zone);
+    let here = now.to_zoned(jiff::tz::TimeZone::system());
     let mut facts = Vec::new();
-    if there.date_naive() != here.date_naive() {
-        facts.push(Fact::text(ui::format::day_heading_short(
-            there.date_naive(),
-        )));
+    if there.date() != here.date() {
+        facts.push(Fact::text(ui::format::day_heading_short(there.date())));
     }
     let difference = there
         .offset()
-        .fix()
-        .local_minus_utc()
-        .saturating_sub(here.offset().fix().local_minus_utc());
+        .seconds()
+        .saturating_sub(here.offset().seconds());
     facts.push(Fact::text(offset_from_here(difference)));
     (ui::clock::time_of_day(&there), facts)
 }
@@ -258,9 +251,8 @@ fn timezone_results(query: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     }
-    chrono_tz::TZ_VARIANTS
-        .iter()
-        .map(ToString::to_string)
+    jiff_tzdb::available()
+        .map(str::to_owned)
         .filter(|zone| {
             !zone.starts_with("Etc/")
                 && (zone.to_lowercase().contains(&query)
@@ -424,7 +416,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                     .with_intrinsic_height()
                                     .with_rhythm(ui::tokens::Rhythm::Tight)
                                     .push(Box::new(
-                                        Text::new(&ui::clock::time_of_day(&here))
+                                        Text::new(&ui::clock::time_of_day(here))
                                             .with_role(ui::TextRole::Display),
                                     ))
                                     .push(Box::new(
@@ -493,7 +485,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
         alarms.sort_by_key(|(id, _)| s.selected_alarm.as_ref() != Some(id));
         for (id, alarm) in alarms {
             let repeat = repeat_summary(&alarm.weekdays());
-            let next = next_ring(alarm, s.local_now());
+            let next = next_ring(alarm, &s.local_now());
             let row = Row::new()
                 .align_start()
                 .push(Box::new(
@@ -502,7 +494,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         .with_intrinsic_height()
                         .with_rhythm(ui::tokens::Rhythm::Tight)
                         .push(Box::new(
-                            Text::new(&ui::clock::time_of_day(&alarm.local_time()))
+                            Text::new(&ui::clock::time_of_day(alarm.local_time()))
                                 .with_role(ui::TextRole::LargeTitle),
                         ))
                         .push(Box::new(
@@ -1539,13 +1531,13 @@ impl ClocksApp {
             });
     }
 
-    fn schedule_native_notifications(&mut self, now: chrono::DateTime<Utc>) {
+    fn schedule_native_notifications(&mut self, now: jiff::Timestamp) {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
         }
         let clocks = self.store.state.with(|shown| shown.clocks.clone());
         let mut delivery = self.store.device.get().delivery;
-        let offset = chrono::Local::now().offset().local_minus_utc();
+        let offset = jiff::Zoned::now().offset().seconds();
         if self.last_scheduled_clocks.as_ref() == Some(&(clocks.clone(), delivery.clone(), offset))
         {
             return;
@@ -1574,7 +1566,7 @@ impl ClocksApp {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
         }
-        let offset = chrono::Local::now().offset().local_minus_utc();
+        let offset = jiff::Zoned::now().offset().seconds();
         if self
             .last_scheduled_clocks
             .as_ref()
@@ -1597,10 +1589,10 @@ impl ClocksApp {
         }
     }
 
-    fn ring_due(&mut self, now: chrono::DateTime<Utc>) {
+    fn ring_due(&mut self, now: jiff::Timestamp) {
         let mut delivery = self.store.device.get().delivery;
         let tick = self.store.state.with(|shown| {
-            crate::schedule::tick(&shown.clocks, &mut delivery, now, chrono::Local::now())
+            crate::schedule::tick(&shown.clocks, &mut delivery, now, &jiff::Zoned::now())
         });
         if delivery != self.store.device.get().delivery {
             self.store
@@ -1667,7 +1659,7 @@ impl ClocksApp {
         }
     }
 
-    fn shell_snapshot(&self, now: chrono::DateTime<Utc>) -> ShellSnapshot {
+    fn shell_snapshot(&self, now: jiff::Timestamp) -> ShellSnapshot {
         let activity = self
             .store
             .state
@@ -1742,8 +1734,10 @@ impl ClocksApp {
 
 /// The present as the toolkit reads it, so a test that holds the clock holds every
 /// countdown with it.
-pub(crate) fn wall_now() -> chrono::DateTime<Utc> {
-    chrono::DateTime::from_timestamp_millis(ui::time::unix_now_ms_i64()).unwrap_or_default()
+pub(crate) fn wall_now() -> jiff::Timestamp {
+    jiff::Timestamp::from_millisecond(ui::time::unix_now_ms_i64())
+        .ok()
+        .unwrap_or_default()
 }
 
 fn retry_at() -> ui::time::Instant {
@@ -1835,5 +1829,5 @@ fn ticking_text(
 }
 
 fn minute(s: &Shown) -> i64 {
-    s.now().timestamp().div_euclid(60)
+    s.now().as_second().div_euclid(60)
 }

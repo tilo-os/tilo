@@ -240,7 +240,7 @@ fn an_environment_gives_the_app_a_home_and_a_clock_instead_of_the_developers_mac
     );
     assert_eq!(
         env.today(),
-        env.clock().local().date_naive(),
+        env.clock().local().date(),
         "the day a test asserts on is the day its clock reads",
     );
 }

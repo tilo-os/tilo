@@ -17,7 +17,7 @@
 //! # fn read(env: &tilo_test_env::TestEnv) -> Settings { Settings }
 //! // Production code that resolves the person's configuration itself:
 //! let settings = read(&env);
-//! assert!(env.today() >= env.clock().local().date_naive());
+//! assert!(env.today() >= env.clock().local().date());
 //! ```
 
 use std::io;
@@ -30,7 +30,7 @@ use crate::TestHome;
 ///
 /// The same reading `--shots` pins for its captures (30 June 2026, 10:42 local): a fixture a test
 /// drives and a screenshot of it show one clock.
-pub const CAPTURE_LOCAL_TIME: (i32, u32, u32, u32, u32) = (2026, 6, 30, 10, 42);
+pub const CAPTURE_LOCAL_TIME: (i16, i8, i8, i8, i8) = (2026, 6, 30, 10, 42);
 
 /// The wall clock a test reads.
 ///
@@ -45,7 +45,7 @@ pub struct Clock {
 impl Clock {
     fn capture_local() -> Self {
         Self {
-            // A local time zone `chrono` cannot resolve leaves the clock at the epoch: a test's
+            // A local time zone that cannot be resolved leaves the clock at the epoch: a test's
             // instant is still ordered and still moves only when the test moves it, which is what
             // it asserts on.
             millis: std::sync::Mutex::new(capture_millis().unwrap_or(0)),
@@ -61,15 +61,13 @@ impl Clock {
     }
 
     #[must_use]
-    pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(self.millis()).unwrap_or_else(|| {
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(0).unwrap_or_default()
-        })
+    pub fn now(&self) -> jiff::Timestamp {
+        jiff::Timestamp::from_millisecond(self.millis()).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
     }
 
     #[must_use]
-    pub fn local(&self) -> chrono::DateTime<chrono::Local> {
-        chrono::DateTime::<chrono::Local>::from(self.now())
+    pub fn local(&self) -> jiff::Zoned {
+        self.now().to_zoned(jiff::tz::TimeZone::system())
     }
 
     /// Move the clock in time: forward for `duration`, back for a negative one. A test advances to
@@ -98,13 +96,13 @@ impl Default for Clock {
 }
 
 pub(crate) fn capture_millis() -> Option<i64> {
-    use chrono::TimeZone as _;
     let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
-    let local = chrono::NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, 0)?;
-    chrono::Local
-        .from_local_datetime(&local)
-        .earliest()
-        .map(|at| at.timestamp_millis())
+    let local = jiff::civil::DateTime::new(year, month, day, hour, minute, 0, 0).ok()?;
+    jiff::tz::TimeZone::system()
+        .to_ambiguous_timestamp(local)
+        .earlier()
+        .ok()
+        .map(jiff::Timestamp::as_millisecond)
 }
 
 /// Whether a test may reach the network.
@@ -229,8 +227,8 @@ impl TestEnv {
 
     /// Today's date on this environment's clock.
     #[must_use]
-    pub fn today(&self) -> chrono::NaiveDate {
-        self.clock.local().date_naive()
+    pub fn today(&self) -> jiff::civil::Date {
+        self.clock.local().date()
     }
 
     /// A path inside the home, whether or not anything wrote it yet.
@@ -250,7 +248,6 @@ impl TestEnv {
 mod tests {
     use super::*;
     use crate::scenario;
-    use chrono::{Datelike as _, Timelike as _};
 
     scenario! {
         #[allow(
@@ -280,7 +277,7 @@ mod tests {
                 assert_eq!(clock.millis(), start + 90_000);
                 assert_eq!(
                     clock.now(),
-                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(start + 90_000).unwrap(),
+                    jiff::Timestamp::from_millisecond(start + 90_000).unwrap(),
                 );
                 clock.set_millis(0);
                 assert_eq!(clock.millis(), 0, "an instant can be set outright");
@@ -335,12 +332,12 @@ mod tests {
         {
             let env = TestEnv::new().unwrap();
             let (year, month, day, _, _) = CAPTURE_LOCAL_TIME;
-            let first = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
+            let first = jiff::civil::Date::new(year, month, day).unwrap();
             assert_eq!(env.today(), first);
             env.clock().advance(Duration::from_secs(24 * 60 * 60));
             assert_eq!(
                 env.today(),
-                first.succ_opt().unwrap(),
+                first.tomorrow().unwrap(),
                 "a day later is a day later on the fixture's clock",
             );
         }

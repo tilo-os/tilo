@@ -330,15 +330,20 @@ fn is_output_limit(body: &str) -> bool {
 
 /// The day the person asks on, as the model reads it: a program reads no clock, so a request
 /// about "this week" or "overdue" is answered from this, never found out by reading change times.
-fn today_line(today: ui::format::NaiveDate) -> String {
-    let week = today.week(ui::format::Weekday::Mon);
-    let tomorrow = today.succ_opt().unwrap_or(today);
+fn today_line(today: ui::format::Date) -> String {
+    let monday = today
+        .checked_sub(ui::format::Span::new().days(today.weekday().to_monday_zero_offset()))
+        .unwrap_or(today);
+    let sunday = monday
+        .checked_add(ui::format::Span::new().days(6))
+        .unwrap_or(monday);
+    let tomorrow = today.tomorrow().unwrap_or(today);
     format!(
         "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}. \
          A `Date` in a program is the day as written here: tomorrow is `{tomorrow}`.",
         ui::format::day_heading(today, true),
-        week.first_day(),
-        week.last_day()
+        monday,
+        sunday
     )
 }
 
@@ -356,9 +361,9 @@ fn input_tokens(body: &str) -> Option<u64> {
 /// E121), so a time of day the person names ("at 6pm") is theirs, in their zone, and is written
 /// shifted by its offset. Without this a model leaves the time out, writes it as UTC, or spends
 /// a turn on the compiler's refusal.
-fn clock_line(local: ui::format::NaiveDateTime, utc: ui::format::NaiveDateTime) -> String {
-    let offset = local - utc;
-    let minutes = offset.num_minutes();
+fn clock_line(local: ui::format::DateTime, utc: ui::format::DateTime) -> String {
+    let offset = local.duration_since(utc);
+    let minutes = offset.as_mins();
     let sign = if minutes < 0 { '-' } else { '+' };
     let zone = ui::format::machine!(
         "the offset a model shifts a time of day by, in ISO 8601's own form",
@@ -368,15 +373,19 @@ fn clock_line(local: ui::format::NaiveDateTime, utc: ui::format::NaiveDateTime) 
             minutes.abs() % 60
         )
     );
-    let six = local.date().and_hms_opt(18, 0, 0).unwrap_or(local) - offset;
+    let six = local
+        .date()
+        .at(18, 0, 0, 0)
+        .checked_sub(offset)
+        .unwrap_or(local);
     let now = ui::format::machine!(
         "the clock a model reads to write an instant, in 24-hour ISO 8601 form",
-        local.format("%H:%M").to_string()
+        local.strftime("%H:%M").to_string()
     );
     format!(
         "It is {now} there now ({zone}). A `Time` in a program is an instant in UTC with a `Z`: 6 \
          pm there today is `{}`. Keep every time they name.",
-        six.format("%Y-%m-%dT%H:%M:%SZ")
+        six.strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 }
 
@@ -1217,8 +1226,11 @@ impl Session {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!(
                 "{place}\n{} {}\n\nThe request:\n\n{request}",
-                today_line(now.date_naive()),
-                clock_line(now.naive_local(), now.naive_utc())
+                today_line(now.date()),
+                clock_line(
+                    now.datetime(),
+                    now.with_time_zone(ui::format::TimeZone::UTC).datetime()
+                )
             ),
         };
         let system = tools::system_for(run.agent_instruction.as_deref());
@@ -2914,7 +2926,7 @@ mod today_tests {
     /// takes one ("remind me to call mum tomorrow").
     #[test]
     fn the_request_names_today_and_its_week() {
-        let friday = ui::format::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        let friday = ui::format::Date::new(2026, 11, 13).unwrap();
         assert_eq!(
             super::today_line(friday),
             format!(
@@ -2948,12 +2960,9 @@ mod today_tests {
     /// an instant in UTC, shifted by the person's offset ("at 6pm" in UTC+01:00 is 17:00Z).
     #[test]
     fn the_request_names_the_time_and_how_a_moment_is_written() {
-        let day = ui::format::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let day = ui::format::Date::new(2026, 11, 16).unwrap();
         assert_eq!(
-            super::clock_line(
-                day.and_hms_opt(22, 45, 0).unwrap(),
-                day.and_hms_opt(21, 45, 0).unwrap()
-            ),
+            super::clock_line(day.at(22, 45, 0, 0), day.at(21, 45, 0, 0)),
             "It is 22:45 there now (UTC+01:00). A `Time` in a program is an instant in UTC with \
              a `Z`: 6 pm there today is `2026-11-16T17:00:00Z`. Keep every time they name."
         );

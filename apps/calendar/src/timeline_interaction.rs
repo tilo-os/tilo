@@ -1,7 +1,7 @@
 //! Week/day timeline interaction controller.
 
 use crate::input_context::InputContext;
-use chrono::{Datelike, NaiveDate};
+use jiff::civil::Date;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -76,8 +76,8 @@ const RESIZE_GRIP: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimelineSpan {
     pub id: Id,
-    pub original: NaiveDate,
-    pub day: NaiveDate,
+    pub original: Date,
+    pub day: Date,
     pub start_min: i64,
     pub end_min: i64,
     pub split: Split,
@@ -85,7 +85,7 @@ pub(super) struct TimelineSpan {
 
 pub(super) struct TimelineRenderEvent<'a> {
     pub id: Id,
-    pub day: NaiveDate,
+    pub day: Date,
     pub title: String,
     pub location: &'a str,
     pub color: Palette,
@@ -97,36 +97,36 @@ pub(super) struct TimelineRenderEvent<'a> {
 }
 
 pub(super) struct TimelineRenderModel<'a, 'event> {
-    pub days: &'a [NaiveDate],
+    pub days: &'a [Date],
     pub events: &'a [TimelineRenderEvent<'event>],
-    pub today: NaiveDate,
-    pub now: Option<(NaiveDate, i64)>,
+    pub today: Date,
+    pub now: Option<(Date, i64)>,
     pub untitled: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TimelineEffect {
     Create {
-        day: NaiveDate,
+        day: Date,
         start_min: i64,
         end_min: i64,
     },
     Move {
         id: Id,
-        original: NaiveDate,
-        day: NaiveDate,
+        original: Date,
+        day: Date,
         start_min: i64,
         dur_min: i64,
     },
     Resize {
         id: Id,
-        original: NaiveDate,
-        day: NaiveDate,
+        original: Date,
+        day: Date,
         start_min: i64,
         end_min: i64,
     },
     Select(Id),
-    OpenDay(NaiveDate),
+    OpenDay(Date),
 }
 
 pub(super) struct TimelineOutcome {
@@ -153,14 +153,14 @@ impl TimelineOutcome {
 #[derive(Clone, Copy, Debug)]
 enum TimelineDrag {
     Create {
-        day: NaiveDate,
+        day: Date,
         origin: Point,
         current: Point,
         active: bool,
     },
     Move {
         id: Id,
-        original: NaiveDate,
+        original: Date,
         origin: Point,
         current: Point,
         grab_off_min: i64,
@@ -230,7 +230,7 @@ impl TimelineInteraction {
         &mut self,
         cx: &mut InputContext<'_>,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         spans: &[TimelineSpan],
     ) -> TimelineOutcome {
         if let WindowEvent::CursorMoved { position, .. } = cx.event {
@@ -308,7 +308,7 @@ impl TimelineInteraction {
     fn begin_drag(
         &mut self,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         spans: &[TimelineSpan],
         point: Point,
     ) -> bool {
@@ -364,7 +364,7 @@ impl TimelineInteraction {
     fn event_at(
         &self,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         spans: &[TimelineSpan],
         point: Point,
     ) -> Option<TimelineSpan> {
@@ -406,7 +406,7 @@ impl TimelineInteraction {
     pub fn resize_grip_at(
         &self,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         spans: &[TimelineSpan],
         point: Point,
     ) -> bool {
@@ -420,7 +420,7 @@ impl TimelineInteraction {
     fn effect_for_drag(
         &self,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         drag: TimelineDrag,
     ) -> Option<TimelineEffect> {
         let geom = self.geometry(area);
@@ -480,7 +480,7 @@ impl TimelineInteraction {
     fn finish_drag(
         &mut self,
         area: Rect,
-        days: &[NaiveDate],
+        days: &[Date],
         spans: &[TimelineSpan],
     ) -> Option<TimelineEffect> {
         let drag = self.drag.take()?;
@@ -498,7 +498,7 @@ impl TimelineInteraction {
         self.viewport.handle_event(cx)
     }
 
-    fn preview(&self, area: Rect, days: &[NaiveDate]) -> Option<TimelineEffect> {
+    fn preview(&self, area: Rect, days: &[Date]) -> Option<TimelineEffect> {
         let drag = self.drag.filter(|drag| drag.is_active())?;
         self.effect_for_drag(area, days, drag)
     }
@@ -578,7 +578,7 @@ impl TimelineInteraction {
             let x0 = grid_x0 + col_w * index as f64;
             let header = Rect::new(x0, area.y0, x0 + col_w, area.y0 + geom.head_h);
             let is_today = *day == model.today;
-            let weekend = day.weekday().num_days_from_monday() >= 5;
+            let weekend = day.weekday().to_monday_zero_offset() >= 5;
             let text_x = x0 + s2;
             let weekday = date::weekday_short(*day);
             ctx.text(
@@ -1126,17 +1126,16 @@ fn fmt_event_min(minute: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
     use uuid::Uuid;
 
     fn area() -> Rect {
         Rect::new(100.0, 40.0, 1300.0, 640.0)
     }
 
-    fn days() -> Vec<NaiveDate> {
-        let first = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+    fn days() -> Vec<Date> {
+        let first = Date::new(2026, 8, 31).unwrap();
         (0..7)
-            .map(|offset| first + Duration::days(offset))
+            .map(|offset| first + jiff::Span::new().days(offset))
             .collect()
     }
 

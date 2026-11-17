@@ -1,6 +1,8 @@
 //! What a day or a time of day reads as in a sentence, where no view can stand beside it.
 
-use chrono::{DateTime, FixedOffset, NaiveDate};
+use jiff::Timestamp;
+use jiff::civil::{Date, DateTime};
+use jiff::tz::{Offset, TimeZone};
 
 use crate::{RegionFormats, Words};
 
@@ -16,8 +18,8 @@ pub fn shown(
     kind: &str,
     value: &str,
     formats: RegionFormats,
-    today: NaiveDate,
-    now: chrono::NaiveDateTime,
+    today: Date,
+    now: DateTime,
     zone: i64,
     words: &dyn Words,
 ) -> String {
@@ -38,21 +40,21 @@ pub fn shown(
 }
 
 /// The day the stored text `text` is: its date part.
-fn day_of(text: &str) -> Option<NaiveDate> {
+fn day_of(text: &str) -> Option<Date> {
     tilo_failure::ignored!(
         "a value that is not a day is shown as the text it is",
-        NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+        Date::strptime("%Y-%m-%d", text).ok()
     )
 }
 
 /// The instant `YYYY-MM-DDTHH:MM:SSZ` in the zone `zone` (seconds ahead of UTC).
-fn moment_of(text: &str, zone: i64) -> Option<chrono::NaiveDateTime> {
-    let zone = FixedOffset::east_opt(i32::try_from(zone).ok()?)?;
+fn moment_of(text: &str, zone: i64) -> Option<DateTime> {
+    let zone = TimeZone::fixed(Offset::from_seconds(i32::try_from(zone).ok()?).ok()?);
     tilo_failure::ignored!(
         "a value that is not an instant is shown as the text it is",
-        DateTime::parse_from_rfc3339(text)
+        text.parse::<Timestamp>()
             .ok()
-            .map(|at| at.with_timezone(&zone).naive_local())
+            .map(|at| at.to_zoned(zone).datetime())
     )
 }
 

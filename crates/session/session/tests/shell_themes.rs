@@ -482,8 +482,13 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
     // shell and nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
-            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
-                .expect("a second of the minute"),
+            u64::try_from(
+                ui::clock::local_now()
+                    .timestamp()
+                    .as_second()
+                    .rem_euclid(60),
+            )
+            .expect("a second of the minute"),
         ))
         .expect("the minute the test runs in");
     ui::time::testing::with_wall(at, || {

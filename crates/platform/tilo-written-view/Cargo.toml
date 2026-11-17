@@ -24,7 +24,7 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # use carries no surface at its start.
 app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet", features = ["surfaces"] }
 serde_json.workspace = true
-chrono = { workspace = true, features = ["std"] }
+jiff.workspace = true
 tracing.workspace = true
 
 [lints]

@@ -20,7 +20,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike as _, Timelike as _};
 use settings_store::hardware::{ActionChord, KeyChord};
 use settings_store::notification_policy::NotificationPolicy;
 use tilo_action_broker::automation::chord_target;
@@ -241,7 +240,7 @@ impl Automation {
                 _ => None,
             })
             .min()
-            .and_then(|due| due.signed_duration_since(now).to_std().ok())
+            .and_then(|due| std::time::Duration::try_from(due.duration_since(now)).ok())
             .and_then(|wait| Instant::now().checked_add(wait));
         // A shortcut armed with a trigger other than a schedule (an app running, a folder changing,
         // a workspace focused) fires on the tick: with nothing armed, the passing of time is
@@ -362,14 +361,14 @@ impl Automation {
     /// and the schedule at this device's local time.
     fn focus_state(&self) -> FocusState {
         let now = self.triggers.clock().now();
-        let local = now.with_timezone(&self.triggers.clock().offset_at(now));
-        let minute = local
-            .hour()
-            .checked_mul(60)
-            .and_then(|minutes| minutes.checked_add(local.minute()))
-            .and_then(|minute| u16::try_from(minute).ok())
-            .unwrap_or(0);
-        let weekday = u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0);
+        let local = now.to_zoned(self.triggers.clock().zone());
+        let minute = u16::try_from(
+            i32::from(local.hour())
+                .saturating_mul(60)
+                .saturating_add(i32::from(local.minute())),
+        )
+        .unwrap_or(0);
+        let weekday = u8::try_from(local.weekday().to_monday_zero_offset()).unwrap_or(0);
         let policy = self.policy.lock_recover();
         FocusState {
             do_not_disturb: policy.do_not_disturb,

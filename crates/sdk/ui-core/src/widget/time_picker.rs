@@ -7,8 +7,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use chrono::Timelike;
-
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -72,14 +70,6 @@ impl TimeValue {
 type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
 fn time_of(at: &str) -> Option<TimeValue> {
-    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
-        let time = instant.time();
-        return Some(TimeValue {
-            hours: time.hour().try_into().ok()?,
-            minutes: time.minute().try_into().ok()?,
-            seconds: Some(time.second().try_into().ok()?),
-        });
-    }
     let clock = at.get(11..19)?;
     let part = |range: std::ops::Range<usize>| -> Option<u8> { clock.get(range)?.parse().ok() };
     Some(TimeValue {

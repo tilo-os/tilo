@@ -88,7 +88,7 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     );
     assert_eq!(
         ui::format::first_weekday(),
-        chrono::Weekday::Sun,
+        jiff::civil::Weekday::Sunday,
         "the week starts on the day the person chose"
     );
 
@@ -97,7 +97,7 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     when(&mut session, || {
         ui::format::region::current().first_day == ui::format::region::FirstDayOfWeek::Monday
     });
-    assert_eq!(ui::format::first_weekday(), chrono::Weekday::Mon);
+    assert_eq!(ui::format::first_weekday(), jiff::civil::Weekday::Monday);
     assert_eq!(ui::clock::hour_minute(14, 5), "14:05");
     ui::format::region::install(before);
 }

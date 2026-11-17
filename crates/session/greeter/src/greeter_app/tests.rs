@@ -2735,16 +2735,13 @@ fn in_time<T>(zero: ui::time::Instant, wall_ms: u64, t: u64, operation: impl FnO
 /// its own.
 #[test]
 fn at_rest_on_the_kms_host_the_clock_turns_each_minute_with_one_wake() {
-    use chrono::TimeZone as _;
-    let started = chrono::Local
-        .with_ymd_and_hms(2026, 6, 30, 10, 41, 20)
-        .earliest()
+    let started = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(10, 41, 20, 0))
         .expect("a local time");
-    let wall_ms = u64::try_from(started.timestamp_millis()).expect("after the epoch");
+    let wall_ms = u64::try_from(started.as_millisecond()).expect("after the epoch");
     let zero = ui::time::now();
     let shown = |app: &mut ui::App, t: u64| {
         let time = in_time(zero, wall_ms, t, || {
-            ui::clock::time_of_day(&ui::clock::local_now())
+            ui::clock::time_of_day(ui::clock::local_now())
         });
         app.refresh_semantic_tree();
         app.semantic_tree()

@@ -369,7 +369,10 @@ pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
                 path: path.clone(),
                 is_dir,
                 size: meta.len(),
-                modified: meta.modified().ok().map(chrono::DateTime::from),
+                modified: meta
+                    .modified()
+                    .ok()
+                    .and_then(|at| jiff::Timestamp::try_from(at).ok()),
                 mime: if is_dir {
                     "inode/directory".into()
                 } else {

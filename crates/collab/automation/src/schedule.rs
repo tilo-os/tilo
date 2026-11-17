@@ -3,7 +3,9 @@
 //! same spec, so a schedule moved between them keeps its times, and a moment
 //! is answered once by whichever keeps it.
 
-use chrono::{DateTime, Datelike as _, FixedOffset, NaiveDate, NaiveTime, TimeZone as _, Utc};
+use jiff::civil::{Date, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Span, Timestamp};
 
 use crate::shortcut::{CatchUp, Schedule, TriggerSpec, Weekday};
 
@@ -11,36 +13,34 @@ use crate::shortcut::{CatchUp, Schedule, TriggerSpec, Weekday};
 pub const MISSED_AFTER_MS: i64 = 90_000;
 
 /// [`MISSED_AFTER_MS`] as a duration.
-pub const MISSED_AFTER: chrono::Duration = chrono::Duration::milliseconds(MISSED_AFTER_MS);
+pub const MISSED_AFTER: SignedDuration = SignedDuration::from_millis(MISSED_AFTER_MS);
 
 /// The shortest interval a schedule repeats in, however short the spec says:
 /// a shortcut firing more often than this is a loop, not a schedule.
 pub const MIN_INTERVAL_SECONDS: u64 = 60;
 
-/// The wall-clock offset the local time of a calendar schedule is read in, at
-/// a given instant.
-pub type Zone<'a> = dyn Fn(DateTime<Utc>) -> FixedOffset + 'a;
-
 /// The first fire time of `schedule` strictly after `now`. An interval counts
 /// from the Unix epoch, so every device computes the same fire times whenever
 /// it armed the schedule; a calendar time is a wall-clock time in `zone`.
 #[must_use]
-pub fn next_fire_time(
-    schedule: &Schedule,
-    now: DateTime<Utc>,
-    zone: &Zone<'_>,
-) -> Option<DateTime<Utc>> {
+pub fn next_fire_time(schedule: &Schedule, now: Timestamp, zone: &TimeZone) -> Option<Timestamp> {
     match schedule {
         Schedule::Interval { seconds } => {
             let period = i64::try_from((*seconds).max(MIN_INTERVAL_SECONDS)).ok()?;
-            let periods = now.timestamp().div_euclid(period).checked_add(1)?;
-            DateTime::from_timestamp(period.checked_mul(periods)?, 0)
+            let periods = now.as_second().div_euclid(period).checked_add(1)?;
+            Timestamp::from_second(period.checked_mul(periods)?).ok()
         }
         Schedule::Calendar { at, weekdays } => {
-            let time = NaiveTime::from_hms_opt(u32::from(at.hour), u32::from(at.minute), 0)?;
-            let today = now.with_timezone(&zone(now)).date_naive();
-            (0..=8_i64)
-                .filter_map(|day| today.checked_add_signed(chrono::Duration::days(day)))
+            let time = Time::new(
+                i8::try_from(at.hour).ok()?,
+                i8::try_from(at.minute).ok()?,
+                0,
+                0,
+            )
+            .ok()?;
+            let today = now.to_zoned(zone.clone()).date();
+            (0..=8_i32)
+                .filter_map(|day| today.checked_add(Span::new().days(day)).ok())
                 .filter(|date| weekdays.is_empty() || weekdays.contains(&weekday_of(*date)))
                 .filter_map(|date| local_instant(date, time, zone))
                 .find(|candidate| *candidate > now)
@@ -81,10 +81,10 @@ impl<'a> Timed<'a> {
     /// first time after `now`. A moment is itself, also when it has passed
     /// already, so one set while its keeper was down still fires.
     #[must_use]
-    pub fn first_ms(&self, now: DateTime<Utc>, zone: &Zone<'_>) -> Option<i64> {
+    pub fn first_ms(&self, now: Timestamp, zone: &TimeZone) -> Option<i64> {
         match self {
             Self::Repeating { schedule, .. } => {
-                next_fire_time(schedule, now, zone).map(|at| at.timestamp_millis())
+                next_fire_time(schedule, now, zone).map(Timestamp::as_millisecond)
             }
             Self::Once { at_ms } => Some(*at_ms),
         }
@@ -94,10 +94,10 @@ impl<'a> Timed<'a> {
     /// `now`: a schedule's next after `now`, so the times missed in between
     /// are answered once between them; none for a moment, which is spent.
     #[must_use]
-    pub fn following_ms(&self, now: DateTime<Utc>, zone: &Zone<'_>) -> Option<i64> {
+    pub fn following_ms(&self, now: Timestamp, zone: &TimeZone) -> Option<i64> {
         match self {
             Self::Repeating { schedule, .. } => {
-                next_fire_time(schedule, now, zone).map(|at| at.timestamp_millis())
+                next_fire_time(schedule, now, zone).map(Timestamp::as_millisecond)
             }
             Self::Once { .. } => None,
         }
@@ -108,11 +108,11 @@ impl<'a> Timed<'a> {
     /// it, and a moment's own time while it has not been answered yet. `None`
     /// when there is nothing more to wait for.
     #[must_use]
-    pub fn waiting_ms(&self, answered_ms: i64, zone: &Zone<'_>) -> Option<i64> {
+    pub fn waiting_ms(&self, answered_ms: i64, zone: &TimeZone) -> Option<i64> {
         match self {
             Self::Repeating { schedule, .. } => {
-                let from = DateTime::from_timestamp_millis(answered_ms)?;
-                next_fire_time(schedule, from, zone).map(|at| at.timestamp_millis())
+                let from = Timestamp::from_millisecond(answered_ms).ok()?;
+                next_fire_time(schedule, from, zone).map(Timestamp::as_millisecond)
             }
             Self::Once { at_ms } => (answered_ms < *at_ms).then_some(*at_ms),
         }
@@ -164,7 +164,7 @@ pub fn plan(
     timed: Timed<'_>,
     answered_due_ms: Option<i64>,
     now_ms: i64,
-    zone: &Zone<'_>,
+    zone: &TimeZone,
 ) -> SchedulePlan {
     match timed {
         Timed::Once { at_ms } => {
@@ -192,13 +192,13 @@ pub fn plan(
                     answered_ms: now_ms,
                 };
             };
-            let from = DateTime::from_timestamp_millis(answered).unwrap_or_default();
+            let from = Timestamp::from_millisecond(answered).unwrap_or(Timestamp::UNIX_EPOCH);
             let Some(due) = next_fire_time(schedule, from, zone) else {
                 return SchedulePlan::Waiting {
                     answered_ms: answered,
                 };
             };
-            let due_ms = due.timestamp_millis();
+            let due_ms = due.as_millisecond();
             if due_ms > now_ms {
                 return SchedulePlan::Waiting {
                     answered_ms: answered,
@@ -219,37 +219,27 @@ pub fn plan(
     }
 }
 
-fn local_instant(date: NaiveDate, time: NaiveTime, zone: &Zone<'_>) -> Option<DateTime<Utc>> {
-    let naive = date.and_time(time);
-    // Read the offset at a first guess of the instant, so a change of offset between now and then
-    // (daylight saving) is taken into account.
-    let first_offset = zone(naive.and_utc()).local_minus_utc();
-    let guess = naive
-        .and_utc()
-        .checked_sub_signed(chrono::Duration::seconds(i64::from(first_offset)))?;
-    let offset = zone(guess);
-    offset
-        .from_local_datetime(&naive)
-        .single()
-        .map(|local| local.with_timezone(&Utc))
+/// The instant `time` on `date` is in `zone`; none when the zone skips or repeats it.
+fn local_instant(date: Date, time: Time, zone: &TimeZone) -> Option<Timestamp> {
+    zone.to_ambiguous_timestamp(date.to_datetime(time))
+        .unambiguous()
+        .ok()
 }
 
-fn weekday_of(date: NaiveDate) -> Weekday {
+fn weekday_of(date: Date) -> Weekday {
     match date.weekday() {
-        chrono::Weekday::Mon => Weekday::Monday,
-        chrono::Weekday::Tue => Weekday::Tuesday,
-        chrono::Weekday::Wed => Weekday::Wednesday,
-        chrono::Weekday::Thu => Weekday::Thursday,
-        chrono::Weekday::Fri => Weekday::Friday,
-        chrono::Weekday::Sat => Weekday::Saturday,
-        chrono::Weekday::Sun => Weekday::Sunday,
+        jiff::civil::Weekday::Monday => Weekday::Monday,
+        jiff::civil::Weekday::Tuesday => Weekday::Tuesday,
+        jiff::civil::Weekday::Wednesday => Weekday::Wednesday,
+        jiff::civil::Weekday::Thursday => Weekday::Thursday,
+        jiff::civil::Weekday::Friday => Weekday::Friday,
+        jiff::civil::Weekday::Saturday => Weekday::Saturday,
+        jiff::civil::Weekday::Sunday => Weekday::Sunday,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::Offset as _;
-
     use super::*;
 
     tilo_test_env::scenario! {
@@ -257,8 +247,8 @@ mod tests {
 
         phase a_schedule_starts_after_it_is_armed_and_a_moment_at_itself_even_when_it_passed;
         {
-            let zone = |_: DateTime<Utc>| Utc.fix();
-            let now = DateTime::from_timestamp_millis(3_600_001).unwrap_or_default();
+            let zone = TimeZone::UTC;
+            let now = Timestamp::from_millisecond(3_600_001).unwrap();
             let every_minute = TriggerSpec::Schedule {
                 schedule: Schedule::Interval { seconds: 60 },
                 catch_up: CatchUp::Skip,

@@ -53,7 +53,7 @@ fn prepared(
 /// it says, arrives with the session's first reading.
 fn shown() -> Shown {
     Shown {
-        clock: ui::clock::time_of_day(&ui::clock::local_now()),
+        clock: ui::clock::time_of_day(ui::clock::local_now()),
         date: ui::format::day_heading(ui::clock::today(), false),
         ..Shown::default()
     }

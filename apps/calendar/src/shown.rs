@@ -1,55 +1,54 @@
 //! Events as the person looking at them sees them: each occurrence at its
 //! instant, in the viewer's time zone.
 
-use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::model::Event;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whose clock events are read on: a named zone, or this device's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Viewer {
-    zone: Option<Tz>,
+    zone: Option<(&'static str, TimeZone)>,
 }
 
 impl Viewer {
     pub fn device() -> Self {
-        Self {
-            zone: device_zone_name().and_then(|name| name.parse::<Tz>().ok()),
-        }
+        device_zone_name().map_or(Self { zone: None }, |name| Self::named(&name))
     }
 
     pub fn named(zone: &str) -> Self {
+        let (name, _) = jiff_tzdb::get(zone).unzip();
         Self {
-            zone: zone.parse::<Tz>().ok(),
+            zone: name.zip(crate::timezone::named(zone)),
         }
     }
 
     pub fn zone_name(&self) -> Option<&'static str> {
-        self.zone.map(Tz::name)
+        self.zone.as_ref().map(|(name, _)| *name)
     }
 
-    pub fn wall(&self, instant: DateTime<Utc>) -> NaiveDateTime {
-        match self.zone {
-            Some(zone) => instant.with_timezone(&zone).naive_local(),
-            None => instant.with_timezone(&chrono::Local).naive_local(),
+    fn time_zone(&self) -> TimeZone {
+        self.zone
+            .as_ref()
+            .map_or_else(TimeZone::system, |(_, zone)| zone.clone())
+    }
+
+    pub fn wall(&self, instant: Timestamp) -> DateTime {
+        instant.to_zoned(self.time_zone()).datetime()
+    }
+
+    pub fn instant(&self, wall: DateTime) -> Option<Timestamp> {
+        match &self.zone {
+            Some((name, _)) => crate::timezone::wall_to_utc(name, wall).map(|(at, _)| at),
+            None => ui::clock::instant_of(wall).or_else(|| {
+                ui::clock::instant_of(wall.checked_add(SignedDuration::from_hours(1)).ok()?)
+            }),
         }
     }
 
-    pub fn instant(&self, wall: NaiveDateTime) -> Option<DateTime<Utc>> {
-        match self.zone {
-            Some(zone) => crate::timezone::wall_to_utc(zone.name(), wall).map(|(at, _)| at),
-            None => match chrono::Local.from_local_datetime(&wall) {
-                LocalResult::Single(at) => Some(at.with_timezone(&Utc)),
-                LocalResult::Ambiguous(a, b) => Some(a.min(b).with_timezone(&Utc)),
-                LocalResult::None => chrono::Local
-                    .from_local_datetime(&(wall + Duration::hours(1)))
-                    .earliest()
-                    .map(|at| at.with_timezone(&Utc)),
-            },
-        }
-    }
-
-    pub fn to_zone(&self, wall: NaiveDateTime, zone: &str) -> NaiveDateTime {
+    pub fn to_zone(&self, wall: DateTime, zone: &str) -> DateTime {
         if zone == "floating" || Some(zone) == self.zone_name() {
             return wall;
         }
@@ -57,10 +56,9 @@ impl Viewer {
             return wall;
         };
         if zone == "UTC" {
-            return instant.naive_utc();
+            return instant.to_zoned(TimeZone::UTC).datetime();
         }
-        zone.parse::<Tz>()
-            .map_or(wall, |zone| instant.with_timezone(&zone).naive_local())
+        crate::timezone::named(zone).map_or(wall, |zone| instant.to_zoned(zone).datetime())
     }
 }
 
@@ -72,26 +70,26 @@ fn device_zone_name() -> Option<String> {
 #[derive(Clone, Copy, Debug)]
 pub struct Shown<'a> {
     pub event: &'a Event,
-    pub original: NaiveDate,
-    pub start: NaiveDateTime,
-    pub end: NaiveDateTime,
-    pub elapsed: Duration,
+    pub original: Date,
+    pub start: DateTime,
+    pub end: DateTime,
+    pub elapsed: SignedDuration,
 }
 
 impl Shown<'_> {
-    pub fn on(&self, day: NaiveDate) -> bool {
-        let from = day.and_time(NaiveTime::MIN);
-        let to = from + Duration::days(1);
+    pub fn on(&self, day: Date) -> bool {
+        let from = day.to_datetime(Time::MIN);
+        let to = from + jiff::Span::new().days(1);
         self.start < to && (self.end > from || self.start >= from)
     }
 
-    pub fn minutes_on(&self, day: NaiveDate) -> (i64, i64) {
-        let from = day.and_time(NaiveTime::MIN);
-        let start = (self.start - from).num_minutes().clamp(0, 24 * 60);
+    pub fn minutes_on(&self, day: Date) -> (i64, i64) {
+        let from = day.to_datetime(Time::MIN);
+        let start = self.start.duration_since(from).as_mins().clamp(0, 24 * 60);
         let end = if self.start.date() == day {
-            start + self.elapsed.num_minutes().max(0)
+            start + self.elapsed.as_mins().max(0)
         } else {
-            (self.end - from).num_minutes()
+            self.end.duration_since(from).as_mins()
         };
         (start, end.clamp(start, 24 * 60))
     }
@@ -100,31 +98,31 @@ impl Shown<'_> {
 /// One generated occurrence's wall interval in the event's own zone. An
 /// override that moved or resized the occurrence is respected; otherwise it
 /// keeps the series' duration.
-pub fn wall_interval(event: &Event, date: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
+pub fn wall_interval(event: &Event, date: Date) -> (DateTime, DateTime) {
     if event.all_day {
-        let start = date.and_time(NaiveTime::MIN);
-        return (start, start + Duration::days(event.all_day_span_days()));
+        let start = date.to_datetime(Time::MIN);
+        return (
+            start,
+            start + jiff::Span::new().days(event.all_day_span_days()),
+        );
     }
     let edit = override_on(event, date);
     let start = edit
         .and_then(|edit| edit.start)
-        .unwrap_or_else(|| date.and_time(event.start.time()));
+        .unwrap_or_else(|| date.to_datetime(event.start.time()));
     let end = edit
         .and_then(|edit| edit.end)
         .unwrap_or_else(|| event.occurrence_end(start));
     (start, end)
 }
 
-pub(crate) fn override_on(
-    event: &Event,
-    date: NaiveDate,
-) -> Option<&crate::model::OccurrenceOverride> {
+pub(crate) fn override_on(event: &Event, date: Date) -> Option<&crate::model::OccurrenceOverride> {
     event.occurrence_overrides.iter().find(|edit| {
         edit.original_date == date || edit.start.is_some_and(|start| start.date() == date)
     })
 }
 
-pub fn instants(event: &Event, date: NaiveDate) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+pub fn instants(event: &Event, date: Date) -> Option<(jiff::Timestamp, jiff::Timestamp)> {
     if event.all_day {
         return None;
     }
@@ -134,33 +132,35 @@ pub fn instants(event: &Event, date: NaiveDate) -> Option<(DateTime<Utc>, DateTi
     let end = if let Some(edit) = edit.filter(|edit| edit.end.is_some()) {
         crate::timezone::endpoint_utc(&event.timezone, end, edit.end_later_fold)?
     } else if event.end_later_fold {
-        start.checked_add_signed(event.elapsed_duration())?
+        start.checked_add(event.elapsed_duration()).ok()?
     } else {
         crate::timezone::endpoint_utc(&event.timezone, end, false)?
     };
     Some((start, end))
 }
 
-pub fn occurrences<'a>(
-    event: &'a Event,
-    from: NaiveDate,
-    to: NaiveDate,
-    viewer: &Viewer,
-) -> Vec<Shown<'a>> {
+pub fn occurrences<'a>(event: &'a Event, from: Date, to: Date, viewer: &Viewer) -> Vec<Shown<'a>> {
     let reach = if event.all_day {
         event.all_day_span_days()
     } else {
         2
     };
-    let window_from = from.and_time(NaiveTime::MIN);
-    let window_to = (to + Duration::days(1)).and_time(NaiveTime::MIN);
+    let window_from = from.to_datetime(Time::MIN);
+    let window_to = (to + jiff::Span::new().days(1)).to_datetime(Time::MIN);
     let mut out = Vec::new();
-    for date in event.occurrences_in(from - Duration::days(reach), to + Duration::days(2)) {
+    for date in event.occurrences_in(
+        from - jiff::Span::new().days(reach),
+        to + jiff::Span::new().days(2),
+    ) {
         let (wall_start, wall_end) = wall_interval(event, date);
         let original = override_on(event, date).map_or(date, |edit| edit.original_date);
         let (start, end, elapsed) = match instants(event, date) {
-            Some((start, end)) => (viewer.wall(start), viewer.wall(end), end - start),
-            None => (wall_start, wall_end, wall_end - wall_start),
+            Some((start, end)) => (
+                viewer.wall(start),
+                viewer.wall(end),
+                end.duration_since(start),
+            ),
+            None => (wall_start, wall_end, wall_end.duration_since(wall_start)),
         };
         let shown = Shown {
             event,
@@ -183,19 +183,16 @@ mod tests {
     use super::*;
     use crate::model::Recurrence;
 
-    fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(y, m, d)
-            .unwrap()
-            .and_hms_opt(h, min, 0)
-            .unwrap()
+    fn at(y: i16, m: i8, d: i8, h: i8, min: i8) -> DateTime {
+        Date::new(y, m, d).unwrap().at(h, min, 0, 0)
     }
 
-    fn event(zone: &str, start: NaiveDateTime, minutes: i64) -> Event {
+    fn event(zone: &str, start: DateTime, minutes: i64) -> Event {
         Event {
             id: uuid::Uuid::new_v4(),
             title: "Call".into(),
             start,
-            end: start + Duration::minutes(minutes),
+            end: start + jiff::SignedDuration::from_mins(minutes),
             timezone: zone.into(),
             recurrence_interval: 1,
             ..Event::default()
@@ -209,7 +206,7 @@ mod tests {
         phase events_are_placed_at_their_instant_on_the_viewers_clock;
         {
             let berlin = Viewer::named("Europe/Berlin");
-            let day = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+            let day = Date::new(2026, 6, 30).unwrap();
 
             let utc = event("UTC", at(2026, 6, 30, 7, 0), 60);
             let shown = occurrences(&utc, day, day, &berlin);
@@ -233,8 +230,8 @@ mod tests {
         {
             let tokyo = Viewer::named("Asia/Tokyo");
             let ny = event("America/New_York", at(2026, 6, 30, 20, 0), 60);
-            let jun30 = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
-            let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+            let jun30 = Date::new(2026, 6, 30).unwrap();
+            let jul1 = Date::new(2026, 7, 1).unwrap();
             assert!(occurrences(&ny, jun30, jun30, &tokyo).is_empty());
             let shown = occurrences(&ny, jul1, jul1, &tokyo);
             assert_eq!(shown[0].start, at(2026, 7, 1, 9, 0));
@@ -249,11 +246,11 @@ mod tests {
             let berlin = Viewer::named("Europe/Berlin");
             let mut weekly = event("America/New_York", at(2026, 10, 19, 9, 0), 60);
             weekly.recurrence = Recurrence::Weekly;
-            let from = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
-            let to = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+            let from = Date::new(2026, 10, 19).unwrap();
+            let to = Date::new(2026, 11, 8).unwrap();
             let hours: Vec<_> = occurrences(&weekly, from, to, &berlin)
                 .iter()
-                .map(|shown| chrono::Timelike::hour(&shown.start))
+                .map(|shown| shown.start.hour())
                 .collect();
             assert_eq!(hours, vec![15, 14, 15]);
         }
@@ -262,13 +259,13 @@ mod tests {
         {
             let berlin = Viewer::named("Europe/Berlin");
             let late = event("Europe/Berlin", at(2026, 6, 30, 23, 0), 120);
-            let jul1 = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+            let jul1 = Date::new(2026, 7, 1).unwrap();
             let shown = occurrences(&late, jul1, jul1, &berlin);
             assert_eq!(shown.len(), 1);
             assert!(shown[0].on(jul1));
             assert_eq!(shown[0].minutes_on(jul1), (0, 60));
             assert_eq!(
-                shown[0].minutes_on(NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()),
+                shown[0].minutes_on(Date::new(2026, 6, 30).unwrap()),
                 (23 * 60, 24 * 60)
             );
         }

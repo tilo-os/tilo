@@ -24,7 +24,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 clap.workspace = true
 hex.workspace = true
 libc.workspace = true

@@ -6,7 +6,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use chrono::{Duration, NaiveDate};
+use jiff::civil::Date;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
 
@@ -23,8 +23,8 @@ use crate::shown::{Shown, Viewer};
 
 const DAYS_SHOWN: i64 = 21;
 
-pub(crate) fn last_day(anchor: NaiveDate) -> NaiveDate {
-    anchor + Duration::days(DAYS_SHOWN - 1)
+pub(crate) fn last_day(anchor: Date) -> Date {
+    anchor + jiff::Span::new().days(DAYS_SHOWN - 1)
 }
 
 const EMPTY_TITLE: &str = "Nothing scheduled in the next three weeks";
@@ -37,7 +37,7 @@ pub(crate) enum AgendaAction {
 }
 
 enum Item<'a> {
-    Heading(NaiveDate),
+    Heading(Date),
     Event(Shown<'a>),
     Task(&'a Task),
 }
@@ -94,7 +94,7 @@ impl AgendaView {
         ctx: &mut PaintCtx<'_>,
         area: Rect,
         source: &AgendaSource<'_>,
-        today: NaiveDate,
+        today: Date,
         pointer: Point,
     ) -> Vec<(Rect, AgendaAction)> {
         let theme = ctx.theme;
@@ -224,7 +224,7 @@ fn event_time(shown: &Shown<'_>) -> String {
     if shown.event.all_day {
         "All day".into()
     } else {
-        date::fmt_time(&shown.start)
+        date::fmt_time(shown.start)
     }
 }
 
@@ -273,10 +273,10 @@ fn task_face<'a>(
     }
 }
 
-fn draw_heading(ctx: &mut PaintCtx<'_>, band: Rect, day: NaiveDate, today: NaiveDate) {
+fn draw_heading(ctx: &mut PaintCtx<'_>, band: Rect, day: Date, today: Date) {
     let theme = ctx.theme;
     let long = date::fmt_day_long(day);
-    let near = (day - today).num_days().abs() <= 1;
+    let near = i64::from(day.since(today).map_or(0, |span| span.get_days())).abs() <= 1;
     let label = if near {
         date::relative_label(day, today)
     } else {
@@ -316,14 +316,14 @@ fn heading_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
 
 pub(crate) struct AgendaSource<'a> {
     pub(crate) model: &'a Calendar,
-    pub(crate) anchor: NaiveDate,
+    pub(crate) anchor: Date,
     pub(crate) hidden_calendars: &'a HashSet<String>,
     pub(crate) calendar_filter: Option<&'a str>,
     pub(crate) viewer: Viewer,
 }
 
 impl<'a> AgendaSource<'a> {
-    fn tasks_on(&self, day: NaiveDate) -> Vec<&'a Task> {
+    fn tasks_on(&self, day: Date) -> Vec<&'a Task> {
         let mut tasks: Vec<&'a Task> = self
             .model
             .tasks
@@ -340,7 +340,7 @@ impl<'a> AgendaSource<'a> {
             self.model,
             (self.anchor, end),
             (self.hidden_calendars, self.calendar_filter),
-            self.viewer,
+            &self.viewer,
         );
         let mut items = Vec::new();
         let mut day = self.anchor;
@@ -352,7 +352,7 @@ impl<'a> AgendaSource<'a> {
                 items.extend(events.into_iter().map(Item::Event));
                 items.extend(tasks.into_iter().map(Item::Task));
             }
-            day += Duration::days(1);
+            day += jiff::Span::new().days(1);
         }
         items
     }
@@ -360,9 +360,9 @@ impl<'a> AgendaSource<'a> {
 
 fn visible_between<'a>(
     model: &'a Calendar,
-    (from, to): (NaiveDate, NaiveDate),
+    (from, to): (Date, Date),
     (hidden_calendars, calendar_filter): (&HashSet<String>, Option<&str>),
-    viewer: Viewer,
+    viewer: &Viewer,
 ) -> Vec<Shown<'a>> {
     let mut shown: Vec<Shown<'a>> = model
         .events
@@ -377,7 +377,7 @@ fn visible_between<'a>(
                     }
                 })
         })
-        .flat_map(|event| crate::shown::occurrences(event, from, to, &viewer))
+        .flat_map(|event| crate::shown::occurrences(event, from, to, viewer))
         .collect();
     shown.sort_by(|a, b| {
         b.event
@@ -426,13 +426,13 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn date(day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 8, day).expect("valid fixture date")
+    fn date(day: i8) -> Date {
+        Date::new(2026, 8, day).expect("valid fixture date")
     }
 
     fn source<'a>(
         model: &'a Calendar,
-        anchor: NaiveDate,
+        anchor: Date,
         hidden_calendars: &'a HashSet<String>,
     ) -> AgendaSource<'a> {
         AgendaSource {
@@ -450,20 +450,20 @@ mod tests {
 
     fn visible_events_on<'a>(
         model: &'a Calendar,
-        day: NaiveDate,
+        day: Date,
         hidden: &HashSet<String>,
         filter: Option<&str>,
     ) -> Vec<Shown<'a>> {
-        visible_between(model, (day, day), (hidden, filter), berlin())
+        visible_between(model, (day, day), (hidden, filter), &berlin())
     }
 
-    fn event(day: u32, calendar_id: Option<&str>) -> Event {
-        let start = date(day).and_hms_opt(9, 0, 0).expect("valid fixture time");
+    fn event(day: i8, calendar_id: Option<&str>) -> Event {
+        let start = date(day).at(9, 0, 0, 0);
         Event {
             id: Uuid::new_v4(),
             title: "Event".into(),
             start,
-            end: start + Duration::hours(1),
+            end: start + jiff::SignedDuration::from_hours(1),
             calendar_id: calendar_id.map(str::to_owned),
             ..Event::default()
         }

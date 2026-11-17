@@ -462,7 +462,7 @@ fn results_column(model: &Model) -> Column {
     }
 
     if !model.history.is_empty() {
-        let now = ui::clock::local_now().timestamp();
+        let now = ui::clock::local_now().timestamp().as_second();
         let rows: Vec<Element> = model
             .history
             .iter()

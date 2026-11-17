@@ -496,7 +496,8 @@ impl BrowserWidget {
     /// Screenshot hook: the review of a visa application two agents and a
     /// person filled, read from the answer shapes the window names actors in.
     pub(super) fn stage_page_review(&mut self) {
-        let now = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or_default();
+        let now =
+            u64::try_from(ui::clock::local_now().timestamp().as_millisecond()).unwrap_or_default();
         let (forms, fields, record) = shot_page(now);
         // The chrome names the page the review is of.
         self.current_uri = "https://visas.example.org/apply".into();
@@ -830,9 +831,10 @@ fn step_title(step: &Step) -> String {
 
 /// The time of day an action ended, as this device shows times.
 fn time_of(time_ms: u64) -> Option<String> {
-    let when = chrono::DateTime::from_timestamp_millis(i64::try_from(time_ms).ok()?)?
-        .with_timezone(&chrono::Local);
-    Some(ui::clock::time_of_day(&when))
+    let when = jiff::Timestamp::from_millisecond(i64::try_from(time_ms).ok()?)
+        .ok()?
+        .to_zoned(jiff::tz::TimeZone::system());
+    Some(ui::clock::time_of_day(when))
 }
 
 /// One field as the engine's fields read lists it for a screenshot: the

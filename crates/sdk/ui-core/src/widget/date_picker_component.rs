@@ -45,9 +45,7 @@ impl Described for DatePicker {
         let shown = value.clone();
         let mut picker = Self::from_text_state(&value.state)
             .on_change(move |day| {
-                shown.edited(crate::component::Value::Text(
-                    day.format("%Y-%m-%d").to_string(),
-                ));
+                shown.edited(crate::component::Value::Text(day.to_string()));
             })
             .marked(
                 marked

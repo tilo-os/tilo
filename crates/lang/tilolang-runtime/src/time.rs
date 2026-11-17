@@ -12,8 +12,7 @@
 //! person writes (`2026-06-30T09:00`) is that minute where they are, and a day is theirs before
 //! it is UTC's.
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime};
 
 use tilolang::calendar::{DAY, civil_from_days, time_text};
 
@@ -39,14 +38,22 @@ impl Core {
             Imp::TimeOfDay => {
                 let at = self.instant_arg(a.h(0)?)?;
                 let local = self.local_wall(at);
-                ret_i64(i64::from(local.time().num_seconds_from_midnight()))
+                ret_i64(
+                    local
+                        .time()
+                        .duration_since(jiff::civil::Time::MIN)
+                        .as_secs(),
+                )
             }
             // The time of day a moment falls at, as the person reads a clock: `10:41` or
             // `10:41 AM`, in the style they chose in Settings.
             Imp::TimeClock => {
                 let at = self.instant_arg(a.h(0)?)?;
                 let local = self.local_wall(at);
-                self.ret_h(Value::Text(self.clock_text(local.hour(), local.minute())))
+                self.ret_h(Value::Text(self.clock_text(
+                    u32::from(local.hour().unsigned_abs()),
+                    u32::from(local.minute().unsigned_abs()),
+                )))
             }
             Imp::DayShift => {
                 let day = self.day(a.h(0)?)?;
@@ -66,7 +73,7 @@ impl Core {
                 let Some(days) = days else {
                     return trap("the day is out of range");
                 };
-                let Some(moved) = day.checked_add_signed(Duration::days(days)) else {
+                let Some(moved) = day.checked_add(jiff::Span::new().days(days)).ok() else {
                     return trap("the day is out of range");
                 };
                 self.ret_h(Value::Text(day_text(moved)))
@@ -77,7 +84,7 @@ impl Core {
                 // Two days are days apart, two moments seconds, and either reads as the same
                 // number of seconds.
                 let secs = match (day_of(&from), day_of(&to)) {
-                    (Some(from), Some(to)) => from.signed_duration_since(to).num_seconds(),
+                    (Some(from), Some(to)) => from.duration_since(to).as_secs(),
                     _ => {
                         Self::instant_arg_text(&from)?.saturating_sub(Self::instant_arg_text(&to)?)
                     }
@@ -95,17 +102,17 @@ impl Core {
             }
             Imp::DayWeekday => {
                 let day = self.day(a.h(0)?)?;
-                ret_i64(i64::from(day.weekday().num_days_from_monday()))
+                ret_i64(i64::from(day.weekday().to_monday_zero_offset()))
             }
             Imp::DayStartOfWeek => {
                 let day = self.day(a.h(0)?)?;
                 // The week runs from the day the person's region starts it on: back that many
                 // days from the day, a week round.
-                let back = i64::from(day.weekday().num_days_from_monday())
+                let back = i64::from(day.weekday().to_monday_zero_offset())
                     .wrapping_add(7)
                     .wrapping_sub(self.week_start())
                     .rem_euclid(7);
-                let Some(start) = day.checked_sub_signed(Duration::days(back)) else {
+                let Some(start) = day.checked_sub(jiff::Span::new().days(back)).ok() else {
                     return trap("the day is out of range");
                 };
                 self.ret_h(Value::Text(day_text(start)))
@@ -149,7 +156,7 @@ impl Core {
     }
 
     /// A `Date` value as a day.
-    pub(crate) fn day(&self, h: i32) -> HResult<NaiveDate> {
+    pub(crate) fn day(&self, h: i32) -> HResult<Date> {
         let text = self.text(h)?;
         day_of(&text).ok_or_else(|| crate::engine::HostFail::Trap(format!("`{text}` is not a day")))
     }
@@ -167,10 +174,11 @@ impl Core {
     }
 
     /// The day `days` after 1970-01-01, as the calendar holds a day number.
-    fn day_of_days(days: i64) -> HResult<NaiveDate> {
+    fn day_of_days(days: i64) -> HResult<Date> {
         let (y, m, d) = civil_from_days(days);
-        match (i32::try_from(y), u32::try_from(m), u32::try_from(d)) {
-            (Ok(y), Ok(m), Ok(d)) => NaiveDate::from_ymd_opt(y, m, d)
+        match (i16::try_from(y), i8::try_from(m), i8::try_from(d)) {
+            (Ok(y), Ok(m), Ok(d)) => Date::new(y, m, d)
+                .ok()
                 .ok_or_else(|| crate::engine::HostFail::Trap("the day is out of range".into())),
             _ => trap("the day is out of range"),
         }
@@ -179,10 +187,9 @@ impl Core {
     /// The moment a day and a time of day name for the person.
     fn moment_of(&self, days: i64, minutes: i64) -> HResult<i64> {
         let day = Self::day_of_days(days)?;
-        let secs = u32::try_from(minutes.rem_euclid(1440).saturating_mul(60)).unwrap_or(0);
-        let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, 0)
-            .unwrap_or(chrono::NaiveTime::MIN);
-        Ok(self.instant_of(day.and_time(time)))
+        let time = jiff::civil::Time::MIN
+            .wrapping_add(jiff::SignedDuration::from_mins(minutes.rem_euclid(1440)));
+        Ok(self.instant_of(day.to_datetime(time)))
     }
 
     /// What `text` says of a day and a time of day, read against the person's day and wall
@@ -191,8 +198,11 @@ impl Core {
         let at = Self::instant_arg_text(near)?;
         let local = self.local_wall(at);
         let epoch = Self::day_of_days(0)?;
-        let days = local.date().signed_duration_since(epoch).num_days();
-        let second_of_day = i64::from(local.time().num_seconds_from_midnight());
+        let days = i64::from(local.date().since(epoch).map_or(0, |span| span.get_days()));
+        let second_of_day = local
+            .time()
+            .duration_since(jiff::civil::Time::MIN)
+            .as_secs();
         let lang = tilolang::natural::Language::of(&self.words.borrow().language());
         Ok(tilolang::natural::when(text, days, second_of_day, lang))
     }
@@ -209,7 +219,7 @@ impl Core {
     fn wall_clock(&self, text: &str) -> HResult<String> {
         let wall = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
             .into_iter()
-            .find_map(|shape| NaiveDateTime::parse_from_str(text, shape).ok());
+            .find_map(|shape| DateTime::strptime(shape, text).ok());
         let Some(wall) = wall else {
             return trap(format!("`{text}` is not a wall-clock time"));
         };
@@ -230,8 +240,8 @@ impl Core {
 
     /// The zone with that name, or `None` for a host that named none or one this platform does
     /// not know.
-    fn zone(&self) -> Option<Tz> {
-        self.zone_name()?.parse().ok()
+    fn zone(&self) -> Option<jiff::tz::TimeZone> {
+        tilo_recurrence::zone::named(&self.zone_name()?)
     }
 
     /// The person's offset from UTC now, in seconds: what the invocation pinned, else what a
@@ -245,40 +255,44 @@ impl Core {
 
     /// The moment `wall` names for the person: read in their zone, so a time of day keeps its
     /// minutes across a change of clocks; by their clock's offset where the host named no zone.
-    pub(crate) fn instant_of(&self, wall: NaiveDateTime) -> i64 {
+    pub(crate) fn instant_of(&self, wall: DateTime) -> i64 {
         let resolved = self
             .zone_name()
             .and_then(|zone| tilo_recurrence::wall_to_utc(&zone, wall))
-            .map(|(instant, _)| instant.timestamp());
-        resolved.unwrap_or_else(|| wall.and_utc().timestamp().saturating_sub(self.offset()))
+            .map(|(instant, _)| instant.as_second());
+        resolved.unwrap_or_else(|| {
+            wall.to_zoned(jiff::tz::TimeZone::UTC)
+                .map_or(0, |at| at.timestamp().as_second())
+                .saturating_sub(self.offset())
+        })
     }
 
     /// The wall time the moment `instant` reads as for the person.
-    pub(crate) fn local_wall(&self, instant: i64) -> NaiveDateTime {
-        let Some(utc) = DateTime::from_timestamp(instant, 0) else {
-            return NaiveDateTime::default();
+    pub(crate) fn local_wall(&self, instant: i64) -> DateTime {
+        let Ok(utc) = jiff::Timestamp::from_second(instant) else {
+            return DateTime::default();
         };
-        match self.zone() {
-            Some(zone) => zone.from_utc_datetime(&utc.naive_utc()).naive_local(),
-            None => utc
-                .checked_add_signed(Duration::seconds(self.offset()))
-                .unwrap_or(utc)
-                .naive_utc(),
-        }
+        let zone = self.zone().unwrap_or_else(|| {
+            let offset = i32::try_from(self.offset()).unwrap_or(0);
+            jiff::tz::TimeZone::fixed(
+                jiff::tz::Offset::from_seconds(offset).unwrap_or(jiff::tz::Offset::UTC),
+            )
+        });
+        utc.to_zoned(zone).datetime()
     }
 
     /// The day `instant` falls on for the person.
-    pub(crate) fn local_day(&self, instant: i64) -> NaiveDate {
+    pub(crate) fn local_day(&self, instant: i64) -> Date {
         self.local_wall(instant).date()
     }
 }
 
 /// The day `text` holds, `YYYY-MM-DD`.
-pub(crate) fn day_of(text: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+pub(crate) fn day_of(text: &str) -> Option<Date> {
+    Date::strptime("%Y-%m-%d", text).ok()
 }
 
 /// A day as the language holds one, `YYYY-MM-DD`.
-pub(crate) fn day_text(day: NaiveDate) -> String {
-    day.format("%Y-%m-%d").to_string()
+pub(crate) fn day_text(day: Date) -> String {
+    day.strftime("%Y-%m-%d").to_string()
 }

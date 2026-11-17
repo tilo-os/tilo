@@ -16,7 +16,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tempfile.workspace = true
-chrono = { workspace = true, features = ["clock", "std"] }
+jiff.workspace = true
 getrandom.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

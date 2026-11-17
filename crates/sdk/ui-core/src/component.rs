@@ -490,21 +490,21 @@ impl PropType for Moment {
 /// The instant `at` is, in seconds since the Unix epoch: its instant, or the midnight of the day it
 /// names.
 fn moment_of(at: &str) -> Option<Moment> {
-    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
-        return Some(Moment(instant.timestamp()));
+    if let Ok(instant) = at.parse::<jiff::Timestamp>() {
+        return Some(Moment(instant.as_second()));
     }
-    let day = chrono::NaiveDate::parse_from_str(at.get(..10)?, "%Y-%m-%d").ok()?;
-    day.and_hms_opt(0, 0, 0)
-        .map(|midnight| Moment(midnight.and_utc().timestamp()))
+    let day = jiff::civil::Date::strptime("%Y-%m-%d", at.get(..10)?).ok()?;
+    let midnight = day.to_zoned(jiff::tz::TimeZone::UTC).ok()?;
+    Some(Moment(midnight.timestamp().as_second()))
 }
 
 /// The day a moment's text names: its date, or the day an instant falls on.
 #[must_use]
-pub fn moment_day(text: &str) -> Option<chrono::NaiveDate> {
-    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Some(at.with_timezone(&chrono::Local).date_naive());
+pub fn moment_day(text: &str) -> Option<jiff::civil::Date> {
+    if let Ok(at) = text.parse::<jiff::Timestamp>() {
+        return Some(at.to_zoned(jiff::tz::TimeZone::system()).date());
     }
-    chrono::NaiveDate::parse_from_str(text.get(..10).unwrap_or(text), "%Y-%m-%d").ok()
+    jiff::civil::Date::strptime("%Y-%m-%d", text.get(..10).unwrap_or(text)).ok()
 }
 
 /// The id of a resource a component presents.
