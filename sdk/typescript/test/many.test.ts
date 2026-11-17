@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { Tilo } from "../src/index.ts";
+import { Tilo, made } from "../src/index.ts";
 import { tasks } from "../src/types/index.ts";
 import { FakeApi, TASKS, WORKSPACE_ID } from "./fakeApi.ts";
 
@@ -46,6 +46,22 @@ describe("a bulk call", () => {
       { applied: 500 },
       { applied: 200 },
     ]);
+  });
+
+  it("names an item an earlier one makes", async () => {
+    const api = new FakeApi();
+    const issues = await tracker(api);
+
+    await issues.many("create", [
+      { title: "Parent" },
+      { title: "Child", parent: made(0) },
+    ]);
+
+    const call = groupCalls(api)[0];
+    const members = (JSON.parse(call.body) as {
+      actions: { args: Record<string, unknown> }[];
+    }).actions;
+    expect(members[1]?.args["parent"]).toEqual({ $made: { member: 0, item: 0 } });
   });
 
   it("sends nothing for an empty list", async () => {

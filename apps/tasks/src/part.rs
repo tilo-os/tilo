@@ -1498,11 +1498,18 @@ pub fn prepare(
     // part is held, so the part keeping it can be found.
     if let Some(issue) = item_of_mut(&mut action.operation)
         && held.get(issue).is_none()
+        && ui::tilo_actions::params::made_of_marker(issue.as_str()).is_none()
     {
         *issue = held.named(issue.as_str())?;
     }
+    // A reference to an item an earlier member of the same group makes
+    // (`{"$made": …}`) is left as it is: the item does not exist here yet, and
+    // the group fills the reference with its id as that member's part applies.
     let check_parent = |parent: Option<&Ref>| -> Result<Option<Id>, String> {
-        parent.map(|parent| held.named(parent.as_str())).transpose()
+        parent
+            .filter(|parent| ui::tilo_actions::params::made_of_marker(parent.as_str()).is_none())
+            .map(|parent| held.named(parent.as_str()))
+            .transpose()
     };
     let goal = |project: Option<&Ref>| -> Result<Option<Area>, String> {
         project

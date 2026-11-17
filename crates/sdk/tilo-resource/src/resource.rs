@@ -2130,7 +2130,10 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
         crate::GROUP_PARAM,
         ParamType::Array,
         format!(
-            "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+            "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}. \
+             A member names an item an earlier member of the same group makes by its place, \
+             {{\"$made\": {{\"member\": 0, \"item\": 0}}}}: the member counted from 0, then which \
+             of the ids it made, which the group fills in as it applies",
             vocabulary.label
         ),
     )

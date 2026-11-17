@@ -162,11 +162,17 @@ where
 
 impl<A> tilo_actions::Action for ActionGroup<A>
 where
-    A: tilo_actions::Action + Serialize,
+    A: tilo_actions::Action + Serialize + serde::de::DeserializeOwned,
 {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(&self.actions).map_err(ActionError::Encode)?;
-        apply_members(doc, &payload, &self.members())
+        // A member that names another's item is decoded as it applies; one
+        // that does not is applied as it was built, as every bulk call's
+        // members are.
+        if !payload.windows(6).any(|window| window == b"$made:") {
+            return apply_prepared(doc, &payload, &self.members());
+        }
+        apply_encoded::<A>(doc, &payload)
     }
 
     /// A group is as consequential as its most consequential member: one
@@ -209,8 +215,9 @@ where
     }
 }
 
-/// Apply `members`, a group encoded as `payload`, in order as one.
-fn apply_members(
+/// Apply `members`, a group encoded as `payload`, in order as one: every
+/// member as it was built, with no reference to fill.
+fn apply_prepared(
     doc: &mut Doc,
     payload: &[u8],
     members: &[&dyn tilo_actions::Action],
@@ -230,6 +237,72 @@ fn apply_members(
         }
     }
     deferring.finish(doc)
+}
+
+/// Apply the members `payload` encodes, in order as one, each filled with the
+/// ids the members before it made: a member names an item an earlier one
+/// creates with a [`MADE`](tilo_actions::params::MADE) reference, and that
+/// member's id is known only as the group applies. The payload keeps the
+/// reference, so a replica fills it with the same id.
+fn apply_encoded<A>(doc: &mut Doc, payload: &[u8]) -> Result<(), ActionError>
+where
+    A: tilo_actions::Action + serde::de::DeserializeOwned,
+{
+    let members: Vec<serde_json::Value> =
+        serde_json::from_slice(payload).map_err(ActionError::Encode)?;
+    let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", payload);
+    if current_member().is_none() {
+        drop(crate::action::take_minted());
+    }
+    let deferring = Deferring::begin();
+    let mut made: Vec<Vec<String>> = Vec::with_capacity(members.len());
+    {
+        let _restore = MemberScope(current_member());
+        for (position, member) in members.into_iter().enumerate() {
+            let position = u64::try_from(position).unwrap_or(u64::MAX);
+            MEMBER.with(|member| member.set(Some((seed, position))));
+            let mut member = member;
+            fill_made(&mut member, &made)?;
+            let action: A = serde_json::from_value(member).map_err(ActionError::Encode)?;
+            action.apply(doc)?;
+            made.push(crate::action::take_minted());
+        }
+    }
+    deferring.finish(doc)
+}
+
+/// Fill each [`MADE`](tilo_actions::params::MADE) marker in `member` with the
+/// id it names among those `made` minted, in order.
+fn fill_made(value: &mut serde_json::Value, made: &[Vec<String>]) -> Result<(), ActionError> {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Some((member, item)) = tilo_actions::params::made_of_marker(text) {
+                let id = made
+                    .get(member)
+                    .and_then(|made| made.get(item))
+                    .ok_or_else(|| {
+                        ActionError::Refused(format!(
+                            "the group has made no item {item} at member {member} to name"
+                        ))
+                    })?;
+                text.clone_from(id);
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                fill_made(item, made)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(fields) => {
+            for field in fields.values_mut() {
+                fill_made(field, made)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// What a group of `members` did: each member's description, or its JSON

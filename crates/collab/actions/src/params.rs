@@ -938,6 +938,43 @@ impl MadeFrom {
     }
 }
 
+/// A typed reference to an item an earlier member of one group made:
+/// `{"$made": {"member": 0, "item": 0}}`, where `member` is the place of the
+/// invocation in the group (counted from 0) and `item` the one it made
+/// (counted from 0, in the order it made them). A group is one change, so a
+/// later member can name what an earlier one creates though neither has run
+/// when the call is made: the framework puts the id that member minted in the
+/// reference's place as the group applies, and the change keeps the reference
+/// itself, so every replica puts the same id there.
+pub const MADE: &str = "$made";
+
+/// The word a bound [`MADE`] reference carries, until the group applies.
+#[must_use]
+pub fn made_marker(member: usize, item: usize) -> String {
+    format!("{MADE}:{member}:{item}")
+}
+
+/// The member and item `value` names, when it is a [`MADE`] reference.
+#[must_use]
+pub fn made_reference(value: &serde_json::Value) -> Option<(usize, usize)> {
+    let reference = value.get(MADE)?;
+    let number = |key: &str| {
+        reference
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|number| usize::try_from(number).ok())
+    };
+    Some((number("member")?, number("item")?))
+}
+
+/// The member and item `text` names, when it is a [`made_marker`].
+#[must_use]
+pub fn made_of_marker(text: &str) -> Option<(usize, usize)> {
+    let rest = text.strip_prefix(MADE)?.strip_prefix(':')?;
+    let (member, item) = rest.split_once(':')?;
+    Some((member.parse().ok()?, item.parse().ok()?))
+}
+
 impl ActionArgs {
     /// The empty argument set — what a nullary action is invoked with.
     pub fn none() -> Self {
@@ -1090,6 +1127,16 @@ impl ActionArgs {
             let value = match (param.ty, value) {
                 (ParamType::Resource, serde_json::Value::String(value)) => {
                     Some(ArgValue::Resource(value.clone()))
+                }
+                // A reference to an item an earlier member of one group made:
+                // bound as the marker the group fills with that member's id
+                // as it applies, so a later member can name what an earlier
+                // one creates before either has run.
+                (ParamType::Text | ParamType::Resource, value)
+                    if made_reference(value).is_some() =>
+                {
+                    made_reference(value)
+                        .map(|(member, item)| ArgValue::Text(made_marker(member, item)))
                 }
                 (ParamType::DateTime, serde_json::Value::String(value)) => {
                     Some(ArgValue::DateTime(value.clone()))

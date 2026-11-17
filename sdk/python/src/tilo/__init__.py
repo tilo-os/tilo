@@ -44,7 +44,7 @@ from ._models import (
     WorkspaceList,
     WorkspaceUsage,
 )
-from ._resource import Entry, FieldMap, Resource
+from ._resource import Entry, FieldMap, Resource, made
 from ._invocation import Invocation
 from ._transport import HttpTransport, NativeTransport, Transport
 from ._workspace import Files, InvocationOpening, Members, Workspace, WorkspaceKeys
@@ -67,6 +67,7 @@ __all__ = [
     "KeyRefused",
     "KeyRevoked",
     "Listing",
+    "made",
     "Member",
     "Members",
     "MintedKey",
