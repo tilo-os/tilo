@@ -474,6 +474,10 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
     up.down().await;
 }
 
+/// How the result of an event is told to its person, where the event says.
+#[path = "hosted_event_told_as.rs"]
+mod told_as;
+
 /// What a turn that a reminder started tells its person when it ends.
 #[path = "hosted_agent_tells.rs"]
 mod tells;

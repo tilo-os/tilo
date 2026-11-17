@@ -164,6 +164,7 @@ impl Server {
             only_if: only_if.map(str::to_owned),
             every: None,
             instruction: "Say what is new.".into(),
+            told_as: None,
             set_up_at_ms: 1,
         }
         .checked()
@@ -464,6 +465,7 @@ async fn this_servers_own_network_is_refused_when_described_and_never_looked_at(
                 only_if: None,
                 every: None,
                 instruction: "Say what is new.".into(),
+                told_as: None,
                 set_up_at_ms: 1,
             }
             .checked()
