@@ -49,30 +49,49 @@ fn status_of(list: &str) -> Option<Status> {
 fn lists(
     cx: &ViewCx<Tracker>,
     window: &Window,
-    issues: &Issues<'_>,
+    issues: &Issues,
     filter: &Filter,
     me: Option<&ui::tilo_resource::MemberId>,
 ) -> Element {
-    let people = cx.people();
+    let people = std::rc::Rc::new(cx.people());
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
-        let cards: Vec<(String, Element)> = issues
+        // A list builds a card only as it comes into view, from the issue as the window
+        // reads it then.
+        let cards: Vec<String> = issues
             .iter()
             .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
-            .map(|(id, issue)| (id.to_string(), card(window, issues, id, issue, &people)))
+            .map(|(id, _)| id.to_string())
             .collect();
+        let count = cards.len();
+        let build = {
+            let window = window.clone();
+            let people = std::rc::Rc::clone(&people);
+            move |key: &str| {
+                let id = Id::from_raw(key);
+                window
+                    .tasks
+                    .with(|tasks| {
+                        let issues = tasks.issues();
+                        let issue = issues.get(&id)?;
+                        Some(card(&window, &issues, &id, issue, &people))
+                    })
+                    .unwrap_or_else(|| Box::new(Spacer::token(ui::tokens::SpacingStep::S0)))
+            }
+        };
         let header = Text::new(&crate::locales::CATALOG.t_args(
             "tasks-list-heading",
             &[
                 ("status", tr(status.label_key()).into()),
-                ("count", cards.len().into()),
+                ("count", count.into()),
             ],
         ))
         .with_role(TextRole::Subheading);
-        board = board.list(
+        board = board.long_list(
             status.label_key(),
             Some(Box::new(header) as Element),
             cards,
+            build,
             Some(crate::new_issue(
                 &|| cx.local(String::new()),
                 window,
@@ -108,7 +127,7 @@ fn lists(
 /// One issue's card: its reference and title, and what it is waiting on.
 fn card(
     window: &Window,
-    issues: &Issues<'_>,
+    issues: &Issues,
     id: &Id,
     issue: &Issue,
     people: &ui::framework::People,

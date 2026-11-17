@@ -225,7 +225,7 @@ fn people(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 fn of_issues<V: PartialEq + Clone + Default + 'static>(
     cx: &ViewCx<Tracker>,
     window: &Window,
-    read: impl Fn(&Issues<'_>) -> V + 'static,
+    read: impl Fn(&Issues) -> V + 'static,
 ) -> LocalState<V> {
     match &window.chain {
         Some(chain) => cx.chain_value(chain, move |_, parts| read(&Issues::of(parts))),

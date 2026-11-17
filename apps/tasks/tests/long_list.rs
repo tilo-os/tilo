@@ -10,6 +10,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
+    clippy::cast_precision_loss,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -94,15 +95,82 @@ fn a_long_trackers_list_builds_a_screenful_of_rows_and_names_each_rows_place() {
     let filtered = started.elapsed();
     assert_a_screenful(&tree_items(&mut app), "filtered");
 
+    // Each new issue reads the part it is written into and lists the rows that moved.
+    let mut created = Vec::new();
+    for title in ["One more", "And another", "And a third"] {
+        let started = std::time::Instant::now();
+        app.call_on(&chain(), "create", json!({ "title": title }))
+            .expect("create");
+        app.settle();
+        created.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_a_screenful(&tree_items(&mut app), "with an issue added");
+    }
+    assert_eq!(held(&app).len(), ISSUES + 3);
+
+    // The board builds the cards its lanes show, and takes an issue as the list does.
     let started = std::time::Instant::now();
-    app.call_on(&chain(), "create", json!({ "title": "One more" }))
+    press_view(&mut app, "Board");
+    app.settle();
+    let board = started.elapsed().as_secs_f64() * 1000.0;
+    let cards = cards(&mut app);
+    assert!(
+        (1..=150).contains(&cards),
+        "the board of {ISSUES} issues holds {cards} cards built"
+    );
+    let started = std::time::Instant::now();
+    app.call_on(&chain(), "create", json!({ "title": "On the board" }))
         .expect("create");
     app.settle();
-    let created = started.elapsed();
-    assert_a_screenful(&tree_items(&mut app), "with an issue added");
+    let on_board = started.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "{ISSUES} issues: the list rebuilt for a filter in {} ms, a new issue listed in {} ms",
+        "{ISSUES} issues: the list rebuilt for a filter in {} ms; a new issue listed in {} ms; \
+         the board opened in {board:.0} ms with {cards} cards; a new issue on the board in \
+         {on_board:.0} ms",
         filtered.as_millis(),
-        created.as_millis(),
+        created
+            .iter()
+            .map(|ms| format!("{ms:.0}"))
+            .collect::<Vec<_>>()
+            .join(" / "),
     );
+}
+
+/// The cards the board holds built: each named by its issue's reference.
+fn cards(app: &mut TestApp<App>) -> usize {
+    fn walk(value: &Value, count: &mut usize) {
+        match value {
+            Value::Object(node) => {
+                let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
+                if name.starts_with('#')
+                    && node.get("role").and_then(Value::as_str) != Some("TreeItem")
+                {
+                    *count = count.saturating_add(1);
+                }
+                node.values().for_each(|child| walk(child, count));
+            }
+            Value::Array(children) => children.iter().for_each(|child| walk(child, count)),
+            _ => {}
+        }
+    }
+    let snapshot: Value =
+        serde_json::from_str(&app.harness().inspection_json().expect("inspection")).expect("json");
+    let mut count = 0;
+    walk(&snapshot, &mut count);
+    count
+}
+
+/// Press the window bar's view `name`, as a press on it does.
+fn press_view(app: &mut TestApp<App>, name: &str) {
+    let harness = app.harness();
+    let bar = ui::window_toolbar::declared().expect("the window declares its views");
+    let views = bar.views.expect("the window declares its views");
+    let view = views
+        .choices
+        .iter()
+        .find(|view| view.label == name)
+        .expect("the bar offers the view");
+    harness.press_window_part(ui::window_toolbar::ToolbarEvent::Action {
+        id: view.id.clone(),
+    });
+    let _ = harness.poll_frame();
 }

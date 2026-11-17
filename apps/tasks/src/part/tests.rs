@@ -1171,3 +1171,126 @@ fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
         .is_err()
     );
 }
+
+/// What `issues` says of the tracker, read through every question the views ask of it.
+fn reading(issues: &Issues) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (id, issue) in issues.iter() {
+        let children: Vec<u64> = issues
+            .children(Some(id))
+            .map(|(_, child)| child.number)
+            .collect();
+        let _ = writeln!(
+            out,
+            "{} {} {:?} under {:?} {:?} {:?}",
+            issue.number,
+            issue.title,
+            issue.status,
+            issues
+                .parent_of(issue)
+                .map(|parent| issues.get(parent).map(|p| p.number)),
+            children,
+            issues.progress(id),
+        );
+    }
+    let top: Vec<u64> = issues
+        .children(None)
+        .map(|(_, issue)| issue.number)
+        .collect();
+    let labels: Vec<(String, usize)> = issues
+        .labels()
+        .map(|(label, count)| (label.to_owned(), count))
+        .collect();
+    let todo = issues.count_kinds(|issue| !issue.status.started());
+    let unassigned = issues.count_kinds(|issue| issue.assignee.is_none());
+    let _ = writeln!(
+        out,
+        "top {top:?}\nlabels {labels:?}\ntodo {todo} unassigned {unassigned} of {}",
+        issues.len()
+    );
+    out
+}
+
+#[test]
+fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
+    let mut board = Board::new("ada");
+    let mut kept = Issues::default();
+    let follow = |board: &Board, kept: &mut Issues| -> Vec<u64> {
+        let parts: Rc<[(u64, Rc<IssuePart>)]> = board.states().into();
+        let before = kept.revision();
+        kept.sync(&parts);
+        assert_eq!(
+            reading(kept),
+            reading(&Issues::of(&parts)),
+            "kept from the changes, the issues read as the parts read afresh"
+        );
+        let mut touched = kept.touched_since(before).expect("one revision back");
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+    };
+    // Enough issues for three parts, every tenth a parent of the nine after it.
+    let mut parent = None;
+    let mut ids = Vec::new();
+    for number in 1..=1_100_u64 {
+        let first = number % 10 == 1;
+        let id = board.create(
+            &format!("Issue {number}"),
+            if first { None } else { parent.clone() },
+        );
+        if first {
+            parent = Some(id.clone());
+        }
+        ids.push(id);
+    }
+    follow(&board, &mut kept);
+
+    // One change touches that issue, and its parent whose progress moved.
+    board
+        .apply(IssuePart::PLACE.with(issue_part::Place {
+            issue: ids[4].clone(),
+            status: Status::Done,
+            before: None,
+            rank: None,
+        }))
+        .unwrap();
+    assert_eq!(follow(&board, &mut kept), vec![1, 5]);
+
+    board
+        .apply(IssuePart::ADD_LABEL.with(issue_part::AddLabel {
+            issue: ids[600].clone(),
+            label: nb("launch"),
+        }))
+        .unwrap();
+    board
+        .apply(IssuePart::ASSIGN.with(issue_part::Assign {
+            issue: ids[1_050].clone(),
+            assignee: Some("agent:claude".to_owned()),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+
+    // A parent moved under another, a parent deleted (its sub-issues stand at
+    // the top until they are moved), an issue made in the newest part.
+    board
+        .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+            issue: ids[20].clone(),
+            parent: Some(ui::tilo_resource::items::Ref::from(&ids[1_090])),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+    board
+        .apply(IssuePart::DELETE.with(issue_part::Delete {
+            issue: ids[30].clone(),
+        }))
+        .unwrap();
+    follow(&board, &mut kept);
+    board.create("One more", Some(ids[0].clone()));
+    let touched = follow(&board, &mut kept);
+    assert_eq!(
+        touched,
+        vec![1, 1_101],
+        "the new issue and its parent, and nothing else"
+    );
+}

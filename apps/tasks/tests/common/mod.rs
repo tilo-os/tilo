@@ -9,7 +9,7 @@ use ui::prelude::*;
 pub struct Held(Vec<(u64, std::rc::Rc<tasks::IssuePart>)>);
 
 impl Held {
-    pub fn issues(&self) -> tasks::Issues<'_> {
+    pub fn issues(&self) -> tasks::Issues {
         tasks::Issues::of(&self.0)
     }
 

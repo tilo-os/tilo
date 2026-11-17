@@ -1019,9 +1019,8 @@ tilo_test_env::scenario! {
         add(&mut app, Status::Todo, "Ship the launch");
         add(&mut app, Status::InProgress, "Archive the banner");
 
-        let held = held(&app);
+        let held = held(&app).issues();
         let statuses: Vec<(&str, Status)> = held
-            .issues()
             .iter()
             .map(|(_, issue)| (issue.title.as_str(), issue.status))
             .collect();
