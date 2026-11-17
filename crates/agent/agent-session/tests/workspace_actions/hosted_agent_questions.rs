@@ -384,7 +384,8 @@ impl Hosted {
     async fn replied(&self, message: &Id) -> Held {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            self.agents.look(&self.workspace).await.unwrap();
+            // Boxed, or the server's whole round lives in the future of every helper waiting here.
+            Box::pin(self.agents.look(&self.workspace)).await.unwrap();
             let part = conversation_part(&self.workspaces, &self.workspace).await;
             let reply = part
                 .messages
