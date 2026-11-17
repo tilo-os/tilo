@@ -91,6 +91,9 @@ public final class TiloEngine: NSObject {
     /// Why the page last stopped on its way in and was loaded again: the page's own sentence,
     /// or the system's. Nil while it never did.
     public private(set) var lastStop: String?
+    /// How long a page that was loaded again after it stopped may say nothing before its stop
+    /// is said. A page takes seconds to load, and a minute on a machine that is busy.
+    var stopPatience: Duration = .seconds(60)
     private var retrying: Task<Void, Never>?
     /// The address asked for last, which a retry loads again.
     private var wanted: URL?
@@ -415,7 +418,12 @@ public final class TiloEngine: NSObject {
             standing = .open(route: inside)
         case "refused":
             standing = .refused(status)
-        case "failed", "unsupported":
+        case "unsupported":
+            // The page was let in and cannot draw here (a simulator offers a page no graphics
+            // adapter). Nothing a second load brings changes that, so it is not loaded again,
+            // and what is said is the page's own sentence.
+            standing = .failed(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
+        case "failed":
             stopped(status)
         default:
             standing = !code.isEmpty && arrival == "join" ? .pairing(code: code) : .arriving(arrival)
@@ -437,6 +445,12 @@ public final class TiloEngine: NSObject {
             try? await Task.sleep(for: .seconds(1.5))
             guard let self, !Task.isCancelled else { return }
             if let loads = self.loads { loads(wanted) } else { self.view.load(URLRequest(url: wanted)) }
+            // The page that is loaded again may never get as far as saying where it stands (it
+            // can wait for what the page before it held). Then what stopped the first is said,
+            // and nobody waits for ever at a way in that shows nothing.
+            try? await Task.sleep(for: self.stopPatience)
+            guard !Task.isCancelled, self.standing == .arriving("load") else { return }
+            self.standing = .failed(why)
         }
     }
 

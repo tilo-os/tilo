@@ -43,6 +43,19 @@ final class EngineTests: XCTestCase {
       requestAnimationFrame(() => { window.frames += 1; });
       window.pairing = code => { root.dataset.arrival = 'join'; root.dataset.pairingCode = code; };
       window.refuse = words => { document.getElementById('status').textContent = words; root.dataset.arrival = 'stopped'; root.dataset.entry = 'refused'; };
+      window.fail = words => { document.getElementById('status').textContent = words; root.dataset.arrival = 'stopped'; root.dataset.entry = 'failed'; };
+      // As the page that has no graphics adapter: it says that it stopped, empties its status
+      // line, and says why in a card it adds a moment later.
+      window.cannotDraw = words => {
+        root.dataset.arrival = 'stopped'; root.dataset.entry = 'unsupported';
+        document.getElementById('status').textContent = '';
+        setTimeout(() => {
+          const card = document.createElement('form'); card.className = 'tilo-entry-card'; card.dataset.card = 'renderer';
+          const message = document.createElement('p'); message.textContent = words;
+          const again = document.createElement('button'); again.textContent = 'Try again';
+          card.append(message, again); document.body.append(card);
+        }, 150);
+      };
       window.enter = () => {
         const semantics = document.getElementById('semantics');
         const heard = [];
@@ -132,6 +145,50 @@ final class EngineTests: XCTestCase {
     func testARefusalIsSaidInTheSitesOwnWords() async throws {
         try await run("refuse('Lounge is invite-only for now.')")
         try await until("the refusal is told") { self.engine.standing == .refused("Lounge is invite-only for now.") }
+    }
+
+    func testAPageThatStoppedIsLoadedOnceMoreAndItsOwnSentenceIsSaidWhenThatLoadSaysNothing() async throws {
+        var asked = 0
+        engine.loads = { _ in asked += 1 }
+        engine.stopPatience = .milliseconds(300)
+        try engine.open(route: "/w/ws-1")
+        XCTAssertNil(engine.lastStop)
+        try await run("fail('Couldn\u{2019}t open Tilo. It stopped while joining.')")
+        // Loaded once more, a moment later: a page before it may still have held its storage.
+        try await until("the page is loaded again") { asked == 2 }
+        XCTAssertEqual(engine.lastStop, "Couldn\u{2019}t open Tilo. It stopped while joining.")
+        XCTAssertEqual(engine.standing, .arriving("load"))
+        // That load says nothing. The page's own sentence is said, and nothing is loaded a third time.
+        try await until("the stop is said") { self.engine.standing == .failed("Couldn\u{2019}t open Tilo. It stopped while joining.") }
+        XCTAssertEqual(asked, 2)
+    }
+
+    func testAPageThatGetsOnAfterItWasLoadedAgainIsNotCalledStopped() async throws {
+        var asked = 0
+        engine.loads = { _ in asked += 1 }
+        engine.stopPatience = .milliseconds(400)
+        try engine.open(route: "/w/ws-1")
+        try await run("fail('This device is already open in another tab')")
+        try await until("the page is loaded again") { asked == 2 }
+        // The second load gets in.
+        try await run("document.getElementById('status').textContent = ''; location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { self.engine.standing == .open(route: "/w/ws-1/so.tilo.chat") }
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(engine.standing, .open(route: "/w/ws-1/so.tilo.chat"))
+    }
+
+    func testAPageThatCannotDrawIsSaidInItsOwnWordsAndIsNotLoadedAgain() async throws {
+        var asked = 0
+        engine.loads = { _ in asked += 1 }
+        try engine.open(route: "/w/ws-1")
+        let words = "Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter."
+        try await run("cannotDraw('\(words)')")
+        try await until("the page's own sentence is said") { self.engine.standing == .failed(words) }
+        // Longer than the moment after which a page that stopped is loaded once more.
+        try await Task.sleep(for: .seconds(2.2))
+        XCTAssertEqual(asked, 1)
+        XCTAssertNil(engine.lastStop)
+        XCTAssertEqual(engine.standing, .failed(words))
     }
 
     func testNothingIsAskedOfAPageThatIsNotIn() async throws {

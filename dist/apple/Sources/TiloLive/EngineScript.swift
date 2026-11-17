@@ -87,7 +87,9 @@ public enum EngineScript {
         const data = root.dataset;
         const now = {
           kind: 'standing', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
-          status: (document.getElementById('status')?.textContent ?? '').slice(0, 400),
+          // A page that cannot draw empties its status line and says why in a card.
+          status: ((document.getElementById('status')?.textContent ?? '')
+            || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
           route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount),
         };
         const text = JSON.stringify(now);
@@ -100,6 +102,9 @@ public enum EngineScript {
       const ready = () => {
         const status = document.getElementById('status');
         if (status) new MutationObserver(standing).observe(status, {childList: true, characterData: true, subtree: true});
+        // The page's cards are children of its body: the one that says it cannot draw may come
+        // a moment after the page said that it stopped.
+        if (document.body) new MutationObserver(standing).observe(document.body, {childList: true});
         standing();
       };
       if (document.readyState === 'loading') addEventListener('DOMContentLoaded', ready, {once: true}); else ready();

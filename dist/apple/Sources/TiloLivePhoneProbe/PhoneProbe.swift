@@ -96,7 +96,13 @@ final class PhoneProbe: ObservableObject {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
         switch standing {
         case .away: break
-        case .arriving(let step): PhoneProbe.say(["standing": "arriving", "step": .string(step), "s": seconds])
+        case .arriving(let step):
+            // A page that stopped on its way in and is loaded once more says why it stopped.
+            var line: [String: JSON] = ["standing": "arriving", "step": .string(step), "s": seconds]
+            if step == "load", let why = engine?.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
+            PhoneProbe.say(.object(line))
+            // Its page is still the one that stopped, for a moment: what that page says of itself.
+            if step == "load", engine?.lastStop != nil { await details() }
         case .pairing(let code):
             keep(code, as: "code")
             PhoneProbe.say(["standing": "pairing", "s": seconds])
@@ -106,8 +112,48 @@ final class PhoneProbe: ObservableObject {
             PhoneProbe.say(["standing": "open", "workspace": .string(workspace), "s": seconds])
             await look(after: "getting in")
         case .refused(let why): PhoneProbe.say(["standing": "refused", "why": .string(why), "s": seconds])
-        case .failed(let why): PhoneProbe.say(["standing": "failed", "why": .string(why), "s": seconds])
+        case .failed(let why):
+            PhoneProbe.say(["standing": "failed", "why": .string(why), "s": seconds])
+            await details()
         }
+    }
+
+    /// What the page itself says where it could not go on: its own words and their details, and
+    /// whether a key that cannot be taken out can be kept in the page's storage (a web view
+    /// wraps such a key with one it keeps in the app's keychain group; a program with no such
+    /// group cannot keep any, and Tilo's page keeps its device's key that way).
+    private func details() async {
+        guard let engine else { return }
+        let asked = try? await engine.view.callAsyncJavaScript(#"""
+            const keyKept = await (async () => {
+              try {
+                const key = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt']);
+                const db = await new Promise((resolve, reject) => {
+                  const open = indexedDB.open('live-probe-key-check');
+                  open.onupgradeneeded = () => open.result.createObjectStore('keys');
+                  open.onsuccess = () => resolve(open.result);
+                  open.onerror = () => reject(open.error);
+                });
+                try {
+                  await new Promise((resolve, reject) => {
+                    const change = db.transaction('keys', 'readwrite');
+                    change.objectStore('keys').put(key, 'one');
+                    change.oncomplete = resolve;
+                    change.onerror = () => reject(change.error);
+                    change.onabort = () => reject(change.error);
+                  });
+                  return 'yes';
+                } finally {
+                  db.close();
+                  indexedDB.deleteDatabase('live-probe-key-check');
+                }
+              } catch (error) { return String(error?.name ?? error); }
+            })();
+            // No link, no code and no key is printed: long runs of hex are left out.
+            const text = (document.body?.innerText ?? '').replace(/\s+/g, ' ').replace(/[0-9a-f]{24,}/gi, '#').replace(/pair=\S+/g, 'pair=#').slice(0, 1500);
+            return JSON.stringify({text, entry: document.documentElement.dataset.entry ?? null, arrival: document.documentElement.dataset.arrival ?? null, secure: isSecureContext, keyKept, gpu: typeof navigator.gpu, transport: typeof WebTransport, locks: typeof navigator.locks, storage: typeof indexedDB});
+            """#, arguments: [:], in: nil, contentWorld: .page)
+        PhoneProbe.say(["page": (asked as? String).flatMap(JSON.init(text:)) ?? .null])
     }
 
     /// Read Chat's newest messages and print the ones not printed yet, as `TiloLiveProbe` does.
