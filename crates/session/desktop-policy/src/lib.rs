@@ -62,6 +62,28 @@ pub struct Window {
     /// The process that made the window, when the compositor knows it: what tells the workspace
     /// it was launched into ([`DesktopPolicy::reads_launch_workspaces`]).
     pub pid: Option<u32>,
+    /// The tag the window's app keeper gave it, as the compositor trusts it: only from a connection
+    /// the session handed over itself.
+    pub tag: Option<String>,
+}
+
+/// A window an app keeper shows, by what names it across a restart of the desktop: the keeper's
+/// process and the window's tag, unique within that keeper.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KeptWindow {
+    pub keeper: u32,
+    pub tag: String,
+}
+
+impl KeptWindow {
+    /// The kept window `window` is, when an app keeper shows it.
+    #[must_use]
+    pub fn of(window: &Window) -> Option<Self> {
+        Some(Self {
+            keeper: window.pid?,
+            tag: window.tag.clone()?,
+        })
+    }
 }
 
 /// The workspace the process `pid` of `app` was launched into, by its id, as the session that
@@ -160,12 +182,15 @@ type Titles = Rc<RefCell<BTreeMap<String, String>>>;
 type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 
 /// A tab held for a window of an app that is on its way: the tab it takes
-/// when it maps (`None` until the desktop makes it), and whether it takes
-/// focus there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// when it maps (`None` until the desktop makes it), whether it takes focus
+/// there, and the one window it is held for, when that is known (a kept app's
+/// window after a restart of the desktop) rather than any next window of the
+/// app.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct HeldTab {
     tab: Option<TabId>,
     background: bool,
+    window: Option<KeptWindow>,
 }
 
 /// The tabs held for each app's coming windows, oldest first: an app's next
@@ -330,6 +355,7 @@ impl TileSource for Windows {
                 .push(HeldTab {
                     tab: Some(id),
                     background: false,
+                    window: None,
                 });
             self.launches.borrow_mut().push(LaunchAsk {
                 app: asked.to_owned(),
@@ -360,6 +386,7 @@ impl TileSource for Windows {
             .push(HeldTab {
                 tab: Some(tab.id),
                 background: false,
+                window: None,
             });
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
@@ -446,6 +473,9 @@ pub struct DesktopPolicy {
     /// The windows launched into a workspace not in front whose tab the shell has not made yet,
     /// each with where it goes ([`Self::carry_launched`]).
     to_carry: Vec<(u64, WorkspaceId)>,
+    /// The windows app keepers show, by window: each is told the tab it stands in
+    /// ([`Self::kept_placements`]).
+    kept: BTreeMap<u64, KeptWindow>,
 }
 
 impl DesktopPolicy {
@@ -508,6 +538,7 @@ impl DesktopPolicy {
             cards: cards::Placements::new(),
             launched_into: None,
             to_carry: Vec::new(),
+            kept: BTreeMap::new(),
         };
         (policy, surface)
     }
@@ -782,11 +813,14 @@ impl DesktopPolicy {
             window: id,
             pid: window.pid,
         };
+        if let Some(kept) = KeptWindow::of(&window) {
+            self.kept.insert(id, kept);
+        }
         let elsewhere = self.launched_elsewhere(&window);
         // A window of an app that asked for another one right after a tab of
         // its own takes the tab held for it there, from the moment it maps.
-        if let Some(held) = self.take_held(window.app_id.as_deref().unwrap_or_default())
-            && self.bind_held(&window, held)
+        if let Some(held) = self.take_held(&window)
+            && self.bind_held(&window, &held)
         {
             self.note_mapped(Mapped {
                 window: window.id,
@@ -1030,6 +1064,7 @@ impl DesktopPolicy {
             .push(HeldTab {
                 tab: None,
                 background,
+                window: None,
             });
         true
     }
@@ -1086,16 +1121,22 @@ impl DesktopPolicy {
         released
     }
 
-    /// Hold `tab` for the next window `app` opens, in the background: the window takes
-    /// the tab the person left it in — its place, its width, the strip it was in — and
-    /// does not take focus. False when `tab` is not on the shell any more.
-    pub fn adopt(&mut self, app: &str, tab: TabId) -> bool {
-        self.hold_tab(app.to_owned(), tab, true)
+    /// Hold `tab`, in the background, for `window` when it is known, else for the next window
+    /// `app` opens: the window takes the tab the person left it in — its place, its width, the
+    /// strip it was in — and does not take focus. False when `tab` is not on the shell any more.
+    pub fn adopt(&mut self, app: &str, tab: TabId, window: Option<KeptWindow>) -> bool {
+        self.hold_tab(app.to_owned(), tab, true, window)
     }
 
     /// Hold `tab` for the window a launch of `app` is on its way to:
     /// [`Self::adopt`], with the focus a launch the person asked for takes.
-    fn hold_tab(&self, app: String, tab: TabId, background: bool) -> bool {
+    fn hold_tab(
+        &self,
+        app: String,
+        tab: TabId,
+        background: bool,
+        window: Option<KeptWindow>,
+    ) -> bool {
         if self.handle.read(|tree| route_of(tree, tab)).is_none() {
             return false;
         }
@@ -1106,6 +1147,7 @@ impl DesktopPolicy {
             .push(HeldTab {
                 tab: Some(tab),
                 background,
+                window,
             });
         true
     }
@@ -1158,16 +1200,34 @@ impl DesktopPolicy {
         })
     }
 
-    /// The tab held for the next window of the app `app` announces, oldest
-    /// first: taken once, by the one window it was held for.
-    fn take_held(&self, app: &str) -> Option<HeldTab> {
+    /// The tab held for `window`: the one held for exactly that window first, else the
+    /// oldest held for the next window of the app it announces that is not held for
+    /// another one. Taken once, by the one window it was held for.
+    fn take_held(&self, window: &Window) -> Option<HeldTab> {
         let mut held = self.held.borrow_mut();
-        let key = held
-            .keys()
-            .find(|asked| app_ids_match(app, asked))
-            .cloned()?;
+        let exact = KeptWindow::of(window).and_then(|kept| {
+            held.iter().find_map(|(key, queue)| {
+                let index = queue.iter().position(|record| {
+                    record.tab.is_some() && record.window.as_ref() == Some(&kept)
+                })?;
+                Some((key.clone(), index))
+            })
+        });
+        let app = window.app_id.as_deref().unwrap_or_default();
+        let (key, index) = if let Some(found) = exact {
+            found
+        } else {
+            let key = held
+                .keys()
+                .find(|asked| app_ids_match(app, asked))
+                .cloned()?;
+            let index = held
+                .get(&key)?
+                .iter()
+                .position(|record| record.tab.is_some() && record.window.is_none())?;
+            (key, index)
+        };
         let queue = held.get_mut(&key)?;
-        let index = queue.iter().position(|record| record.tab.is_some())?;
         let taken = queue.remove(index);
         if queue.is_empty() {
             held.remove(&key);
@@ -1178,7 +1238,7 @@ impl DesktopPolicy {
     /// `window` takes the place of the tab held for it. False when the tab is
     /// gone (the person closed it while the window was on its way), and the
     /// window lands wherever a launch lands.
-    fn bind_held(&self, window: &Window, held: HeldTab) -> bool {
+    fn bind_held(&self, window: &Window, held: &HeldTab) -> bool {
         let Some(held_tab) = held.tab else {
             return false;
         };
@@ -1280,6 +1340,7 @@ impl DesktopPolicy {
         }
         self.arriving.borrow_mut().remove(&window);
         self.placed.remove(&window);
+        self.kept.remove(&window);
         let mut tree = self.handle.read(Clone::clone);
         let Some(tab) = tab_of(&tree, window) else {
             return;
@@ -1430,6 +1491,19 @@ impl DesktopPolicy {
         self.handle.read(|tree| tab_of(tree, window))
     }
 
+    /// The tab each window an app keeper shows stands in: what its keeper is told, so the window
+    /// takes that tab again after the desktop restarts in place. A tab keeps its id wherever it
+    /// moves in its workspace, and the workspace's layout keeps it across restarts.
+    #[must_use]
+    pub fn kept_placements(&self) -> Vec<(KeptWindow, TabId)> {
+        self.handle.read(|tree| {
+            self.kept
+                .iter()
+                .filter_map(|(window, kept)| Some((kept.clone(), tab_of(tree, *window)?)))
+                .collect()
+        })
+    }
+
     /// The tabs the shell has for apps on the workspace in front whose window is there or
     /// on its way, each with the id its app announces itself by: what a launch of an app
     /// that may already be running is decided against. A window that mapped is here, and
@@ -1497,7 +1571,7 @@ impl DesktopPolicy {
         }) else {
             return false;
         };
-        self.hold_tab(app, tab, background)
+        self.hold_tab(app, tab, background, None)
     }
 
     /// Whether a launch holds the place of `tab`: a window was asked for it
@@ -1673,6 +1747,7 @@ fn ask_again(
         queue.push(HeldTab {
             tab: Some(tab),
             background: false,
+            window: None,
         });
     }
     drop(held);

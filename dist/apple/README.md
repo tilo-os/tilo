@@ -1,22 +1,24 @@
 # Tilo Shell and Tilo Assistant for Mac and iPhone
 
-Two apps, each for the Mac and the iPhone, from one Swift package: a native shell around
-Tilo's own page.
+Two apps, each for the Mac and the iPhone, from one Swift package.
 
-- **Tilo Shell** shows Tilo as a whole: the site as a browser opens it, with the desktop and
-  every app.
-- **Tilo Assistant** shows the Assistant app (`so.tilo.assistant`) and nothing else of Tilo:
-  no desktop, no other app, and no setting that leads to them.
+- **Tilo Shell** is a native shell around Tilo's own page. It shows Tilo as a whole: the site
+  as a browser opens it, with the desktop and every app.
+- **Tilo Assistant** is the assistant's window as an app of its own, in SwiftUI
+  (`so.tilo.assistant`): the one main chat, the sub-agents, the Tasks panel, the assistant
+  view. Its views read and call one interface and never Tilo itself.
 
-Only Tilo's web runtime draws a live document or a live view inside a conversation, so these
-apps draw nothing of Tilo a second time. They show Tilo's page in the system web view
+Only Tilo's web runtime draws a live document or a live view inside a conversation, so neither
+app draws anything of Tilo a second time. Tilo Shell shows Tilo's page in the system web view
 ("Links opened full tab" in
 [the web runtime's guide](../../crates/browser/tilo-browser-runtime/WEB_RUNTIME.md) is the
-page that shows one app) and add what only the system can do. An iPhone has no other way to
-draw Tilo: no native runtime exists for it.
+page that shows one app) and adds what only the system can do. Tilo Assistant draws its own
+frame and leaves a place for each live thing, which Tilo's runtime draws there ("Tilo inside a
+native app" below). An iPhone has no other way to draw Tilo: no native runtime exists for it.
 
-Both apps are the same programs. `build.sh` gives a bundle its name, its identifier and what
-it shows; no source file and no file of a bundle names one of the two, and a test keeps it so.
+The shell's programs name no app. `build.sh` gives a bundle its name, its identifier and what
+it shows; no source file of the shell and no file of `Bundle/` names one of the two apps, and
+a test keeps it so.
 
 ```
 Package.swift        the targets, and the oldest system the apps run on
@@ -30,6 +32,15 @@ Sources/TiloShare    the share extension of both
 Sources/TiloLive     Tilo inside a native app: Tilo's page as the client behind a Swift
                      interface, and the view that shows one live Tilo thing
 Sources/TiloLiveProbe  the same with nothing on screen, for a check to drive
+Sources/AssistantCore  Tilo Assistant: what its window shows, and the one interface it all
+                     comes through
+Sources/AssistantUI  its views, shared by the Mac and the iPhone
+Sources/AssistantMac, AssistantPhone, AssistantWidgets
+                     its Mac app, its iPhone app, and the iPhone's widget extension
+Sources/AssistantDrawing  the content of the window's drawing, for tests and pictures only
+Sources/AssistantShots  draws every screen to a picture with nothing on screen
+AssistantBundle/     what Tilo Assistant's bundles carry
+assistant-shots.sh   draws every screen of Tilo Assistant, on this Mac and in a simulator
 Bundle/              what the bundles carry, with room for an app's name and identifier:
                      Info.plists, entitlements, the English sentences, the phone's page in
                      Settings, the icon's one drawing
@@ -38,22 +49,24 @@ build.sh             builds either app, signs, checks, installs
 
 ## The two apps
 
-|                 | Tilo Shell                                      | Tilo Assistant                        |
-| --------------- | ----------------------------------------------- | ------------------------------------- |
-| Built by        | `build.sh shell …`, or `build.sh …`             | `build.sh assistant …`                |
-| Identifier      | `so.tilo.assistant.shell` (see below)           | `so.tilo.assistant`                   |
-| Opens           | `<site>/`: Tilo as the site opens it            | `<site>/app/#/me/so.tilo.assistant`   |
-| What is shown   | everything of the site                          | that app's own page                   |
-| Its bundle says | `TiloAlone` false, `TiloApp` empty              | `TiloAlone` true, `TiloApp` the app   |
+|               | Tilo Shell                              | Tilo Assistant                                       |
+| ------------- | --------------------------------------- | ---------------------------------------------------- |
+| Built by      | `build.sh shell …`, or `build.sh …`     | `build.sh assistant …`                               |
+| Identifier    | `so.tilo.assistant.shell` (see below)   | `so.tilo.assistant`                                  |
+| Programs      | `TiloMac`, `TiloPhone`, `TiloShare`     | `AssistantMac`, `AssistantPhone`, `AssistantWidgets` |
+| What is shown | everything of the site, in a web view   | the assistant's window, in SwiftUI                   |
+| Bundle files  | `Bundle/`                               | `AssistantBundle/`                                   |
 
-Each app keeps its own data, its own keys and its own place shared with its share extension,
-so a person is signed in to each by itself.
+Each app keeps its own data and its own keys, so a person is signed in to each by itself.
+"Tilo Assistant" below says what that app is made of.
 
 **Tilo Shell** opens the site's own entry, as a browser tab does. `TILO_SHELL_APP` at build
 time, or `-TiloApp <id>` once on the command line, names an app that is in front on the
 desktop when it opens.
 
-**Tilo Assistant** shows one app, and the build says which: a bundle whose `Info.plist` has
+**A shell held to one app.** The shell's programs can also show one app alone, which is what
+Tilo Assistant was before it became an app of its own; no word of `build.sh` builds such a
+bundle today. A bundle whose `Info.plist` has
 `TiloAlone` shows `TiloApp` alone, whatever a setting or the command line names
 (`ShellSettings.swift`). The page it opens is the one-app page, which has no desktop. Beyond
 that the web view is held to it (`PageHost.swift`, `SitePolicy.isOwn`):
@@ -68,7 +81,7 @@ that the web view is held to it (`PageHost.swift`, `SitePolicy.isOwn`):
   app is opened in its place. A site that leaves the app each time it is opened is said after
   the second time, not tried for ever.
 
-It shows whatever the site's `so.tilo.assistant` shows: on a site whose web bundle has no
+It shows whatever the site's app of that name shows: on a site whose web bundle has no
 such app, it shows what the one-app page says of an app it does not have.
 
 ## Tilo Shell's identifier
@@ -182,9 +195,9 @@ on.
 
 - **Live windows in the one-app page.** A page that shows one app draws no live windows
   inside a conversation yet; the desktop does. Tilo Shell shows the desktop, so it has them.
-  Tilo Assistant has them when the one-app page draws them.
+  A shell held to one app has them when the one-app page draws them.
 - **The one-app page's bar.** The page that shows one app draws a bar over it with Share and
-  "Open in Tilo". In Tilo Assistant the second leads to the system's browser. A page that
+  "Open in Tilo". In a shell held to one app the second leads to the system's browser. A page that
   knew it was shown as an app of its own could leave the bar out.
 - **Answers in a notification.** The page names no `actions` today, so a notification has no
   answer buttons of its own. When it does, they appear with no change here.
@@ -239,6 +252,72 @@ Chat's messages as they arrive, sends through Chat's own send, and shows a docum
 window that is never put on a screen, with real key presses. A store it keeps holds a device
 key that only the very program that made it reads again.
 
+## Tilo Assistant
+
+The assistant's window as a SwiftUI app, built after one accepted drawing: a sidebar with the
+one main chat and the sub-agents, the conversation with its message field, the Tasks panel, a
+sub-agent's window, the assistant view, and the way in before a device is paired.
+
+**One interface.** The views read and call `AssistantSource` (`Sources/AssistantCore`) and
+nothing else: a conversation as a live stream of pieces (a message, a one-line report, a
+question with its answers, a secret it needs, a service that wants a sign-in, an event it set
+up, a brief, a reminder), the sub-agents, the tasks, what comes at a time and what happens
+when something else does, the facts of the assistant view, and pairing. Every read is a
+stream that begins with what is known now, and what a call changed comes back through the
+streams. An implementation speaks to Tilo; `MemorySource` keeps everything in memory, for
+tests and pictures. One line in each app names the implementation (`Source.swift`). Until one
+that speaks to Tilo stands there, the app is what it is before a device is paired: empty, at
+the way in, and a link it is given finds no Tilo.
+
+**The app starts empty.** The drawing's content lives in `AssistantDrawing`, which the tests
+and the picture tool link and no app does. Its people and firms are examples: a test keeps
+the app's sources and sentences free of them, because nothing in the app is about one
+person's line of work.
+
+**A live thing** in a message, or at the head of a sub-agent's window, is a place the frame
+leaves. `LiveThing` is a value the frame never reads, and the view that draws it comes in
+through the environment (`liveThingView`) from whoever implements the source. `AssistantRoot`
+also takes the source's engine view, which has to stand in an iPhone's window to run and
+shows nothing.
+
+**The message field** is the system's text view. Markdown is formatted in place while it is
+typed, and every character stays: Markdown's own signs are out of sight, except in the words
+the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
+Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
+sends. Attachments and dictation stand under the field, and dictation is the shell's.
+
+**A secret** is typed into the system's protected field. What is typed lives in that one view
+until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
+never part of a message, a draft, a notification or a log, and a `Secret` prints nothing of
+itself.
+
+**Type and colour** are the drawing's: its colours as named tokens (`Token`), its measures
+(`Measure`), its lines 1.45 apart. The face is Tilo Sans, which is the drawing's Instrument
+Sans with more letters. The repository keeps no font, so `build.sh` takes the two files from
+the font catalogue (`tools/font-catalog.py prepare`, into `target/prepared-fonts`) and the
+app makes them known to itself alone.
+
+**Outside the window.** `NoticePlan` says which pieces become notifications: a decision that
+waits, a reminder and a brief interrupt, and so does what the assistant judged important;
+what did not interrupt is listed without a sound, with the assistant's reason. A question's
+first answer is the system's own button beside Open, and a secret is never asked for there.
+`LiveActivityPlan` says what earns a live activity on an iPhone: a reminder that comes once
+within the hour, a brief before something begins, and work the person waits on. The
+assistant's standing work earns none, because an activity that is always there says nothing.
+The app tells both while it runs.
+
+**Told while the app is closed** takes what nothing here makes: an App ID for
+`so.tilo.assistant` with Push Notifications and a profile for it, `aps-environment` in
+`AssistantBundle/Phone.entitlements`, and a host that sends to the addresses the app hands it
+(`AssistantSource.register`: for notifications, for starting a live activity, and for each
+activity that runs). A live activity that the app starts and keeps current itself needs no
+capability.
+
+**Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and
+dark: the Mac's by this Mac, in a window that is never put on a screen, and the iPhone's in a
+simulator that shows no window. Asked for `told`, it also hands the system the drawing's
+notifications and live activities there, and writes down what the system then holds.
+
 ## Limits
 
 - The page draws with WebGPU and reaches its host over WebTransport: system 26.4 or newer.
@@ -259,7 +338,9 @@ dist/apple/build.sh test                         # the package's tests; they ope
 dist/apple/build.sh shell mac --check --live     # build, sign, and ask the app what it can tell
 dist/apple/build.sh shell simulator --live       # the iPhone app, asked in a simulator with no window
 dist/apple/build.sh shell iphone --install       # build, sign, and put it on the one reachable iPhone
-dist/apple/build.sh assistant mac --check        # the same for Tilo Assistant
+dist/apple/build.sh assistant mac --check        # Tilo Assistant: build, sign, and ask it what it can tell
+dist/apple/build.sh assistant iphone --install   # its iPhone app with its widget extension
+dist/apple/assistant-shots.sh DIR                # every screen of Tilo Assistant as a picture, nothing on screen
 open "target/apple.noindex/shell/mac/Tilo Shell.app"  # start the Mac app
 ```
 
@@ -368,9 +449,16 @@ screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
 
 Not checked by anything here, because it needs a window or the system's own interface: how
 the page looks in the window, the camera reading a code, the menu-bar item, the settings window, dictation, the share
-extension at run time, a notification shown and answered through the system, and Tilo
-Assistant against a site that has the Assistant app. And a passkey used in an app that is
+extension at run time, a notification shown and answered through the system. And a passkey used in an app that is
 associated with its site: that takes an App ID with the Associated Domains capability, which
 nothing here makes. What is checked instead: that a build names its sites exactly when its
 profile grants it, what the system answers a page in a build that names none, and the page's
 sentence for it.
+
+`TiloLive` is checked by its own tests, which run the engine against a page that speaks as
+Tilo's does: where the page stands, a change, reads, actions and their refusals, a second
+mount, and the frames of a page nobody sees. Against a real site `TiloLiveProbe` has paired
+from a link and got in. That it then prints Chat's messages as they arrive, sends, and shows a
+live document whose typed keys land in the record has been seen with a throwaway harness of
+the same technique, and not yet with `TiloLiveProbe` itself. Nothing of it has run in a
+simulator or on a phone.

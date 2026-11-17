@@ -408,3 +408,12 @@ recreates a tree with the wrong stacking. `src/wayland/compositor/tree.rs`
 place.
 
 Remove this once upstream exposes the parent's place among its children.
+
+## A toplevel's description is not its tag
+
+`xdg_toplevel_tag_manager_v1.set_toplevel_description` stored the description over the tag, so a
+client that described a window renamed it. The session places an app keeper's windows by their
+tag across a restart of the desktop. `src/wayland/xdg_toplevel_tag.rs` stores the description in
+its own field.
+
+Remove this once upstream stores the description apart.

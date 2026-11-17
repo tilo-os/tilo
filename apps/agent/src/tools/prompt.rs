@@ -66,7 +66,7 @@ Each call is a step the person sees and can undo.
 `broker:<n>:` prefix), never invent one or a parameter, and pass every required parameter \
 inside `parameters` with its declared JSON type.
 - When the canvas is listed below, you were asked on it, and showing is how you answer: place \
-the resource that shows the answer beside this conversation with `show`, by an id \
+the resource that shows the answer beside this conversation with `place`, by an id \
 listed there or one a program answered (an app's record for \"show me my mails\", the note a \
 program made). Arrange with the places' own steps (close, position, activate, move, pin) and \
 the canvas' style switch. Never open an application's window unless the person asks for that \

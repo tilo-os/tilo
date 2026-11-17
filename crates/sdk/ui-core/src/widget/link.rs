@@ -1,11 +1,11 @@
-//! A hyperlink: primary ink with an underline, theme-driven, that opens a URL when clicked,
+//! A hyperlink: your colour with an underline, theme-driven, that opens a URL when clicked,
 //! activated by keyboard (Enter / Space), or triggered by an assistive-technology
 //! `Activate`.
 
 use crate::widget::ModelPath;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::text_render::{TextRenderer, TextStyle};
@@ -304,7 +304,19 @@ impl Widget for Link {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
-        let color = theme.tokens.colors.text_primary;
+        // A link reads in your colour, apart from the words around it; held down it dims, so a
+        // press answers before the page it opens does.
+        let colors = &theme.tokens.colors;
+        let ink = colors.ink_on_any(
+            &[colors.surfaces.content],
+            colors.intent.accent_ink,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let color = if self.is_pressed {
+            crate::tokens::colors::mix8(ink, colors.surfaces.content, 0.35)
+        } else {
+            ink
+        };
         let style = theme.text(self.text_role);
         let (tw, th) = text_renderer.measure_style(&self.label, None, &style);
         let (tw, th) = (f64::from(tw), f64::from(th));
@@ -331,17 +343,14 @@ impl Widget for Link {
         );
 
         if self.is_focused && crate::focus_visible::shown() {
+            // The ring every control wears, round the words.
             let pad = 2.0;
-            let ring = RoundedRect::from_rect(
-                Rect::new(x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad),
-                4.0,
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
+            crate::widget::paint_focus_ring(
+                scene,
                 transform,
-                theme.border_focus,
-                None,
-                &ring,
+                Rect::new(x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad),
+                f64::from(theme.tokens.radii.item),
+                theme,
             );
         }
     }

@@ -854,7 +854,10 @@ impl<C: ChildResource> ChildrenState<C> {
                     context,
                 )
                 .map(|envelope| {
-                    ui_core::bound_dispatch::minted_items(doc, C::KIND, &envelope, &before)
+                    ui_core::bound_dispatch::minted_items(doc, C::KIND, &[], &envelope, &before)
+                        .into_iter()
+                        .map(|(_, address)| address)
+                        .collect::<::std::vec::Vec<_>>()
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 history.rebase(doc);

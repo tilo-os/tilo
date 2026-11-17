@@ -237,6 +237,12 @@ pub trait Layout {
     fn hidden(&self, _index: usize) -> bool {
         false
     }
+
+    /// Whether the forms this layout holds, in its parts and their sections, line their labels
+    /// up in one column: a page's do.
+    fn shares_label_column(&self) -> bool {
+        false
+    }
 }
 
 /// A container arranged by `L`. The primitives are this type with a layout:
@@ -687,13 +693,21 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut TextRenderer,
+        text: &mut TextRenderer,
     ) -> bool {
+        let shared = self.layout.shares_label_column() && {
+            let mut parts: Vec<&mut (dyn Widget + '_)> = self
+                .parts
+                .iter_mut()
+                .map(|part| part.element.as_mut() as &mut (dyn Widget + '_))
+                .collect();
+            crate::widget::FormSection::share_label_column(&mut parts, tree, text)
+        };
         let Ok(laid) = tree.layout(node) else {
-            return false;
+            return shared;
         };
         if !self.styled_by_room() {
-            return self.rewrap(tree);
+            return self.rewrap(tree) | shared;
         }
         let allocated = laid.size;
         self.derive_aspects(tree);
@@ -712,7 +726,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         // it wherever it is not yet. Whether the layout's decision changed since it last settled
         // says nothing about this tree: another tree's solve may have settled it.
         self.layout.settle(allocated, &self.resolved);
-        self.restyle(tree)
+        self.restyle(tree) | shared
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {

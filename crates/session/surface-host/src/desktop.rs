@@ -1048,6 +1048,7 @@ impl StripPolicy {
                 min_size: window.min_size,
                 max_size: window.max_size,
                 pid: window.pid,
+                tag: window.tag.clone(),
             });
             if let Err(error) = mapped {
                 tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");

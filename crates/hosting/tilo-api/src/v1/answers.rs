@@ -363,6 +363,10 @@ pub struct ActionAnswer {
     /// The resources it touched.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
+    /// What it made, each with its id and the address it is published under:
+    /// every item a write of several made, not only the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<Made>,
     /// The link to the record it changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
@@ -378,6 +382,13 @@ pub struct ActionAnswer {
     /// What was undone, for an undo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undone: Option<Value>,
+}
+
+/// An item a write made: its id, and the address it is published under.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Made {
+    pub id: String,
+    pub address: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

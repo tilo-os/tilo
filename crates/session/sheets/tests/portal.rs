@@ -768,7 +768,7 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     use tilo_sheets::portal::AgentQuestion;
     let asked = AgentQuestion {
         agent: "Jane Doe’s agent".into(),
-        run: "Fill Jane Doe’s visa application".into(),
+        title: "Fill Jane Doe’s visa application".into(),
         action: "Submit the application".into(),
         resource: "Schengen visa: Jane Doe".into(),
         arguments: vec![
@@ -981,7 +981,7 @@ tilo_test_env::scenario! {
         use tilo_sheets::portal::AgentQuestion;
         let asked = AgentQuestion {
             agent: "Jane Doe’s agent".into(),
-            run: "Fill Jane Doe’s visa application".into(),
+            title: "Fill Jane Doe’s visa application".into(),
             action: "Submit the application".into(),
             resource: "Schengen visa: Jane Doe".into(),
             arguments: (0..8)

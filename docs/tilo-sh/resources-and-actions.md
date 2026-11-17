@@ -125,6 +125,19 @@ curl -sS --fail-with-body "$resources/snippets/Visa%20checklist" -H "$auth" \
   | jq -r '"favorite: \(.fields.favorite) tags: \(.fields.tags)"'
 ```
 
+## What a write answers
+
+An action that makes something answers what it made: `result.made` holds one entry per item, its `id`
+and the `address` it is published under, and the answer repeats the list as `made` at its top. An action
+of several answers each item the same way, in the order it made them.
+
+```json example=what-a-write-made
+{"status": "ok", "result": {"made": [{"id": "9f2c…", "address": "tasks.tracker/issues/9f2c…"}]},
+ "made": [{"id": "9f2c…", "address": "tasks.tracker/issues/9f2c…"}], "resources": ["tasks.tracker/issues/9f2c…"]}
+```
+
+The address names the item by its id, so renaming the item neither changes it nor stops it resolving.
+
 ## The catalogue
 
 An app publishes its surface once: its resource kinds, every field with its type and whether it can be

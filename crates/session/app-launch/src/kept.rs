@@ -41,6 +41,8 @@ use tilo_lock::MutexRecover as _;
 
 use crate::spawner::End;
 
+pub use tilo_app_keeper::wire::Window;
+
 /// The version of [`KeptLaunch`]: a keeper started by a session that wrote another is not taken
 /// back (its launch cannot be read), and is left running.
 pub const LAUNCH_VERSION: u32 = 1;
@@ -171,6 +173,8 @@ pub(crate) struct Kept {
     released: AtomicBool,
     /// A desktop was handed to the keeper in this run.
     attached: AtomicBool,
+    /// What the keeper was last told of where each window stands, by tag.
+    placed: Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl Kept {
@@ -182,12 +186,53 @@ impl Kept {
             described: AtomicBool::new(false),
             released: AtomicBool::new(false),
             attached: AtomicBool::new(false),
+            placed: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
     /// Whether this run may leave the launch running through an in-place restart.
     pub(crate) fn answered(&self) -> bool {
         self.described.load(Ordering::Acquire) && self.control.lock_recover().is_some()
+    }
+
+    /// The keeper's process, once connected (0 before).
+    pub(crate) fn keeper(&self) -> u32 {
+        self.keeper.load(Ordering::Acquire)
+    }
+
+    /// Tell the keeper that its window `tag` stands at `placement`, unless that is what it was
+    /// last told.
+    pub(crate) fn place(&self, tag: &str, placement: &str) {
+        if self
+            .placed
+            .lock_recover()
+            .get(tag)
+            .is_some_and(|last| last == placement)
+        {
+            return;
+        }
+        let Some(control) = self
+            .control
+            .lock_recover()
+            .as_ref()
+            .and_then(|control| control.try_clone().ok())
+        else {
+            return;
+        };
+        let message = ToKeeper::SetPlacement {
+            tag: tag.to_owned(),
+            placement: placement.to_owned(),
+        };
+        match send(&control, &message, None) {
+            Ok(()) => {
+                self.placed
+                    .lock_recover()
+                    .insert(tag.to_owned(), placement.to_owned());
+            }
+            Err(error) => {
+                tracing::warn!(dir = %self.dir.display(), %error, "a kept window's place was not told");
+            }
+        }
     }
 
     /// Whether the run let go of the launch for an in-place restart.

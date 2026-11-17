@@ -13,7 +13,7 @@
 #                                                     no window, asked what it can tell of itself
 #
 # APP is shell (Tilo Shell, which shows Tilo as a whole; the default) or assistant (Tilo
-# Assistant, which shows the Assistant app and nothing else of Tilo). A bundle lands in
+# Assistant, the assistant's window as a SwiftUI app of its own). A bundle lands in
 # target/apple.noindex/APP/mac/ or target/apple.noindex/APP/iphone/ under its app's name.
 #
 # Environment:
@@ -38,7 +38,9 @@
 #   TILO_APPLE_SIMULATOR         the simulator to ask (default: the newest iPhone installed)
 #   TILO_SHELL_SITE              the Tilo site the build opens (default https://tilo.sh)
 #   TILO_SHELL_APP               an app Tilo Shell opens in front on the desktop (default:
-#                                none). Tilo Assistant shows the Assistant, whatever this says.
+#                                none)
+#   TILO_APPLE_WIDGETS_PROFILE   the profile of the widget extension in Tilo Assistant's iPhone
+#                                app (default: the app's)
 #   TILO_VERSION                 the version (default dist/VERSION)
 #   DEVELOPER_DIR                the Xcode to build with, when it is not the selected one
 set -euo pipefail
@@ -74,11 +76,13 @@ case "$app" in
     shown="${TILO_SHELL_APP:-}"
     ;;
   assistant)
+    # A SwiftUI app of its own: its own programs, and its own files in AssistantBundle/. It
+    # opens no site by itself, so what a shell is told to show does not apply to it.
     name="Tilo Assistant"
     program=TiloAssistant
     id=so.tilo.assistant
-    alone=true
-    shown=so.tilo.assistant
+    alone=false
+    shown=""
     ;;
 esac
 made="$out/$app"
@@ -395,6 +399,178 @@ print(found[0] if found else "")
   ! grep '^CHECK FAIL' "$made/simulator/second.txt" | grep -qv 'WebGPU'
 }
 
+# Tilo Assistant: a SwiftUI app with programs of its own (AssistantMac, AssistantPhone and the
+# iPhone's widget extension AssistantWidgets) and bundle files of its own. README.md, "Tilo
+# Assistant".
+assistant="$here/AssistantBundle"
+
+# Tilo Sans, the face Tilo Assistant's window is drawn in, into a folder of a bundle. The
+# repository keeps no font: its font tool prepares the catalogue once, outside the sources.
+faces() {
+  local catalogue="$repo/target/prepared-fonts" face
+  if [ ! -f "$catalogue/TiloSans[wdth,wght].ttf" ]; then
+    PATH="/opt/homebrew/bin:$PATH" python3 "$repo/tools/font-catalog.py" prepare \
+      "$repo/crates/sdk/ui-core/assets/fonts" "$catalogue" --scope product >&2 \
+      || die "Tilo Sans could not be prepared: tools/font-catalog.py takes Python 3.11 and, once, the network"
+  fi
+  mkdir -p "$1"
+  for face in "TiloSans[wdth,wght].ttf" "TiloSans-Italic[wdth,wght].ttf"; do cp "$catalogue/$face" "$1/"; done
+  [ ! -f "$catalogue/LICENSES/Tilo-Sans-OFL.txt" ] || cp "$catalogue/LICENSES/Tilo-Sans-OFL.txt" "$1/"
+}
+
+build_assistant_mac() {
+  local bin app="$made/mac/$name.app" size
+  ! running "$app" || die "$app is open: quit it first, or it would be replaced under whoever uses it"
+  bin="$(products mac)"
+  local contents="$app/Contents" icons="$made/mac/AppIcon.iconset" rights="$made/mac/app.entitlements"
+  # Opened while it was being built: the same.
+  ! running "$app" || die "$app is open: quit it first, or it would be replaced under whoever uses it"
+  rm -rf "$made/mac"
+  mkdir -p "$contents/MacOS" "$contents/Resources" "$icons"
+  cp "$bin/AssistantMac" "$contents/MacOS/$program"
+  fill "$assistant/Mac-Info.plist" "$contents/Info.plist"
+  stamp "$contents/Info.plist"
+  cp -R "$assistant/en.lproj" "$contents/Resources/"
+  faces "$contents/Resources/Fonts"
+  for size in 16 32 128 256 512; do
+    draw "$icons/icon_${size}x${size}.png" "$size"
+    draw "$icons/icon_${size}x${size}@2x.png" "$((size * 2))"
+  done
+  iconutil -c icns "$icons" -o "$contents/Resources/AppIcon.icns"
+  rm -rf "$icons"
+  fill "$assistant/Mac.entitlements" "$rights"
+  [ -n "$team" ] || say "signed by nobody: it runs on this Mac, and the next build cannot read what this one kept"
+  codesign --force --options runtime --timestamp=none --sign "$identity" --entitlements "$rights" "$app"
+  codesign --verify --deep --strict "$app"
+}
+
+# What Tilo Assistant can tell of itself with nothing on screen: one line per fact.
+said_by_assistant() { # the file its words were kept in
+  grep '^CHECK ' "$1" | sed 's/^CHECK //' | grep -v '^end$' || die "the app said nothing"
+  ! grep -q '^CHECK FAIL' "$1"
+}
+
+check_assistant_mac() {
+  # A build signed by nobody is not started here. Where this Mac already keeps the app's data
+  # under a signature, the system stops another signature's build at its very start and asks
+  # the person at the screen, and the build stands still until they answer.
+  [ -n "$team" ] || die "a build signed by nobody is not asked: name who signs in TILO_APPLE_SIGNING_IDENTITY"
+  local waited=0 asked
+  "$made/mac/$name.app/Contents/MacOS/$program" --check > "$made/mac/check.txt" 2>&1 &
+  asked=$!
+  while kill -0 "$asked" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 30 ]; then
+      kill "$asked" 2>/dev/null || true
+      die "the app did not get as far as its own start in 30 seconds: the system may be asking about its data"
+    fi
+    sleep 1
+  done
+  said_by_assistant "$made/mac/check.txt"
+}
+
+# One bundle of Tilo Assistant's iPhone app: what it says of itself, its sentences, its
+# typeface, the profile that lets it run on the phone, and its signature. The program is
+# already in it.
+assistant_part() { # directory, bundle id, Info.plist, entitlements, profile
+  local dir="$1" rights="$made/iphone/$2.entitlements" decoded="$made/iphone/$2.profile.plist" sdk covers
+  security cms -D -i "$5" > "$decoded" 2>/dev/null || die "$5 is no provisioning profile"
+  [ "$(plist -c 'Print :TeamIdentifier:0' "$decoded")" = "$team" ] \
+    || die "$5 is another team's than the signing identity's"
+  sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+  covers="$(plist -c 'Print :Entitlements:application-identifier' "$decoded")"
+  # shellcheck disable=SC2254  # the profile's identifier is a pattern ("TEAM.*")
+  case "$team.$2" in $covers) ;; *) die "the profile covers $covers, not $2" ;; esac
+  fill "$3" "$dir/Info.plist"
+  stamp "$dir/Info.plist"
+  plist -c "Add :DTPlatformName string iphoneos" -c "Add :DTPlatformVersion string $sdk" \
+    -c "Add :DTSDKName string iphoneos$sdk" "$dir/Info.plist"
+  cp -R "$assistant/en.lproj" "$dir/"
+  faces "$dir/Fonts"
+  cp "$5" "$dir/embedded.mobileprovision"
+  fill "$4" "$rights"
+  # A development profile lets a debugger attach, and the signature has to say the same.
+  if [ "$(plist -c 'Print :Entitlements:get-task-allow' "$decoded" 2>/dev/null)" = true ]; then
+    plist -c "Add :get-task-allow bool true" "$rights"
+  fi
+  codesign --force --timestamp=none --sign "$identity" --entitlements "$rights" "$dir"
+}
+
+build_assistant_iphone() {
+  [ -n "$team" ] || die "an iPhone app is signed by someone: name them in TILO_APPLE_SIGNING_IDENTITY"
+  [ -f "${TILO_APPLE_PROFILE:-}" ] || die "name the iPhone app's provisioning profile in TILO_APPLE_PROFILE"
+  local bin app="$made/iphone/$name.app" scale widgets_profile="${TILO_APPLE_WIDGETS_PROFILE:-$TILO_APPLE_PROFILE}"
+  [ -f "$widgets_profile" ] || die "TILO_APPLE_WIDGETS_PROFILE names no file"
+  bin="$(products iphone)"
+  local appex="$app/PlugIns/AssistantWidgets.appex"
+  rm -rf "$made/iphone"
+  mkdir -p "$appex"
+  # The extension first, then the app that seals it. Each carries the profile that covers it.
+  cp "$bin/AssistantWidgets" "$appex/AssistantWidgets"
+  assistant_part "$appex" "$id.widgets" "$assistant/Widgets-Info.plist" "$assistant/Widgets.entitlements" "$widgets_profile"
+  cp "$bin/AssistantPhone" "$app/$program"
+  # The two files Phone-Info.plist names as the app's icon.
+  for scale in 2 3; do
+    draw "$made/iphone/icon.png" "$((60 * scale))"
+    # An icon on a phone carries no transparency.
+    sips -s format jpeg -s formatOptions best "$made/iphone/icon.png" --out "$made/iphone/icon.jpg" >/dev/null
+    sips -s format png "$made/iphone/icon.jpg" --out "$app/AppIcon60x60@${scale}x.png" >/dev/null
+  done
+  rm -f "$made/iphone/icon.png" "$made/iphone/icon.jpg"
+  assistant_part "$app" "$id" "$assistant/Phone-Info.plist" "$assistant/Phone.entitlements" "$TILO_APPLE_PROFILE"
+  codesign --verify --deep --strict "$app"
+}
+
+# Tilo Assistant's iPhone app in a simulator, asked what it can tell: whether it starts on a
+# phone's system with its typeface and its sentences, and whether the phone lets it show live
+# activities. The simulator runs without its window and is shut down again if this started it.
+check_assistant_simulator() {
+  local bin app="$made/simulator/$name.app" device started="" failed=""
+  local flags=(-c release --triple "$(uname -m)-apple-ios$minimum-simulator"
+    --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --scratch-path "$made/swiftpm-simulator")
+  (cd "$here" && xcrun swift build "${flags[@]}" >&2)
+  bin="$(cd "$here" && xcrun swift build "${flags[@]}" --show-bin-path)"
+  local appex="$app/PlugIns/AssistantWidgets.appex"
+  rm -rf "$made/simulator"
+  mkdir -p "$appex"
+  cp "$bin/AssistantWidgets" "$appex/AssistantWidgets"
+  fill "$assistant/Widgets-Info.plist" "$appex/Info.plist"
+  stamp "$appex/Info.plist"
+  plist -c "Set :CFBundleSupportedPlatforms:0 iPhoneSimulator" "$appex/Info.plist"
+  cp -R "$assistant/en.lproj" "$appex/"
+  faces "$appex/Fonts"
+  codesign --force --timestamp=none --sign - "$appex"
+  cp "$bin/AssistantPhone" "$app/$program"
+  fill "$assistant/Phone-Info.plist" "$app/Info.plist"
+  stamp "$app/Info.plist"
+  plist -c "Set :CFBundleSupportedPlatforms:0 iPhoneSimulator" -c "Delete :CFBundleIcons" "$app/Info.plist"
+  cp -R "$assistant/en.lproj" "$app/"
+  faces "$app/Fonts"
+  codesign --force --timestamp=none --sign - "$app"
+
+  device="${TILO_APPLE_SIMULATOR:-$(xcrun simctl list devices available -j | python3 -I -c '
+import json, sys
+systems = json.load(sys.stdin)["devices"]
+found = [device["udid"] for system, devices in sorted(systems.items(), reverse=True) if "iOS" in system
+         for device in devices if device["name"].startswith("iPhone")]
+print(found[0] if found else "")
+')}"
+  [ -n "$device" ] || die "no iPhone simulator is installed"
+  if ! xcrun simctl list devices booted | grep -q "$device"; then
+    xcrun simctl boot "$device"
+    started=1
+  fi
+  {
+    xcrun simctl bootstatus "$device" -b >/dev/null && xcrun simctl install "$device" "$app" &&
+      { xcrun simctl launch --console --terminate-running-process "$device" "$id" --check \
+        > "$made/simulator/check.txt" 2>&1 || true; }
+  } || failed=1
+  xcrun simctl uninstall "$device" "$id" >/dev/null 2>&1 || true
+  [ -z "$started" ] || xcrun simctl shutdown "$device" >/dev/null 2>&1 || true
+  [ -z "$failed" ] || die "the app could not be put into the simulator"
+  said_by_assistant "$made/simulator/check.txt"
+}
+
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
@@ -402,16 +578,19 @@ case "$command" in
     (cd "$here" && xcrun swift test --scratch-path "$out/swiftpm-mac")
     ;;
   mac)
-    build_mac
+    if [ "$app" = assistant ]; then build_assistant_mac; else build_mac; fi
     say "built $made/mac/$name.app"
     case "${1:-}" in
-      --check) shift; check_mac "$@" ;;
+      --check)
+        shift
+        if [ "$app" = assistant ]; then check_assistant_mac; else check_mac "$@"; fi
+        ;;
       "") ;;
       *) usage ;;
     esac
     ;;
   iphone)
-    build_iphone
+    if [ "$app" = assistant ]; then build_assistant_iphone; else build_iphone; fi
     say "built $made/iphone/$name.app"
     case "${1:-}" in
       --install) install_iphone ;;
@@ -420,7 +599,7 @@ case "$command" in
     esac
     ;;
   simulator)
-    check_simulator "$@"
+    if [ "$app" = assistant ]; then check_assistant_simulator; else check_simulator "$@"; fi
     ;;
   *) usage ;;
 esac

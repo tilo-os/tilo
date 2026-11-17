@@ -18,12 +18,24 @@
 //! (their MCP server, [`mcp_server::PROVIDER`], and their devices,
 //! [`identity_admin::PROVIDER`]) to the action API the desktop's host hands it
 //! for each ([`DesktopSession::serve_person_api`]): the person's host, on a page.
+//! A window also reads what another app keeps through the session's record API, as it does through
+//! the workspace broker. The desktop holds those records itself, so the session takes the reads and
+//! the desktop answers them on its own thread, as it decides each one ([`records`]).
+//! A window that asks another app for an action is answered with what the action did there, or with
+//! its refusal, once it ran in that app's window ([`RevealAnswer`]): never before. An action asked of
+//! a record of the workspace (provider `record:<app>:<record>`, as a link to it is) is run by the
+//! workspace's host where the desktop reaches one ([`DesktopSession::serve_workspace_api`]), whoever
+//! has the record open, and else by the window that shows it; no window is opened for it.
 
 mod activity;
 #[cfg(test)]
 mod mcp_server_tests;
+mod records;
+#[cfg(test)]
+mod records_tests;
 
 pub use activity::{ActivityAsk, ActivityReads, ActivityRequests, activity_requests};
+pub use records::{ASKED_NOT_TAKEN, HOLD_MAX, HeldRecords, RecordAnswers};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,6 +62,10 @@ use crate::navigation::{ChromeEffect, LayoutEffect};
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
+
+/// What a window asking a record for an action hears where no window shows the record and no
+/// host of the workspace runs it.
+pub const NOT_OPEN_HERE: &str = "That is not open in a window here";
 
 /// The launch a [`crate::TileSource`] reads as opening `app` with the content whose hash is `hash`
 /// : `{CONTENT_LAUNCH}{app}:{hash}` ([`content_launch`]).
@@ -85,6 +101,9 @@ struct Opening {
     /// ([`APPLICATION_OPEN_ACTION`]) or another of its actions.
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
+    /// Asked of a record rather than of its app: it runs in the window that shows the record,
+    /// which is left where it is, and opens none.
+    shown_only: bool,
     invocation: InvocationId,
     answer: Answer,
 }
@@ -188,10 +207,16 @@ pub struct DesktopSession {
     /// The invocations a person's action API admitted, and that API, which
     /// answers for them.
     api_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
+    /// The action API of the workspace's host, where the desktop reaches one: what runs an action
+    /// asked of a record of the workspace ([`Self::serve_workspace_api`]).
+    workspace_api: std::sync::Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
     /// The host actions a window asked the shell to choose for the person
     /// ([`session_actions::SHOW_CONNECT`], [`session_actions::SHOW_PAIR_DEVICE`]), for the
     /// desktop to take.
     chosen: Chosen,
+    /// The record reads the windows ask, which the desktop answers on its own thread
+    /// ([`Openings::answer_records`]).
+    records: Arc<records::Reads>,
     woken: Arc<AtomicBool>,
 }
 
@@ -204,6 +229,8 @@ pub struct Openings {
     chosen: Chosen,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
     activity: ActivityRequests,
+    /// The record reads the windows ask of the session.
+    records: Arc<records::Reads>,
     /// What the windows opened since [`Openings::take_reveals`] are to show.
     reveals: std::cell::RefCell<Vec<Reveal>>,
 }
@@ -223,6 +250,93 @@ pub struct Reveal {
     pub action: String,
     /// What the action is invoked with.
     pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// What the window that asked for the action is told once it ran. `None` for an action nobody
+    /// waits on: a row the desktop's own search runs.
+    pub answer: Option<RevealAnswer>,
+}
+
+/// What a window that asked another app for an action is told: the action's own outcome, once the
+/// host ran it in the window the desktop opened or found for it. The host answers through one of
+/// the methods below, once; a reveal dropped unanswered (an open that names nothing to run there, a
+/// host that only opens windows) tells the caller the open went ahead.
+#[derive(Clone)]
+pub struct RevealAnswer(Arc<Unanswered>);
+
+struct Unanswered {
+    invocation: InvocationId,
+    answer: std::sync::Mutex<Option<Answer>>,
+}
+
+impl Drop for Unanswered {
+    fn drop(&mut self) {
+        let unanswered = self.answer.lock_recover().take();
+        if let Some(answer) = unanswered {
+            answer.complete(Ok(InvocationReceipt {
+                invocation: self.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            }));
+        }
+    }
+}
+
+impl RevealAnswer {
+    fn new(invocation: InvocationId, answer: Answer) -> Self {
+        Self(Arc::new(Unanswered {
+            invocation,
+            answer: std::sync::Mutex::new(Some(answer)),
+        }))
+    }
+
+    fn settle(&self, status: ReceiptStatus) {
+        let unanswered = self.0.answer.lock_recover().take();
+        if let Some(answer) = unanswered {
+            answer.complete(Ok(InvocationReceipt {
+                invocation: self.0.invocation,
+                status,
+            }));
+        }
+    }
+
+    /// The action ran and finished with `output`.
+    pub fn completed(&self, output: tilo_actions::ActionOutput) {
+        self.settle(ReceiptStatus::Completed { output });
+    }
+
+    /// The action ran and failed.
+    pub fn failed(&self, error: tilo_actions::outcome::ActionFailure) {
+        self.settle(ReceiptStatus::Failed { error });
+    }
+
+    /// The action was stopped before it ended.
+    pub fn cancelled(&self, message: Option<String>) {
+        self.settle(ReceiptStatus::Cancelled { message });
+    }
+
+    /// The action did not run: the window's own refusal, or why nothing took it.
+    pub fn refused(&self, error: ActionHostError) {
+        let unanswered = self.0.answer.lock_recover().take();
+        if let Some(answer) = unanswered {
+            answer.complete(Err(error));
+        }
+    }
+}
+
+impl PartialEq for RevealAnswer {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RevealAnswer {}
+
+impl std::fmt::Debug for RevealAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevealAnswer")
+            .field("invocation", &self.0.invocation)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The session for the workspace `workspace` , and the desktop's end of it. `woken` is raised
@@ -236,6 +350,7 @@ pub fn serve(
     let nodes = Arc::<std::sync::Mutex<Vec<NodeAsk>>>::default();
     let activity = activity::Api::new(Arc::clone(&woken));
     let chosen = Chosen::default();
+    let records = records::Reads::new(Arc::clone(&woken));
     (
         Arc::new(DesktopSession {
             workspace: workspace.into(),
@@ -244,7 +359,9 @@ pub fn serve(
             activity: Arc::clone(&activity),
             person_apis: std::sync::Mutex::default(),
             api_invocations: std::sync::Mutex::default(),
+            workspace_api: std::sync::Mutex::default(),
             chosen: Arc::clone(&chosen),
+            records: Arc::clone(&records),
             woken,
         }),
         Openings {
@@ -252,6 +369,7 @@ pub fn serve(
             chosen,
             nodes,
             activity: activity.requests(),
+            records,
             reveals: std::cell::RefCell::default(),
         },
     )
@@ -264,6 +382,61 @@ impl DesktopSession {
         self.person_apis
             .lock_recover()
             .insert(provider.to_owned(), api);
+    }
+
+    /// Carry every action a window asks of a record of the workspace (provider
+    /// `record:<app>:<record>`) to `api` from now on: the action API of the workspace's host,
+    /// which runs it whoever has the record open and decides it by the caller's own standing.
+    pub fn serve_workspace_api(&self, api: Arc<dyn ActionHost + Send + Sync>) {
+        *self.workspace_api.lock_recover() = Some(api);
+    }
+
+    /// Run `request`, asked of the record `record` that `app` keeps in this desktop's workspace.
+    /// The workspace's host runs it where the desktop reaches one; a desktop with none hands it to
+    /// the window that shows the record ([`Reveal`]) and opens none for it.
+    fn ask_of_record(
+        &self,
+        caller: &Caller,
+        (app, record): (String, String),
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        // As the broker: what a record offers is its workspace's members' to ask, in this
+        // workspace only.
+        if caller.workspace() != Some(self.workspace.as_str())
+            || request.target.address.action.is_empty()
+        {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        let host = self.workspace_api.lock_recover().clone();
+        if let Some(host) = host {
+            self.api_invocations
+                .lock_recover()
+                .insert(request.invocation, Arc::clone(&host));
+            return host.invoke(caller, request);
+        }
+        let arguments = match request.argument {
+            InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Json(arguments) => arguments,
+            InvokeArgument::Text(_) => {
+                return Pending::ready(Err(ActionHostError::Refused {
+                    reason: "Asking another app for that isn't available here yet".into(),
+                }));
+            }
+        };
+        let (answer, receipt) = pending();
+        self.asked.lock_recover().push(Opening {
+            app,
+            record: (!record.is_empty()).then_some(record),
+            content: None,
+            resource: Some(request.target.address.resource),
+            action: request.target.address.action,
+            arguments,
+            shown_only: true,
+            invocation: request.invocation,
+            answer,
+        });
+        self.woken.store(true, Ordering::Release);
+        receipt
     }
 
     /// The person's action API that admitted `id`, when one did.
@@ -468,6 +641,11 @@ impl ActionHost for DesktopSession {
             self.woken.store(true, Ordering::Release);
             return receipt;
         }
+        let record = tilo_actions::remote::resource_parts(&request.target.provider)
+            .map(|(app, record)| (app.to_owned(), record.to_owned()));
+        if let Some(record) = record {
+            return self.ask_of_record(caller, record, request);
+        }
         let (app, record, content) = match self.app_to_open(caller, &request) {
             Ok((app, record, content)) => (
                 app.to_owned(),
@@ -497,6 +675,7 @@ impl ActionHost for DesktopSession {
             resource,
             action: request.target.address.action,
             arguments,
+            shown_only: false,
             invocation: request.invocation,
             answer,
         });
@@ -520,6 +699,22 @@ impl ActionHost for DesktopSession {
         self.activity.next_change(caller, id)
     }
 
+    /// The record reads of the windows, once the desktop answers them
+    /// ([`Openings::answer_records`]): a desktop that holds no records reads none.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.records.served()
+    }
+
+    /// The next time the records the desktop holds may have changed, for a desktop that answers
+    /// its windows' reads; who is in the workspace is not this session's to tell.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        self.records.changed(caller, scope)
+    }
+
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         if self.activity.serves(id) {
             return Pending::ready(self.activity.cancel(caller, id));
@@ -535,6 +730,14 @@ impl ActionHost for DesktopSession {
 }
 
 impl Openings {
+    /// Answer the record reads of this desktop's windows from now on: the session takes each read
+    /// a window asks, and the desktop answers them with what this returns, on its own thread, from
+    /// the records it holds ([`RecordAnswers::answer`]).
+    #[must_use]
+    pub fn answer_records(&self) -> RecordAnswers {
+        RecordAnswers::of(&self.records)
+    }
+
     /// The desktop's end of the activity the session serves.
     #[must_use]
     pub fn activity(&self) -> ActivityRequests {
@@ -563,8 +766,9 @@ impl Openings {
     /// action runs in, so a link into an app never adds a second window on
     /// what one already shows. Only an open no window shows, or one that
     /// hands the app content, opens a window: on its record when it names
-    /// one ([`record_launch`]). Whether anything was asked, so the host lays
-    /// out again.
+    /// one ([`record_launch`]). An open that names something for the window to
+    /// run is answered by what that came to ([`Reveal::answer`]), every other
+    /// one here. Whether anything was asked, so the host lays out again.
     pub fn open(
         &self,
         handle: &DesktopHandle,
@@ -584,58 +788,70 @@ impl Openings {
             resource,
             action,
             arguments,
+            shown_only,
             invocation,
             answer,
         } in asked
         {
             let existing = record.is_some() || resource.is_some();
+            let route = record.clone().unwrap_or_default();
             let opened = may_open(&app, existing).and_then(|()| {
-                if let Some(resource) = resource {
-                    self.reveals.borrow_mut().push(Reveal {
-                        app: app.clone(),
-                        record: record.clone().unwrap_or_default(),
-                        resource,
-                        action,
-                        arguments,
-                    });
-                }
                 // Content handed to an app is a new thing to show; anything else goes to the
                 // window that already shows it. A window that left the shell since `showing`
                 // answered is no place to go, and the open opens one as if none had been there.
-                let shown = content
-                    .is_none()
-                    .then(|| showing(&app, record.as_deref().unwrap_or_default()))
-                    .flatten()
-                    .is_some_and(|tab| {
-                        handle
-                            .dispatch(LayoutEffect::Focus {
-                                tab: tab.to_string(),
-                            })
-                            .is_ok()
-                    });
+                let window = content.is_none().then(|| showing(&app, &route)).flatten();
+                if shown_only {
+                    // Asked of the record, not of its app: it runs where the record is open,
+                    // and that window stays where it is.
+                    return window
+                        .map(|_| ())
+                        .ok_or_else(|| ActionHostError::Unavailable {
+                            reason: NOT_OPEN_HERE.into(),
+                        });
+                }
+                let shown = window.is_some_and(|tab| {
+                    handle
+                        .dispatch(LayoutEffect::Focus {
+                            tab: tab.to_string(),
+                        })
+                        .is_ok()
+                });
                 if shown {
                     return Ok(());
                 }
-                let app = match (record, content) {
+                let launch = match (record, content) {
                     (Some(record), _) => record_launch(&app, &record),
                     (None, Some(hash)) => content_launch(&app, &hash),
-                    (None, None) => app,
+                    (None, None) => app.clone(),
                 };
                 handle
                     .dispatch(ChromeEffect::OpenApp {
-                        app,
+                        app: launch,
                         beside: None,
                         background: None,
                         float: None,
                     })
                     .map_err(|reason| ActionHostError::Unavailable { reason })
             });
-            answer.complete(opened.map(|()| InvocationReceipt {
-                invocation,
-                status: ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput::default(),
-                },
-            }));
+            match (opened, resource) {
+                (Err(error), _) => answer.complete(Err(error)),
+                // The open is all that was asked.
+                (Ok(()), None) => answer.complete(Ok(InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Completed {
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                })),
+                // The window is to run something: what that comes to is the answer.
+                (Ok(()), Some(resource)) => self.reveals.borrow_mut().push(Reveal {
+                    app,
+                    record: route,
+                    resource,
+                    action,
+                    arguments,
+                    answer: Some(RevealAnswer::new(invocation, answer)),
+                }),
+            }
         }
         any
     }

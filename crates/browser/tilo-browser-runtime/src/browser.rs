@@ -1541,7 +1541,7 @@ fn present_desktop(
         &persistence,
         (&here, &session, (&owners, &opening_permissions)),
     )?;
-    let asks = session_asks::Asks::new(config.peer);
+    let asks = session_asks::Asks::new(config.peer, &openings, Rc::clone(&mentions_store));
     let mentions = mention_notices::over(
         mentions_store,
         &asks,
@@ -3291,13 +3291,13 @@ impl Mount {
                     && self
                         .checkout
                         .as_ref()
-                        .is_some_and(|c| c.id.as_str() == target.document)
+                        .is_some_and(|c| c.id.as_str() == target.record)
                 {
                     self.frame
                         .published_action_locus(
                             target.instance,
                             &target.app,
-                            &target.document,
+                            &target.record,
                             &tilo_actions::ActionAddress::new(&target.resource, &target.action),
                         )
                         .map(|r| [r.x0, r.y0, r.width(), r.height()])

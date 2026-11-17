@@ -711,3 +711,344 @@ fn a_link_into_an_app_goes_to_the_window_that_already_shows_it() {
         assert_eq!(openings.take_reveals().len(), 1, "and it is told the link");
     }
 }
+
+/// The windows a [`RecordWindows`] shell opened: each tab with the record it is on.
+type OpenedRecords = Rc<std::cell::RefCell<Vec<(u64, String)>>>;
+
+/// A shell with Chat open in which any record launch opens a window on that record, served by the
+/// page's session for the workspace `workspace`; and the windows it opened.
+fn chat_shell() -> (
+    ui::headless::FrameHarness,
+    DesktopHandle,
+    std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
+    tilo_desktop_surface::session::Openings,
+    OpenedRecords,
+) {
+    let mut minter = IdMinter::new(7);
+    let chat = tab(&mut minter, "Chat");
+    let tree = seed_tree(&mut minter, "Office", vec![chat]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(RecordWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("workspace", std::sync::Arc::default());
+    (driver, handle, session, openings, opened)
+}
+
+/// What `receipt` holds now: its answer (`None` when its host dropped the request), or the
+/// receipt back while its host has not answered.
+fn answered<T>(
+    receipt: ui::tilo_actions::remote::Pending<T>,
+) -> Result<Option<T>, ui::tilo_actions::remote::Pending<T>> {
+    receipt.wait_timeout(std::time::Duration::ZERO)
+}
+
+/// A window that asks another app for an action hears what the action did in that app's window:
+/// its output, its failure or its refusal, and none of them before it ran. A host that only opens
+/// the window tells it the open went ahead.
+#[test]
+fn a_call_into_another_app_answers_with_what_the_action_did_there() {
+    use ui::tilo_actions::ActionOutput;
+    use ui::tilo_actions::remote::{
+        ActionHost as _, ActionHostError, Caller, InvokeRequest, ReceiptStatus,
+        application_resource_target,
+    };
+    let caller = Caller::local_person("tester").in_workspace("workspace");
+    let pin = || -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": application_resource_target("workspace", "so.tilo.notes", "n:plan", "plan", "pin"),
+            "argument": {"Json": {"place": "top"}},
+        }))
+        .unwrap()
+    };
+    let pinned = || ActionOutput {
+        value: Some(serde_json::json!({"pinned": "top"})),
+        ..ActionOutput::default()
+    };
+    // The window Notes opens on the record, and the answer its caller still waits for.
+    let asked = || {
+        let (driver, handle, session, openings, _) = chat_shell();
+        let receipt = session.invoke(&caller, pin());
+        assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
+        let Err(receipt) = answered(receipt) else {
+            panic!("answered before the action ran in its window");
+        };
+        let reveal = openings
+            .take_reveals()
+            .pop()
+            .expect("the action is the window's to run");
+        (driver, receipt, reveal)
+    };
+
+    let (_shell, receipt, reveal) = asked();
+    reveal
+        .answer
+        .as_ref()
+        .expect("a window waits for it")
+        .completed(pinned());
+    assert_eq!(
+        answered(receipt)
+            .ok()
+            .flatten()
+            .map(|receipt| receipt.map(|receipt| receipt.status)),
+        Some(Ok(ReceiptStatus::Completed { output: pinned() })),
+        "the action's own output"
+    );
+
+    let (_shell, receipt, reveal) = asked();
+    reveal
+        .answer
+        .as_ref()
+        .unwrap()
+        .refused(ActionHostError::confirmation_required());
+    assert_eq!(
+        answered(receipt).ok().flatten(),
+        Some(Err(ActionHostError::confirmation_required())),
+        "its own refusal"
+    );
+
+    let (_shell, receipt, reveal) = asked();
+    reveal
+        .answer
+        .as_ref()
+        .unwrap()
+        .cancelled(Some("stopped".into()));
+    assert_eq!(
+        answered(receipt)
+            .ok()
+            .flatten()
+            .map(|receipt| receipt.map(|receipt| receipt.status)),
+        Some(Ok(ReceiptStatus::Cancelled {
+            message: Some("stopped".into())
+        }))
+    );
+
+    // A host that runs nothing in the window drops the reveal: the open is what happened.
+    let (_shell, receipt, reveal) = asked();
+    drop(reveal);
+    assert_eq!(
+        answered(receipt)
+            .ok()
+            .flatten()
+            .map(|receipt| receipt.map(|receipt| receipt.status)),
+        Some(Ok(ReceiptStatus::Completed {
+            output: ActionOutput::default()
+        }))
+    );
+
+    // An app this person may not open is refused at once, and nothing is handed on to run.
+    let (_driver, handle, session, openings, opened) = chat_shell();
+    let receipt = session.invoke(&caller, pin());
+    assert!(openings.open(
+        &handle,
+        |_, _| Err(ActionHostError::NotPermitted),
+        |_, _| None
+    ));
+    assert_eq!(
+        answered(receipt).ok().flatten(),
+        Some(Err(ActionHostError::NotPermitted))
+    );
+    assert!(openings.take_reveals().is_empty());
+    assert!(opened.borrow().is_empty());
+}
+
+/// The workspace's host as a page's session reaches it: it runs what it is asked and answers with
+/// a link.
+#[derive(Default)]
+struct LinkHost {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl LinkHost {
+    fn link() -> ui::tilo_actions::ActionOutput {
+        ui::tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"url": "https://tilo.so/n/plan"})),
+            ..ui::tilo_actions::ActionOutput::default()
+        }
+    }
+}
+
+impl ui::tilo_actions::remote::ActionHost for LinkHost {
+    fn query(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Ok(
+            ui::tilo_actions::remote::CataloguePage::default(),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        self.asked.lock().unwrap().push(request);
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: Self::link(),
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// Chat asking a shared note for its link: `share-link`, asked of the note's record.
+fn note_link() -> ui::tilo_actions::remote::InvokeRequest {
+    ui::tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: ui::tilo_actions::InvocationId::new(),
+        target: ui::tilo_actions::remote::RemoteActionTarget {
+            provider: "record:so.tilo.notes:n:plan".into(),
+            address: ui::tilo_actions::ActionAddress::new("plan", "share-link"),
+        },
+        argument: ui::tilo_actions::remote::InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+/// An action asked of a record of the workspace, as Chat asks a shared note for its link: the
+/// workspace's host runs it where the desktop reaches one, for a member of the workspace only,
+/// and the desktop opens nothing for it.
+#[test]
+fn an_action_asked_of_a_record_is_run_by_the_workspace_s_host() {
+    use ui::tilo_actions::remote::{ActionHost as _, ActionHostError, Caller, ReceiptStatus};
+    let caller = Caller::local_person("tester").in_workspace("workspace");
+    let (_driver, handle, session, openings, opened) = chat_shell();
+    let host = std::sync::Arc::new(LinkHost::default());
+    session.serve_workspace_api(host.clone());
+    assert_eq!(
+        answered(session.invoke(&caller, note_link()))
+            .ok()
+            .flatten()
+            .map(|receipt| receipt.map(|receipt| receipt.status)),
+        Some(Ok(ReceiptStatus::Completed {
+            output: LinkHost::link()
+        })),
+        "the host's own answer"
+    );
+    assert_eq!(
+        host.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|asked| asked.target.provider.clone())
+            .collect::<Vec<_>>(),
+        ["record:so.tilo.notes:n:plan"],
+        "asked of the record, as the window named it"
+    );
+    assert_eq!(
+        answered(session.invoke(&Caller::local_person("eve"), note_link()))
+            .ok()
+            .flatten(),
+        Some(Err(ActionHostError::UnknownAction)),
+        "nobody from outside the workspace asks its records anything"
+    );
+    assert_eq!(host.asked.lock().unwrap().len(), 1);
+    assert!(
+        !openings.open(&handle, |_, _| Ok(()), |_, _| None),
+        "nothing is the desktop's to open"
+    );
+    assert!(opened.borrow().is_empty());
+}
+
+/// With no host of the workspace, an action asked of a record is run by the window that shows
+/// the record, which stays where it is; where none shows it the caller hears so, and no window
+/// is opened to answer.
+#[test]
+fn an_action_asked_of_a_record_with_no_host_is_run_by_the_window_showing_it() {
+    use ui::tilo_actions::remote::{ActionHost as _, ActionHostError, Caller, ReceiptStatus};
+    let caller = Caller::local_person("tester").in_workspace("workspace");
+    let (mut driver, handle, session, openings, opened) = chat_shell();
+    let receipt = session.invoke(&caller, note_link());
+    assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
+    driver.relayout();
+    assert_eq!(
+        answered(receipt).ok().flatten(),
+        Some(Err(ActionHostError::Unavailable {
+            reason: tilo_desktop_surface::session::NOT_OPEN_HERE.into(),
+        }))
+    );
+    assert!(opened.borrow().is_empty(), "asking a record opens nothing");
+
+    // A window shows it: that window runs the action, and stays where it is.
+    let front = handle.snapshot("g", vec![]).active;
+    let receipt = session.invoke(&caller, note_link());
+    assert!(openings.open(
+        &handle,
+        |_, _| Ok(()),
+        |app, record| (app == "so.tilo.notes" && record == "n:plan").then_some(42)
+    ));
+    driver.relayout();
+    assert_eq!(
+        handle.snapshot("g", vec![]).active,
+        front,
+        "nothing came forward"
+    );
+    let Err(receipt) = answered(receipt) else {
+        panic!("answered before the window ran it");
+    };
+    let reveal = openings.take_reveals().pop().expect("the window runs it");
+    assert_eq!(
+        (
+            reveal.app.as_str(),
+            reveal.record.as_str(),
+            reveal.resource.as_str(),
+            reveal.action.as_str(),
+        ),
+        ("so.tilo.notes", "n:plan", "plan", "share-link")
+    );
+    reveal.answer.as_ref().unwrap().completed(LinkHost::link());
+    assert_eq!(
+        answered(receipt)
+            .ok()
+            .flatten()
+            .map(|receipt| receipt.map(|receipt| receipt.status)),
+        Some(Ok(ReceiptStatus::Completed {
+            output: LinkHost::link()
+        }))
+    );
+}

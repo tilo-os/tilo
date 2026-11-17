@@ -111,6 +111,7 @@ pub struct State {
     pub(crate) pointer_constraints: PointerConstraints,
     pub(crate) gestures: PointerGestures,
     pub(crate) relative: RelativePointers,
+    pub(crate) tablets: crate::tablet::TabletMirror,
     pub(crate) outputs: Vec<KeptOutput>,
     /// The desktop, while one is attached.
     pub(crate) up: Option<Upstream>,
@@ -177,6 +178,7 @@ impl State {
             pointer_constraints: PointerConstraints::new(dh),
             gestures: PointerGestures::new(dh),
             relative: RelativePointers::new(dh),
+            tablets: crate::tablet::TabletMirror::default(),
             outputs: Vec::new(),
             up: None,
             generation: 0,
@@ -205,6 +207,7 @@ impl State {
             "zwp_idle_inhibit_manager_v1" => self.offer_idle_inhibit(),
             "zwp_keyboard_shortcuts_inhibit_manager_v1" => self.offer_shortcuts_inhibit(),
             "xdg_wm_dialog_v1" => self.offer_dialog(),
+            "zwp_tablet_manager_v2" => self.offer_tablet_manager(),
             _ => self.offer_decorations(interface),
         }
     }

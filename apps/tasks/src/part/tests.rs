@@ -577,7 +577,7 @@ fn an_issue_is_named_by_its_title_its_number_or_its_id() {
     // And by its id, which no rename changes.
     board
         .apply(IssuePart::RENAME.with(issue_part::Rename {
-            issue: id.clone(),
+            issue: id,
             title: nb("Ship it"),
         }))
         .unwrap();

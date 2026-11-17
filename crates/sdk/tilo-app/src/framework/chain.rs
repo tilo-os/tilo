@@ -1442,7 +1442,10 @@ impl<P: Chained> ChainState<P> {
                     context,
                 )
                 .map(|envelope| {
-                    ui_core::bound_dispatch::minted_items(doc, P::KIND, &envelope, &before)
+                    ui_core::bound_dispatch::minted_items(doc, P::KIND, &[], &envelope, &before)
+                        .into_iter()
+                        .map(|(_, address)| address)
+                        .collect::<::std::vec::Vec<_>>()
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 // Nobody's undo step: a part's edits are kept in its

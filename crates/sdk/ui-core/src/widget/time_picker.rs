@@ -339,12 +339,10 @@ impl TimePicker {
         (up, value, down)
     }
 
-    fn wrap_inc(v: u8, max: u8) -> u8 {
-        if v >= max { 0 } else { v.saturating_add(1) }
-    }
-
-    fn wrap_dec(v: u8, max: u8) -> u8 {
-        if v == 0 { max } else { v.saturating_sub(1) }
+    /// `v` moved `by`, round the dial of `0..=max`.
+    fn wrapped(v: u8, by: i16, max: u8) -> u8 {
+        let turned = (i16::from(v) + by).rem_euclid(i16::from(max) + 1);
+        u8::try_from(turned).unwrap_or(0)
     }
 
     fn fire_on_change(&mut self) {
@@ -367,32 +365,29 @@ impl TimePicker {
         }
     }
 
-    fn step_hours(&mut self, delta: i8) {
-        if delta > 0 {
-            self.hours = Self::wrap_inc(self.hours, HOUR_MAX);
-        } else if delta < 0 {
-            self.hours = Self::wrap_dec(self.hours, HOUR_MAX);
+    /// Move `cell` by `by` steps round its dial, and say so once.
+    fn step(&mut self, cell: TimeCell, by: i16) {
+        match cell {
+            TimeCell::Hours => self.hours = Self::wrapped(self.hours, by, HOUR_MAX),
+            TimeCell::Minutes => self.minutes = Self::wrapped(self.minutes, by, MINSEC_MAX),
+            TimeCell::Seconds => {
+                let Some(cur) = self.seconds else { return };
+                self.seconds = Some(Self::wrapped(cur, by, MINSEC_MAX));
+            }
         }
         self.fire_on_change();
     }
 
-    fn step_minutes(&mut self, delta: i8) {
-        if delta > 0 {
-            self.minutes = Self::wrap_inc(self.minutes, MINSEC_MAX);
-        } else if delta < 0 {
-            self.minutes = Self::wrap_dec(self.minutes, MINSEC_MAX);
+    /// Put `cell` at `value`: Home and End take a dial to its ends.
+    fn set_cell(&mut self, cell: TimeCell, value: u8) {
+        match cell {
+            TimeCell::Hours => self.hours = value.min(HOUR_MAX),
+            TimeCell::Minutes => self.minutes = value.min(MINSEC_MAX),
+            TimeCell::Seconds if self.seconds.is_some() => {
+                self.seconds = Some(value.min(MINSEC_MAX));
+            }
+            TimeCell::Seconds => return,
         }
-        self.fire_on_change();
-    }
-
-    fn step_seconds(&mut self, delta: i8) {
-        let Some(cur) = self.seconds else { return };
-        let new = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => Self::wrap_inc(cur, MINSEC_MAX),
-            std::cmp::Ordering::Less => Self::wrap_dec(cur, MINSEC_MAX),
-            std::cmp::Ordering::Equal => cur,
-        };
-        self.seconds = Some(new);
         self.fire_on_change();
     }
 
@@ -793,9 +788,9 @@ impl TimePicker {
             };
             if delta != 0 {
                 match which {
-                    0 => self.step_hours(delta),
-                    1 => self.step_minutes(delta),
-                    2 => self.step_seconds(delta),
+                    0 => self.step(TimeCell::Hours, i16::from(delta)),
+                    1 => self.step(TimeCell::Minutes, i16::from(delta)),
+                    2 => self.step(TimeCell::Seconds, i16::from(delta)),
                     _ => {}
                 }
                 *handled = true;
@@ -854,24 +849,29 @@ impl TimePicker {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::ArrowUp) => {
+            // Up and Down step the dial one, Page Up and Down a stretch of it (an hour's
+            // quarter of minutes, a quarter of the day's hours), Home and End to its ends.
+            Key::Named(
+                key @ (NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::PageUp
+                | NamedKey::PageDown
+                | NamedKey::Home
+                | NamedKey::End),
+            ) => {
                 if let Some(cell) = self.focused_cell {
                     self.digit_buffer.clear();
-                    match cell {
-                        TimeCell::Hours => self.step_hours(1),
-                        TimeCell::Minutes => self.step_minutes(1),
-                        TimeCell::Seconds => self.step_seconds(1),
-                    }
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                if let Some(cell) = self.focused_cell {
-                    self.digit_buffer.clear();
-                    match cell {
-                        TimeCell::Hours => self.step_hours(-1),
-                        TimeCell::Minutes => self.step_minutes(-1),
-                        TimeCell::Seconds => self.step_seconds(-1),
+                    let stretch = match cell {
+                        TimeCell::Hours => 6,
+                        TimeCell::Minutes | TimeCell::Seconds => 15,
+                    };
+                    match key {
+                        NamedKey::ArrowUp => self.step(cell, 1),
+                        NamedKey::ArrowDown => self.step(cell, -1),
+                        NamedKey::PageUp => self.step(cell, stretch),
+                        NamedKey::PageDown => self.step(cell, -stretch),
+                        NamedKey::Home => self.set_cell(cell, 0),
+                        _ => self.set_cell(cell, u8::MAX),
                     }
                     *handled = true;
                 }
@@ -929,9 +929,9 @@ impl TimePicker {
             let (_up_rect, value_rect, _down_rect) = Self::spinner_subrects(*cell);
             if value_rect.contains(p) {
                 match which {
-                    0 => self.step_hours(step),
-                    1 => self.step_minutes(step),
-                    2 => self.step_seconds(step),
+                    0 => self.step(TimeCell::Hours, i16::from(step)),
+                    1 => self.step(TimeCell::Minutes, i16::from(step)),
+                    2 => self.step(TimeCell::Seconds, i16::from(step)),
                     _ => {}
                 }
                 *handled = true;
@@ -1090,6 +1090,25 @@ mod tests {
                 assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
                 tp.retreat_focus();
                 assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+            }
+
+            // Page Up and Down move a dial a stretch, round its ends; Home and End to its ends.
+            {
+                use winit::keyboard::NamedKey;
+                let mut tp = TimePicker::new(9, 50);
+                Widget::set_focus(&mut tp, true);
+                tp.focused_cell = Some(TimeCell::Minutes);
+                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageUp));
+                assert_eq!(tp.minutes(), 5, "50 and a quarter hour comes round to 5");
+                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
+                assert_eq!(tp.minutes(), 50);
+                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::End));
+                assert_eq!(tp.minutes(), 59);
+                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::Home));
+                assert_eq!(tp.minutes(), 0);
+                tp.focused_cell = Some(TimeCell::Hours);
+                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
+                assert_eq!(tp.hours(), 3);
             }
         }
 

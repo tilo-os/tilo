@@ -575,6 +575,12 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
  * An action's answer, and an invocation's: what it did, what it changed, and the link
  * to the one record a person opens it with.
  */
+/** An item a write made: its id, and the address it is published under. */
+export interface Made {
+  id: string;
+  address: string;
+}
+
 export interface ActionAnswer {
   /** `ok`, `pending` or `cancelled`. */
   status: string;
@@ -585,6 +591,8 @@ export interface ActionAnswer {
   result: unknown;
   /** The resources it touched, `tilo.content:` for the files it made. */
   resources: string[];
+  /** What it made, each with its id and the address it is published under. */
+  made: Made[];
   link: string | null;
   /** Every record it changed, once each. */
   links: string[];
@@ -603,6 +611,9 @@ export function actionAnswerOf(raw: Record<string, unknown>): ActionAnswer {
     path: textOf(raw.path),
     result: raw.result ?? null,
     resources: Array.isArray(raw.resources) ? raw.resources.map(String) : [],
+    made: Array.isArray(raw.made)
+      ? (raw.made as Made[]).map((item) => ({id: String(item.id), address: String(item.address)}))
+      : [],
     link: textOf(raw.link),
     links: Array.isArray(raw.links) ? raw.links.map(String) : [],
     ask:

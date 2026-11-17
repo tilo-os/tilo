@@ -1804,7 +1804,8 @@ impl Device {
         );
     }
 
-    /// Wait until a window of the app `app` is open on this device.
+    /// Wait until a window of the app `app` is open on this device and drawn, so a test can aim at
+    /// it.
     ///
     /// An app that started and stopped before its window came is not one to wait longer for: the
     /// wait ends with what the session logged of it, which is where a sandbox that could not start
@@ -1823,11 +1824,15 @@ impl Device {
         }
     }
 
-    /// Whether this device shows a window of `app` .
+    /// Whether this device shows a window of `app` that its app has drawn: until then the window
+    /// stands nowhere on the screen.
     fn shows_window(&self, app: &str) -> bool {
         self.ask(&json!({"op": "windows"}))["answer"]["windows"]
             .as_array()
-            .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+            .is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["app_id"].as_str() == Some(app) && !row["rect"].is_null())
+            })
     }
 
     /// What this device's session logged of `app` ending, once the log had `already_logged` lines:

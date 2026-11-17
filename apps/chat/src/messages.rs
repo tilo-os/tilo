@@ -1011,6 +1011,26 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
     Ok(())
 }
 
+/// What a message records of who it mentions: what the chat's own record resolves from `text`
+/// and its body, and what the window wrote down before invoking it — the workspace's agents,
+/// whose names the chat's record does not list — each run once.
+fn resolved_mentions(
+    resolved: Vec<crate::mention::Mention>,
+    written: Option<Vec<crate::mention::Mention>>,
+) -> Vec<crate::mention::Mention> {
+    let mut all = resolved;
+    for mention in written.unwrap_or_default() {
+        let overlaps = all
+            .iter()
+            .any(|kept| mention.start < kept.end() && kept.start < mention.end());
+        if !overlaps {
+            all.push(mention);
+        }
+    }
+    all.sort_by_key(|mention| mention.start);
+    all
+}
+
 impl Chained for ChatPart {
     type Base = Chat;
 
@@ -1086,7 +1106,10 @@ impl Chained for ChatPart {
                 let message = &mut post.message;
                 takes_posts(chat, &message.channel)?;
                 let body = message.body.clone().unwrap_or_default();
-                message.mentions = Some(chat.mentions(&message.text, &body));
+                message.mentions = Some(resolved_mentions(
+                    chat.mentions(&message.text, &body),
+                    message.mentions.take(),
+                ));
             }
             ChatPartAction::PostFile(post) => {
                 takes_posts(chat, &post.channel)?;
@@ -1109,7 +1132,10 @@ impl Chained for ChatPart {
             ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
-                edit.mentions = Some(chat.mentions(&edit.text, &body));
+                edit.mentions = Some(resolved_mentions(
+                    chat.mentions(&edit.text, &body),
+                    edit.mentions.take(),
+                ));
             }
             ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
             ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,

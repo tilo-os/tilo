@@ -824,6 +824,18 @@ impl Colors {
         with_alpha(you, 82)
     }
 
+    /// The fill of a control that is on (a switch's track, a checked box), as it stands for the
+    /// person: the on state where they can change it, and a neutral ink where they cannot, so a
+    /// switch the workspace holds never reads as one of theirs to flip.
+    #[must_use]
+    pub const fn on_fill(&self, enabled: bool) -> Color {
+        if enabled {
+            self.intent.on_state
+        } else {
+            self.text_tertiary
+        }
+    }
+
     /// The neutral lift on any `ground`: `t` 1.0 is one surface step (lighter on a dark
     /// palette, darker on a light one), 0.5 the hover halfway. Hover and press are lifts
     /// and never take the accent; a selected row takes it through [`Self::selected_on`].

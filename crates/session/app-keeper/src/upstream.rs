@@ -23,6 +23,7 @@ use crate::outputs::UpOutput;
 use crate::seat::SEAT_VERSION;
 use crate::state::State;
 use crate::surfaces::{BufferRef, Rect, Role, UpRole, UpSurface, positioner_rules};
+use crate::tablet::TABLET_VERSION;
 
 /// The user data of a desktop object that mirrors one of the app's surfaces (its surface and
 /// role objects): the app surface's id.
@@ -88,9 +89,20 @@ pub(crate) struct Upstream {
     pub icon_sizes: Vec<i32>,
     /// The version the desktop's presentation global was bound at.
     pub presentation_version: u32,
+    /// What names each window to the desktop by its tag, so the session can tell the keeper's
+    /// windows apart across a restart of the desktop.
+    pub toplevel_tag: Option<
+        wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1,
+    >,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
+    pub tablet_manager: Option<
+        wayland_protocols::wp::tablet::zv2::client::zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    >,
+    pub tablet_seat: Option<
+        wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2,
+    >,
     pub data_device_manager: Option<c::wl_data_device_manager::WlDataDeviceManager>,
     pub data_device: Option<c::wl_data_device::WlDataDevice>,
     pub primary_selection: Option<
@@ -164,9 +176,12 @@ impl Upstream {
                 toplevel_icon: None,
                 icon_sizes: Vec::new(),
                 presentation_version: 0,
+                toplevel_tag: None,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
+                tablet_manager: None,
+                tablet_seat: None,
                 data_device_manager: None,
                 data_device: None,
                 primary_selection: None,
@@ -275,6 +290,9 @@ fn bind_global(
         "wl_seat" if up.seat.is_none() => {
             up.seat = Some(registry.bind(name, version.min(SEAT_VERSION), qh, ()));
         }
+        "zwp_tablet_manager_v2" if up.tablet_manager.is_none() => {
+            up.tablet_manager = Some(registry.bind(name, version.min(TABLET_VERSION), qh, ()));
+        }
         "wp_viewporter" => {
             up.viewporter = Some(registry.bind(name, 1, qh, ()));
         }
@@ -283,6 +301,9 @@ fn bind_global(
         }
         "wp_content_type_manager_v1" => {
             up.content_type = Some(registry.bind(name, 1, qh, ()));
+        }
+        "xdg_toplevel_tag_manager_v1" => {
+            up.toplevel_tag = Some(registry.bind(name, 1, qh, ()));
         }
         "wl_data_device_manager" => {
             up.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
@@ -378,6 +399,9 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         if let Some(version) = cursor_shape_version {
             state.offer_cursor_shape(version);
         }
+        // An app that took a tablet seat before this desktop attached gets its devices on the
+        // desktop's seat once both the manager and the seat are bound.
+        state.ensure_upstream_tablet_seat();
     }
 }
 
@@ -709,6 +733,7 @@ wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1);
 
 impl Dispatch<c::wl_subsurface::WlSubsurface, SurfaceRef> for State {

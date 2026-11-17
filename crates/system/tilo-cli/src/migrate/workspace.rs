@@ -55,28 +55,23 @@ pub trait Workspace {
     fn put(&mut self, bytes: &[u8]) -> Result<String>;
 }
 
-/// What an action that ran answered: its value, and the records it names (`tasks.tracker/issues/<id>`).
+/// What an action that ran answered: its value, and what it made, each item
+/// with its id and the address it is published under.
 #[derive(Clone, Debug, Default)]
 pub struct Answer {
     result: Option<Value>,
-    resources: Vec<Value>,
 }
 
 impl Answer {
-    /// An answer carrying `result` and the records a call named.
-    pub(crate) fn of(result: Option<Value>, resources: Vec<Value>) -> Self {
-        Self { result, resources }
+    /// An answer carrying `result`.
+    pub(crate) fn of(result: Option<Value>) -> Self {
+        Self { result }
     }
 
     /// The value the action answered, when it answered one.
     #[must_use]
     pub fn result(&self) -> Option<&Value> {
         self.result.as_ref()
-    }
-
-    /// The records it names, as the references other actions take them by.
-    pub fn resources(&self) -> impl Iterator<Item = &str> {
-        self.resources.iter().filter_map(Value::as_str)
     }
 
     /// Whether the action answered `true` under `field` (an account it found there already).
@@ -260,7 +255,6 @@ impl Held {
 pub(super) struct Call {
     pub(super) status: Status,
     pub(super) result: Option<Value>,
-    pub(super) resources: Vec<Value>,
     pub(super) error: Option<Refused>,
 }
 
@@ -283,10 +277,6 @@ impl Call {
             Some("pending") => Status::Pending,
             other => bail!("the workspace answered no status: {other:?}"),
         };
-        let resources = match typed.get("resources") {
-            Some(Value::Array(resources)) => resources.clone(),
-            _ => Vec::new(),
-        };
         let result = typed
             .get("result")
             .filter(|value| !value.is_null())
@@ -295,13 +285,12 @@ impl Call {
         Ok(Self {
             status,
             result,
-            resources,
             error,
         })
     }
 
     pub(super) fn answer(&self) -> Answer {
-        Answer::of(self.result.clone(), self.resources.clone())
+        Answer::of(self.result.clone())
     }
 }
 
@@ -603,7 +592,6 @@ mod tests {
             .act(&run(), "tasks/tasks.issues#create", json!({"title": "x"}))
             .expect("it ran");
         assert!(answer.said("already"));
-        assert_eq!(answer.resources().next(), Some("tasks.tracker/issues/abc"));
     }
 
     #[test]

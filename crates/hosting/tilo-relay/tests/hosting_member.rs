@@ -1,7 +1,7 @@
 //! A certified host of a person serves a workspace one of the person's devices
 //! governs: the governor attaches it, the workspace's hosts name it, it admits
 //! whom the workspace's governance admits as that governance changes, carries
-//! members' changes to the governor, and stops when detached.
+//! members' changes to every other holder, and stops when detached.
 
 use tilo_relay::{Envelope, RelayClient};
 use tilo_relay_protocol::WorkSetting;
@@ -300,6 +300,108 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     drop(on_member);
     member.stop().await;
     governor.stop().await;
+}
+
+/// Every holder of a workspace carries what is written through it to all the
+/// others: with three holders, the one that made the workspace can go away and
+/// a change written through either other holder still reaches the members on
+/// the third.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each host after the assertions"
+)]
+async fn three_holders_keep_carrying_changes_when_one_goes_away() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
+    let first = alice.enrol("nas", DeviceCapabilities::member());
+    let second = alice.enrol("server", DeviceCapabilities::member());
+    let made_on = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let one = host_on(&alice, &first, WorkSetting::own_person()).await;
+    let two = host_on(&alice, &second, WorkSetting::own_person()).await;
+    let workspaces = made_on.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    for (device, host) in [(&first, &one), (&second, &two)] {
+        workspaces
+            .attach_host(
+                &workspace.workspace,
+                &laptop.cert,
+                device.device_pubkey(),
+                host.host.node_addr(),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        3
+    );
+    for device in [&phone, &tablet] {
+        workspaces
+            .enter(&workspace.workspace, &device.cert)
+            .await
+            .unwrap();
+    }
+    let on_one = session_to(&alice, &phone, &one).await;
+    let on_two = session_to(&alice, &tablet, &two).await;
+    tilo_test_env::within("both holders admit the members", async {
+        while !(admitted(&on_one, workspace.workspace_id).await
+            && admitted(&on_two, workspace.workspace_id).await)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // The holder the workspace was made on goes away.
+    made_on.stop().await;
+    tilo_test_env::within(
+        "a change through one holder reaches the other",
+        carried(
+            &on_one,
+            &phone,
+            &on_two,
+            workspace.workspace_id,
+            b"through one",
+        ),
+    )
+    .await;
+    tilo_test_env::within(
+        "and back",
+        carried(
+            &on_two,
+            &tablet,
+            &on_one,
+            workspace.workspace_id,
+            b"through two",
+        ),
+    )
+    .await;
+
+    drop((on_one, on_two));
+    two.stop().await;
+    one.stop().await;
+}
+
+/// Send `body`, `author`'s change, on `from` and expect it on `to`.
+async fn carried(
+    from: &RelayClient,
+    author: &crate::common::TestDevice,
+    to: &RelayClient,
+    workspace_id: WorkspaceId,
+    body: &[u8],
+) {
+    from.send(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: author.device_pubkey(),
+        authored_at_ns: 1,
+        delta: body.to_vec(),
+        signature: [0; 64],
+    })
+    .unwrap();
+    assert_eq!(next_delta(to).await, body);
 }
 
 /// The devices a held workspace's governance names besides its owner's own:

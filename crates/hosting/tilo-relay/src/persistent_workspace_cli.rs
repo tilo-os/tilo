@@ -512,21 +512,6 @@ fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()>
     tilo_files::native::atomic::write_with_mode(path, bytes, if private { 0o600 } else { 0o644 })
 }
 
-fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> anyhow::Result<T> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).with_context(|| format!("read {}", path.display()))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
-    }
-}
-
-fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
-    write_atomic(path, &serde_json::to_vec(value)?, false)
-        .with_context(|| format!("write {}", path.display()))
-}
-
 /// The workspace id kept in `id_file`.
 fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
     fn read(path: &Path) -> anyhow::Result<Option<String>> {
@@ -949,8 +934,63 @@ async fn settle_owners(
     Ok(())
 }
 
+/// The record in the workspace itself that says what its hosts settled in it
+/// on the operator's behalf: the apps seeded (`seeded`) and the records
+/// refounded (`refounded`), each a map from its name to a note. Being the
+/// workspace's, it moves with the workspace: any host serving it reads what
+/// was done, and a host started on an empty directory seeds nothing again.
+pub(crate) const SETTLED: (&str, &str) = ("so.tilo.relay", "settled");
+
+/// What the workspace's [`SETTLED`] record names under `kind`.
+pub(crate) async fn settled_in(
+    workspaces: &Workspaces,
+    workspace: &str,
+    kind: &'static str,
+) -> anyhow::Result<BTreeSet<String>> {
+    use automerge::ReadDoc as _;
+    let Some(bytes) = workspaces
+        .resource_document(workspace, SETTLED.0, SETTLED.1)
+        .await
+        .map_err(|error| anyhow::anyhow!("read what the workspace settled: {error}"))?
+    else {
+        return Ok(BTreeSet::new());
+    };
+    let doc = automerge::AutoCommit::load(&bytes).context("read what the workspace settled")?;
+    Ok(match doc.get(automerge::ROOT, kind) {
+        Ok(Some((automerge::Value::Object(_), map))) => doc.keys(&map).collect(),
+        _ => BTreeSet::new(),
+    })
+}
+
+/// Note in the workspace's [`SETTLED`] record that `name` was settled under
+/// `kind`.
+async fn mark_settled(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    kind: &'static str,
+    name: &str,
+    note: &str,
+) -> anyhow::Result<()> {
+    workspaces
+        .author_workspace_document(workspace, cert, SETTLED, |doc| {
+            use automerge::ReadDoc as _;
+            use automerge::transaction::Transactable as _;
+            let map = match doc.get(automerge::ROOT, kind) {
+                Ok(Some((automerge::Value::Object(automerge::ObjType::Map), map))) => map,
+                _ => doc
+                    .put_object(automerge::ROOT, kind, automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?,
+            };
+            doc.put(&map, name, note).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("note {name} as settled: {error}"))
+}
+
 /// Seed the workspace with `apps`: each one's record written from its own
-/// factory, as the workspace's governor, and kept in `seeded_file` so a restart
+/// factory, as the workspace's governor, and noted in the workspace's
+/// [`SETTLED`] record so a later start, on this host or another serving it,
 /// seeds only what it added since.
 ///
 /// A workspace the operator just created holds no channel yet, and its records
@@ -963,19 +1003,16 @@ pub(crate) async fn seed_apps(
     workspace: &str,
     cert: &DeviceCert,
     apps: &[String],
-    seeded_file: &Path,
 ) -> anyhow::Result<()> {
-    let mut seeded: BTreeSet<String> = read_json(seeded_file)?;
+    let seeded = settled_in(workspaces, workspace, "seeded").await?;
     let catalogue = tilo_agent_session::AppCatalogue::native();
-    let pending: Vec<&String> = apps.iter().filter(|app| !seeded.contains(*app)).collect();
-    for app in pending {
+    for app in apps.iter().filter(|app| !seeded.contains(*app)) {
         let record = tilo_relay::workspace_bots::workspace_resource(&catalogue, app);
         workspaces
             .prepare_application(workspace, cert, &catalogue, app, &record)
             .await
             .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
-        seeded.insert(app.clone());
-        write_json(seeded_file, &seeded)?;
+        mark_settled(workspaces, workspace, cert, "seeded", app, "seeded").await?;
     }
     Ok(())
 }
@@ -1068,29 +1105,27 @@ pub(crate) async fn settle_strips(
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
-/// Refound each `APP/RECORD` the operator named, once per start that names it:
-/// a record whose retained history lost the base its deltas were written over
-/// is published again as the workspace's next checkpoint of it, and what its
-/// channel retained until now is archived beside the replay. What was done is
-/// kept in `refounded.json` beside the workspace, so a later start naming the
-/// same record does not found it again.
+/// Refound each `APP/RECORD` the operator named, once: a record whose
+/// retained history lost the base its deltas were written over is published
+/// again as the workspace's next checkpoint of it, and what its channel
+/// retained until now is archived beside the replay. What was done is noted in
+/// the workspace's [`SETTLED`] record, so a later start naming the same record,
+/// on any host serving the workspace, does not found it again.
 async fn refound_records(
     workspaces: &Workspaces,
     workspace: &str,
+    cert: &DeviceCert,
     named: &[String],
-    state: &Path,
 ) -> anyhow::Result<()> {
     if named.is_empty() {
         return Ok(());
     }
-    let done_at = state.join("refounded.json");
-    let done: BTreeMap<String, String> = read_json(&done_at)?;
-    let mut done = done;
+    let done = settled_in(workspaces, workspace, "refounded").await?;
     for entry in named {
         let (app, record) = entry
             .split_once('/')
             .with_context(|| format!("--refound {entry:?} is not APP/RECORD"))?;
-        if done.contains_key(entry) {
+        if done.contains(entry) {
             continue;
         }
         let outcome = workspaces
@@ -1104,11 +1139,8 @@ async fn refound_records(
             archived = outcome.archived,
             "a record was refounded and its old history archived"
         );
-        done.insert(
-            entry.clone(),
-            format!("archived {} entries", outcome.archived),
-        );
-        write_json(&done_at, &done)?;
+        let note = format!("archived {} entries", outcome.archived);
+        mark_settled(workspaces, workspace, cert, "refounded", entry, &note).await?;
     }
     Ok(())
 }
@@ -1407,15 +1439,6 @@ pub(crate) async fn run(
         // the record's back (`Workspaces::serving_certificate`). Every governed
         // operation below names it, so a renamed certificate is no refusal.
         let host_cert = workspaces.serving_certificate().clone();
-        // The removals moderation made before the entry had them, taken over once
-        // and kept out for the rest of their day.
-        let adopted = workspaces
-            .adopt_legacy_removals(&workspace, &state.join("removals.json"))
-            .await
-            .context("take over the removals the workspace kept before the entry")?;
-        if adopted > 0 {
-            tracing::info!(%workspace, adopted, "removals taken over from the workspace's removals file");
-        }
         // A setting of the operator's that the workspace's governance refuses
         // stops the start only where going on without it would let in more than
         // the operator configured: the entry, the guests' outside effects and the
@@ -1427,14 +1450,7 @@ pub(crate) async fn run(
         settle_invitation_only(&workspaces, &workspace, &host_cert, &persistent)
             .await
             .map_err(|error| anyhow::anyhow!("settle the workspace's entry: {error}"))?;
-        seed_apps(
-            &workspaces,
-            &workspace,
-            &host_cert,
-            &persistent.seed_apps,
-            &state.join("seeded.json"),
-        )
-        .await?;
+        seed_apps(&workspaces, &workspace, &host_cert, &persistent.seed_apps).await?;
         settle_chat(
             &workspaces,
             &workspace,
@@ -1458,14 +1474,15 @@ pub(crate) async fn run(
         // Members inviting, or not, never lets in anyone the entry does not.
         settled(
             &workspace,
-            settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
+            settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only)
+                .await,
         );
         settle_owners(&workspaces, &workspace, &persistent.owners).await?;
         // A record the operator named whose retained history lost the base its
         // deltas were written over: founded again from what the workspace still
         // reads, its old history archived beside the replay. Runs once per start
         // that names it; a record that still reads is left as it is.
-        refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
+        refound_records(&workspaces, &workspace, &host_cert, &persistent.refound).await?;
         // The wait list, when the workspace takes people by invitation and
         // keeps one: the addresses' windows and the mail the entry sends from
         // its page (the web entry, or the entry `--wait-list-mail` names). What
@@ -1483,8 +1500,9 @@ pub(crate) async fn run(
             std::env::var_os("TILO_WORKSPACES_LOCAL").is_some(),
         )
         .context("read the entry's mail settings")?;
-        let wait_list = entry::WaitListPage::open(&workspaces, &workspace, &shown, &state, &settings)
-            .context("open the entry's wait list")?;
+        let wait_list =
+            entry::WaitListPage::open(&workspaces, &workspace, &shown, &state, &settings)
+                .context("open the entry's wait list")?;
         let page = wait_list.map(std::sync::Arc::new);
         if let Some(page) = &page {
             let _ = workspaces.offer_wait_list(page.offered());
@@ -2171,23 +2189,20 @@ mod tests {
     /// Seeds as the operator's start does, naming the apps it asked `--seed-app`
     /// for, and answers with what the workspace seeded.
     async fn seeded(
-        state: &Path,
         host_cert: &DeviceCert,
         workspaces: &Workspaces,
         workspace: &str,
         apps: &[&str],
     ) -> BTreeSet<String> {
-        let seeded_file = state.join("seeded.json");
         seed_apps(
             workspaces,
             workspace,
             host_cert,
             &apps.iter().map(|app| (*app).to_owned()).collect::<Vec<_>>(),
-            &seeded_file,
         )
         .await
         .unwrap();
-        read_json(&seeded_file).unwrap()
+        settled_in(workspaces, workspace, "seeded").await.unwrap()
     }
 
     /// A persistent workspace's first start seeds its apps: a workspace that was
@@ -2201,7 +2216,7 @@ mod tests {
             host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
-        let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
+        let first = seeded(&host_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(
             first,
             apps.iter()
@@ -2209,7 +2224,7 @@ mod tests {
                 .collect::<BTreeSet<_>>()
         );
         // A restart seeds nothing again: what the first start seeded is kept.
-        let again = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
+        let again = seeded(&host_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(again, first);
         relay.shutdown().await;
     }

@@ -447,8 +447,8 @@ pub struct Adopted {
     /// The keeper's process: the window's process, and the launch's root.
     pub pid: u32,
     pub launch: crate::kept::KeptLaunch,
-    /// The app ids its windows are shown with now.
-    pub windows: Vec<String>,
+    /// Its windows, oldest first, each with the place the run before last told its keeper.
+    pub windows: Vec<crate::kept::Window>,
 }
 
 #[cfg(target_os = "linux")]
@@ -575,11 +575,7 @@ impl Spawner {
         // What the app writes went to the run that started it, through its launcher; that run's
         // log is gone, and nothing reattaches it, so it is no longer recorded.
         tracing::info!(app = %launch.app, keeper, pid = ?description.app_pid, "adopted; its output is no longer recorded");
-        let windows = description
-            .windows
-            .iter()
-            .filter_map(|window| window.app_id.clone())
-            .collect();
+        let windows = description.windows;
         let (events, wake, still_running, ends) = (
             self.events.0.clone(),
             self.wake.clone(),
@@ -659,6 +655,18 @@ impl Spawner {
             .collect();
         for kept in kept {
             kept.attach(&keeping.desktop);
+        }
+    }
+
+    /// Tell the keeper `keeper` that its window `tag` stands at `placement` now, unless that is
+    /// what it was last told: what the run after an in-place restart reads back.
+    pub fn place_kept(&self, keeper: u32, tag: &str, placement: &str) {
+        let kept = running(&self.running)
+            .values()
+            .filter_map(|app| app.kept.clone())
+            .find(|kept| kept.keeper() == keeper);
+        if let Some(kept) = kept {
+            kept.place(tag, placement);
         }
     }
 

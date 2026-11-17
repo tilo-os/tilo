@@ -33,6 +33,8 @@ pub struct Button {
     /// A labelled button that opens a menu shows a trailing chevron, so it
     /// reads as a choice rather than an action.
     pub(crate) opens_menu: bool,
+    /// It shows a value chosen from a list ([`Self::showing_choice`]): it wears a field's edge.
+    shows_choice: bool,
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
@@ -180,6 +182,7 @@ impl Button {
             role: ButtonRole::Secondary,
             toggled: None,
             opens_menu: false,
+            shows_choice: false,
             shortcut: None,
             measured_width: None,
             control_size: ControlSize::Regular,
@@ -431,6 +434,7 @@ impl Button {
     #[must_use]
     pub fn showing_choice(mut self) -> Self {
         self.opens_menu = true;
+        self.shows_choice = true;
         self.dirty = true;
         self
     }
@@ -1545,6 +1549,8 @@ fn shortcut_text(shortcut: &crate::platform::Shortcut) -> String {
 struct FacePaint<'a> {
     rect: Rect,
     role: ButtonRole,
+    /// A field that opens a list, edged as a dropdown is.
+    field: bool,
     confirms: bool,
     on: bool,
     interact: Interaction,
@@ -1636,7 +1642,15 @@ impl FacePaint<'_> {
         // the rest edge.
         let bordered = painted.is_some()
             || crate::surface::control_face(ctx.scene, ctx.transform, &shape, fill, theme);
-        let edge = if bordered { None } else { edge };
+        // A button showing a choice (a day, a person, a case) is a field that opens a list: it
+        // wears the edge a dropdown wears, so the choosers of one form read as one kind.
+        let edge = if bordered {
+            None
+        } else if self.field && self.role == ButtonRole::Secondary {
+            edge.or_else(|| Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)))
+        } else {
+            edge
+        };
         let hit = painted.and_then(|painted| painted.hit);
         let hint = hint_ink(theme, self.role, ink, fill);
         self.content.paint(ctx, self.rect, self.metrics, ink, hint);
@@ -1903,6 +1917,7 @@ impl<'a> ButtonFace<'a> {
         FacePaint {
             rect: self.rect,
             role: self.role,
+            field: false,
             confirms: self.confirms,
             on: self.on,
             interact: self.interact,
@@ -1995,6 +2010,7 @@ impl Button {
         FacePaint {
             rect: self.rect,
             role: self.role,
+            field: self.shows_choice,
             confirms: false,
             on,
             interact,

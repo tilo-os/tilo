@@ -6990,7 +6990,8 @@
       ],
       "semantics": {
         "role": "MenuItem",
-        "label": "label"
+        "label": "label",
+        "not_in_gallery": "a field takes its cases from the enum it is bound to, so no view writes one: the gallery's EnumField shows them"
       }
     },
     {

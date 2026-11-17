@@ -11,7 +11,12 @@ crate::component::part_type!(EnumOptionProps);
 
 /// One case an [`EnumField`] offers: its name, what it reads as, and how it reads.
 #[derive(Clone, Component, Default)]
-#[component(name = "EnumOption", role = "MenuItem", label = "label")]
+#[component(
+    name = "EnumOption",
+    role = "MenuItem",
+    label = "label",
+    not_in_gallery = "a field takes its cases from the enum it is bound to, so no view writes one: the gallery's EnumField shows them"
+)]
 pub struct EnumOptionProps {
     /// The case's own name, as the app declares it: what an edit writes back, never read out.
     #[component(required, data)]

@@ -848,3 +848,314 @@ fn progress(invocation: InvocationId, sequence: u64) -> InvocationUpdate {
         message: None,
     }
 }
+
+/// A host that reads one record, whose readings count its writes. While it holds reads, one that
+/// names the revision it is at and waits is answered by the next [`Records::write`], as a host
+/// that waits for writes answers it; otherwise every read is answered at once.
+#[derive(Default)]
+struct Records {
+    writes: Mutex<u64>,
+    held: Mutex<Vec<(u64, tilo_actions::remote::Completer<RemoteActionMessage>)>>,
+    asked: Mutex<Vec<ResourceReadRequest>>,
+    holds: std::sync::atomic::AtomicBool,
+    refuses: std::sync::atomic::AtomicBool,
+}
+
+impl Records {
+    fn reading(&self, correlation: u64) -> RemoteActionMessage {
+        let writes = *self.writes.lock().unwrap();
+        let result = if self.refuses.load(Ordering::SeqCst) {
+            Err(ActionHostError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            })
+        } else {
+            Ok(serde_json::json!({
+                "revision": format!("r{writes}"),
+                "records": [{"record": "", "value": {"writes": writes}}],
+            })
+            .to_string())
+        };
+        RemoteActionMessage::ResourceReading {
+            correlation,
+            result,
+        }
+    }
+
+    /// A write lands: every read held for it is answered.
+    fn write(&self) {
+        let mut writes = self.writes.lock().unwrap();
+        *writes = writes.saturating_add(1);
+        drop(writes);
+        let held = std::mem::take(&mut *self.held.lock().unwrap());
+        for (correlation, answer) in held {
+            answer.complete(self.reading(correlation));
+        }
+    }
+
+    fn asked(&self) -> Vec<(Option<String>, Option<u32>)> {
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|read| (read.after.clone(), read.wait_ms))
+            .collect()
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for Records {
+    fn read(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionHostError> {
+        Ok(tilo_actions::remote::ResourceCopy::Absent)
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        _: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        let at = format!("r{}", *self.writes.lock().unwrap());
+        let waits = read.wait_ms.is_some() && read.after.as_deref() == Some(at.as_str());
+        self.asked.lock().unwrap().push(read);
+        if waits && self.holds.load(Ordering::SeqCst) && !self.refuses.load(Ordering::SeqCst) {
+            let (answer, held) = tilo_actions::remote::pending();
+            self.held.lock().unwrap().push((correlation, answer));
+            return held;
+        }
+        Pending::ready(self.reading(correlation))
+    }
+}
+
+/// A host whose only service is its [`Records`].
+struct RecordHost(Arc<Records>);
+
+impl ActionHost for RecordHost {
+    fn query(
+        &self,
+        _: &Caller,
+        _: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        Pending::ready(Ok(CataloguePage::default()))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        Pending::ready(Err(ActionHostError::UnknownAction))
+    }
+
+    fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        Pending::ready(Ok(()))
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::clone(&self.0) as Arc<dyn tilo_actions::remote::ResourceReads>)
+    }
+}
+
+/// A reader of a host's [`Records`], which hold reads when `holds`.
+fn reader(holds: bool) -> (Arc<Records>, RemoteActions) {
+    let records = Arc::new(Records::default());
+    records.holds.store(holds, Ordering::SeqCst);
+    let actions = RemoteActions::with_host(
+        Arc::new(RecordHost(Arc::clone(&records))) as Arc<dyn ActionHost + Send + Sync>,
+        Caller::local_person("ada").in_workspace("workspace"),
+    );
+    (records, actions)
+}
+
+/// Tasks' record of the workspace, as a window of another app names it.
+fn tasks() -> ResourceReadRequest {
+    ResourceReadRequest {
+        app: "so.tilo.tasks".into(),
+        record: String::new(),
+        joined: false,
+        // Neither is the follower's to use: it names what it shows and waits by itself.
+        after: Some("stale".into()),
+        wait_ms: Some(1),
+    }
+}
+
+/// How many writes the readings `followed` shows have seen.
+fn writes_shown(followed: &FollowedRead) -> Option<u64> {
+    followed.call().with(|arrival| {
+        arrival
+            .ready()
+            .and_then(|readings| readings.pointer("/records/0/value/writes"))
+            .and_then(serde_json::Value::as_u64)
+    })
+}
+
+tilo_test_env::scenario! {
+    fn a_followed_record_shows_each_write_and_asks_nothing_between;
+
+    phase a_followed_record_is_read_at_once_and_again_when_a_write_lands;
+    {
+        let (records, actions) = reader(true);
+        let followed = actions.follow_resource(None, tasks());
+        assert_eq!(writes_shown(&followed), Some(0));
+        assert_eq!(
+            records.asked(),
+            [
+                (None, None),
+                (Some("r0".to_owned()), Some(FOLLOW_WAIT_MS)),
+            ],
+            "the first read is answered as the record is, the next names what is shown and waits"
+        );
+        assert!(
+            !actions.is_busy(),
+            "a read held for the next write is nothing the client is busy with"
+        );
+        let shown = followed.call().revision();
+        actions.poll();
+        assert_eq!(records.asked().len(), 2, "nothing is asked while nothing is written");
+        assert_eq!(followed.call().revision(), shown, "and nothing is shown again");
+        records.write();
+        assert_eq!(writes_shown(&followed), Some(1));
+        records.write();
+        assert_eq!(writes_shown(&followed), Some(2));
+        assert_eq!(records.asked().len(), 4, "one read for each write");
+    }
+
+    phase a_dropped_follower_reads_nothing_more;
+    {
+        let (records, actions) = reader(true);
+        let followed = actions.follow_resource(None, tasks());
+        assert_eq!(records.asked().len(), 2);
+        drop(followed);
+        records.write();
+        assert_eq!(records.asked().len(), 2, "the answer to the held read asks no other");
+    }
+
+    phase a_reader_the_host_refuses_is_told_and_shown_nothing_more;
+    {
+        let (records, actions) = reader(true);
+        let followed = actions.follow_resource(None, tasks());
+        assert_eq!(writes_shown(&followed), Some(0));
+        records.refuses.store(true, Ordering::SeqCst);
+        records.write();
+        assert_eq!(
+            followed.call().get(),
+            Arrival::Failed(ActionHostError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            }),
+            "what was shown is no longer this reader's to see"
+        );
+        let asked = records.asked().len();
+        records.refuses.store(false, Ordering::SeqCst);
+        records.write();
+        actions.poll();
+        assert_eq!(records.asked().len(), asked, "a refused reader asks no more");
+    }
+
+    phase a_host_that_holds_no_read_is_read_again_on_the_interval;
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (records, actions) = reader(false);
+        let followed = actions.follow_resource(None, tasks());
+        assert_eq!(writes_shown(&followed), Some(0));
+        assert_eq!(
+            records.asked().len(),
+            2,
+            "the waiting read came back at once with nothing new: this host holds none"
+        );
+        {
+            let mut writes = records.writes.lock().unwrap();
+            *writes = writes.saturating_add(1);
+        }
+        actions.poll();
+        assert_eq!(records.asked().len(), 2, "not asked again before the interval");
+        clock.advance(FOLLOW_INTERVAL);
+        actions.poll();
+        assert_eq!(records.asked().last(), Some(&(None, None)));
+        assert_eq!(writes_shown(&followed), Some(1));
+        assert_eq!(records.asked().len(), 3, "one read an interval, never a loop");
+    }
+
+    phase a_record_its_host_cannot_read_says_why_once_and_is_asked_for_ever_more_rarely;
+    {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        // A host that reads no records outside their apps.
+        let (_host, actions) = client();
+        let followed = actions.follow_resource(None, tasks());
+        assert_eq!(
+            followed.call().get(),
+            Arrival::Failed(ActionHostError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+            })
+        );
+        assert!(!actions.is_busy(), "it waits for nothing: the record may never be read here");
+        let told = followed.call().revision();
+        clock.advance(FOLLOW_INTERVAL);
+        actions.poll();
+        clock.advance(FOLLOW_INTERVAL);
+        actions.poll();
+        assert_eq!(followed.call().revision(), told, "the same reason is not told again");
+        assert!(
+            actions
+                .lock()
+                .following
+                .values()
+                .all(|following| following.retry == FOLLOW_INTERVAL.saturating_mul(4)),
+            "each read it could not answer doubles the wait for the next"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_client_made_before_its_host_is_entered_is_that_hosts;
+
+    phase what_it_asked_before_and_what_it_asks_under_the_guard_are_answered_by_that_host;
+    {
+        let host = Arc::new(FakeHost::default());
+        // The window a desktop opens with is built before the desktop serves its windows.
+        let early = RemoteActions::current();
+        let before = early.catalogue(CatalogueQuery::default());
+        assert!(before.get().is_pending(), "nothing answers it yet");
+        let _served = RemoteActions::enter(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_person("ada").in_workspace("workspace"),
+        );
+        let under = early.catalogue(CatalogueQuery::default());
+        assert!(matches!(under.get(), Arrival::Ready(_)));
+        assert!(
+            matches!(before.get(), Arrival::Ready(_)),
+            "what it asked before is that host's to answer too"
+        );
+    }
+
+    phase a_client_that_names_the_session_keeps_to_it;
+    {
+        let host = Arc::new(FakeHost::default());
+        let mut session = RemoteActions::session();
+        let _served = RemoteActions::enter(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_person("ada").in_workspace("workspace"),
+        );
+        let _pending = session.catalogue(CatalogueQuery::default());
+        assert_eq!(session.take_collab_requests().len(), 1);
+    }
+
+    phase a_host_that_cannot_tell_when_the_workspace_changes_says_so;
+    {
+        let (_host, actions) = client();
+        assert_eq!(
+            actions.changed(WatchScope::Records).get(),
+            Arrival::Failed(ActionHostError::Unavailable {
+                reason: tilo_actions::remote::CHANGED_UNAVAILABLE.into(),
+            })
+        );
+        assert!(!actions.is_busy());
+    }
+}

@@ -496,6 +496,31 @@ impl<R: Resource> ResourceEnv<R> {
         super::Query::start(self.dispatch.opener(), &self.alive, target, argument)
     }
 
+    /// Keep a record another app keeps in the window's workspace current:
+    /// `read` as the host answers it now and again after every write to it,
+    /// through the session's record API as the person using the app, who
+    /// must be allowed to read it. The answer is the readings every reader
+    /// gets (`{"revision", "records": [{"record", "value" | "absent" |
+    /// "arriving"}]}`), and fails with the host's reason while the record
+    /// cannot be read, or once this person may no longer read it; build what
+    /// shows with [`ViewCx::arriving`](super::ViewCx::arriving). Nothing
+    /// runs between writes: the host holds the next read until the record
+    /// differs. It is followed while this scope lives. A past version or a
+    /// capture reads nothing.
+    pub fn follow_resource(
+        &self,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> ui_core::ResourceReadCall {
+        if !self.run.mode.is_live() {
+            return ui_core::arriving::Arriving::pending(ui_core::arriving::Source::Local);
+        }
+        let opener = self.dispatch.opener();
+        let followed = opener.follow_resource(read);
+        let readings = followed.call().clone();
+        opener.keep(self.alive.clone(), Rc::new(followed));
+        readings
+    }
+
     /// Invoke the action at `target` of another provider with `argument`,
     /// through the session's action API as the person using the app: a
     /// write a [`Self::query`] then reads back. Why it did not go ahead is

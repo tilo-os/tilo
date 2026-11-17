@@ -454,7 +454,7 @@ impl Checkbox {
         // it with the on state, as far as the motion has come.
         let pose = face.drawn();
         let level = pose.level.clamp(0.0, 1.0);
-        let on_box = theme.tokens.colors.intent.on_state;
+        let on_box = theme.tokens.colors.on_fill(!face.interact.disabled);
         let off_box = if face.interact.hovered {
             theme
                 .tokens

@@ -1942,6 +1942,7 @@ pub(crate) fn describe(state: &State, window: &Window) -> Option<WindowInfo> {
         max_size: size(x11.max_size()),
         pid: x11.pid(),
         icon: state.icons.of(id),
+        tag: None,
     })
 }
 
@@ -2072,6 +2073,13 @@ fn root_surface(surface: &WlSurface) -> WlSurface {
     root
 }
 
+/// Whether the session handed `client`'s connection over itself ([`ClientState::handed`]).
+fn handed(client: Option<&Client>) -> bool {
+    client
+        .and_then(|client| client.get_data::<ClientState>())
+        .is_some_and(|data| data.handed)
+}
+
 /// The process of a client, as `pid` .
 fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
     let client = client?;
@@ -2111,6 +2119,15 @@ pub(crate) fn window_info(
                     .map(|data| (data.app_id.clone(), data.title.clone()))
             });
         let (app_id, title) = attributes.unwrap_or_default();
+        let tag = handed(toplevel.wl_surface().client().as_ref())
+            .then(|| {
+                states
+                    .data_map
+                    .get::<smithay::wayland::xdg_toplevel_tag::XdgToplevelTagSurfaceData>()
+                    .and_then(smithay::wayland::xdg_toplevel_tag::XdgToplevelTagSurfaceData::tag)
+                    .map(|tag| tag.to_string())
+            })
+            .flatten();
         let (min, max) = {
             let mut cached = states
                 .cached_state
@@ -2132,6 +2149,7 @@ pub(crate) fn window_info(
             max_size: size(max),
             pid: pid_of(toplevel.wl_surface().client().as_ref(), display),
             icon: None,
+            tag,
         }
     });
     info.icon = icons.of(info.id);

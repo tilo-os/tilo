@@ -1081,3 +1081,87 @@ fn a_window_is_cut_to_the_display_it_shows_on() {
         "{layout:?}"
     );
 }
+
+/// A window of `app` an app keeper (`keeper`) shows, named `tag`.
+fn kept(id: u64, app: &str, keeper: u32, tag: &str) -> Window {
+    Window {
+        pid: Some(keeper),
+        tag: Some(tag.into()),
+        ..window(id, app)
+    }
+}
+
+/// After an in-place restart each window of a kept app takes exactly the tab it stood in, in
+/// whatever order its windows come back; a window opened while the desktop was away, and one of
+/// the same app no keeper names, take no held tab. What each kept window is told of its tab
+/// follows it.
+#[test]
+fn each_kept_window_takes_back_exactly_its_own_tab() {
+    let (mut driver, mut policy) = mount();
+    for id in 1..=3 {
+        map(&mut driver, &mut policy, id, "org.example.Kept");
+    }
+    let saved: Vec<u64> = (1..=3)
+        .map(|window| policy.tab_of(window).expect("a tab"))
+        .collect();
+    // The desktop restarted: each tab waits for the app's window, as a saved one does.
+    let mut tree = policy.handle().read(Clone::clone);
+    for tab in tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+    {
+        tab.tile = TileContent::LocalApp {
+            app_id: "org.example.Kept".into(),
+            label: "Kept".into(),
+            note: String::new(),
+        };
+    }
+    policy.handle().replace_tree(tree);
+    settle(&mut driver);
+    for (tab, tag) in saved.iter().zip(["w1", "w2", "w3"]) {
+        let window = tilo_desktop_policy::KeptWindow {
+            keeper: 50,
+            tag: tag.into(),
+        };
+        assert!(policy.adopt("org.example.Kept", *tab, Some(window)));
+    }
+    // Neither a window that opened while the desktop was away nor one of another process takes
+    // a tab held for a named window.
+    policy.map(window(20, "org.example.Kept")).unwrap();
+    policy.map(kept(21, "org.example.Kept", 50, "w9")).unwrap();
+    settle(&mut driver);
+    for (id, tag) in [(13, "w3"), (11, "w1"), (12, "w2")] {
+        policy.map(kept(id, "org.example.Kept", 50, tag)).unwrap();
+        settle(&mut driver);
+    }
+    let placed: Vec<Option<u64>> = [11, 12, 13].map(|window| policy.tab_of(window)).into();
+    assert_eq!(placed, saved.iter().copied().map(Some).collect::<Vec<_>>());
+    for window in [20, 21] {
+        let tab = policy.tab_of(window).expect("a tab of its own");
+        assert!(!saved.contains(&tab), "window {window} takes a new tab");
+    }
+    let mut told = policy.kept_placements();
+    told.sort();
+    let told: Vec<(String, u64)> = told
+        .into_iter()
+        .map(|(window, tab)| (window.tag, tab))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            ("w1".to_owned(), saved[0]),
+            ("w2".to_owned(), saved[1]),
+            ("w3".to_owned(), saved[2]),
+            ("w9".to_owned(), policy.tab_of(21).expect("its tab")),
+        ]
+    );
+    policy.unmap(12);
+    assert_eq!(
+        policy.kept_placements().len(),
+        3,
+        "a closed window is told nothing more"
+    );
+}

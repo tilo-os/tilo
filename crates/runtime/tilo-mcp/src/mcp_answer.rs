@@ -142,6 +142,15 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 {
                     answer.insert("resources".into(), Value::Array(resources.clone()));
                 }
+                // What it made, per item: its id and the address it is
+                // published under, beside the action's own answer.
+                if let Some(made) = output
+                    .get("value")
+                    .and_then(|value| value.get("made"))
+                    .filter(|made| !made.is_null())
+                {
+                    answer.insert("made".into(), made.clone());
+                }
             }
         }
         "failed" => {

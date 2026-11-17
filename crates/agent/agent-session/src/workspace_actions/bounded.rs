@@ -78,6 +78,60 @@ pub(super) struct BoundedReplica {
     unix_time: u64,
 }
 
+/// Callers' replicas whose last write is still on its way to be saved, by
+/// the caller and record they act through, with what hears whether it was
+/// ([`SaveWatch`](super::publish::SaveWatch)).
+///
+/// Such a replica is kept here rather than let go: the next action of the
+/// same caller reuses it once the host holds the write, instead of opening
+/// the record again over every change it holds. Nothing unsaved is ever
+/// acted on: a write the host refused or never confirmed lets the replica
+/// go, to be opened again from what the workspace holds.
+pub(super) struct Parked<T> {
+    waiting: Vec<(BoundedKey, T, Arc<super::publish::SaveWatch>)>,
+}
+
+impl<T> Default for Parked<T> {
+    fn default() -> Self {
+        Self {
+            waiting: Vec::new(),
+        }
+    }
+}
+
+impl<T> Parked<T> {
+    /// Set `held` aside for `key` while what it wrote is saved, which
+    /// `watch` hears.
+    pub(super) fn park(&mut self, key: BoundedKey, held: T, watch: Arc<super::publish::SaveWatch>) {
+        // A write the host refused or never confirmed leaves nothing to reuse:
+        // its replica is let go rather than kept.
+        self.waiting
+            .retain(|(parked, _, watch)| *parked != key && watch.outcome() != Some(false));
+        while self.waiting.len() >= super::MAX_MOUNTED {
+            self.waiting.remove(0);
+        }
+        self.waiting.push((key, held, watch));
+    }
+
+    /// Take back what was set aside for `key` once the host holds what it
+    /// wrote, waiting at most `bound` for it: nothing while the save is not
+    /// confirmed.
+    pub(super) fn unpark(&mut self, key: &BoundedKey, bound: std::time::Duration) -> Option<T> {
+        let at = self
+            .waiting
+            .iter()
+            .position(|(parked, _, _)| parked == key)?;
+        let (_, held, watch) = self.waiting.remove(at);
+        watch.wait(bound).then_some(held)
+    }
+
+    /// Keep what `keep` holds of the keys, letting the rest go: a workspace
+    /// deleted takes its callers' replicas with it.
+    pub(super) fn retain(&mut self, keep: impl Fn(&BoundedKey) -> bool) {
+        self.waiting.retain(|(key, _, _)| keep(key));
+    }
+}
+
 /// What a person's answer is bound to: one invocation by one caller of one
 /// target with exactly these arguments ([`tilo_actions::remote::argument_digest`]),
 /// as the broker binds the answers it hands an agent.
@@ -518,6 +572,9 @@ impl Worker {
         self.mount(route, state).map_err(unavailable)?;
         let holder = self.holder_of(route);
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
+        if let Some(held) = self.parked.unpark(&key, super::publish::REUSE_WAIT) {
+            self.bounded.insert(key.clone(), held);
+        }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         let same = self
@@ -586,6 +643,10 @@ impl Worker {
             .get_mut(&key)
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
+        // A replica taken back from a save that outlived the grace was set
+        // aside when the workspace last caught up: what others wrote since is
+        // merged before it acts, only the changes after the heads it holds.
+        super::catch_up::catch_up(&holder, &mut held.held, state);
         super::catch_up::hold_parts(&holder, &mut held.held, state);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;

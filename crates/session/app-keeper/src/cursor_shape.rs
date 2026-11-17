@@ -4,8 +4,8 @@
 //! The app's pointer objects belong to its own `wl_seat`; each one's shape is held and set on the
 //! desktop's pointer, whose enter serial the app received verbatim. A new desktop is given the
 //! held shape when its pointer enters the window, since the app has no reason to ask again.
-//! Tablet tools are not forwarded by the keeper yet, so a tablet device's shape is accepted and
-//! goes nowhere.
+//! A tablet tool's shape is set on the desktop's shape device for that tool, with the serial of
+//! the tool's proximity the app received verbatim.
 
 use std::collections::HashMap;
 
@@ -20,13 +20,14 @@ use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1 as server_device;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1 as server_manager;
+use wayland_protocols::wp::tablet::zv2::server::zwp_tablet_tool_v2::ZwpTabletToolV2;
 
 use crate::state::State;
 
-/// Which of the app's pointers a shape device belongs to.
+/// Which object of the app a shape device belongs to.
 pub(crate) struct DeviceData {
-    /// `None` for a tablet tool, whose shapes the keeper does not pass on.
     pointer: Option<WlPointer>,
+    tablet_tool: Option<ZwpTabletToolV2>,
 }
 
 impl State {
@@ -66,6 +67,38 @@ impl State {
                 return;
             };
             entry.insert(manager.get_pointer(&up_pointer, &qh, ()));
+        }
+        let Ok(shape) = client_device::Shape::try_from(u32::from(shape)) else {
+            return;
+        };
+        if let Some(device) = self.cursor_shape_devices.get(&key) {
+            device.set_shape(serial, shape);
+        }
+    }
+
+    /// The app named a cursor shape for one of its tablets tools: set it on the desktop's shape
+    /// device for that tool, with the serial the app passed on.
+    fn app_tablet_tool_shape(
+        &mut self,
+        tool: &ZwpTabletToolV2,
+        serial: u32,
+        shape: server_device::Shape,
+    ) {
+        let Some(up_tool) = self.tablets.up_tool(&tool.id()) else {
+            return;
+        };
+        let Some((manager, qh)) = self.up.as_ref().and_then(|up| {
+            up.cursor_shape
+                .clone()
+                .map(|manager| (manager, up.qh.clone()))
+        }) else {
+            return;
+        };
+        let key = tool.id().protocol_id();
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            self.cursor_shape_devices.entry(key)
+        {
+            entry.insert(manager.get_tablet_tool_v2(&up_tool, &qh, ()));
         }
         let Ok(shape) = client_device::Shape::try_from(u32::from(shape)) else {
             return;
@@ -125,14 +158,21 @@ impl Dispatch<server_manager::WpCursorShapeManagerV1, ()> for State {
                     cursor_shape_device,
                     DeviceData {
                         pointer: Some(pointer),
+                        tablet_tool: None,
                     },
                 );
             }
             server_manager::Request::GetTabletToolV2 {
                 cursor_shape_device,
-                ..
+                tablet_tool,
             } => {
-                data_init.init(cursor_shape_device, DeviceData { pointer: None });
+                data_init.init(
+                    cursor_shape_device,
+                    DeviceData {
+                        pointer: None,
+                        tablet_tool: Some(tablet_tool),
+                    },
+                );
             }
             _ => {}
         }
@@ -153,9 +193,12 @@ impl Dispatch<server_device::WpCursorShapeDeviceV1, DeviceData> for State {
             serial,
             shape: smithay::reexports::wayland_server::WEnum::Value(shape),
         } = request
-            && let Some(pointer) = &data.pointer
         {
-            state.app_cursor_shape(pointer, serial, shape);
+            if let Some(pointer) = &data.pointer {
+                state.app_cursor_shape(pointer, serial, shape);
+            } else if let Some(tool) = &data.tablet_tool {
+                state.app_tablet_tool_shape(tool, serial, shape);
+            }
         }
     }
 }

@@ -39,6 +39,8 @@ mod touch;
 mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
+#[path = "headless/window_tags.rs"]
+mod window_tags;
 
 use crate::harness::{
     HostLog, Seen, Square, TestClient, headless, mapped_client, mapped_client_without_touch, pump,

@@ -1792,13 +1792,14 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
+        let mentions = self.agent_mentions(&text);
         self.apply_part(
             doc,
             ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
                 message: item(&id),
                 text,
                 body: Some(body),
-                mentions: None,
+                mentions: Some(mentions),
             }),
         );
         self.reload(doc);

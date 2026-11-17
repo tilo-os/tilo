@@ -132,7 +132,11 @@ fn page_workspace(
             // The person a host keeps the workspace for is its owner: the host
             // runs the workspace for them and is nobody in it itself, so it is
             // their role the page reads and their rights it offers.
-            if owners.contains(&member.id.key()) {
+            if member
+                .id
+                .person_id()
+                .is_some_and(|person| owners.contains(person))
+            {
                 member.role = Some(Role::Owner);
             }
             // The page shows its reader's own row as theirs, and reads from it

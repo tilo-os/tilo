@@ -9,14 +9,14 @@
 //!
 //! - keeps a record of the workspace under `<state_root>/hosted/<workspace>.json`, its
 //!   own, never the workspace's files;
-//! - attaches to the governor's host for the workspace, and only
-//!   that workspace ([`crate::attach`]): subscribing replays what the
-//!   governor retains, and live fan-out carries the rest both ways;
-//! - follows the workspace's governance with a replica that governs nothing: each
-//!   governance change the governor publishes is verified against the
-//!   workspace's pinned authority, and the members it admits are what this host
-//!   admits ([`crate::host::GovernedAccessWriter`]), also while the governor
-//!   is offline;
+//! - attaches, for that workspace only ([`crate::attach`]), to every other
+//!   holder its governance names and to the host that handed it over:
+//!   subscribing replays what each retains, and live fan-out carries the rest
+//!   every way, so losing any one holder loses nothing the others hold;
+//! - follows the workspace's governance, whichever holder or member wrote a
+//!   change and whichever holder carried it here: each change is checked
+//!   against the workspace's own rules as it is taken in, and the members it
+//!   admits are what this host admits ([`crate::host::GovernedAccessWriter`]);
 //! - answers the governor with its own signed address, which the workspace's
 //!   join answers carry beside the governor's.
 //!
@@ -285,10 +285,11 @@ impl Hosting {
             // retained it; the workspace opens with its access.
             admit(services, request.workspace_id, &peer, now).await?;
             let retained = services.records.retained(request.workspace_id).await?;
+            // Governance written through any holder or by any member is
+            // the workspace's, whoever carried it here: each change is
+            // checked against the workspace's own rules as it is taken in.
             for body in retained {
-                if body.author == authority.device_public_key {
-                    follow(&mut peer, body.author, &body.body, now);
-                }
+                follow(&mut peer, body.author, &body.body, now);
             }
         }
         // A host of the governor's person is admitted as one of its devices
@@ -327,40 +328,22 @@ impl Hosting {
             runtime.note_attached_host(authority.device_public_key);
         }
         drop(workspace);
-        let identity = LiveIdentity {
-            user_public_key: own.user_public_key,
-            cert: own.clone(),
-            signing_key: services.key.clone(),
-            revocations: services.revocations.clone(),
-        };
-        let dialer = HostDialer {
-            endpoint: services.endpoint.clone(),
-            identity,
-            trust_policy: services.trust_policy.clone(),
-            workspaces: services.workspaces.clone(),
-            metrics: services.metrics.clone(),
-            scope: Some(vec![request.workspace_id]),
-        }
-        .spawn_woken(
-            Upstream {
-                addr: governor.endpoint_addr.clone(),
-                device: authority.device_public_key,
-                person: authority.user_public_key,
-            },
-            format!("governor of {}", request.workspace),
-            &services.arrivals,
-        );
-        let follower = Follower {
+        let mut follower = Follower {
             services: services.clone(),
             workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
-            governor: authority.device_public_key,
             record: self.resource_path(&request.workspace),
             peer,
             replica,
             named,
+            holders: HashMap::new(),
+            handed_by: authority.device_public_key,
         };
-        let task = tokio::spawn(follower.run(notices, AbortOnDrop(dialer)));
+        // The host that handed the workspace over is one of its holders,
+        // dialled from the start: its own address may not be named yet.
+        follower.dial(&governor);
+        follower.dial_holders();
+        let task = tokio::spawn(follower.run(notices));
         self.served
             .lock_recover()
             .insert(request.workspace.clone(), AbortOnDrop(task));
@@ -435,20 +418,20 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
     Ok(peer)
 }
 
-/// Take `body`, a change the governor published, into `peer` when it is
-/// governance. Whether governance changed.
-fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime) -> bool {
+/// Take `body`, a change `author` made or a holder carried, into `peer` when
+/// it is governance. Whether governance changed.
+fn follow(peer: &mut StatePeer, author: [u8; 32], body: &[u8], now: SystemTime) -> bool {
     let message = match postcard::from_bytes::<NeighbourMsg>(body) {
         Ok(message) => message,
         Err(error) => {
-            tracing::warn!(workspace = %peer.workspace_id(), %error, "a change the governor published does not decode");
+            tracing::warn!(workspace = %peer.workspace_id(), %error, "a change of the workspace does not decode");
             return false;
         }
     };
     if matches!(message, NeighbourMsg::AppDocument { .. }) {
         return false;
     }
-    match peer.receive_from(TransportOrigin::RetainedRelayDelta(governor), message, now) {
+    match peer.receive_from(TransportOrigin::RetainedRelayDelta(author), message, now) {
         Ok(outcome) => outcome.changed || outcome.metadata_changed,
         Err(error) => {
             tracing::debug!(workspace = %peer.workspace_id(), %error, "a governance change was not taken in");
@@ -502,6 +485,16 @@ pub(crate) struct HostedReplica {
 }
 
 impl HostedReplica {
+    /// Whether the workspace's governance names `device` among its holders.
+    pub(crate) fn names_holder(&self, device: [u8; 32]) -> bool {
+        self.peer
+            .lock_recover()
+            .governance()
+            .workspace_hosts()
+            .iter()
+            .any(|hint| hint.host.device_public_key == device)
+    }
+
     /// The membership answer `device` builds its replica of the workspace from
     /// ([`crate::workspaces::member_bootstrap`]).
     pub(crate) fn bootstrap(
@@ -549,7 +542,6 @@ struct Follower {
     services: WorkspaceServices,
     workspace: String,
     workspace_id: WorkspaceId,
-    governor: [u8; 32],
     record: PathBuf,
     peer: StatePeer,
     /// What subscribing devices are answered from.
@@ -557,25 +549,83 @@ struct Follower {
     /// Whether the workspace's governance has admitted this host yet: one
     /// that named it and no longer does has let it go.
     named: bool,
+    /// A session to each other holder of the workspace, by device: every
+    /// holder carries what is written through it to all the others, so
+    /// losing any one of them loses nothing the rest hold.
+    holders: HashMap<[u8; 32], AbortOnDrop>,
+    /// The holder that handed the workspace over: dialled whether or not the
+    /// governance names its address yet.
+    handed_by: [u8; 32],
 }
 
 impl Follower {
+    /// Keep a session to `holder`, by its signed address, unless one is
+    /// kept already or it is this host itself.
+    fn dial(&mut self, holder: &WorkspaceDeviceHintV1) {
+        let services = &self.services;
+        let device = holder.device_certificate.device_public_key;
+        if device == services.cert.device_public_key || self.holders.contains_key(&device) {
+            return;
+        }
+        let own = &services.cert;
+        let identity = LiveIdentity {
+            user_public_key: own.user_public_key,
+            cert: own.clone(),
+            signing_key: services.key.clone(),
+            revocations: services.revocations.clone(),
+        };
+        let dialer = HostDialer {
+            endpoint: services.endpoint.clone(),
+            identity,
+            trust_policy: services.trust_policy.clone(),
+            workspaces: services.workspaces.clone(),
+            metrics: services.metrics.clone(),
+            scope: Some(vec![self.workspace_id]),
+        }
+        .spawn_woken(
+            Upstream {
+                addr: holder.endpoint_addr.clone(),
+                device,
+                person: holder.device_certificate.user_public_key,
+            },
+            format!("holder {} of {}", hex::encode(&device[..4]), self.workspace),
+            &services.arrivals,
+        );
+        self.holders.insert(device, AbortOnDrop(dialer));
+    }
+
+    /// Keep a session to every holder the workspace's governance names, and
+    /// to none it no longer names.
+    fn dial_holders(&mut self) {
+        let named: Vec<WorkspaceDeviceHintV1> = self
+            .peer
+            .governance()
+            .workspace_hosts()
+            .iter()
+            .filter_map(|hint| WorkspaceDeviceHintV1::from_transport_hint(hint).ok())
+            .collect();
+        let handed_by = self.handed_by;
+        self.holders.retain(|device, _| {
+            *device == handed_by
+                || named
+                    .iter()
+                    .any(|holder| holder.device_certificate.device_public_key == *device)
+        });
+        for holder in &named {
+            self.dial(holder);
+        }
+    }
+
     /// Take in each change the workspace hands over, for as long as
-    /// the workspace is served. `dialer` attaches the workspace and ends with it.
-    async fn run(
-        mut self,
-        mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>,
-        dialer: AbortOnDrop,
-    ) {
+    /// the workspace is served.
+    async fn run(mut self, mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>) {
         while let Some((author, body)) = notices.recv().await {
-            if author != self.governor {
-                continue;
-            }
             let now = tilo_clock::wall();
             if !follow(&mut self.peer, author, &body, now) {
                 continue;
             }
             *self.replica.peer.lock_recover() = self.peer.clone();
+            self.dial_holders();
             match admit(&self.services, self.workspace_id, &self.peer, now).await {
                 Ok(true) => self.named = true,
                 Ok(false) if self.named => {
@@ -588,7 +638,7 @@ impl Follower {
                 }
             }
         }
-        drop(dialer);
+        self.holders.clear();
         if self.named && self.dropped(tilo_clock::wall()) {
             if let Err(error) = stop_serving(&self.services, self.workspace_id).await {
                 tracing::warn!(workspace = %self.workspace, %error, "a workspace no longer hosted here was not closed");

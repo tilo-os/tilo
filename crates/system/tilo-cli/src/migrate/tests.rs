@@ -21,12 +21,12 @@ struct Recorded {
 impl Workspace for Recorded {
     fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((run.id.clone(), action.to_owned(), args));
-        Ok(Answer::of(None, Vec::new()))
+        Ok(Answer::of(None))
     }
 
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((String::new(), action.to_owned(), args));
-        Ok(Answer::of(None, Vec::new()))
+        Ok(Answer::of(None))
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
@@ -437,10 +437,6 @@ fn a_call_that_ran_answers_its_value_and_the_records_it_names() {
     assert_eq!(
         answer.result().and_then(|value| value.get("id")),
         Some(&serde_json::json!("abc"))
-    );
-    assert_eq!(
-        answer.resources().collect::<Vec<_>>(),
-        ["tasks.tracker/issues/abc"]
     );
 }
 

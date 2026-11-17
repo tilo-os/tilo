@@ -1,7 +1,7 @@
 //! An app behind a keeper, on a real desktop that goes away and comes back.
 
 use tilo_app_keeper::wire::{End, FromKeeper, ToKeeper};
-use tilo_compositor::InputEvent;
+use tilo_compositor::{InputEvent, PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use wayland_client::Proxy as _;
 
 use crate::support::{App, Rig, SUSPENDED};
@@ -1056,4 +1056,353 @@ fn a_content_type_the_app_sets_survives_a_restart() {
     assert_eq!(rig.keeper.describe().fault, None);
     let (_, _, (x, y, _, _)) = rig.windows()[0];
     assert_eq!(rig.pixel((x + 50) as u32, (y + 40) as u32), GREEN);
+}
+
+/// The description and the tool events a pen left on the app.
+fn assert_pen_matches(
+    tablet: &crate::support::TabletSeen,
+    tool: &crate::support::ToolSeen,
+    surface: &wayland_client::protocol::wl_surface::WlSurface,
+) {
+    use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::{Capability, Type};
+
+    assert_eq!(tablet.name.as_deref(), Some("Pen tablet"));
+    assert_eq!(tablet.id, Some((0x056a, 0x0374)));
+    assert!(tablet.done, "the description is finished");
+    assert_eq!(tool.tool_type, Some(u32::from(Type::Pen)), "the pen's type");
+    assert_eq!(tool.hardware_serial, Some((0, 0x5678)));
+    assert_eq!(tool.hardware_id, Some((0x0000, 0x0802)));
+    assert!(
+        tool.capabilities.contains(&u32::from(Capability::Pressure))
+            && tool.capabilities.contains(&u32::from(Capability::Tilt)),
+        "the axes the tool reports are announced"
+    );
+    assert!(tool.done);
+    assert_eq!(tool.proximity_in.len(), 1);
+    assert_ne!(
+        tool.proximity_in[0].0, 0,
+        "the desktop's serial came through"
+    );
+    assert_eq!(
+        tool.proximity_in[0].1.id(),
+        surface.id(),
+        "the tool entered the app's window"
+    );
+    assert_eq!(
+        tool.motion.len(),
+        4,
+        "a motion comes with proximity, the move, the press and the release"
+    );
+    assert!(
+        tool.motion
+            .iter()
+            .all(|(x, y)| (x - 100.0).abs() < 1.0 && (y - 50.0).abs() < 1.0),
+        "motion is in the window at its centre: {:?}",
+        tool.motion
+    );
+    assert!(
+        tool.pressure.iter().all(|pressure| *pressure == 32768),
+        "half pressure every time: {:?}",
+        tool.pressure
+    );
+    assert!(
+        tool.distance.iter().all(|distance| *distance == 16384),
+        "a quarter of the way away: {:?}",
+        tool.distance
+    );
+    assert!(
+        tool.tilt
+            .iter()
+            .all(|(x, y)| (x - 0.1).abs() < 0.01 && (y + 0.2).abs() < 0.01),
+        "the tilt came through: {:?}",
+        tool.tilt
+    );
+    assert!(
+        tool.rotation
+            .iter()
+            .all(|degrees| (degrees - 30.0).abs() < 0.1),
+        "the rotation came through: {:?}",
+        tool.rotation
+    );
+    assert_eq!(tool.down.len(), 1);
+    assert_ne!(tool.down[0], 0);
+    assert_eq!(tool.up, 1);
+    assert!(!tool.frames.is_empty(), "the events were framed");
+}
+
+/// A pen event at the window's centre.
+fn pen_input(x: f64, y: f64, phase: TabletPhase) -> InputEvent {
+    use smithay::backend::input::{TabletToolCapabilities, TabletToolDescriptor, TabletToolType};
+    use smithay::wayland::tablet_manager::TabletDescriptor;
+
+    InputEvent::Tablet(TabletEvent {
+        tablet: TabletDescriptor {
+            name: "Pen tablet".into(),
+            usb_id: Some((0x056a, 0x0374)),
+            syspath: None,
+        },
+        tool: TabletToolDescriptor {
+            tool_type: TabletToolType::Pen,
+            hardware_serial: 0x5678,
+            hardware_id_wacom: 0x0802,
+            capabilities: TabletToolCapabilities::PRESSURE
+                | TabletToolCapabilities::DISTANCE
+                | TabletToolCapabilities::TILT
+                | TabletToolCapabilities::ROTATION,
+        },
+        phase,
+        x,
+        y,
+        pressure: 0.5,
+        distance: 0.25,
+        tilt: (0.1, -0.2),
+        rotation: 30.0,
+        slider: 0.0,
+        wheel: (0.0, 0),
+        as_pointer: false,
+        tip_button: Some(0x110),
+    })
+}
+
+/// A pad event with one group holding four buttons, a ring and a strip.
+fn pad_input(action: PadAction) -> InputEvent {
+    use smithay::wayland::tablet_manager::{
+        TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
+    };
+
+    InputEvent::TabletPad(TabletPadEvent {
+        pad: TabletPadDescriptor {
+            name: "Pen tablet Pad".into(),
+            syspath: None,
+            buttons: 4,
+            groups: vec![TabletPadGroupDescriptor {
+                buttons: vec![0, 1, 2, 3],
+                rings: vec![0],
+                strips: vec![0],
+                modes: 2,
+            }],
+        },
+        tablet: TabletDescriptor {
+            name: "Pen tablet".into(),
+            usb_id: Some((0x056a, 0x0374)),
+            syspath: None,
+        },
+        action,
+    })
+}
+
+#[test]
+fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Canvas", Some("canvas"));
+    app.show(&mut rig, (200, 100), GREEN);
+    // The keeper takes the desktop's tablet seat once the app has one.
+    rig.settle(&mut [&mut app]);
+    let (x, y) = centre(&rig);
+    let (x, y) = (f64::from(x), f64::from(y));
+    for phase in [
+        TabletPhase::ProximityIn,
+        TabletPhase::Motion,
+        TabletPhase::TipDown,
+        TabletPhase::TipUp,
+    ] {
+        rig.desktop().input(pen_input(x, y, phase)).unwrap();
+    }
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.tools.first().is_some_and(|tool| tool.up > 0)
+    });
+    assert_pen_matches(
+        &app.heard.tablets[0],
+        &app.heard.tools[0],
+        app.surface.as_ref().unwrap(),
+    );
+
+    // The tool's cursor shape goes to the desktop's shape device for that tool, and a cursor
+    // surface set with the desktop's own serial is mirrored like any surface.
+    let shape = {
+        use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+        Shape::Crosshair
+    };
+    let tablet_tool = app.heard.tool.clone().unwrap();
+    app.set_tool_cursor_shape(&tablet_tool, app.heard.tools[0].proximity_in[0].0, shape);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.keeper.describe().fault, None);
+
+    let cursor = app
+        .heard
+        .compositor
+        .as_ref()
+        .unwrap()
+        .create_surface(&app.queue.handle(), ());
+    cursor.commit();
+    let proxy = app.heard.tool.clone().unwrap();
+    let serial = app.heard.tools[0].proximity_in[0].0;
+    proxy.set_cursor(serial, Some(&cursor), 1, 2);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.keeper.describe().fault, None);
+    proxy.set_cursor(serial, None, 0, 0);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.keeper.describe().fault, None);
+
+    rig.desktop()
+        .input(pen_input(x, y, TabletPhase::ProximityOut))
+        .unwrap();
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.tools[0].proximity_out >= 1
+    });
+}
+
+#[test]
+fn a_pad_ring_and_its_mode_switch_reach_a_kept_app() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Canvas", Some("canvas"));
+    app.show(&mut rig, (200, 100), GREEN);
+    rig.settle(&mut [&mut app]);
+    for action in [
+        PadAction::Added,
+        PadAction::Mode { group: 0, mode: 1 },
+        PadAction::Button {
+            button: 2,
+            pressed: true,
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: Some(90.0),
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: None,
+        },
+        PadAction::Strip {
+            strip: 0,
+            position: Some(0.25),
+        },
+        PadAction::Strip {
+            strip: 0,
+            position: None,
+        },
+    ] {
+        rig.desktop().input(pad_input(action)).unwrap();
+    }
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.ring_frames >= 2 && apps[0].heard.strip_frames >= 2
+    });
+
+    let pad = &app.heard.pads[0];
+    assert_eq!(pad.groups, 1);
+    assert_eq!(pad.buttons, Some(4));
+    assert!(pad.done);
+    assert_eq!(
+        app.heard.pad_group_buttons,
+        [vec![0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]],
+        "the buttons of the group, in order"
+    );
+    assert_eq!(app.heard.pad_group_done, 1);
+    assert_eq!(app.heard.pad_group_modes, 2, "the group has two modes");
+    assert_eq!(
+        app.heard.pad_modes.last().map(|(_, mode)| *mode),
+        Some(1),
+        "the group switched to its second mode"
+    );
+    assert_eq!(app.heard.ring_angles, [90.0]);
+    assert_eq!(app.heard.ring_stops, 1);
+    assert_eq!(
+        app.heard.strip_positions,
+        [16384],
+        "a quarter along the strip"
+    );
+    assert_eq!(app.heard.strip_stops, 1);
+    assert_eq!(pad.buttons_pressed.len(), 1);
+    assert_eq!(
+        (pad.buttons_pressed[0].1, pad.buttons_pressed[0].2),
+        (2, true),
+        "the second button is down"
+    );
+    let (serial, surface) = pad.entered.as_ref().expect("the pad entered a window");
+    assert_ne!(*serial, 0);
+    assert_eq!(surface.id(), app.surface.as_ref().unwrap().id());
+
+    // Feedback on a button, a ring and a strip goes to the desktop with the app's words.
+    app.heard
+        .pad
+        .as_ref()
+        .unwrap()
+        .set_feedback(2, "mode two".to_owned(), *serial);
+    app.heard
+        .ring
+        .as_ref()
+        .unwrap()
+        .set_feedback("ring".to_owned(), *serial);
+    app.heard
+        .strip
+        .as_ref()
+        .unwrap()
+        .set_feedback("strip".to_owned(), *serial);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_desktop_restart_removes_the_devices_and_announces_the_next_desktops() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Canvas", Some("canvas"));
+    app.show(&mut rig, (200, 100), GREEN);
+    rig.settle(&mut [&mut app]);
+    let (x, y) = centre(&rig);
+    let (x, y) = (f64::from(x), f64::from(y));
+    rig.desktop()
+        .input(pen_input(x, y, TabletPhase::ProximityIn))
+        .unwrap();
+    rig.desktop().input(pad_input(PadAction::Added)).unwrap();
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0]
+            .heard
+            .tools
+            .first()
+            .is_some_and(|tool| !tool.proximity_in.is_empty())
+            && apps[0]
+                .heard
+                .pads
+                .first()
+                .is_some_and(|pad| pad.entered.is_some())
+    });
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let tool = app.heard.tools[0].clone();
+    assert_eq!(tool.proximity_out, 1, "the tool left proximity");
+    assert!(tool.removed, "and the tool is gone");
+    assert!(!tool.frames.is_empty(), "the leave is framed");
+    assert!(app.heard.pads[0].left.is_some(), "the pad left its window");
+    assert!(app.heard.pads[0].removed);
+    assert!(app.heard.tablets[0].removed);
+
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.settle(&mut [&mut app]);
+    let (x, y) = centre(&rig);
+    let (x, y) = (f64::from(x), f64::from(y));
+    rig.desktop()
+        .input(pen_input(x, y, TabletPhase::ProximityIn))
+        .unwrap();
+    rig.desktop().input(pad_input(PadAction::Added)).unwrap();
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.tablets.len() == 2
+            && apps[0].heard.tools.len() == 2
+            && apps[0].heard.pads.len() == 2
+            && apps[0].heard.tools[1].proximity_in.len() == 1
+    });
+    assert_eq!(
+        app.heard.tablets[1].name.as_deref(),
+        Some("Pen tablet"),
+        "the next desktop's tablet is announced"
+    );
+    assert_eq!(
+        app.heard.tools[1].proximity_in[0].1.id(),
+        app.surface.as_ref().unwrap().id()
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
 }

@@ -9,7 +9,7 @@ pub use feed::{DateFeed, DateShown};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -45,6 +45,12 @@ pub struct DatePicker {
     prev_button_rect: Rect,
     next_button_rect: Rect,
     last_cursor: Point,
+    /// The day under the pointer, which lifts.
+    hovered: Option<NaiveDate>,
+    /// Where the chosen day's disc stands: it slides to the day chosen next in the same month.
+    disc: crate::motion::MotionValue<Point>,
+    /// The day and month `disc` was last placed for.
+    disc_for: Option<(NaiveDate, (i32, u32))>,
     /// Whether the picker holds keyboard focus. Drives a focus ring around
     /// the whole calendar so the control reads as focused.
     is_focused: bool,
@@ -65,6 +71,7 @@ struct Face {
     selected: NaiveDate,
     month_view: (i32, u32),
     focused: bool,
+    hovered: Option<NaiveDate>,
     today: NaiveDate,
     marked: HashSet<NaiveDate>,
 }
@@ -83,6 +90,9 @@ impl DatePicker {
             prev_button_rect: Rect::ZERO,
             next_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            hovered: None,
+            disc: crate::motion::MotionValue::new(Point::ZERO),
+            disc_for: None,
             is_focused: false,
             navigator: false,
             marked: HashSet::new(),
@@ -100,6 +110,7 @@ impl DatePicker {
             selected: self.selected,
             month_view: self.month_view,
             focused: self.is_focused,
+            hovered: self.hovered,
             today: self.today.unwrap_or_else(crate::clock::today),
             marked: self.marked.clone(),
         }
@@ -258,6 +269,39 @@ impl DatePicker {
         {
             self.commit_user_date(d);
         }
+    }
+
+    fn disc_moving(&self) -> bool {
+        self.disc.is_moving(crate::motion::frame_now())
+    }
+
+    /// Where the chosen day's disc stands this frame: it slides from the day chosen before
+    /// when both are on the month shown, and stands on the day at once otherwise (a month
+    /// turned, the first look).
+    fn follow_disc(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Point> {
+        use crate::motion::{Direction, ListChange};
+        let now = crate::motion::frame_now();
+        let target = self
+            .day_rects
+            .iter()
+            .find(|(day, _)| *day == self.selected)
+            .map(|(_, cell)| cell.center())?;
+        let placed = (self.selected, self.month_view);
+        let slides = self
+            .disc_for
+            .is_some_and(|(day, month)| day != self.selected && month == self.month_view);
+        if slides {
+            let timing =
+                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            self.disc.set(target, timing, now);
+            if let Some(until) = self.disc.settles_at() {
+                crate::motion::want_frames_until(until);
+            }
+        } else if self.disc.target() != target {
+            self.disc.snap(target);
+        }
+        self.disc_for = Some(placed);
+        Some(self.disc.get(now))
     }
 
     /// Column index (0..=6) of the first-of-month, Monday = 0.
@@ -555,12 +599,38 @@ impl Widget for DatePicker {
                     self.move_selection(7);
                     *ctx.handled = true;
                 }
+                // Home and End go to the week's first and last day.
+                Key::Named(NamedKey::Home) => {
+                    let back = self.selected.weekday().num_days_from_monday();
+                    self.move_selection(-i64::from(back));
+                    *ctx.handled = true;
+                }
+                Key::Named(NamedKey::End) => {
+                    let ahead = 6 - self.selected.weekday().num_days_from_monday();
+                    self.move_selection(i64::from(ahead));
+                    *ctx.handled = true;
+                }
+                // Page Up and Down turn a month, with Shift a year.
                 Key::Named(NamedKey::PageUp) => {
-                    self.retreat_month();
+                    let turns = if ctx.modifiers.state().shift_key() {
+                        12
+                    } else {
+                        1
+                    };
+                    for _ in 0..turns {
+                        self.retreat_month();
+                    }
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::PageDown) => {
-                    self.advance_month();
+                    let turns = if ctx.modifiers.state().shift_key() {
+                        12
+                    } else {
+                        1
+                    };
+                    for _ in 0..turns {
+                        self.advance_month();
+                    }
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
@@ -571,7 +641,13 @@ impl Widget for DatePicker {
             },
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
+                self.hovered = self
+                    .day_rects
+                    .iter()
+                    .find(|(_, cell)| day_disc(*cell).contains(self.last_cursor))
+                    .map(|(day, _)| *day);
             }
+            WindowEvent::CursorLeft { .. } => self.hovered = None,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -607,7 +683,11 @@ impl Widget for DatePicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.presented.as_ref() != Some(&self.face())
+        self.presented.as_ref() != Some(&self.face()) || self.disc_moving()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.disc_moving()
     }
 
     fn mark_drawn(&mut self) {
@@ -848,7 +928,7 @@ impl DatePicker {
     /// The 7×6 day cells: selection fill, today ring and day-number text.
     /// Split out of `draw` to keep that function readable.
     fn draw_day_grid(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -861,39 +941,46 @@ impl DatePicker {
 
         let today = self.today.unwrap_or_else(crate::clock::today);
         let (vy, vm) = self.month_view;
+        let chosen_at = self.follow_disc(theme.motion());
 
+        // The chosen day's disc first, where it stands this frame, under every day's number.
+        if let (Some(at), Some((_, cell))) = (
+            chosen_at,
+            self.day_rects.iter().find(|(day, _)| *day == self.selected),
+        ) {
+            let disc = day_disc(*cell);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.intent.accent,
+                None,
+                &vello::kurbo::Circle::new(at, disc.radius),
+            );
+        }
         for (date, cell_rect) in &self.day_rects {
             let is_in_view_month = date.year() == vy && date.month() == vm;
-            let is_selected = *date == self.selected;
+            let disc = day_disc(*cell_rect);
+            // A day's number reads on the disc once the disc has reached it.
+            let is_selected = *date == self.selected
+                && chosen_at.is_none_or(|at| at.distance(disc.center) < disc.radius / 2.0);
             let is_today = *date == today && is_in_view_month;
 
-            let disc = day_disc(*cell_rect);
-            if is_selected {
+            if self.hovered == Some(*date) && !is_selected {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.intent.accent,
+                    tokens.colors.lift_on(tokens.colors.surfaces.raised, 0.5),
                     None,
                     &disc,
                 );
             }
 
-            // On top of the cell fill, below the text, so it's visible even
-            // when selected.
-            if is_today {
-                let ring = vello::kurbo::Circle::new(disc.center, disc.radius - 0.5);
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    tokens.colors.border_focus,
-                    None,
-                    &ring,
-                );
-            }
-
             let day_str = date.day().to_string();
+            // Today is told by its number in your colour, never by a ring that reads as focus.
             let color = if is_selected {
                 tokens.colors.intent.on_accent
+            } else if is_today {
+                tokens.colors.intent.accent_ink
             } else if is_in_view_month {
                 text_color
             } else {
@@ -1026,6 +1113,33 @@ mod tests {
             assert_eq!(state.get(), target);
             host.key("Right");
             assert_eq!(state.get(), target.succ_opt().unwrap());
+            let later = target + chrono::Duration::days(9);
+            let point = host
+                .root::<DatePicker>()
+                .day_rects
+                .iter()
+                .find(|(date, _)| *date == later)
+                .unwrap()
+                .1
+                .center();
+            host.click_at(point.x, point.y);
+            assert_eq!(state.get(), later);
+            host.poll_frame().unwrap();
+            assert!(
+                host.root::<DatePicker>().needs_animation_frame(),
+                "the chosen disc slides to the day picked rather than jumping"
+            );
+            host.key("Left");
+            assert_eq!(state.get(), later.pred_opt().unwrap());
+            // 2024-06-15 is a Saturday: End goes to the week's Sunday, Home to its Monday.
+            host.key("End");
+            assert_eq!(state.get(), NaiveDate::from_ymd_opt(2024, 6, 16).unwrap());
+            host.key("Home");
+            assert_eq!(state.get(), NaiveDate::from_ymd_opt(2024, 6, 10).unwrap());
+            host.key("Shift+PageDown");
+            assert_eq!(host.root::<DatePicker>().month_view(), (2025, 6));
+            host.key("PageUp");
+            assert_eq!(host.root::<DatePicker>().month_view(), (2025, 5));
         }
 
         phase date_picker_month_navigation_and_selection;

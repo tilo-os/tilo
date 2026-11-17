@@ -85,6 +85,7 @@ use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_manager_v1, xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
     xdg_toplevel_icon_v1::XdgToplevelIconV1,
 };
+use wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1;
 use wayland_protocols_misc::server_decoration::client::{
     org_kde_kwin_server_decoration::{self as kde_decoration, Mode as KdeMode},
     org_kde_kwin_server_decoration_manager::{
@@ -195,6 +196,7 @@ pub struct Seen {
     pub tablet_manager: Option<ZwpTabletManagerV2>,
     pub wm_dialog: Option<XdgWmDialogV1>,
     pub icon_manager: Option<XdgToplevelIconManagerV1>,
+    pub tag_manager: Option<XdgToplevelTagManagerV1>,
     /// The icon sizes the manager tells clients a tab pill paints at.
     pub icon_sizes: Vec<i32>,
     /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
@@ -275,6 +277,21 @@ impl TestClient {
         } else {
             compositor.connect_client().expect("client socket")
         };
+        Self::over(socket)
+    }
+
+    /// Connect over a connection the session handed to the process `pid` itself, as it hands one
+    /// to an app keeper.
+    pub fn connect_for(compositor: &Compositor, pid: u32) -> Self {
+        Self::over(
+            compositor
+                .client_connector()
+                .connect_for(pid)
+                .expect("client socket"),
+        )
+    }
+
+    fn over(socket: std::os::unix::net::UnixStream) -> Self {
         let connection = Connection::from_socket(socket).expect("connection");
         let queue = connection.new_event_queue();
         connection.display().get_registry(&queue.handle(), ());
@@ -1033,6 +1050,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "xdg_toplevel_icon_manager_v1" => {
                     seen.icon_manager = Some(registry.bind(name, 1, qh, ()));
                 }
+                "xdg_toplevel_tag_manager_v1" => {
+                    seen.tag_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 "zwp_text_input_manager_v3" => {
                     seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
                 }
@@ -1091,6 +1111,7 @@ impl Dispatch<XdgToplevelIconManagerV1, ()> for Seen {
 }
 
 delegate_noop!(Seen: ignore XdgToplevelIconV1);
+delegate_noop!(Seen: ignore XdgToplevelTagManagerV1);
 delegate_noop!(Seen: ignore ZwpIdleInhibitManagerV1);
 delegate_noop!(Seen: ignore ZwpIdleInhibitorV1);
 

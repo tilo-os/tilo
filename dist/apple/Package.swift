@@ -26,8 +26,28 @@ let package = Package(
             dependencies: ["ShellCore"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
+        // Tilo Assistant, the SwiftUI app of the assistant's window. Its views read and call one
+        // interface, AssistantSource, and never Tilo itself.
+        // The values the window shows and the interface they come through. No view.
+        .target(name: "AssistantCore"),
+        // The views, shared by the Mac and the iPhone app. Dictation is the shell's.
+        .target(name: "AssistantUI", dependencies: ["AssistantCore", "ShellWeb"]),
+        .executableTarget(name: "AssistantMac", dependencies: ["AssistantCore", "AssistantUI"]),
+        .executableTarget(name: "AssistantPhone", dependencies: ["AssistantCore", "AssistantUI"]),
+        // The iPhone's live activity: a widget extension, which starts as the share extension does.
+        .executableTarget(
+            name: "AssistantWidgets",
+            dependencies: ["AssistantCore", "AssistantUI"],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+        ),
+        // The content of the window's drawing, for tests and pictures. No app links it.
+        .target(name: "AssistantDrawing", dependencies: ["AssistantCore"]),
+        // Draws every screen to a picture with nothing on screen.
+        .executableTarget(name: "AssistantShots", dependencies: ["AssistantCore", "AssistantUI", "AssistantDrawing"]),
         .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"]),
         .testTarget(name: "ShellWebTests", dependencies: ["ShellCore", "ShellWeb"]),
+        .testTarget(name: "AssistantCoreTests", dependencies: ["AssistantCore", "AssistantDrawing"]),
+        .testTarget(name: "AssistantUITests", dependencies: ["AssistantCore", "AssistantUI", "AssistantDrawing"]),
         // Tilo inside a native app: Tilo's own page as the client behind a Swift interface
         // (pairing, live reads, typed actions), and the view that shows one live Tilo thing.
         .target(name: "TiloLive", dependencies: ["ShellCore"]),

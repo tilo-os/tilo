@@ -44,6 +44,10 @@ impl Layout for PageLayout {
         self.measure
     }
 
+    fn shares_label_column(&self) -> bool {
+        self.row.is_none()
+    }
+
     fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gutter = length(content_gutter(resolved));
         let side = if self.fill {

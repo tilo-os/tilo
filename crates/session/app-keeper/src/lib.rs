@@ -58,12 +58,13 @@ mod outputs;
 mod pings;
 mod pointer_constraints;
 mod pointer_gestures;
+mod presentation;
 mod primary_selection;
 mod relative_pointer;
-mod presentation;
 mod seat;
 mod state;
 mod surfaces;
+mod tablet;
 mod text_input;
 mod toplevel_icon;
 mod upstream;
@@ -650,6 +651,7 @@ impl Data {
             self.state.hold_relative_pointers();
             self.state.hold_text_input();
             self.state.seat.hold();
+            self.state.tablets.hold();
             self.state.pings.clear();
             self.state.windows_changed = true;
         }

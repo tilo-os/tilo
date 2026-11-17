@@ -342,11 +342,11 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     );
     // The request body is JSON: the call's own quotes stand escaped in it.
     assert!(
-        first.contains("Show a resource: `show` with `\\\"resource\\\": …`"),
+        first.contains("Show a resource: `place` with `\\\"resource\\\": …`"),
         "{first}"
     );
     assert!(
-        offered.contains(&tools::canvas::SHOW.to_owned()),
+        offered.contains(&tools::canvas::PLACE_TOOL.to_owned()),
         "showing is a tool of its own"
     );
     for (resource, action) in [
@@ -441,16 +441,16 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
     );
 }
 
-/// "Show me my mails" with `show`, which names only what it shows, places the inbox in one model
+/// "Show me my mails" with `place`, which names only what it shows, places the inbox in one model
 /// call, with the reply it carries; `beside` and `view` go to the place as its own parameters.
 #[test]
-fn show_places_what_it_names_in_one_call() {
+fn place_shows_what_it_names_in_one_call() {
     let reply = "Your inbox is beside us.";
     let mut f = canvas_fixture(
         "show me my mails",
         vec![turn(
             &[(
-                tools::canvas::SHOW,
+                tools::canvas::PLACE_TOOL,
                 serde_json::json!({"resource": MAIL, "beside": TASKS, "view": "inbox", "reply": reply}),
             )],
             64,
@@ -472,21 +472,24 @@ fn show_places_what_it_names_in_one_call() {
     assert_eq!(placed[0]["view"], "inbox");
 }
 
-/// A `show` that names nothing to show, the shape models wrote for `invoke` (`{"beside": …}` with
+/// A `place` that names nothing to show, the shape models wrote for `invoke` (`{"beside": …}` with
 /// no resource), runs nothing and is answered once with what it needs; the call that follows
 /// shows it.
 #[test]
-fn a_show_naming_nothing_is_corrected_once() {
+fn a_place_naming_nothing_is_corrected_once() {
     let mut f = canvas_fixture(
         "show me my mails",
         vec![
             turn(
-                &[(tools::canvas::SHOW, serde_json::json!({"beside": TASKS}))],
+                &[(
+                    tools::canvas::PLACE_TOOL,
+                    serde_json::json!({"beside": TASKS}),
+                )],
                 64,
             ),
             turn(
                 &[(
-                    tools::canvas::SHOW,
+                    tools::canvas::PLACE_TOOL,
                     serde_json::json!({"resource": MAIL, "reply": "Here is your mail."}),
                 )],
                 64,
@@ -495,10 +498,10 @@ fn a_show_naming_nothing_is_corrected_once() {
     );
     f.session.run_task(&f.run).unwrap();
     let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 2, "one correction, then the show");
+    assert_eq!(bodies.len(), 2, "one correction, then the place");
     let corrected = bodies[1].to_string();
     assert!(
-        corrected.contains("show: missing resource") && corrected.contains("nothing was run"),
+        corrected.contains("place: missing resource") && corrected.contains("nothing was run"),
         "{corrected}"
     );
     let world = f.world.borrow();
