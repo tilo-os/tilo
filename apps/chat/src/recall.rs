@@ -343,7 +343,7 @@ mod tests {
         fn keep(&mut self, fold: &Fold, answer: &str) -> Result<(), ApiError> {
             self.chat
                 .apply(Chat::KEEP_SUMMARY.with(chat::KeepSummary {
-                    channel: conversation(),
+                    conversation: conversation(),
                     through: fold.through.clone(),
                     through_ts: fold.through_ts,
                     text: fold.kept(answer),
@@ -735,7 +735,7 @@ mod tests {
     fn only_the_conversations_agent_keeps_its_summary_and_it_only_reaches_further() {
         let keep = |through: &str, through_ts: i64, text: &str| {
             Chat::KEEP_SUMMARY.with(chat::KeepSummary {
-                channel: conversation(),
+                conversation: conversation(),
                 through: through.into(),
                 through_ts,
                 text: text.into(),
@@ -787,7 +787,7 @@ mod tests {
             thread
                 .chat
                 .apply(Chat::KEEP_SUMMARY.with(chat::KeepSummary {
-                    channel: Id::from_raw(crate::record::CHAT_CHANNEL),
+                    conversation: Id::from_raw(crate::record::CHAT_CHANNEL),
                     through: "m1".into(),
                     through_ts: 10,
                     text: "The whole workspace's channel.".into(),

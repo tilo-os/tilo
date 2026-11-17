@@ -20,24 +20,49 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Feed",
+    "FeedKind",
+    "Folder",
+    "Outline",
     "Article",
     "BlockKind",
     "ContentBlock",
-    "Feed",
-    "FeedKind",
     "Fetched",
-    "Folder",
-    "Outline",
     "Library",
+    "Articles",
     "AddSubscriptionArgs",
     "UnsubscribeArgs",
-    "MarkFeedReadArgs",
-    "MarkEverythingReadArgs",
     "NewFolderArgs",
     "DeleteFolderArgs",
     "ImportSubscriptionsArgs",
-    "RefreshedArgs",
+    "NoteFeedArgs",
+    "ReceiveArgs",
+    "MarkReadArgs",
+    "SetReadArgs",
+    "SetStarredArgs",
+    "SetTagsArgs",
+    "ForgetFeedArgs",
 ]
+
+class Feed(TypedDict):
+    title: str
+    url: str
+    site_url: str
+    folder: str | None
+    kind: FeedKind
+    certificate_pin: str | None
+
+FeedKind = Literal["rss", "atom", "json", "gemini"]
+
+class Folder(TypedDict):
+    name: str
+    collapsed: bool
+
+class Outline(TypedDict):
+    title: str
+    url: str
+    site_url: str
+    folder: str | None
 
 class Article(TypedDict):
     feed_id: str
@@ -58,16 +83,6 @@ class ContentBlock(TypedDict):
     text: str
     href: str | None
 
-class Feed(TypedDict):
-    title: str
-    url: str
-    site_url: str
-    folder: str | None
-    kind: FeedKind
-    certificate_pin: str | None
-
-FeedKind = Literal["rss", "atom", "json", "gemini"]
-
 class Fetched(TypedDict):
     title: str
     author: str
@@ -75,16 +90,6 @@ class Fetched(TypedDict):
     published: int
     summary: str
     blocks: list[ContentBlock]
-
-class Folder(TypedDict):
-    name: str
-    collapsed: bool
-
-class Outline(TypedDict):
-    title: str
-    url: str
-    site_url: str
-    folder: str | None
 
 AddSubscriptionArgs = TypedDict("AddSubscriptionArgs", {
     "url": "str",
@@ -96,15 +101,6 @@ UnsubscribeArgs = TypedDict("UnsubscribeArgs", {
     "feed": "str",
 })
 """The arguments of `unsubscribe`."""
-
-MarkFeedReadArgs = TypedDict("MarkFeedReadArgs", {
-    "feed": "str",
-})
-"""The arguments of `mark-feed-read`."""
-
-MarkEverythingReadArgs = TypedDict("MarkEverythingReadArgs", {
-})
-"""The arguments of `mark-everything-read`."""
 
 NewFolderArgs = TypedDict("NewFolderArgs", {
     "name": "str",
@@ -121,20 +117,52 @@ ImportSubscriptionsArgs = TypedDict("ImportSubscriptionsArgs", {
 })
 """The arguments of `import-subscriptions`."""
 
-RefreshedArgs = TypedDict("RefreshedArgs", {
-    "articles": "list[Fetched]",
+NoteFeedArgs = TypedDict("NoteFeedArgs", {
     "feed": "str",
     "title": NotRequired["str | None"],
     "certificate_pin": NotRequired["str | None"],
 })
-"""The arguments of `refreshed`."""
+"""The arguments of `note-feed`."""
+
+ReceiveArgs = TypedDict("ReceiveArgs", {
+    "feed": "str",
+    "articles": "list[Fetched]",
+})
+"""The arguments of `receive`."""
+
+MarkReadArgs = TypedDict("MarkReadArgs", {
+    "feed": NotRequired["str | None"],
+})
+"""The arguments of `mark-read`."""
+
+SetReadArgs = TypedDict("SetReadArgs", {
+    "article": "str",
+    "read": "bool",
+})
+"""The arguments of `set-read`."""
+
+SetStarredArgs = TypedDict("SetStarredArgs", {
+    "article": "str",
+    "starred": "bool",
+})
+"""The arguments of `set-starred`."""
+
+SetTagsArgs = TypedDict("SetTagsArgs", {
+    "article": "str",
+    "tags": "list[str]",
+})
+"""The arguments of `set-tags`."""
+
+ForgetFeedArgs = TypedDict("ForgetFeedArgs", {
+    "feed": "str",
+})
+"""The arguments of `forget-feed`."""
 
 class Library(Resource):
     """Feeds — `feeds.library`."""
-    __surface__ = "so.tilo.feeds@a1b6edd52ecfa51c"
+    __surface__ = "so.tilo.feeds@dcc6478737966c0a"
     folders: list[Entry[Folder]]
     feeds: list[Entry[Feed]]
-    articles: list[Entry[Article]]
 
     def add_subscription(self,
         *,
@@ -160,22 +188,6 @@ class Library(Resource):
         """Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unsubscribe", items)
 
-    def mark_feed_read(self, *, feed: str) -> None:
-        """Runs the app's action."""
-        return self.action("mark-feed-read", feed=feed)
-
-    def mark_feed_read_many(self, items: list[MarkFeedReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("mark-feed-read", items)
-
-    def mark_everything_read(self) -> None:
-        """Runs the app's action."""
-        return self.action("mark-everything-read")
-
-    def mark_everything_read_many(self, items: list[MarkEverythingReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("mark-everything-read", items)
-
     def new_folder(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-folder", name=name)
@@ -200,26 +212,24 @@ class Library(Resource):
         """Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("import-subscriptions", items)
 
-    def refreshed(self,
+    def note_feed(self,
         *,
-        articles: list[Fetched],
         feed: str,
         title: str | None = None,
         certificate_pin: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["articles"] = articles
         args["feed"] = feed
         if title is not None:
             args["title"] = title
         if certificate_pin is not None:
             args["certificate_pin"] = certificate_pin
-        return self.action("refreshed", **args)
+        return self.action("note-feed", **args)
 
-    def refreshed_many(self, items: list[RefreshedArgs]) -> list[dict[str, Any]]:
-        """Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("refreshed", items)
+    def note_feed_many(self, items: list[NoteFeedArgs]) -> list[dict[str, Any]]:
+        """Runs `note-feed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("note-feed", items)
 
     def export_opml(self) -> None:
         """Runs the app's action."""
@@ -243,6 +253,90 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_subscription", "add_subscription_many", "unsubscribe", "unsubscribe_many", "mark_feed_read", "mark_feed_read_many", "mark_everything_read", "mark_everything_read_many", "new_folder", "new_folder_many", "delete_folder", "delete_folder_many", "import_subscriptions", "import_subscriptions_many", "refreshed", "refreshed_many", "export_opml", "reader_text_larger", "reader_text_smaller", "reader_font", "reader_paper"})
+    __actions__ = frozenset({"add_subscription", "add_subscription_many", "unsubscribe", "unsubscribe_many", "new_folder", "new_folder_many", "delete_folder", "delete_folder_many", "import_subscriptions", "import_subscriptions_many", "note_feed", "note_feed_many", "export_opml", "reader_text_larger", "reader_text_smaller", "reader_font", "reader_paper"})
+
+
+class Articles(Resource):
+    """Articles — `feeds.articles`."""
+    __surface__ = "so.tilo.feeds@dcc6478737966c0a"
+    articles: list[Entry[Article]]
+    @property
+    def read_through(self) -> dict[str, int]:
+        """Read only."""
+        return self.fields["read_through"]
+
+    def receive(self,
+        *,
+        feed: str,
+        articles: list[Fetched],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("receive", feed=feed, articles=articles)
+
+    def receive_many(self, items: list[ReceiveArgs]) -> list[dict[str, Any]]:
+        """Runs `receive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("receive", items)
+
+    def mark_read(self,
+        *,
+        feed: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        if feed is not None:
+            args["feed"] = feed
+        return self.action("mark-read", **args)
+
+    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mark-read", items)
+
+    def set_read(self,
+        *,
+        article: str,
+        read: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-read", article=article, read=read)
+
+    def set_read_many(self, items: list[SetReadArgs]) -> list[dict[str, Any]]:
+        """Runs `set-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-read", items)
+
+    def set_starred(self,
+        *,
+        article: str,
+        starred: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-starred", article=article, starred=starred)
+
+    def set_starred_many(self, items: list[SetStarredArgs]) -> list[dict[str, Any]]:
+        """Runs `set-starred` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-starred", items)
+
+    def set_tags(self,
+        *,
+        article: str,
+        tags: list[str],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-tags", article=article, tags=tags)
+
+    def set_tags_many(self, items: list[SetTagsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tags` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-tags", items)
+
+    def forget_feed(self, *, feed: str) -> None:
+        """Runs the app's action."""
+        return self.action("forget-feed", feed=feed)
+
+    def forget_feed_many(self, items: list[ForgetFeedArgs]) -> list[dict[str, Any]]:
+        """Runs `forget-feed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget-feed", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"receive", "receive_many", "mark_read", "mark_read_many", "set_read", "set_read_many", "set_starred", "set_starred_many", "set_tags", "set_tags_many", "forget_feed", "forget_feed_many"})
 
 

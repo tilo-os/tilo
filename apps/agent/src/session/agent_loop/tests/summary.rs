@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
         let [kept] = kept.as_slice() else {
             panic!("one summary kept, not {kept:?}");
         };
-        assert_eq!(kept["channel"], "loop");
+        assert_eq!(kept["conversation"], "loop");
         assert_eq!(kept["through"], "m7");
         assert_eq!(kept["through_ts"], 70);
         assert_eq!(kept["text"], "The launch is on Friday.\nAda owns the list.");

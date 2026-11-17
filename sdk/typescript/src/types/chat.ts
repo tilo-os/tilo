@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@22a1d9a3cb0ac3f0";
+export const SURFACE = "so.tilo.chat@8f97350030092d32";
 
 export interface Category {
   name: string;
@@ -637,10 +637,10 @@ export interface MarkReadArgs {
 
 /** The arguments of `keep-summary`. */
 export interface KeepSummaryArgs {
-  channel: string;
   through: string;
   through_ts: number;
   text: string;
+  conversation: string;
 }
 
 /** The arguments of `submit-feedback`. */
@@ -1044,10 +1044,10 @@ export interface Workspace extends tilo.Resource {
   /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
   keepSummary(args: {
-    channel: string;
     through: string;
     through_ts: number;
     text: string;
+    conversation: string;
   }): Promise<void>;
   /** Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepSummaryMany(items: KeepSummaryArgs[]): Promise<tilo.ActionAnswer[]>;

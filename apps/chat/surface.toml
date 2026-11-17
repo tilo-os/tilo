@@ -279,10 +279,10 @@ params = [
 id = "keep-summary"
 kind = "undoable"
 params = [
-  { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "through", type = "text", required = true, schema = { type = "string" } },
   { name = "through_ts", type = "int", required = true, schema = { type = "integer" } },
   { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "conversation", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

@@ -3116,6 +3116,13 @@
             },
             "description": "The resources it touched."
           },
+          "made": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Made"
+            },
+            "description": "What it made, each with its id and the address it is published under:\nevery item a write of several made, not only the first."
+          },
           "link": {
             "type": [
               "string",
@@ -3152,6 +3159,22 @@
           "status"
         ],
         "description": "An action's answer, and an invocation's."
+      },
+      "Made": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "address"
+        ],
+        "description": "An item a write made: its id, and the address it is published under."
       },
       "Ask": {
         "type": "object",
@@ -8511,9 +8534,6 @@
       "chat.workspace.keep-summary.Arguments": {
         "type": "object",
         "properties": {
-          "channel": {
-            "type": "string"
-          },
           "through": {
             "type": "string"
           },
@@ -8522,13 +8542,16 @@
           },
           "text": {
             "type": "string"
+          },
+          "conversation": {
+            "type": "string"
           }
         },
         "required": [
-          "channel",
           "through",
           "through_ts",
-          "text"
+          "text",
+          "conversation"
         ],
         "description": ""
       },
@@ -14799,24 +14822,6 @@
         ],
         "description": ""
       },
-      "feeds.library.mark-feed-read.Arguments": {
-        "type": "object",
-        "properties": {
-          "feed": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "feed"
-        ],
-        "description": ""
-      },
-      "feeds.library.mark-everything-read.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "feeds.library.new-folder.Arguments": {
         "type": "object",
         "properties": {
@@ -14880,9 +14885,74 @@
         ],
         "description": ""
       },
-      "feeds.library.refreshed.Arguments": {
+      "feeds.library.note-feed.Arguments": {
         "type": "object",
         "properties": {
+          "feed": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "certificate_pin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "feed"
+        ],
+        "description": ""
+      },
+      "feeds.library.export-opml.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "feeds.library.reader-text-larger.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "feeds.library.reader-text-smaller.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "feeds.library.reader-font.Arguments": {
+        "type": "object",
+        "properties": {
+          "font": {}
+        },
+        "required": [
+          "font"
+        ],
+        "description": ""
+      },
+      "feeds.library.reader-paper.Arguments": {
+        "type": "object",
+        "properties": {
+          "paper": {}
+        },
+        "required": [
+          "paper"
+        ],
+        "description": ""
+      },
+      "feeds.articles.receive.Arguments": {
+        "type": "object",
+        "properties": {
+          "feed": {
+            "type": "string"
+          },
           "articles": {
             "items": {
               "additionalProperties": false,
@@ -14945,64 +15015,87 @@
               "type": "object"
             },
             "type": "array"
-          },
+          }
+        },
+        "required": [
+          "feed",
+          "articles"
+        ],
+        "description": ""
+      },
+      "feeds.articles.mark-read.Arguments": {
+        "type": "object",
+        "properties": {
           "feed": {
-            "type": "string"
-          },
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "certificate_pin": {
             "type": [
               "string",
               "null"
             ]
           }
         },
+        "required": [],
+        "description": ""
+      },
+      "feeds.articles.set-read.Arguments": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
         "required": [
-          "articles",
+          "article",
+          "read"
+        ],
+        "description": ""
+      },
+      "feeds.articles.set-starred.Arguments": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string"
+          },
+          "starred": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "article",
+          "starred"
+        ],
+        "description": ""
+      },
+      "feeds.articles.set-tags.Arguments": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "article",
+          "tags"
+        ],
+        "description": ""
+      },
+      "feeds.articles.forget-feed.Arguments": {
+        "type": "object",
+        "properties": {
+          "feed": {
+            "type": "string"
+          }
+        },
+        "required": [
           "feed"
-        ],
-        "description": ""
-      },
-      "feeds.library.export-opml.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "feeds.library.reader-text-larger.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "feeds.library.reader-text-smaller.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "feeds.library.reader-font.Arguments": {
-        "type": "object",
-        "properties": {
-          "font": {}
-        },
-        "required": [
-          "font"
-        ],
-        "description": ""
-      },
-      "feeds.library.reader-paper.Arguments": {
-        "type": "object",
-        "properties": {
-          "paper": {}
-        },
-        "required": [
-          "paper"
         ],
         "description": ""
       },
@@ -30178,18 +30271,6 @@
     {
       "app": "so.tilo.feeds",
       "resource": "feeds.library",
-      "action": "mark-feed-read",
-      "arguments": "#/components/schemas/feeds.library.mark-feed-read.Arguments"
-    },
-    {
-      "app": "so.tilo.feeds",
-      "resource": "feeds.library",
-      "action": "mark-everything-read",
-      "arguments": "#/components/schemas/feeds.library.mark-everything-read.Arguments"
-    },
-    {
-      "app": "so.tilo.feeds",
-      "resource": "feeds.library",
       "action": "new-folder",
       "arguments": "#/components/schemas/feeds.library.new-folder.Arguments"
     },
@@ -30208,8 +30289,8 @@
     {
       "app": "so.tilo.feeds",
       "resource": "feeds.library",
-      "action": "refreshed",
-      "arguments": "#/components/schemas/feeds.library.refreshed.Arguments"
+      "action": "note-feed",
+      "arguments": "#/components/schemas/feeds.library.note-feed.Arguments"
     },
     {
       "app": "so.tilo.feeds",
@@ -30240,6 +30321,42 @@
       "resource": "feeds.library",
       "action": "reader-paper",
       "arguments": "#/components/schemas/feeds.library.reader-paper.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "receive",
+      "arguments": "#/components/schemas/feeds.articles.receive.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "mark-read",
+      "arguments": "#/components/schemas/feeds.articles.mark-read.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "set-read",
+      "arguments": "#/components/schemas/feeds.articles.set-read.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "set-starred",
+      "arguments": "#/components/schemas/feeds.articles.set-starred.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "set-tags",
+      "arguments": "#/components/schemas/feeds.articles.set-tags.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "feeds.articles",
+      "action": "forget-feed",
+      "arguments": "#/components/schemas/feeds.articles.forget-feed.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

@@ -565,10 +565,10 @@ impl World {
                     "Keep a summary",
                     tilo_actions::OperationKind::Document,
                     vec![
-                        ActionParam::required("channel", ParamType::Text, "The conversation"),
                         ActionParam::required("through", ParamType::Text, "Its last message"),
                         ActionParam::required("through_ts", ParamType::Integer, "When"),
                         ActionParam::required("text", ParamType::Text, "The summary"),
+                        ActionParam::required("conversation", ParamType::Text, "The conversation"),
                     ],
                     Availability::Available,
                     vec![],
