@@ -2080,9 +2080,10 @@ pub fn item_named_as(
     )))
 }
 
-/// Whether the collection field `name` holds the item `id`: the check an
-/// action makes before it resolves a reference, so one that already names
-/// the id costs a scan of the ids alone.
+/// Whether the collection field `name` holds the item `id`, counting one it
+/// keeps out because it no longer reads: the check an action makes before it
+/// resolves a reference, so one that already names the id costs a scan of the
+/// ids alone.
 #[must_use]
 pub fn item_holds(record: &ResourceDesc, value: &dyn Any, name: &str, id: &str) -> bool {
     let Some((index, field)) = record
@@ -2100,7 +2101,9 @@ pub fn item_holds(record: &ResourceDesc, value: &dyn Any, name: &str, id: &str) 
         return false;
     };
     (items.list)(inner).is_some_and(|list| {
-        (0..list.count()).any(|at| list.item(at).is_some_and(|(held, _)| held.as_str() == id))
+        list.quarantines(id)
+            || (0..list.count())
+                .any(|at| list.item(at).is_some_and(|(held, _)| held.as_str() == id))
     })
 }
 

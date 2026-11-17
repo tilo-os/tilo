@@ -1417,6 +1417,12 @@ impl<T: Model> crate::items::ItemSource for Collection<T> {
 pub trait ItemList {
     fn count(&self) -> usize;
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)>;
+    /// Whether `id` is an item kept out of the list because it no longer
+    /// reads ([`Collection::quarantined`]).
+    fn quarantines(&self, id: &str) -> bool {
+        let _ = id;
+        false
+    }
 }
 
 impl<T: Model> crate::table::PublishedItems for Collection<T> {
@@ -1431,6 +1437,10 @@ impl<T: 'static> ItemList for Collection<T> {
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)> {
         let entry = self.items.get(at)?;
         Some((entry.id.clone(), &*entry.item as &dyn Any))
+    }
+
+    fn quarantines(&self, id: &str) -> bool {
+        self.quarantine.iter().any(|held| held.id.as_str() == id)
     }
 }
 
