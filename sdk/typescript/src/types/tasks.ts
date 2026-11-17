@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@455e39db12025c1d";
+export const SURFACE = "so.tilo.tasks@12705021615f11a5";
 
 /** One of "project", "area". */
 export type Kind = "project" | "area";

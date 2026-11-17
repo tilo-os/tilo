@@ -166,7 +166,7 @@ WriteNoteArgs = TypedDict("WriteNoteArgs", {
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@4372df3ebdeb4ab0"
+    __surface__ = "so.tilo.notes@d00ab9647430874b"
     pages: list[Page]
     tags: list[Tag]
     @property

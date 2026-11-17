@@ -291,7 +291,7 @@ PlanArgs = TypedDict("PlanArgs", {
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@455e39db12025c1d"
+    __surface__ = "so.tilo.tasks@12705021615f11a5"
     areas: list[TrackerArea]
 
     def create_area(self,
@@ -379,7 +379,7 @@ class Tracker(Resource):
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@455e39db12025c1d"
+    __surface__ = "so.tilo.tasks@12705021615f11a5"
     issues: list[Issue]
     @property
     def before(self) -> int:
