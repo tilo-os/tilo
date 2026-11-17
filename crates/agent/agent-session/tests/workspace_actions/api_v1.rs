@@ -261,7 +261,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
 
     // What happened came down the stream as it happened.
     let mut seen = String::new();
-    while !seen.contains("event: run") {
+    while !seen.contains("event: invocation") {
         let frame = tokio::time::timeout(std::time::Duration::from_secs(30), stream.frame())
             .await
             .expect("the stream says what happened within 30 s")
@@ -272,8 +272,8 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
         }
     }
     assert!(
-        seen.contains("\"run\":"),
-        "a run event names its run: {seen}"
+        seen.contains("\"invocation\":"),
+        "an invocation's event names it: {seen}"
     );
 
     // The webhook was refused once, and the same delivery came again.
@@ -306,7 +306,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     let event: Value = serde_json::from_slice(&again_body).unwrap();
     assert_eq!(
         (&event["type"], &event["workspace"]),
-        (&json!("run"), &json!(workspace)),
+        (&json!("invocation"), &json!(workspace)),
         "{event}"
     );
 
