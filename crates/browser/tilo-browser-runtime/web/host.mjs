@@ -8,7 +8,7 @@ import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {UPLOAD_ACTIONS,UPLOAD_FOLDER,chooseFiles,dropRoute,droppedEntries,walkDropped} from './upload-files.mjs';
 import {createDropFeedback} from './drop-feedback.mjs';
-import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,asSecondaryButton,isControlClick,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -869,6 +869,25 @@ export async function mountDesktop(target,options={}) {
     const requestSemantics=()=>{if(active())runtime.request_semantics?.(id);};
     on(accessibility,'focusin',event=>{if(!accessibility.contains(event.relatedTarget))requestSemantics();});
 
+    // A secondary click opens the menu of what it lands on, however the
+    // platform makes one. The right button reaches the runtime as it comes;
+    // a Mac's Control-click comes as the primary button with Control held,
+    // which the runtime would take for a press of what is under it. It is
+    // handed on as the secondary button, down and up, before the runtime's
+    // own listeners on the canvas: they see the one press, never both.
+    const controlClicks=new Set();
+    on(canvas,'pointerdown',event=>{
+      if(!isControlClick(event,config.mac))return;
+      event.stopImmediatePropagation();event.preventDefault();
+      controlClicks.add(event.pointerId);
+      canvas.dispatchEvent(new PointerEvent('pointerdown',asSecondaryButton(event,'pointerdown')));
+    },{capture:true});
+    for(const type of ['pointerup','pointercancel'])on(canvas,type,event=>{
+      // The release is that press's whether Control is still held or not.
+      if(event.button===2||!controlClicks.delete(event.pointerId))return;
+      event.stopImmediatePropagation();
+      canvas.dispatchEvent(new PointerEvent(type,asSecondaryButton(event,type)));
+    },{capture:true});
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
     // Every wheel over the surface is the runtime's: sideways swipes pan the
     // strip or scroll an app, Ctrl+wheel is pinch zoom. None may scroll,

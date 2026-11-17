@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createPanorama} from './panorama.mjs';
-import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILE,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
+import {asSecondaryButton,draggingFiles,droppedFiles,isControlClick,pastedPicture,MAX_DROPPED_FILE,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
@@ -478,4 +478,39 @@ test('a wheel tells the runtime where the fingers are before it reads one',async
  assert.equal(seen.length,1,'the pointer stays where the fingers are');
  canvas.dispatchEvent(new WheelEvent('wheel',{cancelable:true,deltaX:6,deltaY:0,clientX:120,clientY:90}));
  assert.deepEqual(seen.slice(1).map(event=>[event.clientX,event.clientY]),[[120,90]],'a wheel elsewhere moves it there');
+});
+test('a Mac\'s Control-click reaches the runtime as the secondary button, down and up, and the right button as it comes',async()=>{
+ const f=await fixture();const heard=[];
+ // The runtime's own listeners on the canvas, registered after the mount's as winit's are.
+ for(const type of ['pointerdown','pointerup','pointercancel'])f.host.canvas.addEventListener(type,event=>heard.push([type,event.button,event.buttons,Boolean(event.ctrlKey),event.clientX,event.clientY,event.pointerId]));
+ const send=(type,init)=>{const event=new PointerEvent(type,{pointerId:7,pointerType:'mouse',clientX:40,clientY:50,...init});f.host.canvas.dispatchEvent(event);return event;};
+ const down=send('pointerdown',{button:0,buttons:1,ctrlKey:true});
+ assert.deepEqual(heard,[['pointerdown',2,2,false,40,50,7]],'the runtime hears one press, of the secondary button, where the pointer is');
+ assert.equal(down.defaultPrevented,true,'the press it stands for starts nothing of the page\'s');
+ send('pointerup',{button:0,buttons:0,ctrlKey:true});
+ assert.deepEqual(heard.at(-1),['pointerup',2,0,false,40,50,7],'and its release');
+ assert.equal(heard.length,2);
+ // Control let go before the button: still that press's release. A press the page cancels ends it the same way.
+ heard.length=0;send('pointerdown',{button:0,buttons:1,ctrlKey:true});send('pointerup',{button:0,buttons:0});
+ send('pointerdown',{button:0,buttons:1,ctrlKey:true});send('pointercancel',{button:0,buttons:0});
+ assert.deepEqual(heard.map(([type,button])=>[type,button]),[['pointerdown',2],['pointerup',2],['pointerdown',2],['pointercancel',2]]);
+ // The primary button alone and the right button arrive as they came, once each.
+ heard.length=0;send('pointerdown',{button:0,buttons:1});send('pointerup',{button:0,buttons:0});send('pointerdown',{button:2,buttons:2});send('pointerup',{button:2,buttons:0});
+ assert.deepEqual(heard.map(([type,button,buttons])=>[type,button,buttons]),[['pointerdown',0,1],['pointerup',0,0],['pointerdown',2,2],['pointerup',2,0]]);
+ // A finger or a pen holding Control is no mouse: the touch stays a touch.
+ heard.length=0;send('pointerdown',{button:0,buttons:1,ctrlKey:true,pointerType:'touch'});send('pointerup',{button:0,buttons:0,ctrlKey:true,pointerType:'touch'});
+ assert.deepEqual(heard.map(([type,button])=>[type,button]),[['pointerdown',0],['pointerup',0]]);
+ await f.host.cleanup();
+});
+test('Control with the primary button is the secondary button on a Mac only, and only for a mouse',()=>{
+ const press={button:0,ctrlKey:true,pointerType:'mouse',clientX:3,clientY:4,pointerId:9,shiftKey:true};
+ assert.equal(isControlClick(press,true),true);
+ assert.equal(isControlClick(press,false),false,'elsewhere Control-click is a click with Control held');
+ assert.equal(isControlClick({...press,ctrlKey:false},true),false);
+ assert.equal(isControlClick({...press,button:2},true),false,'the right button is already the secondary one');
+ assert.equal(isControlClick({...press,button:1},true),false);
+ for(const pointerType of ['touch','pen'])assert.equal(isControlClick({...press,pointerType},true),false);
+ const down=asSecondaryButton(press,'pointerdown'),up=asSecondaryButton(press,'pointerup');
+ assert.deepEqual([down.button,down.buttons,down.ctrlKey,down.shiftKey,down.clientX,down.clientY,down.pointerId,down.bubbles],[2,2,false,true,3,4,9,false]);
+ assert.deepEqual([up.button,up.buttons],[2,0]);
 });

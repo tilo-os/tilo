@@ -52,6 +52,18 @@ test('a pointer event on the layer goes on to the canvas, without bubbling', () 
   assert.equal(canvas.sent[0].pointerId, 1);
 });
 
+test('a context menu asked for over the layer is the runtime\'s: the browser\'s own stays away', () => {
+  const {layer, canvas} = setup();
+  // The runtime's listener on the canvas takes every request, as winit's does.
+  canvas.dispatchEvent = event => { canvas.sent.push(event); event.defaultPrevented = true; return false; };
+  const press = layer.fire('pointerdown', {pointerType: 'mouse', pointerId: 1, clientX: 10, clientY: 20, button: 2, buttons: 2});
+  const asked = layer.fire('contextmenu', {pointerType: 'mouse', pointerId: 1, clientX: 10, clientY: 20, button: 2, buttons: 2});
+  assert.deepEqual(canvas.sent.map(event => [event.type, event.button, event.clientX, event.clientY]),
+    [['pointerdown', 2, 10, 20], ['contextmenu', 2, 10, 20]]);
+  assert.equal(asked.defaultPrevented, true, 'the browser shows no menu of its own over the desktop');
+  assert.equal(press.defaultPrevented, false, 'only the menu request is answered for the browser');
+});
+
 test('moving between the layer\'s own elements neither enters nor leaves the surface', () => {
   const {layer, canvas, text} = setup();
   layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: text});
