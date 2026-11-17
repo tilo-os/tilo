@@ -99,6 +99,10 @@ grep -q 'Environment=TILO_BOOT_HEALTH_UNIT=tilo-server-health.service' \
 grep -q '^ExecStartPre=+/usr/libexec/tilo-hosted-prepare' \
   "$root/usr/lib/systemd/system/tilo-hosted.service" \
   || die 'the hosted-VM service does not run its machine setup as root'
+# Every VM's network opens /dev/net/tun, whose node exists only once the module
+# is loaded; nothing else in the image loads it.
+grep -qx 'tun' "$root/usr/lib/modules-load.d/tilo-hosted.conf" \
+  || die "nothing loads the tun module its VMs' networks open"
 grep -q '^ConditionPathExists=/etc/tilo/api.env' \
   "$root/usr/lib/systemd/system/tilo-api.service" \
   || die 'the API server does not wait for its configuration'

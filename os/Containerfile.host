@@ -189,6 +189,10 @@ COPY os/usr/lib/sysusers.d/tilo-identity.conf \
     /usr/lib/sysusers.d/
 COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-relay.conf \
     /usr/lib/tmpfiles.d/
+# pasta, one per workspace VM, opens /dev/net/tun; the node exists only once the
+# module is loaded, and the service's own machine setup refuses to start without
+# it.
+COPY os/etc/modules-load.d/tilo-hosted.conf /usr/lib/modules-load.d/tilo-hosted.conf
 # The device-trust group owns the identity directory, so it has to exist before
 # tmpfiles-setup runs. There is no session user on a server image; only the
 # static relay account joins this narrow device-identity boundary.
