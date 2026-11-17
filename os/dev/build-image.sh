@@ -427,8 +427,13 @@ export TMPDIR
 if [ -z "${TILO_GENERATION:-}" ] && [ "$TILO_SKIP_BUILD" = "1" ]; then
   # Read back, not allocated: the number is already sealed into this image's
   # UKI, and allocating a second would consume a generation that no published
-  # image carries -- which is the series the rollback floor counts along.
-  TILO_GENERATION="$(podman run --rm --entrypoint cat "$TILO_IMAGE" /usr/lib/tilo/generation 2>/dev/null | tr -d '[:space:]')"
+  # image carries -- which is the series the rollback floor counts along. An
+  # image that carries none (an unsealed one, such as the server OS) reads as
+  # unknown, and that readback has to fail here rather than end the script:
+  # `podman run` of a path the image lacks exits non-zero, which pipefail would
+  # otherwise take as this script's own failure before it printed anything.
+  TILO_GENERATION="$(podman run --rm --entrypoint cat "$TILO_IMAGE" /usr/lib/tilo/generation 2>/dev/null | tr -d '[:space:]')" \
+    || true
   [ -n "$TILO_GENERATION" ] || TILO_GENERATION="unknown"
   msg "generation $TILO_GENERATION (read from $TILO_IMAGE, not allocated)"
 fi
