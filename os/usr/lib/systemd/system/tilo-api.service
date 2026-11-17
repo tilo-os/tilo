@@ -1,0 +1,52 @@
+[Unit]
+Description=Tilo API server (agents' MCP endpoint, routing to their workspaces)
+Documentation=file:///usr/share/doc/tilo/api/
+# Configured entirely by its environment, as its container image is: the
+# deployment's origin, web entry and relay address never enter the image. The
+# unit is inert until an operator writes them, so a server that does not publish
+# an MCP endpoint runs nothing it would refuse to serve.
+ConditionPathExists=/etc/tilo/api.env
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tilo-api
+Group=tilo-api
+EnvironmentFile=/etc/tilo/api.env
+StateDirectory=tilo-api
+StateDirectoryMode=0700
+ExecStart=/usr/libexec/tilo/tilo-api
+Restart=on-failure
+RestartSec=5
+LimitCORE=0
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ReadWritePaths=/var/lib/tilo-api
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

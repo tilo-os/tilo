@@ -1,0 +1,14 @@
+[Unit]
+Description=Boot into a staged OS update, inside the update window
+
+[Timer]
+# The first check waits for the boot to settle and for boot health to have run;
+# then every quarter hour, so an update the bootc timer staged inside the window
+# is applied inside the same one.
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

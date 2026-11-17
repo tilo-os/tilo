@@ -85,4 +85,8 @@ COPY --chmod=0644 keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY --chmod=0644 keys/release/rekor.pub /usr/share/tilo/release/rekor.pub
 
 COPY --chmod=0755 os/containers/tilo-vm-host/entrypoint.sh /usr/local/bin/tilo-vm-host
+# The start the server OS runs too: the machine setup, then the guest and the
+# service.
+COPY --chmod=0755 os/usr/libexec/tilo-hosted-prepare /usr/local/bin/tilo-hosted-prepare
+COPY --chmod=0755 os/usr/libexec/tilo-hosted-serve /usr/local/bin/tilo-hosted-serve
 ENTRYPOINT ["/usr/local/bin/tilo-vm-host"]

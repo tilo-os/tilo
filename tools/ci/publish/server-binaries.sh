@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # The programs the tilo.sh server images run, compiled by t's own check and cached like any other
 # build here: the API server, the VM host's service, its jail helper and its member, the
-# relay's daemon, its admin and its enroll program with the filesystem replica. The images package
-# what this leaves (api-build.sh, vm-host-build.sh, relay-build.sh); none compiles Rust inside its
-# build, so an image after a change costs that crate's compile and a layering run.
+# relay's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
+# boot and update tools. The images package what this leaves (api-build.sh, vm-host-build.sh,
+# relay-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
+# costs that crate's compile and a layering run.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host or relay)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host or relay)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, relay or host)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -32,8 +33,22 @@ case $image in
     # by package root.
     packages=(-p tilo-relay -p tilo-fs --bins)
     bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
+  host)
+    # The server OS: the relay and replica, the hosted-VM service and its jail helper, the API
+    # server, and the boot tools the update ledger and the boot-entry pass read. One feature
+    # resolution, so the shared workspace crates compile once.
+    packages=(-p tilo-relay -p tilo-fs --bin tilo-relay --bin tilo-relay-admin \
+                --bin tilo-enroll --bin fs
+              -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail
+              -p tilo-api --bin tilo-api
+              -p tilo-esp-write --bin tilo-esp-write
+              -p tilo-image-policy-check --bin tilo-image-policy-check
+              -p tilo-user-identity --bin tilo-image-trust
+              -p tilo-board-successor --bin tilo-board-successor)
+    bins=(tilo-relay tilo-relay-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+          tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
   *)
-    die "unknown server image $image: api, vm-host or relay" ;;
+    die "unknown server image $image: api, vm-host, relay or host" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

@@ -1,0 +1,42 @@
+#!/usr/bin/bash
+# Whether an automatic OS update may run now: the window its operator chose.
+#
+#   tilo-server-update-window        exit 0 inside the window (or when none is set)
+#
+# The window is one setting, `window=HH:MM-HH:MM` (local time, `HH:MM` either
+# side; `22:00-04:00` wraps midnight), in the update policy every Tilo machine
+# keeps at /var/lib/tilo/update-policy beside its channel and schedule
+# (sysusers.d/tilo-relay.conf, /usr/libexec/tilo-update-policy-set). A window is
+# what a server needs and a desktop does not: the update service may only stage
+# inside it, and tilo-server-update-apply only reboots into a staged generation
+# inside it, so a machine that serves other people's workspaces restarts when its
+# operator said, never in the middle of their day.
+#
+# No window, or a policy file this image cannot read, means any time: an
+# operator who set nothing is not silently kept on an old image.
+set -uo pipefail
+
+POLICY="${TILO_UPDATE_POLICY:-/var/lib/tilo/update-policy}"
+window=
+if [ -r "$POLICY" ]; then
+  window="$(sed -n 's/^window=//p' "$POLICY" | tail -n 1)"
+fi
+[ -n "$window" ] || exit 0
+
+if [[ ! $window =~ ^([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])$ ]]; then
+  echo "tilo-server-update-window: window '$window' is not HH:MM-HH:MM; allowing the update" >&2
+  exit 0
+fi
+
+now=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+start=$(( 10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[2]} ))
+end=$(( 10#${BASH_REMATCH[3]} * 60 + 10#${BASH_REMATCH[4]} ))
+if [ "$start" -le "$end" ]; then
+  [ "$now" -ge "$start" ] && [ "$now" -lt "$end" ] && exit 0
+else
+  # Across midnight: inside from START to the end of the day, and from the start
+  # of the next one to END.
+  { [ "$now" -ge "$start" ] || [ "$now" -lt "$end" ]; } && exit 0
+fi
+echo "tilo-server-update-window: outside the update window $window"
+exit 1

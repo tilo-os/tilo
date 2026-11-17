@@ -6111,6 +6111,72 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
+# The server OS (os/Containerfile.host): the machine that serves other people's
+# workspaces — the relay and the file replica, the hosted-VM service with
+# Firecracker and its jail helper, the API server — with updates that stage and
+# are judged by the server's own health verdict. Its programs are t's own compile
+# (host-binaries), so the image is packaging only: the mirrored bootc base and the
+# runtime packages from the frozen RPM snapshot. Tested in a micro-VM, and booted
+# in a VM of its own on dispatch.
+[[check]]
+name = "host-binaries"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/server-binaries.sh host /target/publish/host/binaries"
+# One feature resolution for the whole server; the links are most of a server
+# build, and the compiler cache the builder gives this check is what keeps a
+# one-crate change at a relink.
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/host/binaries/**"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "image-host"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/host/binaries /target/publish/host"
+needs = ["host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/host/image.oci.tar", "/target/publish/host/digest", "/target/publish/host/rpms-source"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "test-image-host"
+# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/tests/host_image.sh /target/publish/host/image.oci.tar"
+needs = ["image-host"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1800
+default = false
+
+# The server image proves itself by booting: the machine serves (the hosted-VM
+# service binds its socket, the boot judges itself by the server probe, updates
+# stage through the verified path), and an update that breaks the server spends
+# its tries and the boot loader goes back by itself. Driven at the serial console,
+# which is the only console the image has.
+[[check]]
+name = "host-assurance-x86_64"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh"
+needs = ["image-host", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 10800
+on = ["dispatch"]
+
 [[check]]
 name = "sign-vm-host"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.

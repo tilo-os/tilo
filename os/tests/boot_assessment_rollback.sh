@@ -4,8 +4,7 @@
 #   RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
 #   RESET='./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk "$TILO_DISK"' \
 #   SERIAL='./os/dev/vm.sh serial' \
-#   FAULT=greetd|greeter|unlock \
-#     ./os/tests/boot_assessment_rollback.sh STAGE_IMAGE [OUT_DIR]
+#   FAULT=greetd|greeter|unlock|server #     ./os/tests/boot_assessment_rollback.sh STAGE_IMAGE [OUT_DIR]
 #
 # RUNNER runs one shell command line in the booted guest (`vm.sh ssh`, an ssh
 # wrapper, `tilo-vm vm ssh NAME --`). With SUDO_PASS the commands that need root
@@ -18,10 +17,15 @@
 # SERIAL, if set, prints the guest's console log; each boot that never answers
 # keeps it as evidence of where it stopped.
 #
+# SUBJECT_UNIT is the unit that has to be in service on the deployment the
+# machine came back to (greetd.service by default; a server has no sign-in
+# screen, so it names the unit its own boot health judges it by).
+#
 # STAGE_IMAGE is what `bootc switch` stages: any bootable image other than the
 # booted one that this machine's policy accepts (an immutable tilo-vm digest on
 # a dev disk, a signed release on a sealed one). Prefix `containers-storage:` to
-# stage an image from root's local container storage.
+# stage an image from root's local container storage, or `oci:` to stage an OCI
+# layout directory with its tag, as `tilo-vm vm upgrade --from local` does.
 #
 # What is proved, on the production units and the production boot loader:
 #
@@ -51,6 +55,9 @@
 #                 filesystem's device that is never opened; on a sealed UKI entry the
 #                 fault is UNLOCK not being run for the staged deployment's
 #                 boots, so its real encrypted root waits.
+#        server   the staged deployment's own service (SUBJECT_UNIT) fails to
+#                 start: the shape of an update whose server comes up unable to
+#                 serve, which no "the unit is enabled" check would catch.
 #      Each of its boots spends a try: tilo-boot-health.service fails (or, at
 #      the unlock prompt, nothing runs at all), systemd-bless-boot leaves the
 #      counter, and the boot loader decrements it. While a broken boot is up,
@@ -84,14 +91,15 @@ BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
 # the verdict on a broken boot is the health check's and not this timeout's.
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-360}"
 SWITCH_TIMEOUT="${SWITCH_TIMEOUT:-2400}"
-DROPIN_DIR=/etc/systemd/system/greetd.service.d
+SUBJECT_UNIT="${SUBJECT_UNIT:-greetd.service}"
+DROPIN_DIR="/etc/systemd/system/${SUBJECT_UNIT}.d"
 DROPIN="$DROPIN_DIR/90-boot-assessment-fault.conf"
 FAULT="${FAULT:-greetd}"
 FAULT_CONFIG=/etc/greetd/boot-assessment-fault.toml
 
 [ -n "$RUNNER" ] || { echo "set RUNNER to a command that runs a shell line in the guest" >&2; exit 2; }
 [ -n "$STAGE_IMAGE" ] || { echo "usage: $0 STAGE_IMAGE [OUT_DIR]" >&2; exit 2; }
-case "$FAULT" in greetd|greeter|unlock) ;; *) echo "FAULT must be greetd, greeter or unlock, not '$FAULT'" >&2; exit 2 ;; esac
+case "$FAULT" in greetd|greeter|unlock|server) ;; *) echo "FAULT must be greetd, greeter, unlock or server, not '$FAULT'" >&2; exit 2 ;; esac
 [ "$FAULT" != unlock ] || [ -n "$RESET" ] || { echo "FAULT=unlock power-cycles boots that wait at their unlock prompt: set RESET" >&2; exit 2; }
 mkdir -p "$OUT"
 
@@ -287,6 +295,7 @@ ok "tilo-boot-entries.service succeeded"
 step "stage $STAGE_IMAGE"
 case "$STAGE_IMAGE" in
   containers-storage:*) switch="bootc switch --transport containers-storage $(printf '%q' "${STAGE_IMAGE#containers-storage:}")" ;;
+  oci:*) switch="bootc switch --transport oci $(printf '%q' "${STAGE_IMAGE#oci:}")" ;;
   *) switch="bootc switch $(printf '%q' "$STAGE_IMAGE")" ;;
 esac
 start=$(date +%s)
@@ -321,8 +330,8 @@ TRIES="${BASH_REMATCH[1]}"
 B_ENTRY="$(id_of "$B_FILE")"
 ok "the staged entry carries a try counter before the reboot: $NEXT/$B_FILE (the running one is $NEXT/$A_NEXT)"
 
-# --- 3. the staged deployment cannot reach the greeter --------------------------------
-step "make only the staged deployment unable to reach the greeter ($FAULT)"
+# --- 3. the staged deployment cannot come into service --------------------------------
+step "make only the staged deployment come up broken ($FAULT)"
 UNLOCK_INJECTED=no
 if [ "$FAULT" = unlock ]; then
   # The staged entry's own command line, edited in a private mount namespace
@@ -349,6 +358,15 @@ grep "^options" "$file"'
     UNLOCK_INJECTED=yes
     ok "the staged entry's initrd now waits at an unlock prompt: $shape"
   fi
+elif [ "$FAULT" = server ]; then
+  as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
+# Written by os/tests/boot_assessment_rollback.sh: $SUBJECT_UNIT, this machine's
+# own liveness, fails on the deployment under test (composefs $B_DIGEST) and
+# nowhere else: the shape of an update whose server comes up unable to serve.
+[Service]
+ExecStartPre=/usr/bin/sh -c '! grep -q \"composefs=$B_DIGEST\" /proc/cmdline'
+EOF
+systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 elif [ "$FAULT" = greetd ]; then
   as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: greetd fails on the
@@ -390,8 +408,8 @@ ExecStart=/usr/bin/sh -c 'if grep -q \"composefs=$B_DIGEST\" /proc/cmdline; then
 EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 fi
-guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the booted deployment after the fault was written; it must only affect the staged one"
-[ "$FAULT" = unlock ] || ok "greetd still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
+guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the booted deployment after the fault was written; it must only affect the staged one"
+[ "$FAULT" = unlock ] || ok "$SUBJECT_UNIT still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
 
 has_fallback_unit() {
   guest 'systemctl cat tilo-boot-fallback.service >/dev/null 2>&1'
@@ -535,7 +553,7 @@ while :; do
     [ "$verdict" = not-assessed ] || fail "the deployment that came back was not on trial, yet its health check says '$verdict'"
   fi
   [[ "$a_now" != *+* ]] || fail "the deployment that came back is still on trial ($a_now) after a good boot: systemd-bless-boot did not bless it, so it will spend its tries on boots that work; see $OUT/04-boot$attempt.txt"
-  guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the deployment that came back"
+  guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the deployment that came back"
   ok "boot $attempt: the boot loader went back to $a_now by itself (on trial: ${a_counted:-no}, health: $verdict, blessed)"
   check_fallback_settled "$TRIES"
   break

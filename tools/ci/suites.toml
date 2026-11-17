@@ -1709,6 +1709,14 @@ suite = "os/containers/tilo-vm-host/test-image.sh"
 reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
 
 [[unrequired]]
+suite = "os/tests/host_image.sh"
+reason = "inspects the built server image with buildah as root, so it needs the archive image-host writes and a micro-VM step"
+
+[[unrequired]]
+suite = "os/tests/serial_runner.sh"
+reason = "the runner os/tests/boot_assessment_rollback.sh takes on a machine with no sshd; the host-assurance check runs it against the booted server image's serial console, which it needs"
+
+[[unrequired]]
 suite = "os/containers/tilo-api/test-image.sh"
 reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
 

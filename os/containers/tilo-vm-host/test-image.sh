@@ -32,6 +32,12 @@ grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-legacy hosted lacks p
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
 [[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the relay'"'"'s runs'
+[[ -x $root/usr/local/bin/tilo-hosted-serve ]] || die 'no tilo-hosted-serve, the guest fetch and service start'
+[[ -x $root/usr/local/bin/tilo-hosted-prepare ]] || die 'no tilo-hosted-prepare, the machine setup of the start'
+grep -q 'tilo-hosted-prepare$' "$root/usr/local/bin/tilo-vm-host" \
+  || die 'the start does not run the shared machine setup'
+grep -q 'exec tilo-hosted-serve --state' "$root/usr/local/bin/tilo-vm-host" \
+  || die 'the start does not end in the shared serve step'
 grep -q -- '--evict-notice' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --evict-notice'
 grep -q -- '--memory-mib' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --memory-mib'
 # The start's own mkfs.xfs line, on a scratch file: the state disk's filesystem is made only

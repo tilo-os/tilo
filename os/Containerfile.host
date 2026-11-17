@@ -1,121 +1,202 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Tilo host-mode bootc image — headless always-on host / relay.
-# ----------------------------------------------------------------------------
-# Ships a minimal bootc image that boots straight into
-# `tilo-relay.service` and `tilo-fs-replica.service`. No compositor, no greetd, no session. Users
-# reach it via their own workspaces once the enrollment token in
-# /etc/tilo/enrollment-token.txt is consumed on first boot.
+# Tilo server image — a headless, always-on machine that serves other people's
+# workspaces: the relay and the filesystem replica, the hosted-VM service (one
+# jailed Firecracker VM per workspace environment) and the API server, with
+# updates that stage and roll back on this machine's own health verdict.
+# ============================================================================
+# No compositor, no greetd, no session. Users reach the machine through their
+# own workspaces once the enrollment token in /etc/tilo/enrollment-token.txt is
+# consumed on first boot; an operator reaches it at the serial console, whose
+# pairing token is the first boot's.
 #
-#     podman build -f os/Containerfile.host -t localhost/tilo-host:latest .
+# Nothing here compiles: t builds every program (tools/ci/publish/
+# server-binaries.sh, the checks host-binaries) and this build lays them out on
+# the same mirrored Fedora bootc base and the same frozen RPM snapshot the
+# desktop image uses (tools/ci/publish/host-build.sh). Its context is what the
+# image copies and nothing else, so a one-crate change moves one file in it.
 #
-# The disk-image step is the same as the desktop image:
-# `os/build-host.sh` writes a qcow2 the operator installs onto
-# a target machine. See os/build-host.sh.
+# The guest OS inside each workspace VM is not here: the service fetches the
+# rootfs Firecracker boots, pinned by digest in os/hosted-guest-snapshot.env and
+# signed with the release key.
 # ============================================================================
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
-# Same digest-pinned snapshot and same mirrored Fedora bootc base the desktop
-# image uses (see os/Containerfile's comment, resolve-rpm-snapshot.sh and
-# os/base-snapshot.env). Every `dnf install` in this file pulls from the frozen
-# repo, never live Fedora mirrors. Both ARGs go before the first FROM so
-# they're global — an ARG between two FROMs belongs to the previous stage.
 ARG BASE_REF
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
-# ---- Stage 1: builder (same base + toolchain as the desktop image) ---------
-FROM ${BASE_REF} AS builder
+# Firecracker and its jailer, from the release os/external-assets pins.
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache \
-        gcc gcc-c++ make cmake perl perl-FindBin python3 git \
-        clang clang-devel pkgconf-pkg-config \
-        sqlite-devel zlib-ng-compat-devel \
-    && dnf clean all
-
-WORKDIR /build
-COPY . /build
-
-ARG SOURCE_DATE_EPOCH=0
-# No RUSTFLAGS here, deliberately. The variable REPLACES `build.rustflags`
-# from .cargo/config.toml rather than appending to it, so setting it for the
-# `--remap-path-prefix` alone silently drops target-cpu=x86-64-v3 and every
-# link-time hardening flag (full RELRO, BIND_NOW, noexecstack, and the
-# GNU_PROPERTY shadow-stack mark) from everything this image builds. That
-# exact regression is why the remap now lives in .cargo/config.toml instead,
-# alongside the flags it used to displace -- it still applies here, because
-# cargo reads that config from /build.
-ENV CARGO_HOME=/build/.cargo-home \
-    SCCACHE_DIR=/build/.sccache \
-    CARGO_INCREMENTAL=0 \
-    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
-    LC_ALL=C.UTF-8 \
-    TZ=UTC
-
-# Host image ships tilo-relay plus the authenticated filesystem replica as one
-# composite always-on home peer.
-# Drop the browser member (Servo) before resolving.
-RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,target=/build/target \
-    --mount=type=cache,target=/build/.sccache \
-    sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cargo build --release \
-        -p tilo-relay -p tilo-fs \
-    && mkdir -p /out \
-    && cp target/release/tilo-relay \
-          target/release/tilo-relay-admin \
-          target/release/tilo-enroll \
-          target/release/tilo-home-peer-control \
-          target/release/fs \
-          /out/
-
-# ---- Stage 2: runtime image ------------------------------------------------
+# ---- Runtime image ---------------------------------------------------------
 FROM ${BASE_REF}
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
-# Minimal runtime — no display stack, no PipeWire, no greetd. Just
-# what a headless network appliance needs: time sync, firewall,
-# fuse for filesystem serving, ca-certs for iroh relays.
+# What a server runs, from the frozen snapshot: time sync, firewall, fuse for the
+# filesystem replica, certificates for iroh relays, the network manager, and the
+# VM host's programs — passt is pasta (each VM's network), skopeo fetches the
+# guest, xfsprogs makes a state disk, libcap gives the jail helper what it needs,
+# util-linux's setpriv drops to the service's uid, tar unpacks the member
+# identity, and gzip unpacks the Firecracker release below, which is a tarball.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         firewalld \
         fuse3 \
         ca-certificates \
         NetworkManager \
+        curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
     && rpm -q --qf '%{NAME}\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core \
         openvpn NetworkManager-openvpn openssh openssh-clients openssh-server \
         ModemManager fwupd 2>/dev/null | xargs -r dnf remove -y \
     && dnf clean all
 
-# Copy binaries + systemd unit + tmpfiles snippet.
-COPY --from=builder /out/tilo-relay /usr/libexec/tilo/tilo-relay
-COPY --from=builder /out/tilo-relay-admin /usr/libexec/tilo/tilo-relay-admin
-COPY --from=builder /out/tilo-enroll /usr/libexec/tilo/tilo-enroll
-COPY --from=builder /out/tilo-home-peer-control /usr/libexec/tilo-home-peer-control
-COPY --from=builder /out/fs /usr/bin/fs
-RUN chmod 0755 /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin /usr/libexec/tilo/tilo-enroll /usr/bin/fs /usr/libexec/tilo-home-peer-control \
-    && for name in tilo-relay tilo-relay-admin tilo-enroll; do \
-         ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
-       done
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo server" \
+      org.opencontainers.image.description="A headless Tilo machine that serves workspaces and their VMs" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
 
-COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
-COPY os/usr/lib/systemd/system/tilo-fs-replica.service /usr/lib/systemd/system/tilo-fs-replica.service
-COPY os/usr/lib/systemd/system/tilo-relay-firstboot.service /usr/lib/systemd/system/tilo-relay-firstboot.service
-COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
-COPY os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate
-COPY os/usr/lib/systemd/system/tilo-relay-state-migrate.service /usr/lib/systemd/system/tilo-relay-state-migrate.service
-COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-relay.conf /usr/lib/tmpfiles.d/
-# The device-trust group owns the identity directory, so it has to exist
-# before tmpfiles-setup runs. There is no session user on a host image; only
-# the static relay account joins this narrow device-identity boundary.
-COPY os/usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-identity.conf
-COPY os/usr/lib/sysusers.d/tilo-relay.conf /usr/lib/sysusers.d/tilo-relay.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf
-RUN chmod 0755 /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate
+ARG FIRECRACKER_ASSET=firecracker-v1.17.0-x86_64.tgz
+RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
+    mkdir /tmp/fc \
+    && tar -xzf "/assets/${FIRECRACKER_ASSET}" -C /tmp/fc \
+    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 /usr/local/bin/firecracker \
+    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/jailer-v1.17.0-x86_64 /usr/local/bin/jailer \
+    && rm -rf /tmp/fc \
+    && firecracker --version | head -1 | grep -qx 'Firecracker v1.17.0'
+
+# ---- Programs ---------------------------------------------------------------
+# Host image ships the relay, the authenticated filesystem replica and the enroll
+# program as one composite always-on home peer; the hosted-VM service with its
+# jail helper; the API server; and the boot tools the update ledger needs.
+COPY bin/tilo-relay bin/tilo-relay-admin bin/tilo-enroll /usr/libexec/tilo/
+COPY bin/fs /usr/bin/fs
+COPY bin/tilo-api /usr/libexec/tilo/tilo-api
+COPY bin/tilo-legacy /usr/libexec/tilo/tilo-legacy
+COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
+COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
+COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
+COPY bin/tilo-image-policy-check /usr/libexec/tilo-image-policy-check
+COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
+# The jail helper is root-owned and runnable only by the service's group (10001,
+# os/usr/lib/sysusers.d/tilo-hosted.conf; numeric here because the accounts are
+# made further down). Its capabilities are given by tilo-hosted.service at start
+# (an image build's name the build's own user namespace, not the host's).
+# The ESP writer also answers to /usr/libexec/tilo-uki-cmdline (the last link
+# below): under that name it is the in-place UKI command-line and .osrel editor
+# the boot-entry pass reads (os/components.toml).
+RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
+    && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail \
+    && chmod 0755 /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin \
+        /usr/libexec/tilo/tilo-enroll /usr/libexec/tilo/tilo-api \
+        /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
+        /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
+        /usr/libexec/tilo-board-successor /usr/bin/fs \
+    && for name in tilo-relay tilo-relay-admin tilo-enroll tilo-legacy; do \
+         ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
+       done \
+    && ln -s ../libexec/tilo/tilo-image-trust /usr/bin/tilo-image-trust \
+    && ln -s tilo-esp-write /usr/libexec/tilo-uki-cmdline
+
+# ---- What hosting a VM needs ------------------------------------------------
+# The service runs as tilo-hosted (10001): the jail refuses any other caller. The
+# helper's configuration is root-owned in a root-owned directory, as it requires.
+COPY os/containers/tilo-vm-host/hosted-jail.json /etc/tilo/hosted-jail.json
+# fetch-guest accepts only the guest the release key signed (/etc/containers/
+# policy.json's scope for registry.tilo.so/tilo/hosted-guest).
+COPY os/etc/containers/policy.json /etc/containers/policy.json
+# Where the signatures are: cosign keeps them as sigstore attachments in the same
+# repository, which skopeo looks at only when told to.
+COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
+COPY keys/cosign.pub /usr/share/tilo/cosign.pub
+COPY keys/release/ /usr/share/tilo/release/
+
+# ---- Scripts ----------------------------------------------------------------
+# The machine setup and the start the VM host's own image shares (so a host that
+# runs in a pod and one that owns a machine run one start), the server health
+# verdict, the boot-entry maintenance and the verified update.
+COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
+     os/usr/libexec/tilo-server-health os/usr/libexec/tilo-server-update-window \
+     os/usr/libexec/tilo-server-update-apply \
+     os/usr/libexec/tilo-boot-health \
+     os/usr/libexec/tilo-deployment os/usr/libexec/tilo-verified-update \
+     os/usr/libexec/tilo-update-channel os/usr/libexec/tilo-update-policy-check \
+     os/usr/libexec/tilo-update-policy-set \
+     os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
+     os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate \
+     /usr/libexec/
+RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
+        /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
+        /usr/libexec/tilo-server-update-apply \
+        /usr/libexec/tilo-boot-health /usr/libexec/tilo-deployment \
+        /usr/libexec/tilo-verified-update /usr/libexec/tilo-update-channel \
+        /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
+        /usr/libexec/tilo-image-trust-staged \
+        /usr/libexec/tilo-esp-mount /usr/libexec/tilo-relay-firstboot \
+        /usr/libexec/tilo-relay-state-migrate
+
+# ---- Units ------------------------------------------------------------------
+COPY os/usr/lib/systemd/system/tilo-relay.service \
+    os/usr/lib/systemd/system/tilo-fs-replica.service \
+    os/usr/lib/systemd/system/tilo-relay-firstboot.service \
+    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
+    os/usr/lib/systemd/system/tilo-hosted.service \
+    os/usr/lib/systemd/system/tilo-api.service \
+    os/usr/lib/systemd/system/tilo-boot-entries.service \
+    os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-boot-health.service \
+    os/usr/lib/systemd/system/tilo-boot-fallback.service \
+    os/usr/lib/systemd/system/tilo-deployment-finalize.service \
+    os/usr/lib/systemd/system/tilo-esp-write@.service \
+    os/usr/lib/systemd/system/tilo-server-health.service \
+    os/usr/lib/systemd/system/tilo-server-update-apply.service \
+    os/usr/lib/systemd/system/tilo-server-update-apply.timer \
+    /usr/lib/systemd/system/
+# An update stages where the desktop's does — verified, counted before the
+# reboot, finalized at the next boot — and this image's own step boots into it
+# only inside the operator's window and after the running generation passed its
+# health check. The desktop-only hooks (system extensions, live update) are
+# absent because the units they start are.
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/05-tilo-composefs.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-tilo-boot-entries.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/15-tilo-server-window.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-tilo-update-policy.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf
+COPY os/usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf \
+    /usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf
+COPY os/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf \
+    /usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf
+COPY os/usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf \
+    /usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf
+
+COPY os/usr/lib/sysusers.d/tilo-identity.conf \
+    os/usr/lib/sysusers.d/tilo-relay.conf \
+    os/usr/lib/sysusers.d/tilo-hosted.conf \
+    os/usr/lib/sysusers.d/tilo-api.conf \
+    /usr/lib/sysusers.d/
+COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-relay.conf \
+    /usr/lib/tmpfiles.d/
+# The device-trust group owns the identity directory, so it has to exist before
+# tmpfiles-setup runs. There is no session user on a server image; only the
+# static relay account joins this narrow device-identity boundary.
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf \
+        /usr/lib/sysusers.d/tilo-hosted.conf /usr/lib/sysusers.d/tilo-api.conf
+
+COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
+
+# This image boots bootc's split kernel/initrd entries rather than a sealed UKI,
+# and the boot-entry pass accepts that layout only from an image that says which
+# layout it boots (os/usr/libexec/tilo-deployment, /usr/lib/tilo/image-flavour).
+# `server` and not `dev`: everything that treats `dev` as a development image —
+# the development signing key, dev-only paths — must keep treating this one as a
+# release image.
+RUN echo server > /usr/lib/tilo/image-flavour
 
 # The first-boot script consumes /etc/tilo/enrollment-token.txt (a
 # base32-Crockford EnrollmentToken minted on the operator's primary
@@ -130,28 +211,32 @@ RUN mkdir -p /etc/tilo \
 # Default relay config; `tilo-relay init` inside the first-boot
 # service writes the configuration under `/etc/tilo/relay.toml` once the
 # enrollment completes.
-RUN mkdir -p /etc/tilo \
-    && printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
+RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
         > /etc/tilo/relay.toml
 
-# Enable services.
+# Enable services. The update timer keeps its Tilo drop-ins: it stages a verified
+# image with its try counter and never reboots blindly, and
+# tilo-server-update-apply is the only step that restarts the machine into a
+# staged one.
 RUN systemctl enable tilo-relay-firstboot.service \
     && systemctl enable tilo-relay.service \
     && systemctl enable tilo-fs-replica.service \
+    && systemctl enable tilo-hosted.service \
+    && systemctl enable tilo-api.service \
     && systemctl enable chronyd.service \
     && systemctl enable firewalld.service \
+    && systemctl enable tilo-boot-entries.timer \
+    && systemctl enable tilo-boot-health.service \
+    && systemctl enable tilo-boot-fallback.service \
+    && systemctl enable tilo-server-update-apply.timer \
+    && systemctl enable bootc-fetch-apply-updates.timer \
     && systemctl set-default multi-user.target
 
-# The host does not run a graphical session; disable greetd + gdm
+# The server does not run a graphical session; disable greetd + gdm
 # in case anything transitively pulls them in.
-RUN systemctl mask greetd.service || true
-RUN systemctl mask gdm.service || true
+RUN systemctl mask greetd.service gdm.service || true
 
-# Automatic bootc updates — the host benefits even more than the
-# desktop image because it's headless + always-on.
-RUN systemctl enable bootc-fetch-apply-updates.timer
-
-# Prune everything the headless relay does not need on the boot path.
+# Prune everything the headless server does not need on the boot path.
 # Even more aggressive than the desktop image: no display stack, no
 # session manager, no `wait-online` blockers (iroh does its own NAT
 # traversal + reconnect), no plymouth. `|| true` so a missing unit
@@ -175,9 +260,6 @@ RUN for u in \
 # `localhost/tilo-host` as its update origin, so update it from local
 # storage (`bootc switch --transport containers-storage localhost/tilo-host`),
 # which the policy admits as locally built.
-COPY keys/cosign.pub /usr/share/tilo/cosign.pub
-COPY keys/release/ /usr/share/tilo/release/
-COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
 

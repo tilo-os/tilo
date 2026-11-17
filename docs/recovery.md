@@ -87,8 +87,9 @@ on every attempt, and when it reaches zero it stops offering that entry first.
 running now, which it recognises by the `composefs=` identity of the running root.
 On the sealed image every entry has to name a UKI under `EFI/Linux/bootc/`, and the
 identity is read from that UKI's sealed command line; any other entry fails the
-pass. Only a dev image (`/usr/lib/tilo/image-flavour` reads `dev`) also accepts
-bootc's split kernel/initrd entries: `linux` and `initrd` from one
+pass. Only an unsealed image (`/usr/lib/tilo/image-flavour` reads `dev` for the
+dev image, `server` for the server image) also accepts bootc's split
+kernel/initrd entries: `linux` and `initrd` from one
 `EFI/Linux/bootc_composefs-<id>/` directory and exactly one `composefs=` on the
 `options` line. Such a deployment counts and rolls back the same way; it gets no
 repair entry, because that is derived from a UKI.
@@ -160,6 +161,22 @@ One machine keeps the plain verdict: a virtual machine made without any display
 device (the headless dev VMs reached over SSH), where no greeter can present on
 any generation. On real hardware no display device at all is what a broken GPU
 driver leaves behind, so there the greeter is still required.
+
+A server has no sign-in screen, so it is judged by what it is for. The server
+image enables the same boot assessment, and `tilo-boot-health` there is given
+`tilo-server-health` as this machine's own liveness (`TILO_BOOT_HEALTH_UNIT`, the
+same seam an always-on board uses for its session). That probe passes when the
+relay is active — it notifies readiness only after its iroh endpoint is bound and
+accepting, so peers can dial it, and it keeps writing its metrics snapshot into
+its state root — and `tilo-relay-admin status` could open every durable workspace
+store; where the machine runs a filesystem replica (`/etc/tilo/home-peer.toml`),
+that replica is active and publishes complete content. A server that has not
+been paired yet has no relay to serve; it is judged by reaching
+`multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
+never rolled back for it. A server stages an update but does not restart into it
+blindly: `tilo-server-update-apply` does that only inside the operator's update
+window (`window=HH:MM-HH:MM` in `/var/lib/tilo/update-policy`) and only after
+the running generation passed its own health check.
 
 Blessing renames the booted entry (`name+2-1.conf` to `name.conf`) on the ESP,
 which stays mounted read-only. `systemd-bless-boot.service` therefore remounts

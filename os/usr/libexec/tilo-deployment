@@ -972,9 +972,11 @@ cmd_entries() {
   esac
 
   local f name id changed=0 directory uki_rel cmd digest proven=0 split_entries=0
-  if [ -n "$booted_digest" ] && [ -r "$IMAGE_FLAVOUR_FILE" ] \
-     && [ "$(cat "$IMAGE_FLAVOUR_FILE")" = dev ]; then
-    split_entries=1
+  # An unsealed image's boot layout: the dev image's, and the server image's,
+  # which is unsealed for the same reason (no UKI yet) and must not be mistaken
+  # for a dev image anywhere else: only this pass reads the value this way.
+  if [ -n "$booted_digest" ] && [ -r "$IMAGE_FLAVOUR_FILE" ]; then
+    case "$(cat "$IMAGE_FLAVOUR_FILE")" in dev|server) split_entries=1 ;; esac
   fi
   esp_plan_reset
   for f in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do

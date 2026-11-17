@@ -1,0 +1,133 @@
+#!/usr/bin/bash
+# Whether this boot of a Tilo server is serving what it is for.
+#
+# tilo-boot-health.service judges the server by this unit (the host image's
+# drop-in names it in TILO_BOOT_HEALTH_UNIT, the same seam an always-on board
+# uses for its own session): a oneshot that succeeds when the machine serves and
+# fails when it does not. A failed update needs no rollback command — the boot
+# loader keeps the try it spent and stops offering the entry after its tries —
+# but the verdict has to be about the server, not about a sign-in screen a server
+# does not have.
+#
+# A server that serves means, in order:
+#
+#   1. The relay is serving: tilo-relay.service is active. It is Type=notify and
+#      notifies READY only after its iroh endpoint is bound and accepting, so an
+#      active relay is one peers can dial, and its metrics snapshot is one it
+#      wrote since this boot began.
+#   2. The store opens: `tilo-relay-admin status` opens every durable workspace
+#      store on the state root and reads its membership and retained changes.
+#      A generation whose store cannot be opened is one no workspace can reach.
+#   3. The filesystem replica, when this machine runs one (/etc/tilo/home-peer.toml
+#      names its binding), is active and reports complete content: it publishes
+#      its endpoints only with a ready, fresh proof, so peers get the files they
+#      ask for rather than a relay address that serves none of them.
+#
+# A server that has not been paired yet has no relay: tilo-relay-firstboot waits
+# on the console for the pairing token from the person's own device, and until
+# then multi-user.target is everything the machine can do. That boot is judged by
+# the target alone, as an always-on board with no account yet is, so a fresh
+# server is never rolled back for waiting to be paired.
+set -uo pipefail
+
+log()  { printf 'tilo-server-health: %s\n' "$*"; }
+warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
+
+RELAY_CONFIG="${TILO_SERVER_HEALTH_RELAY_CONFIG:-/etc/tilo/relay.toml}"
+CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
+HOME_PEER="${TILO_SERVER_HEALTH_HOME_PEER:-/etc/tilo/home-peer.toml}"
+ADMIN="${TILO_SERVER_HEALTH_ADMIN:-/usr/libexec/tilo/tilo-relay-admin}"
+# tilo-relay.service's own default state root (os/usr/lib/systemd/system/
+# tilo-relay.service reads /etc/tilo/relay.toml; this is the image's default).
+STATE_ROOT="${TILO_SERVER_HEALTH_STATE_ROOT:-/var/lib/tilo-relay}"
+# How long a serving generation may take to come up: the relay's own
+# TimeoutStartSec plus firstboot's enrollment wait, which has already run by the
+# time this unit is asked.
+DEADLINE="${TILO_SERVER_HEALTH_TIMEOUT:-240}"
+POLL="${TILO_SERVER_HEALTH_POLL:-2}"
+# A metrics snapshot older than this is not evidence of a serving daemon: the
+# daemon writes one every second while it runs.
+FRESH="${TILO_SERVER_HEALTH_FRESH:-30}"
+
+if [ -r "$RELAY_CONFIG" ]; then
+  configured="$(sed -n 's/^[[:space:]]*state_root[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$RELAY_CONFIG" | tail -n 1)"
+  [ -z "$configured" ] || STATE_ROOT="$configured"
+fi
+
+final_state() {
+  systemctl status --no-pager --lines=20 tilo-relay.service tilo-fs-replica.service 2>&1 \
+    | sed 's/^/tilo-server-health:   /' >&2
+}
+
+# Not paired yet: the machine is at its pairing prompt, and reaching
+# multi-user.target is the whole of what it can prove.
+if [ ! -e "$CERT" ]; then
+  end=$(( $(date +%s) + DEADLINE ))
+  while :; do
+    if systemctl is-active --quiet multi-user.target; then
+      log 'not paired yet (no device certificate); the server is waiting at its pairing prompt'
+      log 'multi-user.target is active — this boot is good'
+      exit 0
+    fi
+    [ "$(date +%s)" -ge "$end" ] && break
+    sleep "$POLL"
+  done
+  warn "not paired yet, and multi-user.target did not become active within ${DEADLINE}s"
+  final_state
+  exit 1
+fi
+
+replica=no
+[ -e "$HOME_PEER" ] && replica=yes
+
+# The verdict written as one line per part, so a failed boot's journal says which
+# part failed rather than only that the boot did.
+serving() {
+  local reason= applies
+  if ! systemctl is-active --quiet tilo-relay.service; then
+    reason="tilo-relay.service is not active"
+  elif [ ! -r "$STATE_ROOT/metrics.json" ]; then
+    reason="the relay has written no metrics snapshot in $STATE_ROOT"
+  elif [ $(( $(date +%s) - $(stat -c %Y "$STATE_ROOT/metrics.json") )) -gt "$FRESH" ]; then
+    reason="the relay's metrics snapshot in $STATE_ROOT is older than ${FRESH}s: it is not serving now"
+  elif ! applies="$("$ADMIN" --config "$RELAY_CONFIG" status 2>&1)"; then
+    reason="tilo-relay-admin status cannot open this state root: $applies"
+  elif [ "$replica" = yes ] && ! systemctl is-active --quiet tilo-fs-replica.service; then
+    reason="tilo-fs-replica.service is not active, so the filesystem this machine publishes is not served"
+  elif [ "$replica" = yes ] && ! grep -qx 'full_content_replication: true' <<<"$applies"; then
+    reason="the filesystem replica serves no complete content yet: $(grep -m1 'full_content_replication:' <<<"$applies")"
+  fi
+  if [ -n "$reason" ]; then
+    warn "$reason"
+    return 1
+  fi
+  log 'the relay is serving'
+  log 'the store opens (tilo-relay-admin status read every durable workspace)'
+  if [ "$replica" = yes ]; then
+    log 'the filesystem replica publishes complete content to peers'
+  else
+    log 'this machine runs no filesystem replica, so there is no content endpoint to publish'
+  fi
+  return 0
+}
+
+end=$(( $(date +%s) + DEADLINE ))
+while :; do
+  # A unit that has already failed will not start serving by waiting.
+  if systemctl is-failed --quiet tilo-relay.service; then
+    warn 'tilo-relay.service FAILED, so this boot does not count as a success and the'
+    warn 'boot loader keeps its spent try'
+    final_state
+    exit 1
+  fi
+  if serving; then
+    log 'this boot is good'
+    exit 0
+  fi
+  [ "$(date +%s)" -ge "$end" ] && break
+  sleep "$POLL"
+done
+warn "this boot does not count as a success: not serving within ${DEADLINE}s, so the"
+warn 'boot loader keeps its spent try and goes back after its tries'
+final_state
+exit 1

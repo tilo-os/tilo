@@ -1,0 +1,46 @@
+#!/bin/sh
+# What a machine needs before it can host workspace VMs, done as root: the
+# privileged half of the start, run by tilo-hosted.service's ExecStartPre=+… and
+# by os/containers/tilo-vm-host/entrypoint.sh inside the pod. Both then run
+# tilo-hosted-serve, which needs none of this and fetches the guest and serves.
+set -eu
+
+data=${TILO_VM_DATA:-/var/lib/tilo-hosted}
+run=${TILO_VM_RUN:-/run/tilo-hosted}
+cgroup=${TILO_VM_CGROUP:-tilo-vms}
+
+say() { printf 'tilo-hosted-prepare: %s\n' "$*" >&2; }
+
+# User namespaces: each VM's network namespace is owned through one, which
+# Ubuntu's AppArmor refuses to unprivileged users unless told otherwise.
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+  echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+fi
+[ "$(cat /proc/sys/user/max_user_namespaces)" -gt 0 ] || { say 'user namespaces are off'; exit 1; }
+
+# The tun device: each VM's network uid opens it for pasta's tap, and a /dev made
+# without udev (devtmpfs's 0600) would refuse it, and every VM with it.
+[ -c /dev/net/tun ] || { say 'no /dev/net/tun'; exit 1; }
+chmod 0666 /dev/net/tun
+
+# The cgroup tree: every VM's cgroup is made in $cgroup, under this root. A cgroup
+# hands its controllers to children only while no process of its own runs in it,
+# which inside the pod's cgroup namespace is why the entrypoint moves itself into
+# a leaf first; on a machine's own root, systemd keeps itself in init.scope, so
+# the root is already process-free.
+grep -qw cgroup2 /proc/mounts || { say 'no cgroup v2'; exit 1; }
+for controller in cpu memory pids; do
+  echo "+$controller" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+done
+mkdir -p "/sys/fs/cgroup/$cgroup"
+for controller in cpu memory pids; do
+  echo "+$controller" > "/sys/fs/cgroup/$cgroup/cgroup.subtree_control" 2>/dev/null || true
+done
+
+# The service's directories: its state and the guest images are the service's,
+# the jails are root's (the jail helper creates each one as root), and the run
+# directory holds the socket the service binds.
+mkdir -p "$data" "$data/state" "$data/images" "$data/jails" "$run"
+chown tilo-hosted:tilo-hosted "$data" "$data/state" "$data/images" "$run"
+chown root:root "$data/jails"
+chmod 0755 "$data/jails"

@@ -1,0 +1,48 @@
+#!/usr/bin/bash
+# Boot into a staged OS update, once this generation has proved itself and the
+# operator's window is open.
+#
+# A Tilo server stages an update and does not reboot into it by itself: the boot
+# health check has to have judged the running generation good (a generation that
+# is still on trial must not restart a machine that serves other people's
+# workspaces), and the update window has to be open. This is the step that turns
+# a staged update into the next boot, so a server follows its channel without
+# anyone logging in to it, and a generation that fails its own health check is
+# the boot loader's to take back, not this unit's.
+set -uo pipefail
+
+log()  { printf 'tilo-server-update-apply: %s\n' "$*"; }
+
+BOOTC="${TILO_SERVER_UPDATE_BOOTC:-/usr/bin/bootc}"
+FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
+WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
+HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
+
+# No staged deployment: nothing to boot into.
+staged="$("$BOOTC" status --format json 2>/dev/null | "$FIELD" bootc-status-field staged-image 2>/dev/null)" \
+  || true
+if [ -z "$staged" ]; then
+  log 'no staged deployment; nothing to apply'
+  exit 0
+fi
+
+# The running generation's verdict. A boot the boot loader counts keeps
+# tilo-boot-health, and only an active unit means the boot was judged good and
+# blessed; rebooting before that verdict would spend a try of a generation nobody
+# judged yet. A boot it does not count (the entry is already proven) never runs
+# that unit, and the generation is not on trial, so there is nothing to wait for.
+state="$(systemctl show -p ActiveState --value "$HEALTH" 2>/dev/null)"
+if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ] \
+  && [ "$state" != active ]; then
+  if [ "$state" = failed ]; then
+    log "this generation failed $HEALTH; not restarting the machine on it"
+  else
+    log "$HEALTH has not judged this boot yet; not restarting the machine before it does"
+  fi
+  exit 0
+fi
+
+"$WINDOW" || exit 0
+
+log "booting into the staged $staged"
+systemctl reboot

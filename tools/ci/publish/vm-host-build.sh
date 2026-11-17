@@ -43,6 +43,8 @@ cp os/containers/tilo-vm-host/Containerfile "$context/"
 cp "$binaries/tilo-legacy" "$binaries/tilo-hosted-jail" "$binaries/tilo-runtime" "$context/bin/"
 cp os/containers/tilo-vm-host/hosted-jail.json os/containers/tilo-vm-host/entrypoint.sh \
   "$context/os/containers/tilo-vm-host/"
+mkdir -p "$context/os/usr/libexec"
+cp os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve "$context/os/usr/libexec/"
 cp os/etc/containers/policy.json "$context/os/etc/containers/"
 cp os/etc/containers/registries.d/registry.tilo.so.yaml "$context/os/etc/containers/registries.d/"
 cp keys/cosign.pub "$context/keys/"

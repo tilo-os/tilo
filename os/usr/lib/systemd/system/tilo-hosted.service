@@ -1,0 +1,49 @@
+[Unit]
+Description=Hosted workspace VMs (Firecracker, one jail per workspace)
+Documentation=file:///usr/share/doc/tilo/environments.md
+# A VM has nothing to do before the network and the state directories exist, and
+# a host that owns its own machine must not wait for anything else.
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tilo-hosted
+Group=tilo-hosted
+# The machine setup the pod and this OS share: user namespaces, the tun device,
+# the VMs' cgroup tree, and the directories below. `+` runs it as root.
+ExecStartPre=+/usr/libexec/tilo-hosted-prepare
+ExecStart=/usr/libexec/tilo-hosted-serve --state /var/lib/tilo-hosted/state --run /run/tilo-hosted
+# The helper's file capabilities are a container build's, so this start gives
+# the service the two it needs to become root (jail/privileged.rs), and the
+# helper runs as root from there with the jail's own work: mounting each
+# chroot, mknod-ing its devices and handing it to its slot uid. The bounding
+# set is therefore the kernel's, not narrowed here; only the ambient pair is.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+StateDirectory=tilo-hosted
+StateDirectoryMode=0755
+RuntimeDirectory=tilo-hosted
+RuntimeDirectoryMode=0755
+# The guest fetch from the registry can take minutes on a cold first start.
+TimeoutStartSec=600
+Restart=on-failure
+# A machine without its guest image yet (no network on first boot) retries
+# without a busy loop.
+RestartSec=30
+LimitCORE=0
+PrivateTmp=yes
+ProtectHome=yes
+ReadWritePaths=/var/lib/tilo-hosted
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

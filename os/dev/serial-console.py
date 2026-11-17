@@ -2,11 +2,19 @@
 """Drive a guest's serial console over a qemu unix socket, and log what it said.
 
     serial-console.py SOCKET --log FILE STEP [STEP ...]
+    serial-console.py SOCKET --log FILE --run LINE [--login USER:PASS]
+                       [--timeout SECONDS] [--deadline SECONDS]
 
     STEP := expect:REGEX      wait for REGEX to appear (default timeout 120 s)
           | send:TEXT         type TEXT and press return
           | sleep:SECONDS
           | timeout:SECONDS   change the timeout for later `expect` steps
+
+`--run` is the one-line form a harness needs on a machine with no SSH: it signs
+in at the console if it is asked to (`--login USER:PASS`; a session already open
+is used as it is), runs LINE in that shell, prints the command's output on
+stdout and exits with the command's status. `--timeout` bounds the wait for the
+prompt, `--deadline` the wait for the command. Diagnostics go to stderr.
 
 `vm.sh boot --serial-socket` starts qemu with `-serial unix:...,server=on`,
 which is bidirectional — unlike `-serial file:`, which can only be read. That
@@ -104,12 +112,93 @@ class Console:
         while time.monotonic() < end:
             self._pump()
 
+    def read_until(self, pattern):
+        """Wait for PATTERN; return what the console said before it and the match.
+
+        Everything read is dropped, so a caller that runs one command and reads
+        its answer needs no bookkeeping between calls: each connects to the same
+        terminal, whose scrollback this process never sees.
+        """
+        rx = re.compile(pattern.encode(), re.S)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            text = visible(self.buf)
+            m = rx.search(text)
+            if m:
+                before = text[: m.start()].decode("utf-8", "replace")
+                self.buf = self.buf[m.end() :]
+                return before, m
+            if time.monotonic() > deadline:
+                tail = visible(self.buf)[-4000:].decode("utf-8", "replace")
+                print(
+                    f"[FAIL] never saw /{pattern}/ in {self.timeout:.0f}s.\n"
+                    f"       Last of what the console said:\n{tail}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            self._pump()
+
+    def login(self, userpass):
+        """Sign in at the console's own prompt, or find a session already open."""
+        _, prompt = self.read_until(r"login: |[#$] ")
+        if not prompt.group(0).startswith(b"login"):
+            return
+        user, _, password = userpass.partition(":")
+        self.send(user)
+        self.read_until(r"[Pp]assword:")
+        self.send(password)
+        self.read_until(r"[#$] ")
+
+    def run(self, command):
+        """Run one shell line in the signed-in session; its output and status.
+
+        A command that takes the session down with it — a reboot the line
+        requests — never prints its status; a fresh `login:` on the line means
+        the session ended, and that is reported at once rather than after the
+        deadline.
+        """
+        begin = "__TILO_RUN_BEGIN__"
+        line = (
+            f"printf '\\n{begin}\\n'; {{ {command} ; }} 2>&1; "
+            "printf '\\n__TILO_RUN_END__%s\\n' \"$?\""
+        )
+        self.send(line)
+        text, match = self.read_until(r"__TILO_RUN_END__([0-9]+)|login: ")
+        # The console echoes what was typed, markers and all; only what follows
+        # the last BEGIN is the command's own output.
+        if begin in text:
+            text = text.rsplit(begin, 1)[1]
+        sys.stdout.write(text.lstrip("\r\n"))
+        sys.stdout.flush()
+        if match.group(1) is None:
+            print("[FAIL] the session ended before the command reported", file=sys.stderr)
+            raise SystemExit(1)
+        return int(match.group(1))
+
+
+def option(argv, name, default=None):
+    if name not in argv:
+        return default
+    return argv[argv.index(name) + 1]
+
 
 def main(argv):
-    if len(argv) < 4 or argv[2] != "--log":
+    if len(argv) < 4 or "--log" not in argv:
         raise SystemExit(__doc__)
-    con = Console(argv[1], argv[3])
-    for step in argv[4:]:
+    con = Console(argv[1], option(argv, "--log"))
+    command = option(argv, "--run")
+    if command is not None:
+        # One shell line on a machine with no SSH: sign in if the console asks,
+        # then run it and return its status. The timeout bounds the wait for the
+        # prompt, never the command itself, which the caller sizes by its own
+        # deadline (an update staged, a reboot done).
+        con.timeout = float(option(argv, "--timeout", "30"))
+        login = option(argv, "--login")
+        if login:
+            con.login(login)
+        con.timeout = float(option(argv, "--deadline", "600"))
+        return con.run(command)
+    for step in argv[argv.index("--log") + 2 :]:
         kind, _, arg = step.partition(":")
         if kind == "expect":
             con.expect(arg)

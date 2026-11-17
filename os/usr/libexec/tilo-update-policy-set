@@ -11,12 +11,16 @@ metered=avoid
 channel=
 pin=
 pin_base=
+# A server updates only inside this window; a desktop that sets none updates at
+# any time (tilo-server-update-window reads it there).
+window=
 if [ -r "$state_file" ]; then
     while IFS='=' read -r key value; do
         case "$key:$value" in
             schedule:system|schedule:daily|schedule:weekly) schedule=$value ;;
             metered:allow|metered:avoid) metered=$value ;;
             channel:dev|channel:stable) channel=$value ;;
+            window:[0-9][0-9]:[0-9][0-9]-[0-9][0-9]:[0-9][0-9]) window=$value ;;
             pin:registry.tilo.so/tilo/tilo-vm:*|pin:registry.tilo.so/tilo/tilo-vm-ref:*) pin=$value ;;
             pin-base:sha256:*) pin_base=$value ;;
         esac
@@ -42,6 +46,13 @@ case "${1-}" in
             *) echo "usage: $0 pin REF sha256:DIGEST" >&2; exit 2 ;;
         esac ;;
     unpin) pin= pin_base= ;;
+    # The hours an unattended machine may stage an update and restart into it.
+    window)
+        case "${2-}:${3-}" in
+            [0-9][0-9]:[0-9][0-9]-[0-9][0-9]:[0-9][0-9]:) window=$2 ;;
+            none:) window= ;;
+            *) echo "usage: $0 window HH:MM-HH:MM | window none" >&2; exit 2 ;;
+        esac ;;
     *) echo "unsupported update-policy action" >&2; exit 2 ;;
 esac
 
@@ -51,6 +62,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 {
     printf 'schedule=%s\nmetered=%s\n' "$schedule" "$metered"
     [ -z "$channel" ] || printf 'channel=%s\n' "$channel"
+    [ -z "$window" ] || printf 'window=%s\n' "$window"
     [ -z "$pin" ] || printf 'pin=%s\npin-base=%s\n' "$pin" "$pin_base"
 } > "$tmp"
 chmod 0644 "$tmp"
