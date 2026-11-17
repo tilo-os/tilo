@@ -291,6 +291,10 @@ const MAX_COMPACTION_SET_OPS: usize = collab_types::document_transfer::MAX_DOCUM
     / collab_types::document_transfer::MIN_DOCUMENT_SEGMENT_BYTES
     + 1;
 
+/// The length and digest of one stretch of a durable encoding: a part's bytes, or a document's
+/// changes since its base.
+pub(crate) type StretchDigest = (u64, [u8; 32]);
+
 /// Whether a record's sealed history, a compaction set of `set` ops and bytes
 /// and `writes` ops and bytes after it, is within its bounds.
 const fn sealed_within_bounds(set: (usize, usize), writes: (usize, usize)) -> bool {
@@ -317,9 +321,6 @@ pub struct StatePeer {
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
-    /// The digests of the durable parts [`Self::durable_hash`] last took,
-    /// shared by the copies of this replica. Never persisted.
-    durable_digests: durable::PartDigests,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

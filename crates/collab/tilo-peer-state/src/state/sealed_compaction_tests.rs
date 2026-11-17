@@ -1497,6 +1497,32 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    fn a_durable_hash_keeps_no_second_copy_of_the_replica;
+    // A session that stores nothing hashes what a store would write and keeps the lengths and
+    // digests, not the encoding: every commit takes this hash, and keeping the encoding of every
+    // record beside the replica doubled the memory of a folder's records.
+    phase hashing_a_replica_that_stores_nothing_keeps_no_encoding;
+    {
+        let mut f = fixture();
+        let (now, keys) = (f.now, f.keys());
+        let mut author = Author::new(&f.host);
+        for value in ["1", "2", "3"] {
+            let sealed = write(&f.host, &f.editor, &keys, &author.edit("value", value), now);
+            admit(&mut f.host, &f.editor, sealed, now);
+        }
+        assert_eq!(f.host.kept_encoded_bytes(), 0, "no record is encoded beside the replica");
+        let hashed = f.host.durable_hash().unwrap();
+        assert_eq!(f.host.kept_encoded_bytes(), 0, "hashing keeps no part");
+        assert_eq!(hashed, f.host.durable_hash().unwrap(), "one state has one digest");
+        assert_eq!(
+            hashed,
+            f.host.durable_hash_of_kept_parts().unwrap(),
+            "the digest is the one the stored encoding has"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_history_falls_due_and_the_governor_compacts_behind_its_receipt;
 

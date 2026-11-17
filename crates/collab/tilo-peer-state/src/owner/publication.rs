@@ -30,6 +30,55 @@ pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 /// drafted nothing is tried again ([`NativeWorkspaceOwner::compact_outgoing`]).
 const COMPACTION_RETRY: usize = 256;
 
+/// The records whose compaction drafted nothing, each resting until its passes are spent.
+///
+/// The rest is the record's own, not the workspace's: one history that cannot fold yet — its
+/// keys are not here, or it does not merge — must not keep the workspace's other histories from
+/// folding, which leaves them to fill and refuse writes.
+#[derive(Default)]
+pub(crate) struct Resting(
+    std::sync::Mutex<std::collections::BTreeMap<(WorkspaceId, String, String), usize>>,
+);
+
+impl Resting {
+    /// Count one pass over `workspace`, and answer the records that still rest.
+    fn pass(&self, workspace: WorkspaceId) -> std::collections::BTreeSet<(String, String)> {
+        let mut resting = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut still = std::collections::BTreeSet::new();
+        resting.retain(|(resting_workspace, app, record), wait| {
+            if *resting_workspace != workspace {
+                return true;
+            }
+            *wait = wait.saturating_sub(1);
+            if *wait == 0 {
+                return false;
+            }
+            still.insert((app.clone(), record.clone()));
+            true
+        });
+        still
+    }
+
+    /// `record` of `workspace` drafted nothing: it rests a while.
+    fn failed(&self, workspace: WorkspaceId, (app, record): (String, String)) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((workspace, app, record), COMPACTION_RETRY);
+    }
+
+    /// `record` of `workspace` folded: it is tried again when it is next due.
+    fn folded(&self, workspace: WorkspaceId, (app, record): (String, String)) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(workspace, app, record));
+    }
+}
+
 /// The channel keys a device holds for the sealed records of its workspaces:
 /// what its owner compacts their histories with
 /// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
@@ -2007,37 +2056,50 @@ impl NativeWorkspaceOwner {
         {
             return Ok(0);
         }
-        if asked.is_none()
-            && let Some(wait) = self.0.compaction_wait.lock().get_mut(&workspace)
-            && *wait > 0
-        {
-            *wait = wait.saturating_sub(1);
-            return Ok(0);
-        }
+        // A history that drafted nothing rests a while: folding it again on every pass would
+        // read the whole history as often.
+        let resting = if asked.is_none() {
+            self.0.resting.pass(workspace)
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        let failed = std::sync::Mutex::new(Vec::new());
+        let folded = std::sync::Mutex::new(Vec::new());
         let runs = (self.0.store.as_ref(), workspace);
         let draft = |view: &NativeCommittedView| {
             let device = view.device().device_public_key;
             let mut due = view.peer.publication().sealed_records_to_compact();
-            if let Some(route) = asked
-                && !due.contains(&route)
+            if let Some(route) = asked.as_ref()
+                && !due.contains(route)
             {
-                due.push(route);
+                due.push(route.clone());
             }
             let publication = state(view)?;
             let mut open = |write: &SignedOp| keys.open(workspace, write);
             due.into_iter()
                 .filter_map(|(app, record)| {
+                    if asked.is_none() && resting.contains(&(app.clone(), record.clone())) {
+                        return None;
+                    }
                     let mut seal =
                         |snapshot: &[u8]| keys.seal_checkpoint(workspace, &app, &record, snapshot);
                     let route = (app.as_str(), record.as_str());
-                    let drafted = view.peer.publication().draft_sealed_compaction(
-                        route, None, &mut open, &mut seal, device, now,
-                    );
-                    let ops = drafted
+                    let ops = view
+                        .peer
+                        .publication()
+                        .draft_sealed_compaction(route, None, &mut open, &mut seal, device, now)
                         .inspect_err(|error| {
                             tracing::warn!(%error, %app, %record, "sealed record history stays uncompacted");
+                            failed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push((app.clone(), record.clone()));
                         })
                         .ok()?;
+                    folded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((app.clone(), record.clone()));
                     Some(
                         owed_to(publication, runs, route)
                             .map(|owed| (None, (app, record, owed), ops)),
@@ -2056,13 +2118,19 @@ impl NativeWorkspaceOwner {
         let compacted = self
             .commit_outgoing(workspace, signer, now, draft, admit)
             .await?;
-        if compacted == 0 {
-            self.0
-                .compaction_wait
-                .lock()
-                .insert(workspace, COMPACTION_RETRY);
-        } else {
-            self.0.compaction_wait.lock().remove(&workspace);
+        let failed = failed
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let folded = folded
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A record that folded is tried again when it is next due, not kept resting; one that
+        // could not fold rests a while, still due (it may be full) but not read again each pass.
+        for (app, record) in folded {
+            self.0.resting.folded(workspace, (app, record));
+        }
+        for (app, record) in failed {
+            self.0.resting.failed(workspace, (app, record));
         }
         Ok(compacted)
     }
@@ -2832,5 +2900,40 @@ mod encoding_tests {
                 serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&past).unwrap()).is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMPACTION_RETRY, Resting, WorkspaceId};
+
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
+    }
+
+    /// One history that cannot fold yet rests a while, and every other history of the
+    /// workspace — one that is full and refusing writes, say — is folded on the very next pass.
+    #[test]
+    fn a_history_that_cannot_fold_rests_alone() {
+        let resting = Resting::default();
+        let (stuck, ready) = (
+            ("so.tilo.files".to_owned(), "tree".to_owned()),
+            ("so.tilo.files".to_owned(), "chunk.1@tree".to_owned()),
+        );
+        resting.failed(workspace(), stuck.clone());
+        let still = resting.pass(workspace());
+        assert_eq!(still, std::collections::BTreeSet::from([stuck]));
+        assert!(!still.contains(&ready), "another record is not resting");
+
+        // Its rest is spent after its passes, and it is tried again.
+        for _ in 0..COMPACTION_RETRY {
+            resting.pass(workspace());
+        }
+        assert!(resting.pass(workspace()).is_empty());
+
+        // One that folds leaves no rest behind.
+        resting.failed(workspace(), ready.clone());
+        resting.folded(workspace(), ready.clone());
+        assert!(!resting.pass(workspace()).contains(&ready));
     }
 }

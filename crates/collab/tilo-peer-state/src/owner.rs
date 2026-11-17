@@ -235,9 +235,9 @@ struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
-    /// How many more passes each workspace takes before a compaction that
-    /// drafted nothing is tried again.
-    compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
+    /// The records a compaction of which drafted nothing, each resting a
+    /// while before it is tried again.
+    resting: publication::Resting,
 }
 #[derive(Default)]
 struct Current {
@@ -580,7 +580,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            compaction_wait: Mutex::new(BTreeMap::new()),
+            resting: publication::Resting::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -614,7 +614,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            compaction_wait: Mutex::new(BTreeMap::new()),
+            resting: publication::Resting::default(),
         })))
     }
     #[must_use]

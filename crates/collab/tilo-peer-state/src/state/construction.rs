@@ -94,7 +94,6 @@ impl StatePeer {
             missed: held::Missed::default(),
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
-            durable_digests: super::durable::PartDigests::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history, as a member

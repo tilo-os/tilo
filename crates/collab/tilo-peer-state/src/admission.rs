@@ -653,6 +653,30 @@ impl ExactAdmissions {
         bytes.extend_from_slice(&rest);
         Ok(bytes)
     }
+    /// [`Self::encode_parts`] without keeping the settled entries, which are the bulk: their
+    /// length and digest, and the rest's bytes. What a durable hash folds in on a session that
+    /// stores nothing.
+    pub(crate) fn digested_parts(
+        &self,
+    ) -> Result<(crate::state::StretchDigest, Vec<u8>), AdmissionError> {
+        let rejected = |e: postcard::Error| AdmissionError::Rejected(e.to_string());
+        let settled = if let Some(settled) = self.settled.encoded.get() {
+            settled.to_vec()
+        } else {
+            postcard::to_allocvec(&self.settled.entries).map_err(rejected)?
+        };
+        let rest = postcard::to_allocvec(&(&self.recent, &*self.marks)).map_err(rejected)?;
+        if settled.len().saturating_add(rest.len()) > MAX_EXACT_ADMISSION_BYTES {
+            return Err(AdmissionError::ResourceLimit);
+        }
+        Ok((
+            (
+                u64::try_from(settled.len()).unwrap_or(u64::MAX),
+                *blake3::hash(&settled).as_bytes(),
+            ),
+            rest,
+        ))
+    }
     /// [`Self::encode`] in two parts: the settled entries, shared and
     /// encoded once per settling, then the rest.
     pub(crate) fn encode_parts(&self) -> Result<(std::sync::Arc<[u8]>, Vec<u8>), AdmissionError> {
