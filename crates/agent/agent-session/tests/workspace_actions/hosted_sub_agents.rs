@@ -1379,3 +1379,7 @@ mod teams;
 /// what gives a sub-agent its model.
 #[path = "hosted_skills.rs"]
 mod skills;
+
+/// What a look read before a turn ended, once that turn has ended.
+#[path = "hosted_turn_ends.rs"]
+mod turn_ends;
