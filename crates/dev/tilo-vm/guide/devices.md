@@ -386,6 +386,25 @@ where it is recorded with the route, so tilo-vm uses it too.
   cause; `tilo-vm rollback --account device` brings the previous build back.
 - A layer is refused with `target`: it was built for another architecture.
 
+## The machine's GPU (`--gl`)
+
+`vm create <name> --gl` renders the VM's desktop on the machine's GPU through virgl.
+NVIDIA's EGL stack initialises no context virglrenderer can render on
+(`EGL_NOT_INITIALIZED`), and libvirt otherwise picks the node the firmware
+initialised, which on a laptop with a discrete NVIDIA card is that card. So
+tilo-vm picks the first render node whose driver is not NVIDIA, keeps it on
+the VM and says so when it creates it:
+
+```
+GL renders on /dev/dri/renderD128 (the first render node whose driver is not NVIDIA; amdgpu serves virglrenderer where NVIDIA's EGL stack does not)
+```
+
+Name another with `--render-node /dev/dri/renderD128` when more than one is
+usable. `tilo-vm vm shot` captures the VM's real display from outside the guest even
+with `--gl`: it is what shows a black frame or a frozen picture while the
+compositor restarts, when `tilo-vm shot` (the compositor's own frame) cannot
+answer at all.
+
 Enable a supported active connection's magic-packet wake without reconnecting:
 
 ```sh

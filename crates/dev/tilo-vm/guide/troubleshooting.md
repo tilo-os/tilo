@@ -51,14 +51,21 @@ that consumes that credential. The error prints the exact command;
 `tilo-vm guide platforms` explains it.
 
 **Protocol mismatch.** The VM's tilo-vmd and your `tilo-vm` disagree; both
-protocol numbers are in the message. If `tilo-vm` is older, update your
-checkout and rebuild it the way the docs build it: `cargo build -p tilo-vm`,
-then run `target/debug/tilo-vm` (any cargo drop-in works).
-If the VM is older, it depends on the VM: one running a bootc dev image moves
-onto a current one with `tilo-vm vm upgrade`; one that is not (no `bootc`)
-cannot be upgraded in place, so create a VM from a dev image
-(`tilo-vm vm create <name>`) or ask whoever set it up. The hint checks which
-it is.
+protocol numbers are in the message. A dev disk keeps the tilo-vmd it was
+built with, so a VM from another commit cannot be driven by this checkout's
+tilo-vm, and the image ships the client that matches it. Use the command you
+meant with that client, which `vm client` copies out once:
+
+```sh
+tilo-vm vm client dev -- swap tilo-session
+tilo-vm vm client dev -- vm status
+tilo-vm vm client dev          # fetch it and print the image, protocol and path
+```
+
+The alternative is to change one side: `tilo-vm vm upgrade` moves a VM that
+boots a bootc dev image onto a current one; a tiny VM can be created fresh
+(`tilo-vm vm create <name>`). A checkout older than the VM rebuilds with
+`cargo build -p tilo-vm`. The hint checks which side is older.
 
 **No tilo-vmd / no tilo-control.** The VM runs a production image (or any
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,

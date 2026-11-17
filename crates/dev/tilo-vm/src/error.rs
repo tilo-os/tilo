@@ -246,6 +246,8 @@ pub enum CliError {
     Busy { what: String },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("render node {path} does not exist")]
+    RenderNodeMissing { path: String, nodes: Vec<String> },
     #[error("source file '{path}' is not what the swap snapshotted")]
     SourceChanged { path: String },
     #[error("no app set named '{set}'")]
@@ -381,21 +383,25 @@ impl CliError {
             ),
             Self::ProtocolMismatch { vm, client, daemon, bootc } if client > daemon => {
                 let name = if vm.is_empty() { String::new() } else { format!(" {vm}") };
+                let target = if vm.is_empty() { "<vm>" } else { vm.as_str() };
                 match bootc {
                     Some(true) => format!(
-                        "the VM is older than this tilo-vm: move it onto a current dev image with tilo-vm vm upgrade{name}"
+                        "the VM is older than this tilo-vm: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), or move it onto a current dev image with tilo-vm vm upgrade{name}"
                     ),
                     Some(false) => format!(
-                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}"
+                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>"
                     ),
                     None => format!(
-                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)"
+                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>"
                     ),
                 }
             }
-            Self::ProtocolMismatch { .. } => format!(
-                "this tilo-vm is older than the VM's tilo-vmd: update this checkout and rebuild it: {REBUILD}"
-            ),
+            Self::ProtocolMismatch { vm, .. } => {
+                let target = if vm.is_empty() { "<vm>" } else { vm.as_str() };
+                format!(
+                    "this tilo-vm is older than the VM's tilo-vmd: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), which is the version it ships; or update this checkout and rebuild it: {REBUILD}"
+                )
+            }
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
             Self::CommandFailed { stderr, .. } if !stderr.is_empty() => {
@@ -511,6 +517,16 @@ impl CliError {
             Self::SourceChanged { .. } => {
                 "the worktree changed while the build ran: commit or stash the edit and rerun (nothing was applied)".into()
             }
+            Self::RenderNodeMissing { nodes, .. } => {
+                let available = if nodes.is_empty() {
+                    "this machine exposes none".to_owned()
+                } else {
+                    nodes.join(", ")
+                };
+                format!(
+                    "this machine renders on {available}; pass one with --render-node, or omit it and tilo-vm picks the first node whose driver is not NVIDIA"
+                )
+            }
             Self::InvalidInput(_) => {
                 "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input click left --at 400 300   |   input touch tap 400 300   |   input gamepad press a   (each device: tilo-vm input <key|touch|pen|gamepad> --help; text beyond a US layout: tilo-vm control type '<text>')".into()
             }
@@ -561,7 +577,8 @@ impl CliError {
             | Self::DownloadFailed { .. }
             | Self::RootKeyRefused { .. }
             | Self::Qemu { .. } => "platforms",
-            Self::SudoRefused { .. }
+            Self::RenderNodeMissing { .. }
+            | Self::SudoRefused { .. }
             | Self::DeviceAsleep { .. }
             | Self::WakeTimeout { .. }
             | Self::PeerRoute { .. }
@@ -938,6 +955,10 @@ mod tests {
                 wake: None,
             },
             CliError::InvalidInput("bad".into()),
+            CliError::RenderNodeMissing {
+                path: "/dev/dri/renderD7".into(),
+                nodes: vec!["/dev/dri/renderD128".into()],
+            },
             CliError::UnknownAppSet {
                 set: "x".into(),
                 known: vec!["verification".into()],
@@ -1011,6 +1032,7 @@ mod tests {
                 | CliError::MissingInImage { .. }
                 | CliError::Busy { .. }
                 | CliError::InvalidInput(_)
+                | CliError::RenderNodeMissing { .. }
                 | CliError::SourceChanged { .. }
                 | CliError::UnknownAppSet { .. }
                 | CliError::PackagesFailed { .. }
@@ -1146,6 +1168,7 @@ mod tests {
                 };
                 let upgrade = mismatch(2, 1, Some(true)).hint();
                 assert!(upgrade.contains("tilo-vm vm upgrade dev"), "{upgrade}");
+                assert!(upgrade.contains("tilo-vm vm client dev --"), "{upgrade}");
                 let no_bootc = mismatch(2, 1, Some(false)).hint();
                 assert!(!no_bootc.contains("vm upgrade dev"), "{no_bootc}");
                 assert!(
@@ -1163,6 +1186,7 @@ mod tests {
                 for bootc in [Some(true), Some(false), None] {
                     let rebuild = mismatch(1, 2, bootc).hint();
                     assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
+                    assert!(rebuild.contains("tilo-vm vm client dev --"), "{rebuild}");
                     assert!(!rebuild.contains("vm upgrade"), "{rebuild}");
                 }
             }

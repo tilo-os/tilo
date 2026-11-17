@@ -1666,6 +1666,28 @@ mod tests {
                 Policy::SessionRestart
             );
 
+            // A session component names no unit of its own (the compositor
+            // starts app-keeper and most of the session helpers): swapping it
+            // still restarts the session, because the running compositor is
+            // what started the old binary.
+            let keeper_before = generation(4, &[("app-keeper", "k1", Scope::Session, &[])]);
+            let keeper_after = generation(
+                5,
+                &[
+                    ("app-keeper", "k2", Scope::Session, &[]),
+                    (
+                        "launcher",
+                        "l1",
+                        Scope::Session,
+                        &["tilo-runtime-resident.service"],
+                    ),
+                ],
+            );
+            let (p, restarts) = policy(&user, &keeper_before, &keeper_after).unwrap();
+            assert_eq!(p, Policy::SessionRestart);
+            assert!(restarts.sessions);
+            assert_eq!(restarts.units, ["tilo-runtime-resident.service"]);
+
             let vm = record("vm", AccountKind::Vm);
             let fs1 = generation(1, &[("fs", "f1", Scope::Vm, &["fs.service"])]);
             let fs2 = generation(

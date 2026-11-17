@@ -103,6 +103,11 @@ pub struct VmEntry {
     pub heads: Option<u8>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gl: bool,
+    /// The DRM render node virglrenderer renders on (`--render-node`, or the
+    /// one `vm create` chose and reported). Absent on a VM created before the
+    /// choice was kept: the domain then resolves it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_node: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
