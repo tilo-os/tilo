@@ -375,6 +375,10 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
         self.host.pointer_axis(scroll);
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.host.pointer_modifiers(held);
+    }
+
     fn wants_keyboard(&self) -> bool {
         // A sheet takes the keys while it is drawn, whatever window has the focus behind it: a
         // presented modal claims input by construction. One that asks about typing leaves all but

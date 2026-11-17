@@ -402,7 +402,7 @@ impl PartView {
         let mut instance = Instance::new(
             Config {
                 app: bundle.meta.app.clone(),
-                me: person.to_owned(),
+                me: person.into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
@@ -652,6 +652,12 @@ impl SurfaceHost for PartView {
     fn pointer_axis(&mut self, scroll: Scroll) {
         if let Some(open) = self.open.as_mut() {
             open.widgets.pointer_axis(scroll);
+        }
+    }
+
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        if let Some(open) = self.open.as_mut() {
+            open.widgets.pointer_modifiers(held);
         }
     }
 

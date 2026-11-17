@@ -62,5 +62,10 @@ the graph may make it.
 
 ## Not used
 
-room, desk, space, channel (except Chat's channels), principal, subject, collaborator, participant,
-host, relay (except iroh's NAT relay), run, seat, arrangement, record, slot.
+Old names: room, desk, space, channel (except Chat's channels), principal, subject, collaborator,
+participant, host, relay (except iroh's NAT relay), run, seat, arrangement, record, slot.
+
+Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
+
+`tools/policy/check_glossary_words.py` keeps these words out of code, docs and catalogues; uses
+that mean something outside Tilo are listed in `tools/policy/glossary_words_allowed.toml`.

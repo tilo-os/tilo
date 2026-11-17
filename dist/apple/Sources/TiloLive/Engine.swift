@@ -74,14 +74,34 @@ public final class TiloEngine: NSObject {
         }
     }
 
+    /// This engine's own pass: thirty-two random bytes its script takes an ask of the person's
+    /// providers with. It stands in the script's own scope and here, and nowhere a page's
+    /// script, or the app, can read it.
+    let pass: String
+    /// How many frames inside the page were refused their content, for a check.
+    private(set) var refusedFrames = 0
+
     private let ear = Ear()
     private var standingListeners: [UUID: AsyncStream<Standing>.Continuation] = [:]
     private var changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    /// Whoever waits for the page's next word of a change, once.
+    private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// How often a page that stopped on its way in is loaded again before it is said.
     private var retries = 0
+    /// Why the page last stopped on its way in and was loaded again: the page's own sentence,
+    /// or the system's. Nil while it never did.
+    public private(set) var lastStop: String?
     private var retrying: Task<Void, Never>?
     /// The address asked for last, which a retry loads again.
     private var wanted: URL?
+    /// The workspace asked for last. A page that got in elsewhere is opened there.
+    private var wantedWorkspace: String?
+    /// How often a page that stands elsewhere than asked is still moved before it is said.
+    private var moves = 0
+    /// The page in the view was loaded to pair, and has not been loaded again since.
+    private var pairs = false
+    /// Loads an address in place of the web view, for a test that fetches nothing.
+    var loads: ((URL) -> Void)?
     /// What was looked up in the page's listing since it got in.
     var found: [String: String] = [:]
 
@@ -102,11 +122,14 @@ public final class TiloEngine: NSObject {
         // The page keeps its connection and its records in step while nobody looks at it.
         configuration.preferences.inactiveSchedulingPolicy = .none
         view = WKWebView(frame: frame, configuration: configuration)
+        var random = SystemRandomNumberGenerator()
+        pass = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &random)) }.joined()
         super.init()
         ear.engine = self
         view.configuration.userContentController.add(ear, name: EngineScript.name)
         view.configuration.userContentController.addUserScript(WKUserScript(
-            source: EngineScript.source(origin: settings.origin, unseen: unseen),
+            source: EngineScript.source(origin: settings.origin, unseen: unseen, pass: pass,
+                                        providers: PersonProvider.allCases.map(\.rawValue)),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -120,14 +143,26 @@ public final class TiloEngine: NSObject {
     /// in. `standings()` says how it goes on: the code to compare, then in, or the refusal.
     public func pair(with link: URL) throws(Problem) {
         guard let address = EngineAddress.pairing(link, of: settings) else { throw .notOfThisSite }
-        go(to: address)
+        go(to: address, in: EngineAddress.workspace(ofPage: address), pairing: true)
     }
 
     /// Open the workspace `route` names (`/@<host>/w/<workspace>`, `/w/<workspace>` or `/me`)
     /// as the device this store already is.
     public func open(route: String) throws(Problem) {
         guard let address = EngineAddress.page(of: EngineAddress.chat, in: route, of: settings) else { throw .notOfThisSite }
-        go(to: address)
+        go(to: address, in: EngineAddress.workspace(of: route))
+    }
+
+    /// Put the page away. The engine stands nowhere until it is asked to pair or to open
+    /// again; the device's key stays in its store.
+    public func leave() {
+        retrying?.cancel()
+        retrying = nil
+        wanted = nil
+        wantedWorkspace = nil
+        pairs = false
+        view.loadHTMLString("", baseURL: nil)
+        standing = .away
     }
 
     /// Where the device stands, from now on. The first value is where it stands now.
@@ -148,6 +183,41 @@ public final class TiloEngine: NSObject {
         changeListeners[id] = continuation
         continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.changeListeners[id] = nil } }
         return stream
+    }
+
+    /// The page's next word of a change: `false` when none came within `patience`.
+    func nextChange(within patience: Duration) async -> Bool {
+        let id = UUID()
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled else { return }
+            self?.changeWaiters.removeValue(forKey: id)?.resume(returning: false)
+        }
+        let heard = await withCheckedContinuation { waiting in changeWaiters[id] = waiting }
+        timer.cancel()
+        return heard
+    }
+
+    /// Run `call`, and where Tilo answers that no such action is published, run it again at the
+    /// page's next word of a change (two seconds later at the latest), until `patience` is over.
+    ///
+    /// A device that just got in holds its records before its app has published everything it
+    /// offers: Chat lists its messages a few seconds before it offers its send. An action that
+    /// is still not published when the patience is over is refused in Tilo's own words. Any
+    /// other refusal is said at once.
+    public func whenPublished<Value: Sendable>(within patience: Duration = .seconds(20),
+                                               _ call: @MainActor () async throws -> Value) async throws -> Value {
+        let end = ContinuousClock.now.advanced(by: patience)
+        while true {
+            do {
+                return try await call()
+            } catch let problem as Problem {
+                guard case .refused(code: "unknown_action", reason: _) = problem else { throw problem }
+                let left = ContinuousClock.now.duration(to: end)
+                guard left > .zero else { throw problem }
+                _ = await nextChange(within: min(left, .seconds(2)))
+            }
+        }
     }
 
     // MARK: Resources and actions
@@ -220,7 +290,9 @@ public final class TiloEngine: NSObject {
                                  completionHandler: nil)
     }
 
-    private func ask(_ script: String, _ arguments: [String: Any]) async throws -> JSON {
+    /// - Parameter hiding: something a person typed into a protected field, which went into
+    ///   this ask. An answer that holds it is handed to nobody.
+    func ask(_ script: String, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
         guard case .open = standing else { throw Problem.notOpen }
         let answer: Any?
         do {
@@ -228,7 +300,14 @@ public final class TiloEngine: NSObject {
         } catch {
             throw Problem.noAnswer
         }
-        guard let text = answer as? String, let read = JSON(text: text) else { throw Problem.noAnswer }
+        guard let text = answer as? String else { throw Problem.noAnswer }
+        // The script takes a protected value out of what it answers. Should one come back all
+        // the same, as typed or as JSON writes it, the answer goes no further.
+        if let hiding, !hiding.isEmpty,
+           text.contains(hiding) || text.contains(String(JSON.string(hiding).text.dropFirst().dropLast())) {
+            throw Problem.noAnswer
+        }
+        guard let read = JSON(text: text) else { throw Problem.noAnswer }
         if let refusal = read["error"] {
             let code = refusal["code"]?.string ?? "failed"
             if code == "not-open" { throw Problem.notOpen }
@@ -239,11 +318,14 @@ public final class TiloEngine: NSObject {
 
     // MARK: The page
 
-    private func go(to address: URL) {
+    private func go(to address: URL, in workspace: String?, pairing: Bool = false) {
         retrying?.cancel()
         retrying = nil
         retries = 1
+        moves = 3
+        pairs = pairing
         wanted = address
+        wantedWorkspace = workspace
         standing = .arriving("load")
         load(address)
     }
@@ -251,6 +333,10 @@ public final class TiloEngine: NSObject {
     /// An address that differs from the one shown only after its `#` would leave the page as
     /// it is, and Tilo's page reads what a link carries only as it loads.
     private func load(_ address: URL) {
+        if let loads {
+            loads(address)
+            return
+        }
         guard let shown = view.url, TiloEngine.sameDocument(shown, address) else {
             view.load(URLRequest(url: address))
             return
@@ -277,6 +363,9 @@ public final class TiloEngine: NSObject {
         switch kind {
         case "changed":
             for listener in changeListeners.values { listener.yield() }
+            let waiting = changeWaiters
+            changeWaiters.removeAll()
+            for waiter in waiting.values { waiter.resume(returning: true) }
         case "standing":
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
@@ -293,8 +382,30 @@ public final class TiloEngine: NSObject {
             // `route` is the page's path and what follows its `#`.
             let parts = route.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
             let inside = parts.count > 1 ? parts[1] : ""
-            // A link may have led to the desktop: the engine holds the one app's page.
-            if parts.first != "/app/", let address = EngineAddress.page(of: EngineAddress.chat, in: inside, of: settings) {
+            // The page that paired stands where its site lets a new device in (its home
+            // workspace), under the address of the workspace its link names: it shows that
+            // address and holds the other's records. Loaded again, without the link's secret,
+            // the device opens the workspace it was asked for, as itself.
+            if pairs, let address = EngineAddress.page(of: EngineAddress.chat, in: wantedWorkspace ?? inside, of: settings) {
+                pairs = false
+                wanted = address
+                standing = .arriving("open")
+                load(address)
+                return
+            }
+            // A page may still stand in another workspace than was asked for, and a link may
+            // have led to the desktop. The engine holds the one app's page, in the workspace it
+            // was asked for.
+            let elsewhere = EngineAddress.isElsewhere(inside, than: wantedWorkspace)
+            if parts.first != "/app/" || elsewhere {
+                guard moves > 0, let address = EngineAddress.page(of: EngineAddress.chat, in: elsewhere ? wantedWorkspace ?? inside : inside,
+                                                                  of: settings)
+                else {
+                    standing = .failed(elsewhere ? "The site opened another workspace than the one that was asked for"
+                        : "The site did not open the page that shows one app")
+                    return
+                }
+                moves -= 1
                 wanted = address
                 standing = .arriving("open")
                 load(address)
@@ -320,11 +431,12 @@ public final class TiloEngine: NSObject {
             return
         }
         retries -= 1
+        lastStop = why
         standing = .arriving("load")
         retrying = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             guard let self, !Task.isCancelled else { return }
-            self.view.load(URLRequest(url: wanted))
+            if let loads = self.loads { loads(wanted) } else { self.view.load(URLRequest(url: wanted)) }
         }
     }
 
@@ -356,6 +468,13 @@ extension TiloEngine: WKNavigationDelegate {
     public func webView(_ webView: WKWebView,
                         decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = action.request.url, !action.shouldPerformDownload else { return .cancel }
+        // Tilo's page draws everything itself and makes no frame. Content from anywhere that
+        // something inside a live thing would put into one is not loaded: it gets no document
+        // to run in, so it stands beside nothing of the person's.
+        guard action.targetFrame?.isMainFrame != false else {
+            refusedFrames += 1
+            return .cancel
+        }
         // The engine shows nothing, so nothing leaves it for a browser: what is not the site's
         // own is not loaded at all.
         return policy.destination(of: url) == .inside ? .allow : .cancel

@@ -274,7 +274,7 @@ fn window(
     let instance = Instance::new(
         Config {
             app: BOARD_APP.to_owned(),
-            me: me.to_owned(),
+            me: me.into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,
@@ -422,7 +422,7 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
     let record = InstanceRecord::of(
         docs.chunks(),
         CollaborationManager::with_peer_transport(Routed {
-            me: "ada".to_owned(),
+            me: "ada".into(),
             wire: Wire::default(),
             mine: Rc::default(),
             primary: None,
@@ -1445,7 +1445,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
     let mut instance = Instance::new(
         Config {
             app: BOARD_APP.to_owned(),
-            me: "ada".to_owned(),
+            me: "ada".into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,

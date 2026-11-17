@@ -35,6 +35,19 @@ pub(super) fn dispatcher() -> ui::framework::Dispatcher<crate::resource::Setting
     ui::framework::testing::dispatcher(settings_sections::APP_ID)
 }
 
+/// What reading the display configuration answers. A device's displays are read from its
+/// display service, so the read is a job: this waits for what it finished with.
+pub(super) fn inspection(
+    app: &mut App,
+) -> Result<Option<serde_json::Value>, ui::tilo_actions::ApiError> {
+    app.call_on_finished(
+        <crate::resource::Settings as ui::tilo_resource::Resource>::KIND,
+        "inspect-display-configuration",
+        serde_json::json!({}),
+    )
+    .map(|answered| answered.value)
+}
+
 pub(super) fn frame(app: &mut App) {
     for _ in 0..4 {
         app.settle();
@@ -106,8 +119,7 @@ fn display_inspection_and_staging_share_the_production_api() {
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
         .expect("settings opens headlessly");
     app.settle();
-    let before = app
-        .call("inspect-display-configuration", serde_json::json!({}))
+    let before = inspection(&mut app)
         .expect("display observation is declared")
         .expect("observation returned");
     assert_eq!(before["has_staged_changes"], false);
@@ -139,10 +151,7 @@ fn display_inspection_and_staging_share_the_production_api() {
     )
     .expect("a real scale change stages through the same output resource");
     app.settle();
-    let staged = app
-        .call("inspect-display-configuration", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
+    let staged = inspection(&mut app).unwrap().unwrap();
     assert_eq!(staged["has_staged_changes"], true);
     assert_eq!(
         staged["staged_configuration"]["outputs"]["eDP-1"]["scale"],
@@ -172,10 +181,7 @@ fn display_inspection_and_staging_share_the_production_api() {
         .is_err(),
         "unsupported modes are rejected by the published contract"
     );
-    let after = app
-        .call("inspect-display-configuration", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
+    let after = inspection(&mut app).unwrap().unwrap();
     assert_eq!(
         after, staged,
         "inspection and refused invocations cannot edit display state"
@@ -188,8 +194,7 @@ fn display_observation_is_available_to_viewers_without_staging_rights() {
         ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
             .expect("read-only Settings opens");
     app.settle();
-    let before = app
-        .call("inspect-display-configuration", serde_json::json!({}))
+    let before = inspection(&mut app)
         .expect("read-only observer is available")
         .expect("observation returned");
     assert!(
@@ -201,10 +206,7 @@ fn display_observation_is_available_to_viewers_without_staging_rights() {
         .is_err(),
         "inspection does not grant device configuration rights"
     );
-    let after = app
-        .call("inspect-display-configuration", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
+    let after = inspection(&mut app).unwrap().unwrap();
     assert_eq!(before, after);
 }
 
@@ -229,11 +231,7 @@ fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
             "role {role:?}: stale control in the actual application and host action APIs: {:?}",
             audit.issues
         );
-        assert!(
-            app.call("inspect-display-configuration", serde_json::json!({}))
-                .unwrap()
-                .is_some()
-        );
+        assert!(inspection(&mut app).unwrap().is_some());
         for action in [
             "identify-displays",
             "apply-display-changes",
@@ -1673,4 +1671,29 @@ fn a_display_switch_is_named_by_the_row_it_stands_in() {
         Some(Toggled::True),
         "the display is in use"
     );
+}
+
+/// A device's displays are the display service's to change, so a request for
+/// them answers later: through the app's dispatch it runs as the job it
+/// declares and ends with what the service said. No test has the service, so
+/// each ends saying so.
+#[test]
+fn a_devices_display_requests_are_jobs_the_display_service_answers() {
+    let _guard = crate::prefs::test_env::ConfigGuard::new();
+    let (mut app, _) = device_on_displays();
+    frame(&mut app);
+    for effect in [
+        DisplayEffect::InspectDisplayConfiguration,
+        DisplayEffect::IdentifyDisplays,
+    ] {
+        let answered = app.effect(&crate::effects::SettingsEffect::from(effect.clone()));
+        assert!(
+            matches!(
+                &answered,
+                Err(ui::tilo_actions::ApiError::Failed(why))
+                    if why == "Displays need the certified collaboration service."
+            ),
+            "{effect:?}: {answered:?}"
+        );
+    }
 }

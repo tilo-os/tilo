@@ -69,6 +69,8 @@ pub mod agents;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
+#[cfg(feature = "agents")]
+pub mod coding_agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
@@ -117,6 +119,8 @@ pub mod workspace_agents;
 pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
+#[cfg(feature = "agents")]
+pub mod workspace_telling;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

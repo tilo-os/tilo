@@ -1338,7 +1338,10 @@ tilo_test_env::scenario! {
             )
             .await
             .unwrap_err();
-            assert_eq!(refusal, ActionHostError::NotPermitted.to_string());
+            assert_eq!(
+                refusal,
+                format!("not_permitted: {}", ActionHostError::NotPermitted)
+            );
             assert!(host.mutations.lock().unwrap().is_empty());
         });
     }
@@ -2225,13 +2228,19 @@ tilo_test_env::scenario! {
     phase directory_failures_are_not_reported_as_missing_resources;
     {
         for tool in ["tilo_invoke", "tilo_resolve"] {
-            for failure in [
-                ActionHostError::Unavailable {
-                    reason: "the original directory is disconnected".into(),
-                },
-                ActionHostError::NotPermitted,
+            for (failure, expected) in [
+                (
+                    ActionHostError::Unavailable {
+                        reason: "the original directory is disconnected".into(),
+                    },
+                    "unavailable: the original directory is disconnected",
+                ),
+                (
+                    ActionHostError::NotPermitted,
+                    "not_permitted: the caller may not invoke this action",
+                ),
             ] {
-                let expected = failure.to_string();
+                let expected = expected.to_owned();
                 let host = Writer::new(Some("history"));
                 *host.running.lock().unwrap() = true;
                 *host.query_failure.lock().unwrap() = Some(DirectoryFailure {

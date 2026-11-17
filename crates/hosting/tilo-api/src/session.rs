@@ -103,7 +103,7 @@ pub struct Session {
     id: String,
     /// The person, as their workspaces name them.
     person: String,
-    /// The grant's session with the host the front door forwarded to.
+    /// The grant's session with the host the API server forwarded to.
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,

@@ -51,6 +51,7 @@ pub mod app;
 mod attachment_view;
 pub mod body;
 pub mod call;
+pub mod cause;
 mod channel_sheet;
 pub mod composer;
 pub mod continuity;
@@ -112,6 +113,8 @@ impl ChatApp {
     }
 }
 
+#[cfg(test)]
+mod cause_tests;
 #[cfg(test)]
 mod component_tests;
 #[cfg(test)]

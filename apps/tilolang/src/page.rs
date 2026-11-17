@@ -208,7 +208,7 @@ impl PageWindow {
         let mut instance = Instance::new(
             Config {
                 app: app.clone(),
-                me: me.to_owned(),
+                me: me.into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,

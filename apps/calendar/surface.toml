@@ -45,6 +45,7 @@ fields = [
   { path = "events.*.reminder_min", type = { option = "int" } },
   { path = "events.*.project", type = { option = "text" } },
   { path = "events.*.calendar_id", type = { option = "text" } },
+  { path = "events.*.categories", type = { set = "text" } },
   { path = "tasks", type = { collection = { named = "Task" } }, stored = "keyed" },
   { path = "tasks.*.id", type = "text", readonly = true },
   { path = "tasks.*.title", type = "text", label = true },
@@ -64,7 +65,7 @@ fields = [
 id = "new-event"
 kind = "undoable"
 params = [
-  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["email"] } }, calendar_id = { type = "string" }, categories = { type = "array", items = { type = "string" } }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
 ]
 
 [[resources.verbs]]
@@ -124,6 +125,22 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-categories"
+kind = "outside"
+params = [
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
+  { name = "categories", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "add-invitation"
+kind = "undoable"
+returns = { schema = { type = "object" } }
+params = [
+  { name = "ics", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "delete-task"
 kind = "outside"
 params = [
@@ -142,7 +159,7 @@ params = [
 id = "import-items"
 kind = "outside"
 params = [
-  { name = "events", type = { list = { named = "EventData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } } },
+  { name = "events", type = { list = { named = "EventData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["email"] } }, calendar_id = { type = "string" }, categories = { type = "array", items = { type = "string" } }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } } },
   { name = "tasks", type = { list = { named = "TaskData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } } },
 ]
 
@@ -150,7 +167,7 @@ params = [
 id = "adopt-remote-event"
 kind = "outside"
 params = [
-  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["email"] } }, calendar_id = { type = "string" }, categories = { type = "array", items = { type = "string" } }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
   { name = "at", type = { named = "RemoteAt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
 ]
 
@@ -241,6 +258,7 @@ fields = [
   { name = "reminder_min", type = { option = "int" } },
   { name = "project", type = { option = "text" } },
   { name = "calendar_id", type = { option = "text" } },
+  { name = "categories", type = { set = "text" } },
 ]
 
 [[resources.types]]
@@ -266,6 +284,7 @@ fields = [
   { name = "reminder", type = "int" },
   { name = "project", type = "text" },
   { name = "calendar_id", type = "text" },
+  { name = "categories", type = { list = "text" } },
 ]
 
 [[resources.types]]

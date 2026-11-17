@@ -436,6 +436,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         author_name: message.author_name.clone(),
         share: message.share.clone(),
         question: message.question.clone(),
+        cause: message.cause.clone(),
         attempts: message.attempts,
         sending: false,
     }

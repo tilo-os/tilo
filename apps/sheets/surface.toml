@@ -274,6 +274,13 @@ id = "export-xlsx-content"
 kind = "read"
 
 [[resources.verbs]]
+id = "export-csv-content"
+kind = "read"
+params = [
+  { name = "sheet", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
 id = "read-file"
 kind = "read"
 params = [
@@ -290,6 +297,16 @@ params = [
   { name = "name", type = "text", required = true },
   { name = "sheet", type = { option = "text" }, required = false },
   { name = "from", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "read-cells"
+kind = "read"
+params = [
+  { name = "sheet", type = "text", required = true },
+  { name = "range", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+  { name = "shown", type = { option = "bool" }, required = false },
 ]
 
 [[resources.types]]

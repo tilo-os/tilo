@@ -951,21 +951,51 @@ async function connect({
       throw failure(result.Err);
     }
 
-    /** Run one action; `target` is `{provider, address: {resource, action}}` from a catalogue row. */
-    function invoke(target, argument, {confirmation = null, invocation, label} = {}) {
+    /** `target` as it travels: `{provider, address: {resource, action}}` copied from a catalogue row. */
+    function wireTarget(target) {
       const resource = target?.address?.resource;
       const recordsOwn = resource === '' && String(target?.provider).startsWith('record:');
       if (!target?.provider || !(resource || recordsOwn) || !target?.address?.action) {
         throw new TypeError('target is {provider, address: {resource, action}} copied from a catalogue row');
       }
+      return {provider: target.provider, address: {resource: target.address.resource, action: target.address.action}};
+    }
+
+    /** Run one action; `target` is `{provider, address: {resource, action}}` from a catalogue row. */
+    function invoke(target, argument, {confirmation = null, invocation, label} = {}) {
+      const wired = wireTarget(target);
       const id = invocation ?? globalThis.crypto.randomUUID();
       const existing = entries.get(id);
       if (existing) return ticket(existing, existing.terminal ? Promise.resolve(existing) : send(existing));
       const entry = keep(id, {state: 'unknown'}, {
-        target: {provider: target.provider, address: {resource: target.address.resource, action: target.address.action}},
+        target: wired,
         argument: invokeArgument(argument), confirmation: wireConfirmation(confirmation), label: label ?? null,
       });
       return ticket(entry, send(entry));
+    }
+
+    /**
+     * Run one action and answer what the host said of it, `{invocation, state, output?, error?}`,
+     * keeping nothing of the call in this page: not its argument, which may be what a person
+     * typed into a protected field. A refusal throws as `invoke`'s does. One the host accepted
+     * and still runs is followed with `observe`; a caller that must not run it twice names the
+     * `invocation` itself and asks again under the same id.
+     */
+    async function once(target, argument, {confirmation = null, invocation} = {}) {
+      const id = invocation ?? globalThis.crypto.randomUUID();
+      const confirmed = wireConfirmation(confirmation);
+      const answer = await ask({Invoke: {invocation: id, target: wireTarget(target), argument: invokeArgument(argument),
+        ...(confirmed ? {confirmation: confirmed} : {})}});
+      const receipt = answer.Receipt;
+      if (!receipt) throw new ActionsError('unavailable', 'the host did not answer');
+      if (receipt.status?.Rejected) throw failure(receipt.status.Rejected.error);
+      return {invocation: id, ...(receiptState(receipt.status) ?? {state: 'unknown'})};
+    }
+
+    /** What became of an invocation the host accepted, asked of the host and kept nowhere here. */
+    async function observe(id) {
+      const update = (await ask({Observe: {invocation: id}})).Update?.state?.update;
+      return {invocation: id, ...(update ? stateOf(update) : {state: 'unknown'})};
     }
 
     async function status(id) {
@@ -993,6 +1023,8 @@ async function connect({
     return {
       catalogue,
       invoke,
+      once,
+      observe,
       status,
       cancel,
       dispose() { entries.clear(); },

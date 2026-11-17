@@ -12,7 +12,8 @@ use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value, parse_
 use crate::resource::{CellWrite, range_label};
 use crate::workbook::SheetSnapshot;
 
-pub const MAX_READ_CELLS: usize = 4096;
+/// The most cells one part of a read answers, as the record's own read and a file's.
+pub const MAX_READ_CELLS: usize = crate::resource::MAX_READ_CELLS;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchableCell {
@@ -169,21 +170,68 @@ pub fn sort_writes(
     writes
 }
 
-pub fn read(snap: &SheetSnapshot, range: Option<&str>) -> Result<serde_json::Value, String> {
-    let used = snap.raw.keys().chain(snap.bold.iter()).copied();
-    let (start, end) = match range {
-        Some(range) => crate::resource::parse_range(range)
-            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?,
-        None => used.fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
-            ((0, 0), (end.0.max(col), end.1.max(row)))
-        }),
+/// What a range of the sheet holds, as values: numbers as numbers and dates as ISO text, with
+/// the formulas, formats and bold cells by reference. `range` is every used cell when none, the
+/// cells a formula spills into among them. A range of more than [`MAX_READ_CELLS`] cells
+/// answers in parts of whole rows: `from` is the row a part starts at, as the sheet numbers it,
+/// and the answer's `next` the row to read on from, beside the whole range as `of`. With
+/// `shown`, what each cell shows comes beside its value.
+///
+/// # Errors
+/// A range that is none, and a `from` outside the range.
+pub fn read(
+    snap: &SheetSnapshot,
+    range: Option<&str>,
+    from: Option<u32>,
+    shown: bool,
+) -> Result<serde_json::Value, String> {
+    let values = crate::calc::recalculate_snapshot(snap);
+    let (start, end) = if let Some(range) = range {
+        crate::resource::parse_range(range)
+            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?
+    } else {
+        let spilled = values
+            .iter()
+            .filter(|(_, value)| **value != CellValue::Empty)
+            .map(|(addr, _)| *addr);
+        snap.raw
+            .keys()
+            .chain(snap.bold.iter())
+            .copied()
+            .chain(spilled)
+            .fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
+                ((0, 0), (end.0.max(col), end.1.max(row)))
+            })
     };
-    let width = (end.0 - start.0) as usize + 1;
-    let height = (end.1 - start.1) as usize + 1;
-    if width.saturating_mul(height) > MAX_READ_CELLS {
-        return Err(format!("read at most {MAX_READ_CELLS} cells at once"));
+    let first = if let Some(row) = from {
+        row.checked_sub(1)
+            .filter(|row| (start.1..=end.1).contains(row))
+            .ok_or_else(|| {
+                format!(
+                    "`from` is a row of {}: {} to {}",
+                    range_label(start, end),
+                    start.1.saturating_add(1),
+                    end.1.saturating_add(1)
+                )
+            })?
+    } else {
+        start.1
+    };
+    let width = usize::try_from(end.0.saturating_sub(start.0))
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let most_rows = u32::try_from((MAX_READ_CELLS / width).max(1)).unwrap_or(u32::MAX);
+    let last = end.1.min(first.saturating_add(most_rows.saturating_sub(1)));
+    let mut content = range_content_of(snap, &values, (start.0, first), (end.0, last), shown);
+    if (first, last) != (start.1, end.1)
+        && let Some(fields) = content.as_object_mut()
+    {
+        fields.insert("of".into(), range_label(start, end).into());
+        if last < end.1 {
+            fields.insert("next".into(), last.saturating_add(2).into());
+        }
     }
-    Ok(range_content(snap, start, end))
+    Ok(content)
 }
 
 /// `number` to the 15 significant digits a spreadsheet keeps, so a read
@@ -259,25 +307,39 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
 
 fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
     let values = crate::calc::recalculate_snapshot(snap);
+    range_content_of(snap, &values, start, end, false)
+}
+
+/// The cells `start..=end` of `snap`, whose cells compute `values`, as a read answers them;
+/// with `shown`, also what each shows.
+fn range_content_of(
+    snap: &SheetSnapshot,
+    values: &HashMap<Addr, CellValue>,
+    start: Addr,
+    end: Addr,
+    shown: bool,
+) -> serde_json::Value {
     let mut rows = Vec::new();
+    let mut words = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut formats = serde_json::Map::new();
     let mut bold = Vec::new();
     for row in start.1..=end.1 {
         let mut line = Vec::new();
+        let mut line_words = Vec::new();
         for col in start.0..=end.0 {
             let raw = snap.raw.get(&(col, row));
-            line.push(
-                values
-                    .get(&(col, row))
-                    .map_or(serde_json::Value::Null, |value| {
-                        json_value(
-                            value,
-                            shown_format(snap, (col, row)),
-                            raw.map(String::as_str),
-                        )
-                    }),
-            );
+            let held = values
+                .get(&(col, row))
+                .map(|value| (value, shown_format(snap, (col, row))));
+            line.push(held.map_or(serde_json::Value::Null, |(value, format)| {
+                json_value(value, format, raw.map(String::as_str))
+            }));
+            if shown {
+                line_words.push(serde_json::Value::String(
+                    held.map_or_else(String::new, |(value, format)| format_value(value, format)),
+                ));
+            }
             if let Some(raw) = raw.filter(|raw| raw.starts_with('=')) {
                 formulas.insert(addr_to_a1(col, row), raw.clone().into());
             }
@@ -289,6 +351,7 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
             }
         }
         rows.push(serde_json::Value::Array(line));
+        words.push(serde_json::Value::Array(line_words));
     }
     let mut content = serde_json::json!({
         "sheet": snap.name,
@@ -297,10 +360,13 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
         "formulas": formulas,
         "bold": bold,
     });
-    if !formats.is_empty()
-        && let Some(fields) = content.as_object_mut()
-    {
-        fields.insert("formats".into(), formats.into());
+    if let Some(fields) = content.as_object_mut() {
+        if !formats.is_empty() {
+            fields.insert("formats".into(), formats.into());
+        }
+        if shown {
+            fields.insert("shown".into(), words.into());
+        }
     }
     note_formula_errors(&mut content, snap, start, end);
     content
@@ -486,9 +552,11 @@ pub fn answer(
     }
     let workbook = crate::workbook::Workbook::read(doc).ok()?;
     let touched = touched_cells(changes);
-    let sheet_id = touched
-        .first()
-        .map(|(sheet, _, _)| sheet.clone())
+    // A delete also rewrites the formulas of other sheets that read the rows: the answer is
+    // about the sheet the rows left.
+    let sheet_id = reshaped_sheet(changes)
+        .filter(|_| action == "delete-rows")
+        .or_else(|| touched.first().map(|(sheet, _, _)| sheet.clone()))
         .or_else(|| changes.iter().find_map(|patch| sheet_of(&props(patch))))?;
     let sheet_key = ui::tilo_resource::Id::from_raw(sheet_id.clone());
     let sheet = workbook.sheet(&sheet_key)?;
@@ -510,7 +578,15 @@ pub fn answer(
                 )
             })
             .collect();
-        let (first, rest) = cells.split_first()?;
+        let Some((first, rest)) = cells.split_first() else {
+            // A change that wrote no cell, as a sheet made with none: the sheet itself, so
+            // its maker has its id.
+            return Some(serde_json::json!({
+                "sheet": snap.name,
+                "item": sheet_id,
+                "rows": [],
+            }));
+        };
         rest.iter()
             .fold((*first, *first), |(start, end), &(col, row)| {
                 (
@@ -541,7 +617,145 @@ pub fn answer(
     if shown_end != end {
         note_formula_errors(&mut content, &snap, start, end);
     }
+    let note = match action {
+        "delete-rows" => {
+            lost_references(&workbook, &touched).map(|lost| ("reference_errors", lost))
+        }
+        "sort-rows" => {
+            unmoved_references(&workbook, &sheet_key, start, end).map(|kept| ("references", kept))
+        }
+        _ => None,
+    };
+    if let (Some((key, note)), Some(fields)) = (note, content.as_object_mut()) {
+        fields.insert(key.into(), note);
+    }
     Some(content)
+}
+
+/// The most cells an answer names when it lists the formulas a change concerns.
+const MAX_NAMED_CELLS: usize = 20;
+
+/// `cells`, each named with its sheet, as an answer lists them: the first few and how many more.
+fn named_cells(cells: Vec<String>, how: &str) -> Option<serde_json::Value> {
+    if cells.is_empty() {
+        return None;
+    }
+    let more = cells.len().saturating_sub(MAX_NAMED_CELLS);
+    let mut note = serde_json::json!({
+        "cells": cells.into_iter().take(MAX_NAMED_CELLS).collect::<Vec<_>>(),
+        "how": how,
+    });
+    if more > 0
+        && let Some(fields) = note.as_object_mut()
+    {
+        fields.insert("more".into(), more.into());
+    }
+    Some(note)
+}
+
+/// The formulas a delete rewrote that now hold `#REF!`, on every sheet: what pointed at the
+/// deleted cells says so rather than reading the cells that slid into their place.
+fn lost_references(
+    workbook: &crate::workbook::Workbook,
+    touched: &[(String, String, String)],
+) -> Option<serde_json::Value> {
+    let mut cells = Vec::new();
+    for (id, sheet) in workbook.sheets.iter() {
+        let layout = sheet.layout();
+        let mut lost: Vec<Addr> = touched
+            .iter()
+            .filter(|(on, _, _)| on == id.as_str())
+            .filter_map(|(_, row, column)| {
+                let row = ui::tilo_resource::Id::from_raw(row.clone());
+                let column = ui::tilo_resource::Id::from_raw(column.clone());
+                let raw = &sheet.cells.cell(&row, &column)?.raw.0;
+                (raw.starts_with('=') && raw.contains("#REF!"))
+                    .then(|| layout.addr(&row, &column))
+                    .flatten()
+            })
+            .collect();
+        lost.sort_unstable_by_key(|(col, row)| (*row, *col));
+        cells.extend(
+            lost.into_iter()
+                .map(|(col, row)| format!("{}!{}", sheet.name.0, addr_to_a1(col, row))),
+        );
+    }
+    named_cells(
+        cells,
+        "these formulas pointed at deleted cells and hold #REF! now; write them again to point them elsewhere",
+    )
+}
+
+/// The formulas outside the sorted cells `start..=end` of sheet `sorted` that point at some of
+/// its rows: a sort moves what cells hold and no reference follows it, so these read other
+/// rows' values now. One that reads every sorted row reads the same values as before and is
+/// left out.
+fn unmoved_references(
+    workbook: &crate::workbook::Workbook,
+    sorted: &ui::tilo_resource::Id,
+    start: Addr,
+    end: Addr,
+) -> Option<serde_json::Value> {
+    let named = workbook.name_reaching(sorted);
+    let mut cells = Vec::new();
+    for (id, sheet) in workbook.sheets.iter() {
+        let own = id == sorted;
+        if !own && named.is_none() {
+            continue;
+        }
+        let layout = sheet.layout();
+        let mut pointing: Vec<Addr> = sheet
+            .cells
+            .cells()
+            .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && (own || cell.raw.0.contains('!')))
+            .filter_map(|(row, column, cell)| {
+                let at = layout.addr(&row, &column)?;
+                let moved_itself =
+                    own && (start.0..=end.0).contains(&at.0) && (start.1..=end.1).contains(&at.1);
+                if moved_itself {
+                    return None;
+                }
+                let mut points = false;
+                crate::refs::each_reference(&cell.raw.0, |sheet, first, last| {
+                    let reads_sorted = match sheet {
+                        None => own,
+                        Some(written) => {
+                            named.as_deref() == Some(crate::refs::fold_sheet(written).as_str())
+                        }
+                    };
+                    let meets = first.0 <= end.0
+                        && last.0 >= start.0
+                        && first.1 <= end.1
+                        && last.1 >= start.1;
+                    let every_row = first.1 <= start.1 && last.1 >= end.1;
+                    points |= reads_sorted && meets && !every_row;
+                });
+                points.then_some(at)
+            })
+            .collect();
+        pointing.sort_unstable_by_key(|(col, row)| (*row, *col));
+        cells.extend(
+            pointing
+                .into_iter()
+                .map(|(col, row)| format!("{}!{}", sheet.name.0, addr_to_a1(col, row))),
+        );
+    }
+    named_cells(
+        cells,
+        "a sort moves what cells hold, not the formulas pointing at them: these keep their addresses and read what the sort put there",
+    )
+}
+
+/// The sheet whose rows or columns `changes` added or removed.
+fn reshaped_sheet(changes: &[automerge::Patch]) -> Option<String> {
+    changes.iter().find_map(|patch| {
+        let props = props(patch);
+        props
+            .windows(2)
+            .any(|pair| matches!(pair, [field, lines] if field == "cells" && (lines == "rows" || lines == "columns")))
+            .then(|| sheet_of(&props))
+            .flatten()
+    })
 }
 
 fn props(patch: &automerge::Patch) -> Vec<String> {

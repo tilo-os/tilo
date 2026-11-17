@@ -19,7 +19,8 @@
 //! `count` and `keep`, answered through [`Keeps`] by the host that keeps
 //! them ([`super::api::BotApi::keeps`]). The note goes with every
 //! instruction and judgement, so whoever answers reads what the program is
-//! for and what its last run left.
+//! for and what its last run left. A judgement is the agent's transform over
+//! whatever model the host reaches for its person ([`super::judging`]).
 
 use serde_json::{Map, Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
@@ -124,6 +125,23 @@ pub enum Question {
         prompt: String,
         schema: Option<Value>,
     },
+}
+
+impl Question {
+    /// The transform that answers this question, held to the bounds the
+    /// agent app holds one to on a device: how many labels and how long,
+    /// how long a prompt, and a shape an answer can be checked against.
+    ///
+    /// # Errors
+    /// The bound the question is past, in words for whoever reads the run.
+    pub fn transform(&self) -> Result<tilo_agent::transform::Transform, String> {
+        use tilo_agent::transform::Transform;
+        match self {
+            Self::Labels { choices, multi } => Transform::classify(choices.clone(), *multi),
+            Self::Prompt { prompt, schema } => Transform::freeform(prompt, schema.clone()),
+        }
+        .map_err(|failure| failure.message.clone())
+    }
 }
 
 /// One judgement a program asks of the model of the person it runs for.
@@ -393,6 +411,8 @@ fn judgement(
             schema: arguments.given("schema").cloned(),
         }
     };
+    // Past a bound, a question is refused here, before any model is asked.
+    question.transform()?;
     Ok(Some(Judgement {
         person: person.to_owned(),
         workspace: asked_for.workspace.to_owned(),

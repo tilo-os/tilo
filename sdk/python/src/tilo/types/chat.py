@@ -62,6 +62,7 @@ __all__ = [
     "Anchor",
     "Answered",
     "Attached",
+    "Cause",
     "Choice",
     "ClipAttr",
     "ClipBlock",
@@ -80,8 +81,10 @@ __all__ = [
     "ShareAccess",
     "ShownAs",
     "ShownPersona",
+    "Starting",
     "Step",
     "StepUpdate",
+    "Stopped",
     "Transition",
     "WindowShare",
     "Withdrawn",
@@ -92,7 +95,11 @@ __all__ = [
     "Agent",
     "AgentState",
     "Bound",
+    "NewSubAgent",
+    "Note",
     "Spent",
+    "Stands",
+    "Sub",
     "Workspace",
     "Messages",
     "Drafts",
@@ -140,6 +147,8 @@ __all__ = [
     "AnswerQuestionArgs",
     "WithdrawQuestionArgs",
     "SettleQuestionArgs",
+    "AskAgentArgs",
+    "StopAgentArgs",
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
@@ -159,6 +168,11 @@ __all__ = [
     "SetAgentInstructionArgs",
     "SetAgentBoundArgs",
     "RetireAgentArgs",
+    "StartSubAgentArgs",
+    "NoteSubAgentArgs",
+    "StopSubAgentArgs",
+    "SubAgentStandsArgs",
+    "SetSubAgentLimitsArgs",
 ]
 
 class Category(TypedDict):
@@ -376,6 +390,12 @@ class Answered(TypedDict):
 Attached = dict[str, Any]
 """One of resource, text, image, video, file: an object whose case the app tags it with."""
 
+class Cause(TypedDict):
+    kind: str
+    label: str
+    key: str
+    person: str
+
 class Choice(TypedDict):
     id: str
     label: str
@@ -428,6 +448,8 @@ class Message(TypedDict):
     origin: Origin | None
     share: WindowShare | None
     question: Question | None
+    cause: Cause | None
+    stopped: Stopped | None
     attempts: int
 
 class NewMessage(TypedDict):
@@ -498,6 +520,11 @@ class ShownPersona(TypedDict):
     account: str
     linked: str | None
 
+class Starting(TypedDict):
+    kind: str
+    label: str
+    key: str
+
 class Step(TypedDict):
     id: str
     sequence: int
@@ -512,6 +539,10 @@ class StepUpdate(TypedDict):
     label: str
     outcome: str
     why: str | None
+
+class Stopped(TypedDict):
+    attempt: int
+    at: int
 
 class Transition(TypedDict):
     state: AgentWorkState
@@ -565,6 +596,9 @@ class Agent(TypedDict):
     state: AgentState
     created_at: int
     instruction: str | None
+    sub: Sub | None
+    sub_depth: int | None
+    sub_at_once: int | None
 
 AgentState = Literal["active", "retired"]
 
@@ -573,9 +607,41 @@ class Bound(TypedDict):
     kinds: list[str]
     answer: str
 
+class NewSubAgent(TypedDict):
+    name: str
+    job: str
+    role: str | None
+    instruction: str | None
+    kind: str | None
+    model: str | None
+    task: str | None
+    id: str | None
+
+class Note(TypedDict):
+    id: str
+    by: str
+    text: str
+    at: int
+
 class Spent(TypedDict):
     day: str
     cost_micros: int
+
+Stands = Literal["working", "needs_person", "done", "failed", "stopped"]
+
+class Sub(TypedDict):
+    started_by: str
+    job: str
+    role: str
+    kind: str
+    runs: str
+    depth: int
+    task: str | None
+    conversation: str
+    stands: Stands
+    since: int
+    line: str
+    notes: list[Note]
 
 BeginChatArgs = TypedDict("BeginChatArgs", {
     "name": "str",
@@ -859,6 +925,19 @@ SettleQuestionArgs = TypedDict("SettleQuestionArgs", {
 })
 """The arguments of `settle-question`."""
 
+AskAgentArgs = TypedDict("AskAgentArgs", {
+    "text": "str",
+    "channel": "str",
+    "cause": "Starting",
+    "members": NotRequired["list[Any] | None"],
+})
+"""The arguments of `ask-agent`."""
+
+StopAgentArgs = TypedDict("StopAgentArgs", {
+    "message": "str",
+})
+"""The arguments of `stop-agent`."""
+
 CarryCountsArgs = TypedDict("CarryCountsArgs", {
     "earlier": "dict[str, dict[str, int]]",
 })
@@ -975,9 +1054,46 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 })
 """The arguments of `retire-agent`."""
 
+StartSubAgentArgs = TypedDict("StartSubAgentArgs", {
+    "name": "str",
+    "job": "str",
+    "role": NotRequired["str | None"],
+    "instruction": NotRequired["str | None"],
+    "kind": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+    "task": NotRequired["str | None"],
+    "id": NotRequired["str | None"],
+})
+"""The arguments of `start-sub-agent`."""
+
+NoteSubAgentArgs = TypedDict("NoteSubAgentArgs", {
+    "agent": "str",
+    "text": "str",
+})
+"""The arguments of `note-sub-agent`."""
+
+StopSubAgentArgs = TypedDict("StopSubAgentArgs", {
+    "agent": "str",
+})
+"""The arguments of `stop-sub-agent`."""
+
+SubAgentStandsArgs = TypedDict("SubAgentStandsArgs", {
+    "agent": "str",
+    "stands": "Stands",
+    "line": NotRequired["str | None"],
+})
+"""The arguments of `sub-agent-stands`."""
+
+SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
+    "agent": "str",
+    "depth": NotRequired["int | None"],
+    "at_once": NotRequired["int | None"],
+})
+"""The arguments of `set-sub-agent-limits`."""
+
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1331,7 +1447,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1661,6 +1777,34 @@ class Messages(Resource):
         """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("settle-question", items)
 
+    def ask_agent(self,
+        *,
+        text: str,
+        channel: str,
+        cause: Starting,
+        members: list[Any] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["text"] = text
+        args["channel"] = channel
+        args["cause"] = cause
+        if members is not None:
+            args["members"] = members
+        return self.action("ask-agent", **args)
+
+    def ask_agent_many(self, items: list[AskAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ask-agent", items)
+
+    def stop_agent(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("stop-agent", message=message)
+
+    def stop_agent_many(self, items: list[StopAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop-agent", items)
+
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> None:
         """Runs the app's action."""
         return self.action("carry-counts", earlier=earlier)
@@ -1691,12 +1835,12 @@ class Messages(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
+    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
 
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1714,7 +1858,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -1765,7 +1909,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1803,7 +1947,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@7b6b8412b862de0c"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
@@ -1951,8 +2095,98 @@ class ChatAgent(Resource):
         """Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("retire-agent", items)
 
+    def start_sub_agent(self,
+        *,
+        name: str,
+        job: str,
+        role: str | None = None,
+        instruction: str | None = None,
+        kind: str | None = None,
+        model: str | None = None,
+        task: str | None = None,
+        id: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["name"] = name
+        args["job"] = job
+        if role is not None:
+            args["role"] = role
+        if instruction is not None:
+            args["instruction"] = instruction
+        if kind is not None:
+            args["kind"] = kind
+        if model is not None:
+            args["model"] = model
+        if task is not None:
+            args["task"] = task
+        if id is not None:
+            args["id"] = id
+        return self.action("start-sub-agent", **args)
+
+    def start_sub_agent_many(self, items: list[StartSubAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `start-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("start-sub-agent", items)
+
+    def note_sub_agent(self,
+        *,
+        agent: str,
+        text: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("note-sub-agent", agent=agent, text=text)
+
+    def note_sub_agent_many(self, items: list[NoteSubAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `note-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("note-sub-agent", items)
+
+    def stop_sub_agent(self, *, agent: str) -> None:
+        """Runs the app's action."""
+        return self.action("stop-sub-agent", agent=agent)
+
+    def stop_sub_agent_many(self, items: list[StopSubAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop-sub-agent", items)
+
+    def sub_agent_stands(self,
+        *,
+        agent: str,
+        stands: Stands,
+        line: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        args["stands"] = stands
+        if line is not None:
+            args["line"] = line
+        return self.action("sub-agent-stands", **args)
+
+    def sub_agent_stands_many(self, items: list[SubAgentStandsArgs]) -> list[dict[str, Any]]:
+        """Runs `sub-agent-stands` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sub-agent-stands", items)
+
+    def set_sub_agent_limits(self,
+        *,
+        agent: str,
+        depth: int | None = None,
+        at_once: int | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if depth is not None:
+            args["depth"] = depth
+        if at_once is not None:
+            args["at_once"] = at_once
+        return self.action("set-sub-agent-limits", **args)
+
+    def set_sub_agent_limits_many(self, items: list[SetSubAgentLimitsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-sub-agent-limits` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-sub-agent-limits", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "set_agent_colour", "set_agent_colour_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "set_agent_colour", "set_agent_colour_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
 
 

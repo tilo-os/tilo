@@ -1102,6 +1102,10 @@ mod own_tests;
 #[cfg(test)]
 mod personal_tests;
 #[cfg(test)]
+mod telling_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod told_tests;
 #[cfg(test)]
 mod vault_tests;

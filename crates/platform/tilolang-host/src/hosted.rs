@@ -864,7 +864,7 @@ impl Hosted {
         let mut instance = Instance::new(
             Config {
                 app: spec.app.clone(),
-                me: spec.person.clone(),
+                me: spec.person.as_str().into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {

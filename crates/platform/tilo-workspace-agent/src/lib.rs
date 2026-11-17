@@ -9,6 +9,9 @@
 //! committed surface by the workspace's grants. An editor names, bounds and retires
 //! agents; the person who keeps one alone chooses its model and tells it how to work for
 //! them ([`Agent::instruction`]).
+//!
+//! An agent starts sub-agents for the person who keeps it. Each is an item here too, with what
+//! it was started for and how it stands ([`sub`]).
 
 use std::fmt;
 
@@ -22,7 +25,12 @@ use tilo_resource::{
 };
 
 pub mod learned;
+pub mod sub;
 
+pub use sub::{NewSubAgent, Stands, Sub};
+
+#[cfg(test)]
+mod sub_tests;
 #[cfg(test)]
 mod tests;
 
@@ -203,6 +211,15 @@ pub struct Agent {
     /// How it works for its keeper, in the keeper's words: what it is told before every
     /// request, beside what every agent is told. `None` for an agent told nothing of its own.
     pub instruction: Option<String>,
+    /// What makes it a sub-agent: who started it, for what job, and how it stands
+    /// ([`sub`]). `None` for an agent a person made.
+    pub sub: Option<Sub>,
+    /// How deep the sub-agents under it may go: 1 lets it start sub-agents, 2 lets those
+    /// start their own. Its keeper's to say; `None` follows [`sub::DEFAULT_DEPTH`].
+    pub sub_depth: Option<u8>,
+    /// How many sub-agents under it may be at work at once. Its keeper's to say; `None`
+    /// follows [`sub::DEFAULT_AT_ONCE`].
+    pub sub_at_once: Option<u32>,
 }
 
 impl Identified for Agent {
@@ -275,6 +292,26 @@ impl Agent {
                 .collect(),
         )
     }
+
+    /// Whether an agent started it for the person it works for ([`sub`]).
+    #[must_use]
+    pub const fn is_sub(&self) -> bool {
+        self.sub.is_some()
+    }
+
+    /// The rules every turn of it carries in `workspace`: what its record bounds it to
+    /// ([`Self::bound_rules`]), and for a sub-agent the rules that keep it from reading
+    /// whoever started it ([`sub::one_way`]). Whoever runs its turns hands the policy these,
+    /// never the bound alone: the one-way rule comes from what the agent is, so no bound set
+    /// on it, and none taken off it, lifts it.
+    #[must_use]
+    pub fn turn_rules(&self, workspace: &str) -> Vec<tilo_action_policy::Rule> {
+        let mut rules = self.bound_rules().unwrap_or_default();
+        if self.is_sub() {
+            sub::keep_one_way(&mut rules, workspace);
+        }
+        rules
+    }
 }
 
 /// The workspace's agents, by id.
@@ -334,15 +371,15 @@ impl WorkspaceAgents {
     read_content = WorkspaceAgents::read_document
 )]
 impl WorkspaceAgents {
-    /// Make an agent: a name people read (at most 64 characters), the member who keeps
-    /// it (whoever asks when none is named), and optionally a model as `provider/model`
-    /// and the colour it is drawn in.
+    /// Make an agent: a name people read (at most 64 characters), and optionally a model as
+    /// `provider/model` and the colour it is drawn in. Whoever makes it keeps it: a keeper it
+    /// names is refused unless it is the one who makes it.
     #[action]
     pub fn create_agent(
         &mut self,
         cx: &mut ActionCx,
         #[param("Its name, as people read it")] name: NonBlank,
-        #[param("Who keeps it: a member's id; none for whoever makes it")] keeper: Option<String>,
+        #[param("Who keeps it: whoever makes it, and no one else")] keeper: Option<String>,
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the keeper's default")]
         model: Option<String>,
@@ -351,17 +388,29 @@ impl WorkspaceAgents {
         #[param("The MCP client it connects as; none for an agent its keeper's device runs")]
         mcp_client: Option<String>,
     ) -> Result<(), Refusal> {
-        if self.agents.len() >= MAX_AGENTS {
+        self.not_by_sub_agent(cx)?;
+        if self.count_made_by_people() >= MAX_AGENTS {
             return Err(Refusal::new(format!(
                 "a workspace keeps at most {MAX_AGENTS} agents"
             )));
         }
         let name = clean_name(&name)?;
+        // Whoever makes an agent keeps it. The keeper pays for its work with their own model and
+        // answers for what it does, so nobody is made one by a name somebody else wrote.
         let me = author(cx)?;
-        let keeper = match keeper.as_deref().map(str::trim) {
-            None | Some("") => me,
-            Some(keeper) => person(keeper)?,
-        };
+        let named = keeper
+            .as_deref()
+            .map(str::trim)
+            .filter(|named| !named.is_empty());
+        if let Some(named) = named
+            && named != me
+            && person(named)? != me
+        {
+            return Err(Refusal::new(
+                "an agent is kept by whoever makes it: its keeper makes it themselves",
+            ));
+        }
+        let keeper = me;
         let id = match id.as_deref().map(str::trim) {
             None | Some("") => cx.id().to_string(),
             Some(id) => {
@@ -395,6 +444,9 @@ impl WorkspaceAgents {
             state: AgentState::Active,
             created_at: cx.now_ms(),
             instruction: None,
+            sub: None,
+            sub_depth: None,
+            sub_at_once: None,
         });
         Ok(())
     }
@@ -412,6 +464,7 @@ impl WorkspaceAgents {
         )]
         limit_micros: Option<u64>,
     ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         let me = author(cx)?;
         let found = self
             .agents
@@ -498,6 +551,7 @@ impl WorkspaceAgents {
         #[param("The agent")] agent: Id,
         #[param("Its colour: a slot of the presence palette")] colour: u8,
     ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         let me = author(cx)?;
         let found = self
             .agents
@@ -516,9 +570,11 @@ impl WorkspaceAgents {
     #[action(item = agents)]
     pub fn rename_agent(
         &mut self,
+        cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
         #[param("Its new name, as people read it")] name: NonBlank,
     ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         let name = clean_name(&name)?;
         let found = self
             .agents
@@ -539,6 +595,7 @@ impl WorkspaceAgents {
             String,
         >,
     ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         let me = author(cx)?;
         let found = self
             .agents
@@ -581,9 +638,11 @@ impl WorkspaceAgents {
     #[action(item = agents)]
     pub fn set_agent_bound(
         &mut self,
+        cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
         #[param("The rules: node, kinds and answer; none for the default")] bound: Vec<Bound>,
     ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         if bound.len() > MAX_BOUND {
             return Err(Refusal::new(format!(
                 "a bound holds at most {MAX_BOUND} rules"
@@ -608,7 +667,12 @@ impl WorkspaceAgents {
     /// Retire an agent: it takes no new work, and its name and conversations stay
     /// readable.
     #[action(item = agents)]
-    pub fn retire_agent(&mut self, #[param("The agent")] agent: Id) -> Result<(), Refusal> {
+    pub fn retire_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+    ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
@@ -619,16 +683,108 @@ impl WorkspaceAgents {
         found.state = AgentState::Retired;
         Ok(())
     }
+
+    /// Start a sub-agent.
+    ///
+    /// An agent starts one for the person it works for: a job, a role in a few words and
+    /// the kind of work that picks its model. It gets a conversation of its own, in which
+    /// its job is its first message, and works there until the job is done. Whoever started
+    /// it reads that conversation and steers it; it reads nothing of whoever started it.
+    /// Many at once is ordinary. Only an agent starts one: a person asks their own agent.
+    #[action]
+    pub fn start_sub_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(flatten)] sub_agent: NewSubAgent,
+    ) -> Result<(), Refusal> {
+        self.start_sub(cx, sub_agent)
+    }
+
+    /// Give a sub-agent a note while it works.
+    ///
+    /// The agent that started it, or one above that, tells it something more: the note is
+    /// written into its conversation as that agent's own words and reaches it at its next
+    /// step. Its person does not need this: they write into its conversation.
+    #[action(item = agents)]
+    pub fn note_sub_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+        #[param("What it is told")] text: NonBlank,
+    ) -> Result<(), Refusal> {
+        self.note_sub(cx, &agent, text.as_str())
+    }
+
+    /// Stop a sub-agent.
+    ///
+    /// It ends what it is doing at its next step. Its person stops it, or the agent that
+    /// started it or one above that. What is written to it afterwards makes it work again;
+    /// `retire-agent` dismisses it for good.
+    #[action(item = agents)]
+    pub fn stop_sub_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+    ) -> Result<(), Refusal> {
+        self.stop_sub(cx, &agent)
+    }
+
+    /// Say how a sub-agent stands.
+    ///
+    /// Written by whatever runs it, as the sub-agent itself, when its work begins and when
+    /// it ends: nobody else says how it stands.
+    #[action(item = agents, audience = "agents")]
+    pub fn sub_agent_stands(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+        #[param("How it stands: working, needs_person, done, failed or stopped")] stands: Stands,
+        #[param("One line of how it stands; none while it works")] line: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.sub_stands(cx, &agent, stands, line.as_deref())
+    }
+
+    /// Say how many sub-agents an agent may have.
+    ///
+    /// Its keeper's alone, in person: how deep the sub-agents under it go (1 lets it start
+    /// sub-agents, 2 lets those start their own) and how many work at once. None follows the
+    /// default.
+    #[action(item = agents)]
+    pub fn set_sub_agent_limits(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent a person keeps")] agent: Id,
+        #[param("How deep its sub-agents go; none for the default")] depth: Option<u8>,
+        #[param("How many work at once; none for the default")] at_once: Option<u32>,
+    ) -> Result<(), Refusal> {
+        self.set_sub_limits(cx, &agent, depth, at_once)
+    }
 }
 
 impl WorkspaceAgents {
+    /// How many agents here people made: every agent that is no sub-agent, retired or not.
+    fn count_made_by_people(&self) -> usize {
+        self.agents
+            .iter()
+            .filter(|agent| agent.sub.is_none())
+            .count()
+    }
+
     fn valid(&self) -> Result<(), Refusal> {
-        if self.agents.len() > MAX_AGENTS {
+        let made = self.count_made_by_people();
+        if made > MAX_AGENTS {
             return Err(Refusal::new(format!(
                 "a workspace keeps at most {MAX_AGENTS} agents"
             )));
         }
+        if self.agents.len().saturating_sub(made) > sub::MAX_SUB_AGENTS {
+            return Err(Refusal::new(format!(
+                "a workspace keeps at most {} sub-agents",
+                sub::MAX_SUB_AGENTS
+            )));
+        }
         for agent in &self.agents {
+            sub::check(agent)?;
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
             if agent
@@ -682,6 +838,13 @@ impl WorkspaceAgents {
         self.agents.iter().filter(|agent| agent.is_active())
     }
 
+    /// The agents people made that work here: every active agent that is no sub-agent. What
+    /// lists a workspace's agents lists these, and a person's own agent is one of them; the
+    /// sub-agents one of them started are that agent's own to list ([`sub`]).
+    pub fn made_by_people(&self) -> impl Iterator<Item = &Agent> {
+        self.active().filter(|agent| !agent.is_sub())
+    }
+
     /// An id for a new agent called `name` that no agent here holds: its name in
     /// lowercase letters, digits and dashes, with `2`, `3`, … appended where taken. Its
     /// actor reads `agent:<id>`, so the id is made once and kept.
@@ -710,10 +873,11 @@ impl WorkspaceAgents {
         if !taken(&stem) {
             return stem;
         }
-        (2..=MAX_AGENTS + 1)
+        let most = MAX_AGENTS.saturating_add(sub::MAX_SUB_AGENTS);
+        (2..=most.saturating_add(1))
             .map(|n| format!("{stem}-{n}"))
             .find(|id| !taken(id))
-            .unwrap_or_else(|| format!("{stem}-{}", MAX_AGENTS + 2))
+            .unwrap_or_else(|| format!("{stem}-{}", most.saturating_add(2)))
     }
 
     /// What each agent working here is called, by its bare id (its actor is

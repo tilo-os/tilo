@@ -549,8 +549,8 @@ pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
-    deterministic_narrative, heads_for_entry, human_label, member_display_label,
-    validate_narrative, version_index_for_entry,
+    deterministic_narrative, heads_for_entry, human_label, validate_narrative,
+    version_index_for_entry,
 };
 pub use live_collaboration::{
     Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,

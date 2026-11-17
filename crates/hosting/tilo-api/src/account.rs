@@ -682,7 +682,7 @@ impl Server {
                 match self.revoke_grant(&grant.person, id).await {
                     Ok(_) => {
                         // The workspace records the revocation, so every
-                        // holder and front door refuses the key, not only this
+                        // holder and API server refuses the key, not only this
                         // one.
                         if let Some(workspace) = workspace
                             && let Err(outcome) =
@@ -831,8 +831,8 @@ impl Server {
 
     /// The keys this one holds and the keys it minted. One reaching a
     /// workspace reads them from the workspace's own record, which every
-    /// holder keeps and every front door reads. One reaching all of them
-    /// reads the keys minted through this front door.
+    /// holder keeps and every API server reads. One reaching all of them
+    /// reads the keys minted through this API server.
     async fn account_keys(&self, grant: &Grant, key: &Connection) -> Outcome {
         let mine = grant.id.clone();
         let Scope::Workspace(workspace) = grant.scope.clone() else {
@@ -995,7 +995,7 @@ fn workspace_grant_row(grant: &tilo_peer_state::WorkspaceGrant) -> Value {
 
 /// Whether `workspace` is labelled with every one of `labels`.
 /// The hosts calls may be forwarded to, as an account lists them: the ones
-/// the front door knows, its first the default.
+/// the API server knows, its first the default.
 fn host_rows(server: &crate::Server) -> Value {
     Value::Array(
         server

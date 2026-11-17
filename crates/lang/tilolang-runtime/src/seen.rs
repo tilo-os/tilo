@@ -160,9 +160,13 @@ mod tests {
         MemberId::person(id).into()
     }
 
-    fn version(who: &str, at: &str, change: &str, run: bool) -> Version {
+    fn agent(id: &str) -> Actor {
+        MemberId::agent(id).into()
+    }
+
+    fn version(who: Actor, at: &str, change: &str, run: bool) -> Version {
         Version {
-            who: Some(person(who)),
+            who: Some(who),
             at: at.to_owned(),
             action: "a".to_owned(),
             run: run.then(|| Run {
@@ -189,10 +193,10 @@ mod tests {
         phase versions_after_the_mark_and_the_persons_own_are_unseen;
         {
             let versions = [
-                version("ada", "2026-10-30T09:00:00Z", "c1", false),
-                version("agent:a", "2026-10-30T09:01:00Z", "c2", true),
-                version("ben", "2026-10-30T09:02:00Z", "c3", false),
-                version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
+                version(person("ada"), "2026-10-30T09:00:00Z", "c1", false),
+                version(agent("a"), "2026-10-30T09:01:00Z", "c2", true),
+                version(person("ben"), "2026-10-30T09:02:00Z", "c3", false),
+                version(agent("a"), "2026-10-30T09:03:00Z", "c4", true),
             ];
             let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
             // Nothing seen: everyone else's, the agent's and Ben's alike.
@@ -229,8 +233,8 @@ mod tests {
             );
             // Two versions of one second (a change's place in the log decides): the mark names one
             // of them, and what came after it stands.
-            let earlier = version("ben", "2026-10-30T09:02:00Z", "c3", false);
-            let mut second = version("ben", "2026-10-30T09:02:00Z", "c4", false);
+            let earlier = version(person("ben"), "2026-10-30T09:02:00Z", "c3", false);
+            let mut second = version(person("ben"), "2026-10-30T09:02:00Z", "c4", false);
             second.op = 9;
             let both = [earlier, second];
             assert_eq!(after_mark(&both, &SeenMark::of(&both[0])), 1);
@@ -242,9 +246,9 @@ mod tests {
             // The same type all three: a person's change is marked as an agent's, and nobody's
             // own change is.
             let versions = [
-                version("ada", "2026-10-30T09:00:00Z", "c1", false),
-                version("ben", "2026-10-30T09:02:00Z", "c3", false),
-                version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
+                version(person("ada"), "2026-10-30T09:00:00Z", "c1", false),
+                version(person("ben"), "2026-10-30T09:02:00Z", "c3", false),
+                version(agent("a"), "2026-10-30T09:03:00Z", "c4", true),
             ];
             let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
             assert_eq!(changes(unseen(&versions, &person("ada"), None, &[])), ["c3", "c4"]);
@@ -258,7 +262,7 @@ mod tests {
 
         phase a_record_made_from_another_counts_as_a_change_to_it;
         {
-            let mut comment = version("ben", "2026-10-30T09:02:00Z", "c3", false);
+            let mut comment = version(person("ben"), "2026-10-30T09:02:00Z", "c3", false);
             comment.resource = "comment".to_owned();
             comment.from = Some(crate::value::ResourceRef::parse_id("task", "Task").unwrap());
             // Ben said it about the task: Ada has not seen the task change, nor what he said.

@@ -141,20 +141,24 @@ pub enum DisplayEffect {
     /// A display's colour profile, or `System default`. Staged until applied.
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
+    // The five below ask the device's display service when the displays
+    // are a device's, and answer when it has: jobs. The read was a view;
+    // `own_device` keeps who runs it what it was for one, the person at this
+    // device and those acting for them.
     /// Read the compositor observations, staged configuration and preview transaction.
-    #[effect(view, returns, kind = "read")]
+    #[effect(job, returns, own_device, idempotent, kind = "read")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns)]
+    #[effect(job, returns)]
     IdentifyDisplays,
     /// Preview the staged placement; it is kept only when confirmed.
-    #[effect(returns)]
+    #[effect(job, returns)]
     ApplyDisplayChanges,
     /// Keep the placement being previewed.
-    #[effect(returns)]
+    #[effect(job, returns)]
     KeepDisplayChanges,
     /// Go back to the placement before the preview.
-    #[effect(returns)]
+    #[effect(job, returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
     #[effect(returns, row, label = "display-tools-forget")]

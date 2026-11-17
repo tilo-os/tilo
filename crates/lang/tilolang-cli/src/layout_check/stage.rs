@@ -238,16 +238,15 @@ impl Staged {
     ) -> Result<Self, String> {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
-        let me = ME.to_owned();
         let names = Rc::new(tilolang_tilo::names::Told::new(
-            &me,
+            ME.into(),
             Rc::new(tilolang_tilo::names::Unnamed),
         ));
         names.tell("Ada".to_owned(), Vec::new(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
-                me: me.clone(),
+                me: ME.into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
@@ -265,7 +264,7 @@ impl Staged {
             names,
             Box::new(app_end),
         );
-        let mut record = MemoryRecord::new(staging.record.unwrap_or_default(), me);
+        let mut record = MemoryRecord::new(staging.record.unwrap_or_default(), ME.to_owned());
 
         instance.sync(Some(record.doc()));
         // The window is laid out for a still picture: no frame comes to take in the indexes its

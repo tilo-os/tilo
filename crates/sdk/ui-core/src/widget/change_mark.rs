@@ -50,8 +50,7 @@ pub struct ChangeMarkProps {
 }
 
 pub struct RowMark {
-    pub identity: String,
-    pub name: String,
+    pub by: Person,
     pub spoken: String,
     pub said: String,
     pub show: Option<Box<dyn FnMut()>>,
@@ -114,8 +113,7 @@ impl ChangeMarkProps {
                 }
             });
         Some(RowMark {
-            identity: by.identity.id().to_owned(),
-            name: by.name,
+            by,
             spoken,
             said,
             show: self.activate.handler(),
@@ -125,10 +123,10 @@ impl ChangeMarkProps {
     #[must_use]
     pub fn face(self, key: &str) -> Option<Chip> {
         let mark = self.row()?;
-        let hue = PresenceHue::of_identity(&mark.identity);
+        let hue = mark.by.hue;
         let chip = Chip::new(String::new())
             .with_id(key.to_owned())
-            .with_face(mark.name.clone(), face_colour(hue))
+            .with_face(mark.by.name.clone(), face_colour(hue))
             .style(ChipStyle::Tinted(Tone::Presence(hue)))
             .tooltip(mark.spoken.clone())
             .with_accessible_name(mark.spoken);

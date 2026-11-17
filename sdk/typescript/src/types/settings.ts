@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@27961302d579fd33";
+export const SURFACE = "so.tilo.settings@0eaa347d94dcdb19";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -567,11 +567,12 @@ export interface Root extends tilo.Resource {
   chooseThunderbirdMetadata(): Promise<void>;
   inspectThunderbirdImport(): Promise<void>;
   inspectCalendarChoices(): Promise<void>;
+  inspectDisplayConfiguration(): Promise<void>;
 }
 
 /** The actions `Root` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ROOT_ACTIONS = ["inspectInputSources", "inspectKeyboardMap", "inspectKeyboardSources", "storageSummary", "searchHubModels", "showHubModel", "discoverThunderbirdAccounts", "chooseThunderbirdMetadata", "inspectThunderbirdImport", "inspectCalendarChoices"] as const;
+export const ROOT_ACTIONS = ["inspectInputSources", "inspectKeyboardMap", "inspectKeyboardSources", "storageSummary", "searchHubModels", "showHubModel", "discoverThunderbirdAccounts", "chooseThunderbirdMetadata", "inspectThunderbirdImport", "inspectCalendarChoices", "inspectDisplayConfiguration"] as const;
 
 /** The `settings.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {

@@ -32,8 +32,8 @@ let package = Package(
         .target(name: "AssistantCore"),
         // The views, shared by the Mac and the iPhone app. Dictation is the shell's.
         .target(name: "AssistantUI", dependencies: ["AssistantCore", "ShellWeb"]),
-        .executableTarget(name: "AssistantMac", dependencies: ["AssistantCore", "AssistantUI"]),
-        .executableTarget(name: "AssistantPhone", dependencies: ["AssistantCore", "AssistantUI"]),
+        .executableTarget(name: "AssistantMac", dependencies: ["AssistantCore", "AssistantUI", "AssistantTilo", "TiloLive", "ShellCore"]),
+        .executableTarget(name: "AssistantPhone", dependencies: ["AssistantCore", "AssistantUI", "AssistantTilo", "ShellCore"]),
         // The iPhone's live activity: a widget extension, which starts as the share extension does.
         .executableTarget(
             name: "AssistantWidgets",
@@ -53,7 +53,12 @@ let package = Package(
         .target(name: "TiloLive", dependencies: ["ShellCore"]),
         // The engine with nothing on screen, for a check to drive against a Tilo site.
         .executableTarget(name: "TiloLiveProbe", dependencies: ["ShellCore", "TiloLive"]),
-        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive"]),
+        // The same in an iPhone app, the engine unseen in its root view, for a check in a simulator.
+        .executableTarget(name: "TiloLivePhoneProbe", dependencies: ["ShellCore", "TiloLive"]),
+        // The assistant's data interface on Tilo itself: the app as its person's device,
+        // through the engine. The one thing the apps name as their source.
+        .target(name: "AssistantTilo", dependencies: ["AssistantCore", "ShellCore", "TiloLive"]),
+        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive", "AssistantCore", "AssistantTilo"]),
     ],
     swiftLanguageModes: [.v6]
 )

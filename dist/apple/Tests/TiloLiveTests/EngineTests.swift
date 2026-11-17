@@ -54,6 +54,12 @@ final class EngineTests: XCTestCase {
           invokeAction: async (resource, action, args, options) => {
             heard.push({resource, action, args, confirm: options.confirm});
             if (action === 'refuse') throw new Error('forbidden: Editors may not do this');
+            // Chat offers its send a moment after a device got in.
+            if (action === 'send') {
+              if (!window.sendPublished) throw new Error('unknown_action: no action addressed by (chat.workspace, send)');
+              window.messagesTaken = (window.messagesTaken ?? 0) + 1;
+              return {state: 'completed', output: {value: {accepted: true, message: 'm-1', conversation: args.to[0].id}}};
+            }
             if (action === 'read') return {state: 'completed', output: {value: {words: semantics.textContent}}};
             return {state: 'completed', output: {value: {took: args, confirmed: options.confirm}}};
           },
@@ -76,6 +82,36 @@ final class EngineTests: XCTestCase {
           };
         };
       };
+      // A page that knows a native app may hold it: once it is in, it hands the host standing in
+      // its document the entry of its device (web/native-host.mjs). What its host answers
+      // here is deliberately careless: it says a key where none belongs and repeats a secret.
+      window.asked = [];
+      window.handOver = () => globalThis.tiloNativeHost?.device(Object.freeze({
+        person: 'ad'.repeat(32), workspace: 'ws-1',
+        catalogue: async () => ({actions: []}),
+        status: async invocation => ({invocation, state: 'succeeded'}),
+        ownWorkspace: async () => ({id: 'own-7', name: 'Mine', origin: 'https://host.example:8443'}),
+        invoke: async (target, argument) => {
+          window.asked.push({target, argument});
+          const done = value => ({invocation: 'i-1', state: 'succeeded', output: {value, resources: []}});
+          switch (target.provider + ' ' + target.address.action) {
+            case 'tilo.models list':
+              return done({providers: [{id: 'anthropic', name: 'Anthropic', protocol: 'anthropic', endpoint: 'https://api.anthropic.com',
+                configured: true, models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1',
+                apiKey: 'sk-said-by-mistake', token: 'tok-said-by-mistake', secret: 'said-by-mistake'}],
+                defaultProvider: 'anthropic', assignments: [{kind: 'subtask', provider: 'anthropic', model: 'm-2'}]});
+            case 'tilo.vault add':
+              return done({reference: 'vault.item:0a', kind: argument.kind, belongsTo: argument.belongsTo, addedAt: 1794900000,
+                echoed: 'you sent ' + argument.secret + ' twice ' + argument.secret, secret: argument.secret, nested: [{note: argument.secret}]});
+            case 'tilo.models set-key':
+              throw Object.assign(new Error('The provider did not accept ' + argument.key), {code: 'key-refused'});
+            case 'tilo.events pause':
+              return {invocation: 'i-2', state: 'failed', error: {code: 'forbidden', message: 'This event is not yours'}};
+            default:
+              throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
+          }
+        },
+      }));
       // A page that says itself when something it shows changed.
       window.told = [];
       window.offerChanges = () => { globalThis.tiloChanges = {listen: listener => { window.told.push(listener); return () => { window.told = []; }; }}; };
@@ -213,6 +249,340 @@ final class EngineTests: XCTestCase {
         XCTAssertThrowsError(try engine.open(route: "/somewhere/else"))
     }
 
+    // MARK: The person's own providers
+
+    private func enterAsADevice() async throws {
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; handOver(); enter()")
+        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+    }
+
+    /// What the page's host was asked, as text.
+    private func asked() async throws -> String {
+        try await engine.view.callAsyncJavaScript("return JSON.stringify(window.asked)", arguments: [:], in: nil,
+                                                  contentWorld: .page) as? String ?? ""
+    }
+
+    func testThePersonsOwnProvidersAnswerTheAppsCodeThroughThePagesSession() async throws {
+        try await enterAsADevice()
+        let linked = try await engine.modelProviders()
+        XCTAssertEqual(linked.providers.map(\.id), ["anthropic"])
+        XCTAssertEqual(linked.providers.first?.hasKey, true)
+        XCTAssertEqual(linked.providers.first?.models, [.init(id: "m-1", label: "Model one")])
+        XCTAssertEqual(linked.defaultProvider, "anthropic")
+        // A kind with a model of its own runs on it, any other on the default.
+        XCTAssertEqual(linked.model(for: "subtask")?.model, "m-2")
+        XCTAssertEqual(linked.model(for: "request")?.model, "m-1")
+        let heard = try await asked()
+        XCTAssertEqual(heard, #"[{"target":{"provider":"tilo.models","address":{"resource":"models","action":"list"}},"argument":null}]"#)
+        // Whose device it is and the person's own workspace come the same way.
+        let whose = try await engine.whose()
+        XCTAssertEqual(whose?.person, String(repeating: "ad", count: 32))
+        XCTAssertEqual(whose?.workspace, "ws-1")
+        let own = try await engine.ownWorkspace()
+        XCTAssertEqual(own.route, "/@host.example:8443/w/own-7")
+        XCTAssertEqual(own.name, "Mine")
+        // A refusal is the host's own, whether it throws it or answers it.
+        do {
+            try await engine.ask(.events, "pause", of: "events", ["event": "e-1"])
+            XCTFail("a refused action was taken for done")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "forbidden", reason: "This event is not yours"))
+        }
+        do {
+            try await engine.ask(.telling, "list", of: "told")
+            XCTFail("an action nobody offers was taken for done")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "No such action is offered"))
+        }
+    }
+
+    func testWithoutTheEnginesPassNoScriptReachesThePersonsProviders() async throws {
+        try await enterAsADevice()
+        // As any other script in the document would ask: with no pass, a guessed one, one of
+        // the right length, and the pass cut short.
+        let wrong = String(engine.pass.reversed())
+        XCTAssertNotEqual(wrong, engine.pass)
+        let answers = try await engine.view.callAsyncJavaScript(#"""
+            const tries = [undefined, '', 'open sesame', wrong, cut, 0, {}, [pass]];
+            const said = [];
+            for (const given of tries) {
+              said.push(JSON.parse(await __tiloLive.person(given, 'tilo.models', 'models', 'list', null, null)).error?.code ?? 'answered');
+              said.push(JSON.parse(await __tiloLive.own(given)).error?.code ?? 'answered');
+              said.push(JSON.parse(__tiloLive.whose(given)).error?.code ?? 'answered');
+            }
+            return JSON.stringify({said: [...new Set(said)], asked: window.asked.length});
+            """#, arguments: ["wrong": wrong, "cut": String(engine.pass.dropLast()), "pass": engine.pass], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(answers, #"{"said":["unknown_action"],"asked":0}"#)
+    }
+
+    func testThePassStandsNowhereAPagesScriptCanRead() async throws {
+        try await enterAsADevice()
+        _ = try await engine.modelProviders()
+        let found = try await engine.view.callAsyncJavaScript(#"""
+            const found = [];
+            const print = value => {
+              try { return typeof value === 'function' ? Function.prototype.toString.call(value) : typeof value === 'string' ? value : ''; }
+              catch { return ''; }
+            };
+            const look = (owner, label) => {
+              for (const name of [...Object.getOwnPropertyNames(owner), ...Object.getOwnPropertySymbols(owner)]) {
+                const described = Object.getOwnPropertyDescriptor(owner, name);
+                for (const part of [described?.get, described?.set, 'value' in (described ?? {}) ? described.value : undefined]) {
+                  if (print(part).includes(pass)) found.push(label + '.' + String(name));
+                }
+              }
+            };
+            look(globalThis, 'globalThis');
+            look(globalThis.__tiloLive, '__tiloLive');
+            look(globalThis.tiloNativeHost, 'tiloNativeHost');
+            look(document, 'document');
+            if (document.documentElement.outerHTML.includes(pass)) found.push('the document');
+            for (const store of [localStorage, sessionStorage]) {
+              for (let at = 0; at < store.length; at++) if ((store.getItem(store.key(at)) ?? '').includes(pass)) found.push('storage');
+            }
+            return JSON.stringify(found);
+            """#, arguments: ["pass": engine.pass], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(found, "[]")
+        XCTAssertEqual(engine.pass.count, 64)
+        // Each engine makes its own.
+        let other = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
+        XCTAssertNotEqual(other.pass, engine.pass)
+    }
+
+    func testAProviderOffTheEnginesListIsRefusedBeforeThePageIsAsked() async throws {
+        try await enterAsADevice()
+        XCTAssertEqual(PersonProvider.allCases.map(\.rawValue),
+                       ["tilo.models", "tilo.vault", "tilo.events", "tilo.telling", "tilo.initiative", "tilo.asking", "tilo.learned"])
+        // With the engine's own pass: what the device could ask its host, and the engine does not.
+        let refused = try await engine.view.callAsyncJavaScript(#"""
+            const said = [];
+            for (const provider of ['tilo.environment', 'tilo.mcp-server', 'tilo.device-pairing', 'tilo.accounts', 'tilo.hosting',
+                                    'workspace.permissions:ws-1', 'record:so.tilo.chat:x', 'tilo.models ', 'TILO.MODELS', '']) {
+              said.push(JSON.parse(await __tiloLive.person(pass, provider, 'models', 'list', null, null)).error?.code ?? 'answered');
+            }
+            return JSON.stringify({said: [...new Set(said)], asked: window.asked.length});
+            """#, arguments: ["pass": engine.pass], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(refused, #"{"said":["unknown_action"],"asked":0}"#)
+    }
+
+    func testWhatWasTypedIntoAProtectedFieldReachesTheHostAndComesBackInNoAnswer() async throws {
+        try await enterAsADevice()
+        let typed = "s3cret \"typed\" \\ into the field"
+        let board = NSPasteboard.general.changeCount
+        let item = try await engine.keepInVault(Protected(typed), kind: "key", belongsTo: ["https://api.example"], username: "ada")
+        XCTAssertEqual(item.reference, "vault.item:0a")
+        XCTAssertEqual(item.kind, "key")
+        XCTAssertEqual(item.belongsTo, ["https://api.example"])
+        // It reached the host's own call, in the field the action names, exactly as typed.
+        let reached = try await engine.view.callAsyncJavaScript(
+            "const last = window.asked.at(-1); return JSON.stringify([last.target.provider, last.target.address.action, last.argument.secret === typed, last.argument.username, last.argument.kind])",
+            arguments: ["typed": typed], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(reached, #"["tilo.vault","add",true,"ada","key"]"#)
+        // The host repeated it three times over. Nothing of it crosses to the app.
+        let raw = try await engine.ask(.vault, "add", of: "vault", ["kind": "key", "belongsTo": ["https://api.example"]],
+                                       protected: (field: "secret", value: Protected(typed)))
+        XCTAssertEqual(raw["echoed"], "you sent  twice ")
+        XCTAssertNil(raw["secret"])
+        XCTAssertEqual(raw["nested"], [["note": ""]])
+        XCTAssertFalse(raw.text.contains("s3cret"))
+        // A refusal that repeats a key says the rest and not the key.
+        do {
+            try await engine.keepModelKey(Protected("sk-typed-key"), for: "anthropic")
+            XCTFail("a refused key was taken for kept")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "key-refused", reason: "The provider did not accept "))
+        }
+        // Nothing went to the pasteboard, and the value says nothing of itself.
+        XCTAssertEqual(NSPasteboard.general.changeCount, board)
+        let protected = Protected(typed)
+        XCTAssertEqual("\(protected)", "Protected")
+        XCTAssertEqual(String(reflecting: protected), "Protected")
+        XCTAssertTrue(Mirror(reflecting: protected).children.isEmpty)
+        var dumped = ""
+        dump(protected, to: &dumped)
+        XCTAssertFalse(dumped.contains("s3cret"))
+        XCTAssertFalse(Protected(typed).isEmpty)
+    }
+
+    func testAnAnswerThatStillHoldsWhatWasTypedIsHandedToNobody() async throws {
+        try await enterAsADevice()
+        // Should the script ever fail to take a protected value out, the engine stops the answer.
+        do {
+            _ = try await engine.ask("return JSON.stringify({ok: {said: hidden}})", ["hidden": "typed \"once\""], hiding: "typed \"once\"")
+            XCTFail("an answer that holds a protected value crossed to the app")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .noAnswer)
+        }
+        let plain = try await engine.ask("return JSON.stringify({ok: {said: 'nothing of it'}})", [:], hiding: "typed \"once\"")
+        XCTAssertEqual(plain, ["said": "nothing of it"])
+    }
+
+    func testNoTextUnderASecretsNameCrossesToTheApp() async throws {
+        try await enterAsADevice()
+        // The host said a key, a token and a secret where none belongs.
+        let raw = try await engine.ask(.models, "list", of: "models")
+        let provider = raw["providers"]?[0]
+        XCTAssertEqual(provider?["id"], "anthropic")
+        XCTAssertNil(provider?["apiKey"])
+        XCTAssertNil(provider?["token"])
+        XCTAssertNil(provider?["secret"])
+        XCTAssertFalse(raw.text.contains("said-by-mistake"))
+        // What is no secret keeps its name: an assignment's kind, a provider's id.
+        XCTAssertEqual(raw["assignments"]?[0]?["kind"], "subtask")
+    }
+
+    func testOnlyTheFirstEntryOfADocumentIsTakenAndTheHostCannotBeReplaced() async throws {
+        try await enterAsADevice()
+        try await run(#"""
+            globalThis.tiloNativeHost.device({invoke: async () => { window.stolen = true; return {state: 'succeeded', output: {value: {providers: []}}}; }});
+            try { globalThis.tiloNativeHost = {device() { window.stolen = true; }}; } catch { /* It cannot be written. */ }
+            try { delete globalThis.tiloNativeHost; } catch { /* Nor taken away. */ }
+            try { globalThis.tiloNativeHost.device = () => { window.stolen = true; }; } catch { /* Nor changed. */ }
+            """#)
+        let linked = try await engine.modelProviders()
+        XCTAssertEqual(linked.providers.map(\.id), ["anthropic"])
+        let stolen = try await engine.view.callAsyncJavaScript("return String(window.stolen) + ' ' + typeof globalThis.tiloNativeHost.device",
+                                                               arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(stolen, "undefined function")
+    }
+
+    func testAPageThatHandsANativeAppNothingSaysSo() async throws {
+        // Tilo's page as it was before it knew of a native host, and any page in a browser.
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        do {
+            _ = try await engine.modelProviders()
+            XCTFail("a page that hands over nothing answered for the person's providers")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "unavailable", reason: "This page hands a native app no way to its person's own providers"))
+        }
+        let whose = try await engine.whose()
+        XCTAssertNil(whose)
+        // Chat's own actions are the mount's, as before.
+        let read = try await engine.read("notes.book")
+        XCTAssertEqual(read, ["words": ""])
+    }
+
+    func testAFrameInsideThePageIsGivenNoContent() async throws {
+        try await enterAsADevice()
+        // What a live thing would put into the page from elsewhere, or from the site itself.
+        try await run(#"""
+            for (const address of ['https://tilo.test/app/inside.html', 'https://elsewhere.example/', 'data:text/html,<script>parent.postMessage(1, "*")<\/script>']) {
+              const frame = document.createElement('iframe');
+              frame.src = address;
+              document.body.append(frame);
+            }
+            """#)
+        try await until("the frames were refused") { self.engine.refusedFrames == 3 }
+        // The page itself goes on as before.
+        let linked = try await engine.modelProviders()
+        XCTAssertEqual(linked.defaultProvider, "anthropic")
+    }
+
+    func testNothingOfThePersonsIsAskedOfAPageThatIsNotIn() async throws {
+        do {
+            _ = try await engine.keepInVault(Protected("typed"), kind: "key", belongsTo: ["https://api.example"])
+            XCTFail("a page that is not in was handed a secret")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .notOpen)
+        }
+    }
+
+    func testASendWaitsForChatToOfferItAtThePagesNextWord() async throws {
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        let engine = engine!
+        let sending = Task { try await engine.chatSend("Hello", to: ChatRecipient(.conversation, id: "c_chat", name: "chat")) }
+        // Chat refuses the send it does not offer yet, and the engine asks again at the page's
+        // word (the first of which says the page is in).
+        try await until("Chat refused the send it does not offer yet") {
+            ((try? await engine.view.callAsyncJavaScript("return tiloMount.heard.filter(call => call.action === 'send').length",
+                                                         arguments: [:], in: nil, contentWorld: .page)) as? Int ?? 0) >= 1
+        }
+        try await run("window.sendPublished = true; write('Chat is ready')")
+        let message = try await sending.value
+        XCTAssertEqual(message, "m-1")
+        let sent = try await engine.view.callAsyncJavaScript(
+            "return JSON.stringify([...new Set(tiloMount.heard.filter(call => call.action === 'send').map(call => [call.resource, call.args.text, call.args.to[0].id].join(' ')))])",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        // Every try was the same send, and the one Chat took was the first it could take.
+        XCTAssertEqual(sent, #"["chat.workspace Hello c_chat"]"#)
+        let taken = try await engine.view.callAsyncJavaScript("return window.messagesTaken ?? 0", arguments: [:], in: nil, contentWorld: .page) as? Int
+        XCTAssertEqual(taken, 1)
+    }
+
+    func testAnActionThatIsNeverOfferedIsRefusedInTilosWordsWhenThePatienceIsOver() async throws {
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        do {
+            _ = try await engine.whenPublished(within: .milliseconds(400)) {
+                try await self.engine.invoke("send", on: "chat.workspace", ["to": [["id": "c_chat"]], "text": "Hello"])
+            }
+            XCTFail("an action nobody offers was taken for done")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "no action addressed by (chat.workspace, send)"))
+        }
+        // Another refusal is said at once, not waited on.
+        let before = ContinuousClock.now
+        do {
+            _ = try await engine.whenPublished(within: .seconds(30)) { try await self.engine.invoke("refuse", on: "notes.book") }
+            XCTFail("a refused action was taken for done")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "forbidden", reason: "Editors may not do this"))
+        }
+        XCTAssertLessThan(ContinuousClock.now - before, .seconds(5))
+    }
+
+    func testAfterAPairingTheWorkspaceIsLoadedAgainWithoutTheLinksSecret() async throws {
+        var asked: [URL] = []
+        engine.loads = { asked.append($0) }
+        let secret = String(repeating: "cd", count: 48)
+        try engine.pair(with: URL(string: "\(Self.site)/#/@host.example/w/own-1?pair=\(secret)")!)
+        // The page that paired says it is in, under the address of the workspace its link
+        // names. What it holds is whatever its site let the new device into.
+        try await run("location.hash = '#/@host.example/w/own-1/so.tilo.chat'; pairing('246810'); enter()")
+        try await until("the workspace is loaded again") { asked.count == 2 }
+        XCTAssertEqual(asked.last?.absoluteString, "\(Self.site)/app/#/@host.example/w/own-1/so.tilo.chat")
+        XCTAssertFalse(asked.last?.absoluteString.contains(secret) ?? true)
+        XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } }, "the engine was in on the page that paired")
+        // The page of that second load says it is in: now the engine is.
+        try await run("document.documentElement.dataset.arrival = 'done again'")
+        try await until("the engine is in") { self.engine.standing == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
+        XCTAssertEqual(asked.count, 2)
+    }
+
+    func testADeviceLetInElsewhereIsOpenedInTheWorkspaceItsLinkNames() async throws {
+        var asked: [URL] = []
+        engine.loads = { asked.append($0) }
+        let secret = String(repeating: "ab", count: 48)
+        try engine.pair(with: URL(string: "\(Self.site)/#/@host.example/w/own-1?pair=\(secret)")!)
+        XCTAssertEqual(asked.map(\.absoluteString), ["\(Self.site)/app/#/@host.example/w/own-1/so.tilo.chat?pair=\(secret)"])
+        // The site lets a new device in at its home workspace, whatever its link names.
+        try await run("location.hash = '#/@host.example/w/home-9/so.tilo.chat'; enter()")
+        try await until("the workspace the link names is asked for") { asked.count == 2 }
+        XCTAssertEqual(asked.last?.absoluteString, "\(Self.site)/app/#/@host.example/w/own-1/so.tilo.chat")
+        XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } }, "the engine was in at a workspace nobody asked for")
+        // There it is in.
+        try await run("location.hash = '#/@host.example/w/own-1/so.tilo.chat'")
+        try await until("the engine is in") { self.engine.standing == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
+        XCTAssertEqual(asked.count, 2)
+    }
+
+    func testASiteThatKeepsOpeningAnotherWorkspaceIsSaidAndNotTriedForEver() async throws {
+        var asked = 0
+        engine.loads = { _ in asked += 1 }
+        try engine.open(route: "/w/own-1")
+        try await run("location.hash = '#/w/home-0/so.tilo.chat'; enter()")
+        for n in 1...4 {
+            try await Task.sleep(for: .milliseconds(120))
+            try await run("location.hash = '#/w/home-\(n)/so.tilo.chat'")
+        }
+        try await until("it is said") { if case .failed = self.engine.standing { true } else { false } }
+        // The address itself, and three more tries.
+        XCTAssertEqual(asked, 4)
+        XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } })
+    }
+
     private func run(_ script: String) async throws {
         _ = try await engine.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
     }
@@ -245,6 +615,21 @@ final class EngineAddressTests: XCTestCase {
                      "https://tilo.sh/docs/#/w/1f0e?pair=\(secret)", "https://tilo.sh/#/settings?pair=\(secret)"] {
             XCTAssertNil(EngineAddress.pairing(URL(string: text)!, of: settings), text)
         }
+    }
+
+    func testAPageStandsElsewhereOnlyInAnotherWorkspace() {
+        XCTAssertFalse(EngineAddress.isElsewhere("/@h.example/w/ws-1/so.tilo.chat", than: "/@h.example/w/ws-1"))
+        // The same workspace under another name of its host.
+        XCTAssertFalse(EngineAddress.isElsewhere("/w/ws-1/so.tilo.chat", than: "/@127.0.0.1:24100/w/ws-1"))
+        XCTAssertTrue(EngineAddress.isElsewhere("/@h.example/w/ws-2/so.tilo.chat", than: "/@h.example/w/ws-1"))
+        XCTAssertTrue(EngineAddress.isElsewhere("/me/so.tilo.chat", than: "/w/ws-1"))
+        XCTAssertTrue(EngineAddress.isElsewhere("/settings", than: "/w/ws-1"))
+        // The person's own is wherever the site opens it, and nothing asked for is nowhere else.
+        XCTAssertFalse(EngineAddress.isElsewhere("/@h.example/w/ws-2", than: "/me"))
+        XCTAssertFalse(EngineAddress.isElsewhere("/@h.example/w/ws-2", than: nil))
+        XCTAssertEqual(EngineAddress.workspace(ofPage: URL(string: "https://tilo.sh/app/#/@h.example/w/ws-1/so.tilo.chat?pair=\(secret)")!),
+                       "/@h.example/w/ws-1")
+        XCTAssertNil(EngineAddress.workspace(ofPage: URL(string: "https://tilo.sh/app/")!))
     }
 
     func testAnAppsPageNamesItsWorkspaceAndItsRecord() {

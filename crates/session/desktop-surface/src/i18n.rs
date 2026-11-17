@@ -48,7 +48,8 @@ mod tests {
 
         phase a_strip_is_called_a_strip_in_every_locale;
         // A workspace holds strips; the desktop names a strip a strip
-        // everywhere, as the native strip switcher does, never a "desk".
+        // everywhere, as the native strip switcher does. English is judged
+        // with the rest of the tree by tools/policy/check_glossary_words.py.
         {
             for (locale, source) in CATALOGS {
                 for line in source.lines().filter(|line| !line.starts_with('#')) {
@@ -57,7 +58,7 @@ mod tests {
                         assert!(
                             !matches!(
                                 word.to_lowercase().as_str(),
-                                "desk" | "desks" | "schreibtisch" | "schreibtische"
+                                "schreibtisch" | "schreibtische"
                             ),
                             "{locale}: {line}"
                         );

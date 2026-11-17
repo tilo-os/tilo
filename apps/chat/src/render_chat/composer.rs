@@ -34,9 +34,9 @@ impl ChatApp {
     ) {
         let rect = self.composer_rect();
         self.composer_top = None;
-        // With no channel open a draft would have nowhere to go, so there is
+        // With no conversation open a draft would have nowhere to go, so there is
         // no composer to type into.
-        if self.direct_person().is_none() && self.channel(&self.active_channel).is_none() {
+        if self.direct_person().is_none() && !self.takes_messages() {
             self.composer_main.set_focus(false);
             return;
         }

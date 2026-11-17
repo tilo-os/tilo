@@ -152,7 +152,7 @@ pub enum KeyEffect {
     #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
     CopyProof,
-    #[effect(attended, privileged, label = "publisher-copy-secret")]
+    #[effect(job, attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
     #[effect(job, attended, privileged)]
     ExportKey,

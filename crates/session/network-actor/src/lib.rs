@@ -521,11 +521,10 @@ enum InternalEvent {
     /// A workspace's link ended; `deleted` when its host said the
     /// workspace's owner deleted it.
     NativeLinkClosed { ws: WorkspaceId, deleted: bool },
-    /// A workspace's hold failed to dial `via`, its `governor` or another host.
+    /// A workspace's hold failed to dial `via`, one of its holders.
     NativeDialFailed {
         ws: WorkspaceId,
         via: Box<tilo_peer_state::join::TransportHint>,
-        governor: bool,
         reason: String,
     },
     Host {
@@ -1940,12 +1939,9 @@ impl ActorState {
             Some(InternalEvent::NativeLinkClosed { ws, deleted }) => {
                 self.native_link_closed(ws, deleted).await;
             }
-            Some(InternalEvent::NativeDialFailed {
-                ws,
-                via,
-                governor,
-                reason,
-            }) => self.native_dial_failed(ws, &via, governor, &reason),
+            Some(InternalEvent::NativeDialFailed { ws, via, reason }) => {
+                self.native_dial_failed(ws, &via, &reason);
+            }
             Some(InternalEvent::Host {
                 ws,
                 peer,

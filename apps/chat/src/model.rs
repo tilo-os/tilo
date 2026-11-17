@@ -275,6 +275,8 @@ pub struct Message {
     pub share: Option<crate::record::WindowShare>,
     /// What it asks one person, and where that question stands.
     pub question: Option<crate::question::Question>,
+    /// What started the turn it asks for, when a person did not type it.
+    pub cause: Option<crate::cause::Cause>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
@@ -652,6 +654,9 @@ pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> 
                     .is_some_and(|prev| {
                         prev.appearance == m.appearance
                             && prev.sending == m.sending
+                            // What started a turn stands alone, under its own name.
+                            && prev.cause.is_none()
+                            && m.cause.is_none()
                             && (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS
                     })
         });
@@ -734,6 +739,7 @@ mod tests {
             author_name: None,
             share: None,
             question: None,
+            cause: None,
             attempts: 0,
             sending: false,
         }

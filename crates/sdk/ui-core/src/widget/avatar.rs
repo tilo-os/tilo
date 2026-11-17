@@ -109,6 +109,12 @@ impl<'a> AvatarFace<'a> {
         }
     }
 
+    /// `person`'s face, in the hue they wear.
+    #[must_use]
+    pub fn of(person: &'a crate::component::Person) -> Self {
+        Self::new(&person.name, person.identity.id()).hue(person.hue)
+    }
+
     /// Software, not a person: the agent's own face, the agent mark on a rounded square in its
     /// colour ([`Self::hue`] for its client's), drawn as the faces of who is here draw it
     /// ([`crate::agent_identity::draw_agent_identity_mark`]), so an agent looks the same on every

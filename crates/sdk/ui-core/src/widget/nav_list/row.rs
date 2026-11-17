@@ -10,7 +10,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
-use super::model::{NavItemSpec, NavRowData, NavRowKind, NavStatus};
+use super::model::{NavItemSpec, NavRowData, NavRowKind};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{
     NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column, nav_item_height,
@@ -231,7 +231,7 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     face.count = spec.count;
     face.secondary = spec.secondary.as_deref();
     face.meta = spec.meta.as_deref();
-    face.status = spec.status.as_ref().map(NavStatus::row_status);
+    face.status = spec.status;
     face.status_label = spec
         .status_label
         .as_ref()

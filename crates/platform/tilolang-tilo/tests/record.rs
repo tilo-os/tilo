@@ -211,7 +211,7 @@ fn window_over(
     let instance = Instance::new(
         Config {
             app: APP.to_owned(),
-            me: me.to_owned(),
+            me: me.into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,
@@ -609,7 +609,7 @@ fn instance_over(me: &str, record: &mut InstanceRecord, platform: &Rc<Counter>) 
     let mut instance = Instance::new(
         Config {
             app: APP.to_owned(),
-            me: me.to_owned(),
+            me: me.into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,

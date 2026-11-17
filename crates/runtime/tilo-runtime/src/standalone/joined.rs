@@ -104,7 +104,6 @@ impl Holder for WorkspaceHolder {
     fn dial_failed(
         &self,
         _via: TransportHint,
-        _governor: bool,
         reason: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         tracing::debug!(%reason, "a joined workspace's link is unavailable");

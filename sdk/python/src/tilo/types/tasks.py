@@ -25,14 +25,22 @@ __all__ = [
     "TrackerArea",
     "Area",
     "Attachment",
+    "BudgetBy",
     "Issue",
     "Link",
+    "ListedIssue",
     "Message",
     "MessageKind",
     "NewIssue",
     "Origin",
     "Priority",
+    "Resumed",
     "Status",
+    "Stopped",
+    "StoppedWhy",
+    "WaitFor",
+    "WaitKind",
+    "Work",
     "Tracker",
     "Issues",
     "CreateAreaArgs",
@@ -43,6 +51,7 @@ __all__ = [
     "DeleteAreaArgs",
     "CreateArgs",
     "StartArgs",
+    "CreateManyArgs",
     "RenameArgs",
     "MoveUnderArgs",
     "AssignArgs",
@@ -56,6 +65,13 @@ __all__ = [
     "LinkNoteArgs",
     "DeleteArgs",
     "PlanArgs",
+    "SetPlaceArgs",
+    "WaitArgs",
+    "ResumeArgs",
+    "SetBudgetArgs",
+    "RunBeganArgs",
+    "RunEndedArgs",
+    "StopArgs",
 ]
 
 Kind = Literal["project", "area"]
@@ -84,6 +100,8 @@ class Attachment(TypedDict):
     author_name: str
     at_ms: int
 
+BudgetBy = Literal["person", "agent"]
+
 class Issue(TypedDict):
     number: int
     rank: str
@@ -107,6 +125,7 @@ class Issue(TypedDict):
     created_ms: int
     origin: Origin | None
     url: str | None
+    work: Work | None
 
 class Link(TypedDict):
     label: str
@@ -114,6 +133,24 @@ class Link(TypedDict):
     kind: str
     resource: str
     record: str | None
+
+class ListedIssue(TypedDict):
+    key: str | None
+    under: str | None
+    title: str
+    parent: str | None
+    body: str | None
+    status: Status | None
+    assignee: str | None
+    url: str | None
+    project: str | None
+    priority: Priority | None
+    estimate: int | None
+    due_ms: int | None
+    labels: list[str] | None
+    origin: Origin | None
+    rank: str | None
+    goal: Area | None
 
 class Message(TypedDict):
     author: str | None
@@ -157,7 +194,43 @@ class Origin(TypedDict):
 
 Priority = Literal["none", "urgent", "high", "medium", "low"]
 
+class Resumed(TypedDict):
+    cause: str
+    at_ms: int
+
 Status = Literal["backlog", "todo", "in-progress", "in-review", "done", "cancelled"]
+
+class Stopped(TypedDict):
+    why: StoppedWhy
+    words: str
+    at_ms: int
+
+StoppedWhy = Literal["failed", "budget", "time", "lost-worker", "person"]
+
+class WaitFor(TypedDict):
+    kind: WaitKind
+    what: str
+    on: str | None
+    event: str | None
+
+WaitKind = Literal["time", "reply", "change", "answer", "people"]
+
+class Work(TypedDict):
+    folder: str
+    note: str
+    waits: list[WaitFor]
+    until_ms: int | None
+    since_ms: int | None
+    budget_micros: int | None
+    budget_ms: int | None
+    budget_by: BudgetBy
+    spent_micros: int
+    worked_ms: int
+    runs: int
+    running_since_ms: int | None
+    lost: int
+    stopped: Stopped | None
+    resumed: Resumed | None
 
 CreateAreaArgs = TypedDict("CreateAreaArgs", {
     "name": "str",
@@ -217,6 +290,11 @@ StartArgs = TypedDict("StartArgs", {
     "before": "int",
 })
 """The arguments of `start`."""
+
+CreateManyArgs = TypedDict("CreateManyArgs", {
+    "issues": "list[ListedIssue]",
+})
+"""The arguments of `create-many`."""
 
 RenameArgs = TypedDict("RenameArgs", {
     "issue": "str",
@@ -308,9 +386,55 @@ PlanArgs = TypedDict("PlanArgs", {
 })
 """The arguments of `plan`."""
 
+SetPlaceArgs = TypedDict("SetPlaceArgs", {
+    "issue": "str",
+    "folder": "str",
+    "note": NotRequired["str | None"],
+})
+"""The arguments of `set-place`."""
+
+WaitArgs = TypedDict("WaitArgs", {
+    "issue": "str",
+    "waits": "list[WaitFor]",
+    "until_ms": "int",
+})
+"""The arguments of `wait`."""
+
+ResumeArgs = TypedDict("ResumeArgs", {
+    "issue": "str",
+    "cause": "str",
+})
+"""The arguments of `resume`."""
+
+SetBudgetArgs = TypedDict("SetBudgetArgs", {
+    "issue": "str",
+    "money_micros": NotRequired["int | None"],
+    "time_ms": NotRequired["int | None"],
+})
+"""The arguments of `set-budget`."""
+
+RunBeganArgs = TypedDict("RunBeganArgs", {
+    "issue": "str",
+})
+"""The arguments of `run-began`."""
+
+RunEndedArgs = TypedDict("RunEndedArgs", {
+    "issue": "str",
+    "cost_micros": "int",
+    "worked_ms": "int",
+})
+"""The arguments of `run-ended`."""
+
+StopArgs = TypedDict("StopArgs", {
+    "issue": "str",
+    "why": "StoppedWhy",
+    "words": "str",
+})
+"""The arguments of `stop`."""
+
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@188395cb119c73de"
+    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
     areas: list[Entry[TrackerArea]]
 
     def create_area(self,
@@ -402,7 +526,7 @@ class Tracker(Resource):
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@188395cb119c73de"
+    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
     issues: list[Entry[Issue]]
     @property
     def before(self) -> int:
@@ -473,6 +597,8 @@ class Issues(Resource):
         """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start", items)
 
+    # the app's `create-many` action is named as a field of this kind: run it with
+    # `action("create-many")`.
     def rename(self,
         *,
         issue: str,
@@ -688,8 +814,104 @@ class Issues(Resource):
         """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("plan", items)
 
+    def set_place(self,
+        *,
+        issue: str,
+        folder: str,
+        note: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        args["folder"] = folder
+        if note is not None:
+            args["note"] = note
+        return self.action("set-place", **args)
+
+    def set_place_many(self, items: list[SetPlaceArgs]) -> list[dict[str, Any]]:
+        """Runs `set-place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-place", items)
+
+    def wait(self,
+        *,
+        issue: str,
+        waits: list[WaitFor],
+        until_ms: int,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("wait", issue=issue, waits=waits, until_ms=until_ms)
+
+    def wait_many(self, items: list[WaitArgs]) -> list[dict[str, Any]]:
+        """Runs `wait` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("wait", items)
+
+    def resume(self,
+        *,
+        issue: str,
+        cause: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("resume", issue=issue, cause=cause)
+
+    def resume_many(self, items: list[ResumeArgs]) -> list[dict[str, Any]]:
+        """Runs `resume` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resume", items)
+
+    def set_budget(self,
+        *,
+        issue: str,
+        money_micros: int | None = None,
+        time_ms: int | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        if money_micros is not None:
+            args["money_micros"] = money_micros
+        if time_ms is not None:
+            args["time_ms"] = time_ms
+        return self.action("set-budget", **args)
+
+    def set_budget_many(self, items: list[SetBudgetArgs]) -> list[dict[str, Any]]:
+        """Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-budget", items)
+
+    def run_began(self, *, issue: str) -> None:
+        """Runs the app's action."""
+        return self.action("run-began", issue=issue)
+
+    def run_began_many(self, items: list[RunBeganArgs]) -> list[dict[str, Any]]:
+        """Runs `run-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("run-began", items)
+
+    def run_ended(self,
+        *,
+        issue: str,
+        cost_micros: int,
+        worked_ms: int,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("run-ended", issue=issue, cost_micros=cost_micros, worked_ms=worked_ms)
+
+    def run_ended_many(self, items: list[RunEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `run-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("run-ended", items)
+
+    def stop(self,
+        *,
+        issue: str,
+        why: StoppedWhy,
+        words: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("stop", issue=issue, why=why, words=words)
+
+    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many"})
+    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many", "set_place", "set_place_many", "wait", "wait_many", "resume", "resume_many", "set_budget", "set_budget_many", "run_began", "run_began_many", "run_ended", "run_ended_many", "stop", "stop_many"})
 
 

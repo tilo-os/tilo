@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::time::Duration;
 
-use agent_provider_config::Interaction;
+/// The kinds of work a model is chosen by: what [`TransformModel`] is asked
+/// for and [`Transform::kind`] answers.
+pub use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::Rule;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
@@ -472,6 +474,52 @@ pub enum Transform {
 }
 
 impl Transform {
+    /// A classification over `choices`: between 1 and 64 of them, each text
+    /// of 1 to 200 characters; with `multi`, every one that applies. The one
+    /// place a classification's bounds are checked, whoever asks for it.
+    ///
+    /// # Errors
+    ///
+    /// [`code::INVALID_ARGUMENTS`] for choices outside those bounds.
+    pub fn classify(choices: Vec<String>, multi: bool) -> Result<Self, Failure> {
+        if choices.is_empty() || choices.len() > MAX_CHOICES {
+            return Err(invalid("`classify` needs between 1 and 64 choices"));
+        }
+        if choices
+            .iter()
+            .any(|choice| choice.trim().is_empty() || choice.chars().count() > MAX_CHOICE_CHARS)
+        {
+            return Err(invalid("each choice must be 1 to 200 characters"));
+        }
+        Ok(Self::Classify { choices, multi })
+    }
+
+    /// A prompt answered as text, or as a value of `schema` when one is
+    /// given. The one place a prompt's bounds and its schema are checked,
+    /// whoever asks for it.
+    ///
+    /// # Errors
+    ///
+    /// [`code::INVALID_ARGUMENTS`] for no prompt or a schema the answer could
+    /// not be checked against, [`code::TOO_LARGE`] for either past its bound.
+    pub fn freeform(prompt: &str, schema: Option<Value>) -> Result<Self, Failure> {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err(invalid("`freeform` needs a `prompt`"));
+        }
+        if prompt.len() > MAX_PROMPT_BYTES {
+            return Err(failure(
+                code::TOO_LARGE,
+                "the prompt exceeds the 4 KiB limit",
+                false,
+            ));
+        }
+        if let Some(schema) = &schema {
+            check_schema(schema)?;
+        }
+        Ok(Self::Freeform { prompt, schema })
+    }
+
     /// What kind of interaction this is, as far as choosing a model goes.
     #[must_use]
     pub fn kind(&self) -> Interaction {
@@ -852,28 +900,10 @@ pub fn bind(
         AGENT_CLASSIFY_ACTION => classify(&args)?,
         AGENT_TASK_ACTION => task(&args)?,
         AGENT_RESPOND_ACTION => respond(&args)?,
-        _ => {
-            let prompt = args
-                .prompt
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if prompt.is_empty() {
-                return Err(invalid("`freeform` needs a `prompt`"));
-            }
-            if prompt.len() > MAX_PROMPT_BYTES {
-                return Err(failure(
-                    code::TOO_LARGE,
-                    "the prompt exceeds the 4 KiB limit",
-                    false,
-                ));
-            }
-            Transform::Freeform {
-                prompt,
-                schema: schema()?,
-            }
-        }
+        _ => Transform::freeform(
+            args.prompt.as_deref().unwrap_or_default(),
+            args.schema.clone().map(Value::Object),
+        )?,
     };
     let needs_input = !matches!(
         transform,
@@ -938,19 +968,7 @@ fn classify(args: &Arguments) -> Result<Transform, Failure> {
         .map(|choice| choice.as_str().map(str::to_string))
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| invalid("every choice must be text"))?;
-    if choices.is_empty() || choices.len() > MAX_CHOICES {
-        return Err(invalid("`classify` needs between 1 and 64 choices"));
-    }
-    if choices
-        .iter()
-        .any(|choice| choice.trim().is_empty() || choice.chars().count() > MAX_CHOICE_CHARS)
-    {
-        return Err(invalid("each choice must be 1 to 200 characters"));
-    }
-    Ok(Transform::Classify {
-        choices,
-        multi: args.multi.unwrap_or(false),
-    })
+    Transform::classify(choices, args.multi.unwrap_or(false))
 }
 
 /// Bind the single wire argument a directed invocation carries.

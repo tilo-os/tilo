@@ -476,6 +476,12 @@ chat-messages-ask = Die eigene Person fragen
 chat-messages-answer-question = Eine Frage beantworten
 chat-messages-withdraw-question = Eine Frage zurückziehen
 chat-messages-settle-question = Sagen, was aus einer Antwort wurde
+chat-messages-ask-agent = Einen Agenten fragen
+chat-messages-stop-agent = Die Arbeit eines Agenten stoppen
+# Was einen Zug gestartet hat, den niemand getippt hat: steht dort, wo sonst der Name steht.
+chat-cause-reminder = Erinnerung: { $label }
+chat-cause-event = Ereignis: { $label }
+chat-cause-news = Neuigkeit: { $label }
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = Bei „{ $resource }“

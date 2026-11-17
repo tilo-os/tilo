@@ -158,47 +158,26 @@ impl TextInput {
         let Some((region, block)) = &self.edits else {
             return;
         };
-        let now = crate::time::now();
-        for interaction in presence.visible_interactions(now) {
-            let Some((start, end)) =
-                crate::presence::written_in(&interaction, Some(region), block, &self.text)
-            else {
-                continue;
-            };
-            let Some(alpha) = presence.interaction_fade(interaction.invocation, now) else {
-                continue;
-            };
-            let Some(user) = interaction
-                .actor
-                .members()
-                .first()
-                .map(|member| (*member).clone())
-            else {
-                continue;
-            };
-            let bands: Vec<(Rect, f32)> = self
-                .selection_rects(theme, start, end)
-                .into_iter()
-                .map(|band| (transform.transform_rect_bbox(band), alpha))
-                .collect();
-            presence.draw_peer_typing(scene, theme, &user, &bands);
-            presence.note_shown(interaction.invocation);
-            presence.note_drawn(interaction.invocation, now);
-            let name = presence.interaction_status_label_written(&interaction);
-            presence.draw_action_caret_labeled_in(
-                scene,
-                theme,
-                text_renderer,
-                transform,
-                &user,
-                &name,
-                crate::presence::LabeledCaret::within(self.caret_rect(theme, end), self.rect.y0)
-                    .among(
-                        self.selection_rects(theme, 0, self.text.len()),
-                        self.rect.x1,
+        presence.draw_writes_in(
+            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (Some(region), block, &self.text),
+            None,
+            &mut |_, _, start, end| {
+                (
+                    self.selection_rects(theme, start, end),
+                    Some(
+                        crate::presence::LabeledCaret::within(
+                            self.caret_rect(theme, end),
+                            self.rect.y0,
+                        )
+                        .among(
+                            self.selection_rects(theme, 0, self.text.len()),
+                            self.rect.x1,
+                        ),
                     ),
-            );
-        }
+                )
+            },
+        );
     }
 }
 

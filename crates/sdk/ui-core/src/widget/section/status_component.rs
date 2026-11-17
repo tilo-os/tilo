@@ -4,9 +4,9 @@ use crate::component::{Component, Described, Person};
 use crate::icons::Icon;
 use crate::widget::list_row::RowStatus;
 
-use super::{ObjectHeader, ObjectLead, OwnedStatus, StatusLine};
+use super::{ObjectHeader, ObjectLead, StatusLine};
 
-crate::component::choice!(RowStatus<'static>, "RowStatus", {
+crate::component::choice!(RowStatus, "RowStatus", {
     Active => "active",
     Warning => "warning",
     Error => "error",
@@ -24,19 +24,17 @@ pub struct StatusLineProps {
     /// What state it says: `active` (running, connected, healthy) unless said, `warning` (needs
     /// attention soon), `error` (failed or offline unexpectedly), `idle` (present but
     /// inactive).
-    pub status: Option<RowStatus<'static>>,
+    pub status: Option<RowStatus>,
     /// A person whose presence it says, in their colour, instead of a status.
     pub who: Option<Person>,
 }
 
-fn said(props: StatusLineProps) -> (OwnedStatus, String) {
+fn said(props: StatusLineProps) -> (RowStatus, String) {
     let StatusLineProps { text, status, who } = props;
     let status = match (who, status) {
-        (Some(who), _) => OwnedStatus::Presence(who.identity.id().to_owned()),
-        (None, Some(RowStatus::Warning)) => OwnedStatus::Warning,
-        (None, Some(RowStatus::Error)) => OwnedStatus::Error,
-        (None, Some(RowStatus::Idle)) => OwnedStatus::Idle,
-        (None, Some(RowStatus::Active | RowStatus::Presence(_)) | None) => OwnedStatus::Active,
+        (Some(who), _) => RowStatus::Presence(who.hue),
+        (None, Some(status)) => status,
+        (None, None) => RowStatus::Active,
     };
     (status, text)
 }
@@ -53,7 +51,7 @@ impl Described for StatusLine {
     /// ticks, a connection that fails.
     fn set_props(&mut self, props: StatusLineProps) -> bool {
         let (status, text) = said(props);
-        self.set_owned_status(status, text);
+        self.set_status(status, text);
         true
     }
 }

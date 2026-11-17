@@ -20,11 +20,18 @@ public enum EngineScript {
     ///     it drew one. So an unseen page's frames are driven by a clock, slowly: it draws for
     ///     nobody, only to go on living. `__tiloLive.seen(true)` hands the frames back to the
     ///     screen while a person looks at the view.
-    public static func source(origin: String, unseen: Bool) -> String {
-        source
+    ///   - pass: what the script takes an ask of the person's own providers with: the engine
+    ///     made it and hands it in with every such ask. Without one no such ask is taken.
+    ///   - providers: the providers of the person's own the script asks for the engine; an ask
+    ///     of any other is refused.
+    public static func source(origin: String, unseen: Bool, pass: String = "", providers: [String] = []) -> String {
+        let listed = (try? JSONSerialization.data(withJSONObject: providers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return source
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%NAME%", with: name)
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
+            .replacingOccurrences(of: "%PASS%", with: literal(pass))
+            .replacingOccurrences(of: "%PROVIDERS%", with: listed)
     }
 
     static func literal(_ text: String) -> String {
@@ -185,8 +192,76 @@ public enum EngineScript {
       };
       const live = id => (id ? lives.get(id)?.mount : mount);
 
+      // The device's own entry. A page that knows a native app may hold it hands this over once
+      // it is in (web/native-host.mjs): its asks of the workspace's host as the person on this
+      // device. It is kept in this script's own scope and on no global, and only the first of
+      // a document is taken, so nothing that runs later puts another in its place.
+      let device;
+      Object.defineProperty(globalThis, 'tiloNativeHost', {value: Object.freeze({
+        device(entry) { if (!device && entry && typeof entry.invoke === 'function') device = entry; },
+      })});
+      // The pass is this engine's own: the engine made it and hands it in with every ask of
+      // the person's providers. It stands here, in no function a page's script could print.
+      const pass = %PASS%;
+      const providers = new Set(%PROVIDERS%);
+      const holds = given => {
+        if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
+        let differs = 0;
+        for (let at = 0; at < pass.length; at++) differs |= given.charCodeAt(at) ^ pass.charCodeAt(at);
+        return differs === 0;
+      };
+      // What crosses to the app: never the protected value that went in, wherever an answer
+      // carries it, and no text under a name that only ever holds a secret.
+      const secretNames = new Set(['secret', 'password', 'passphrase', 'apikey', 'api_key', 'privatekey', 'private_key',
+        'token', 'accesstoken', 'access_token', 'refreshtoken', 'refresh_token']);
+      const without = (value, hidden) => {
+        if (typeof value === 'string') return hidden && value.includes(hidden) ? value.split(hidden).join('') : value;
+        if (Array.isArray(value)) return value.map(item => without(item, hidden));
+        if (!value || typeof value !== 'object') return value;
+        const kept = {};
+        for (const [name, field] of Object.entries(value)) {
+          if (typeof field === 'string' && secretNames.has(name.toLowerCase())) continue;
+          kept[name] = without(field, hidden);
+        }
+        return kept;
+      };
+      const unknown = (provider, action) =>
+        JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
+      const noDevice = () =>
+        JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
+
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
+        // One of the person's own providers on their host, asked for the app's own code alone:
+        // with this engine's pass, and of the providers the engine names. `hidden` is a field
+        // of the argument and what the person typed into a protected field for it.
+        async person(given, provider, resource, action, argument, hidden) {
+          if (!holds(given) || !providers.has(provider)) return unknown(provider, action);
+          if (!device) return noDevice();
+          const secret = hidden && typeof hidden.value === 'string' ? hidden.value : '';
+          try {
+            const plain = argument && Object.keys(argument).length ? argument : null;
+            const answer = await device.invoke({provider, address: {resource, action}},
+              hidden ? {...(argument ?? {}), [hidden.field]: secret} : plain);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, secret)});
+          } catch (error) { return JSON.stringify({error: without(failure(error), secret)}); }
+        },
+        // Whose device this is and the workspace it stands in, as the page's session says it.
+        whose(given) {
+          if (!holds(given)) return unknown('tilo.device', 'whose');
+          if (!device) return noDevice();
+          return JSON.stringify({ok: {person: device.person ?? null, workspace: device.workspace ?? null}});
+        },
+        // The person's own workspace on this host, which the host makes when it is first asked for.
+        async own(given) {
+          if (!holds(given)) return unknown('tilo.device', 'own');
+          if (!device) return noDevice();
+          try {
+            const own = await device.ownWorkspace();
+            return JSON.stringify({ok: {id: own?.id ?? null, name: own?.name ?? null, origin: own?.origin ?? null}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         actions(resource, id) {
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});

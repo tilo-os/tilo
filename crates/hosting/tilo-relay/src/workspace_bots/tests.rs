@@ -18,6 +18,11 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
 
+/// A person's events through the host's own actions.
+mod events;
+/// The host's own answers for the programs it runs for a person.
+mod judging;
+
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
 /// The greeter's installation.
@@ -1766,7 +1771,7 @@ async fn an_instruction_nothing_takes_is_handed_over_again_or_kept_as_a_dead_let
     // Until this host can start a turn of a person's assistant, its own
     // answer is that nothing takes the instruction yet.
     assert!(matches!(
-        assistant::host_steps().instruct(taken[0].clone()),
+        assistant::host_steps(workspaces.clone()).instruct(taken[0].clone()),
         Err(HostStepError::Unavailable(_))
     ));
 }

@@ -1282,7 +1282,7 @@ tilo_test_env::scenario! {
             assert!(
                 failed
                     && text
-                        == "no app notes; name a running app by its id or last part, e.g. <app_id>. Running none; installed none",
+                        == "unknown_app: no app notes; name a running app by its id or last part, e.g. <app_id>. Running none; installed none",
                 "{text}"
             );
 
@@ -1305,7 +1305,7 @@ tilo_test_env::scenario! {
             assert!(!failed, "{text}");
             assert_eq!(
                 text,
-                "apps\nnotes    running\nthe installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+                "apps\nnotes    running\nthe installed apps could not be read: this session's workspaces cannot be read"
             );
             let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({"path": "sheets"})).await;
             assert!(
@@ -2611,7 +2611,7 @@ tilo_test_env::scenario! {
             assert!(failed, "{text}");
             assert_eq!(
                 text,
-                "no running app is named notes, and the installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+                "no running app is named notes, and the installed apps could not be read: this session's workspaces cannot be read"
             );
             let running = Notes::new(true).installed(Installed::Unreadable);
             let (text, failed) = tool(&agent(&running), "tilo_find", query(APP)).await;

@@ -36,6 +36,9 @@ mod step;
 use step::batch_invocation;
 #[path = "mcp_turns.rs"]
 mod turns;
+
+#[path = "mcp_refusal.rs"]
+mod refusal;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
@@ -265,23 +268,11 @@ impl From<&str> for BridgeError {
     }
 }
 
-/// The one place a refusal becomes the text an MCP client reads.
+/// The one place a refusal becomes the text an MCP client reads
+/// ([`refusal::said`]).
 impl From<BridgeError> for String {
     fn from(error: BridgeError) -> Self {
-        match error {
-            // What happened, and what to do: a bare code leaves the caller
-            // guessing whether to retry, and a caller that retries the same
-            // stale revision fails the same way.
-            BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision) => {
-                "the resource changed since the revision this call named, which you read: \
-                 the action is offered at a newer revision now. Invoke it again and omit \
-                 revision, which runs it against the directory as it is now, or re-run \
-                 tilo_query and invoke it at the revision that page names"
-                    .to_owned()
-            }
-            BridgeError::Host(error) => error.to_string(),
-            BridgeError::Bridge(message) => message,
-        }
+        refusal::said(error)
     }
 }
 

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
-use tilo_actions::Actor;
+use tilo_actions::{Actor, MemberId};
 use tilo_render_protocol::patch::local;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::RootView;
@@ -90,7 +90,7 @@ impl Surface {
         let mut instance = Instance::new(
             Config {
                 app: wrapper.compiled.meta.app.clone(),
-                me: view.viewer.id().to_owned(),
+                me: view.viewer.clone(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
@@ -119,7 +119,7 @@ impl Surface {
             .host()
             .ok_or("no runtime started for the written view")?;
         // A person's own view is their own code. Anyone else's asks first.
-        if view.author == Actor::Member(view.viewer.clone()) {
+        if view.author.member_id().and_then(MemberId::as_person) == Some(&view.viewer) {
             host.authority()
                 .trust(&ModuleHash::written_by(&view.author));
         }

@@ -82,12 +82,20 @@ impl OwnResource {
     /// app's manifest declares each member's own ([`own_kinds`]); `None` for
     /// any other record. What a device of that person writes into the
     /// record's frames: nobody else derives the id.
+    ///
+    /// A document that lives and syncs with a tree is as private as the tree
+    /// it belongs to ([`DocumentId::tree`]): a part of the person's record,
+    /// a chunk of it or a child inside it is the person's own too, recognised
+    /// as the record it belongs to.
     #[must_use]
     pub fn recognise(app: &str, record: &str, owner: [u8; 32]) -> Option<Self> {
+        let base = crate::document::DocumentId::parse(record)
+            .and_then(|id| id.tree())
+            .map_or_else(|| record.to_owned(), |tree| tree.as_str().to_owned());
         own_kinds(app)
             .into_iter()
             .filter_map(|kind| Self::new(&kind, owner))
-            .find(|own| own.names(record))
+            .find(|own| own.names(&base))
     }
 }
 
@@ -109,6 +117,24 @@ pub fn own_kinds(app: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_of_an_own_record_is_the_persons_own() {
+        let mailbox = OwnResource::of_person(&hex::encode([3; 32]), "mail.mailbox").unwrap();
+        let part = crate::document::DocumentId::parse(&mailbox.document_id())
+            .unwrap()
+            .part(2);
+        let recognised = OwnResource::recognise("so.tilo.mail", part.as_str(), [3; 32])
+            .expect("a part of the mailbox is the mailbox's own");
+        assert_eq!(
+            recognised, mailbox,
+            "recognised as the record it belongs to"
+        );
+        assert!(
+            OwnResource::recognise("so.tilo.mail", part.as_str(), [4; 32]).is_none(),
+            "another person's root recognises none of it"
+        );
+    }
 
     #[test]
     fn an_own_records_id_is_its_kind_and_persons_alone() {

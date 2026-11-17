@@ -329,6 +329,17 @@ pub struct Message {
     /// ([`crate::question`]).
     #[model(readonly)]
     pub question: Option<crate::question::Question>,
+    /// What started the turn it asks for, when a person did not type it: a
+    /// reminder, an event, news of work started for them, each for the one
+    /// person its asking pinned ([`crate::cause`]).
+    #[model(readonly)]
+    pub cause: Option<crate::cause::Cause>,
+    /// The stop of the turn it asks for, when the person the turn is for
+    /// stopped it (`stop-agent`): the agent ends its work, and nothing
+    /// answers the message until someone asks again
+    /// ([`crate::summons::Stopped`]).
+    #[model(readonly)]
+    pub stopped: Option<crate::summons::Stopped>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now. The answer of
     /// attempt `n` is the reply [`reply_id_at`] derives, so asking again never
@@ -362,6 +373,8 @@ impl Message {
             origin: None,
             share: None,
             question: None,
+            cause: None,
+            stopped: None,
             attempts: 0,
         }
     }
@@ -914,6 +927,8 @@ pub(crate) struct Posting {
     pub share: Option<WindowShare>,
     /// What it asks one person.
     pub question: Option<crate::question::Question>,
+    /// What started the turn it asks for, when a person did not type it.
+    pub cause: Option<crate::cause::Cause>,
     /// Who the text refers to, as the chat record resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,

@@ -9,9 +9,20 @@
 //! ([`crate::shell::HostRequest::Revoke`]), which signs it and announces it on
 //! every session of theirs, and the host's revocations then mark the device in
 //! the list it answers.
+//!
+//! A read of the list stays open ([`LiveDevices`]): the host answers it
+//! once, and it has the list again whenever the host sends the person's
+//! record anew, which it does as the record changes, and whenever this page
+//! itself changed it. Whatever shows the list follows that read; nothing
+//! asks the host again on a timer.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde_json::Value;
-use tilo_actions::remote::identity_admin;
+use tilo_actions::remote::{Completer, InvocationState, Pending, identity_admin, pending};
+use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
@@ -20,14 +31,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "wasm32")]
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 #[cfg(target_arch = "wasm32")]
-use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionOutput};
 #[cfg(target_arch = "wasm32")]
 use tilo_desktop_surface::session::DesktopSession;
-#[cfg(target_arch = "wasm32")]
-use tilo_lock::MutexRecover as _;
 #[cfg(target_arch = "wasm32")]
 use tilo_relay_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
@@ -43,6 +52,219 @@ use crate::mcp_server::{Revoked, Revoking};
 const REASONS: [&str; 4] = ["retired", "lost", "stolen", "compromised"];
 
 #[cfg(target_arch = "wasm32")]
+/// How long the host is given to answer the person's record when this page
+/// reads it once more.
+const READ_WAIT_MS: u32 = 20_000;
+
+#[cfg(target_arch = "wasm32")]
+/// How long a waiting read sleeps at most before it looks again: whoever
+/// waits on it checks its own deadline only when woken.
+const WAIT_WAKE_MS: u32 = 10_000;
+
+/// The reads of the person's devices this page keeps current.
+///
+/// The list is the host's to keep. A read of it is answered by the host
+/// once and stays open here. It has the list again when the host sends the
+/// person's record anew ([`Self::sent`]), and when this page changed the
+/// list itself, by approving a device or announcing that one was taken
+/// back ([`Self::moved`]): then the record is read from the host once more
+/// ([`Self::wait`] says so, [`Self::read`] takes the answer).
+#[derive(Default)]
+pub(crate) struct LiveDevices(Mutex<Live>);
+
+#[derive(Default)]
+struct Live {
+    /// Each open read, and whether the host answered it yet.
+    reads: HashMap<InvocationId, bool>,
+    /// The list as the host last gave it, and how many lists that makes.
+    listed: Option<Value>,
+    sequence: u64,
+    /// Whether this page changed the list since it was last read.
+    owed: bool,
+    /// Whether the list is being read from the host again now.
+    reading: bool,
+    /// Whether the page's timer is set to wake whoever waits.
+    ticking: bool,
+    /// Whoever waits to hear that a read may have changed.
+    waiting: Vec<Completer<()>>,
+}
+
+impl Live {
+    /// Hold `listed` as the list; whether it differs from the one held.
+    fn hold(&mut self, listed: Value) -> bool {
+        if self.listed.as_ref() == Some(&listed) {
+            return false;
+        }
+        self.listed = Some(listed);
+        self.sequence = self.sequence.saturating_add(1);
+        true
+    }
+
+    fn answered(&self, id: &InvocationId) -> bool {
+        self.reads.get(id).copied().unwrap_or(false)
+    }
+}
+
+/// Tell everyone who waited that a read may have changed.
+fn tell(waiting: Vec<Completer<()>>) {
+    for told in waiting {
+        told.complete(());
+    }
+}
+
+impl LiveDevices {
+    /// Read `id` was asked of the host, which has not answered it yet.
+    pub(crate) fn expect(&self, id: InvocationId) {
+        self.0.lock_recover().reads.insert(id, false);
+    }
+
+    /// Whether `id` is a read of the list.
+    pub(crate) fn reads(&self, id: &InvocationId) -> bool {
+        self.0.lock_recover().reads.contains_key(id)
+    }
+
+    /// The host answered read `id` with `listed`: the read is open from here
+    /// on, and has what the page learns of the list after it.
+    pub(crate) fn answered(&self, id: InvocationId, listed: Value) {
+        let waiting = {
+            let mut live = self.0.lock_recover();
+            live.reads.insert(id, true);
+            live.hold(listed);
+            // Just read: nothing of this page's is missing from it.
+            live.owed = false;
+            std::mem::take(&mut live.waiting)
+        };
+        tell(waiting);
+    }
+
+    /// The host sent the person's record anew: `listed` is the list now.
+    pub(crate) fn sent(&self, listed: Value) {
+        let waiting = {
+            let mut live = self.0.lock_recover();
+            if !live.hold(listed) {
+                return;
+            }
+            std::mem::take(&mut live.waiting)
+        };
+        tell(waiting);
+    }
+
+    /// This page changed the list, by approving a device or announcing that
+    /// one was taken back: the record is read from the host once more.
+    pub(crate) fn moved(&self) {
+        let waiting = {
+            let mut live = self.0.lock_recover();
+            live.owed = true;
+            std::mem::take(&mut live.waiting)
+        };
+        tell(waiting);
+    }
+
+    /// The read this page owed is back: `listed` is the list now, `None`
+    /// when the host did not answer.
+    pub(crate) fn read(&self, listed: Option<Value>) {
+        let waiting = {
+            let mut live = self.0.lock_recover();
+            live.reading = false;
+            let changed = listed.is_some_and(|listed| live.hold(listed));
+            // Changed again while it was read: whoever waits asks once more.
+            if !changed && !live.owed {
+                return;
+            }
+            std::mem::take(&mut live.waiting)
+        };
+        tell(waiting);
+    }
+
+    /// Read `id` as it is now: the list as its latest item, once the host
+    /// answered it.
+    pub(crate) fn state(&self, id: &InvocationId) -> Option<InvocationState> {
+        let live = self.0.lock_recover();
+        if !live.answered(id) {
+            return None;
+        }
+        let value = live.listed.clone()?;
+        Some(InvocationState::new(
+            *id,
+            InvocationUpdate::Item {
+                invocation: *id,
+                sequence: live.sequence,
+                value,
+            },
+        ))
+    }
+
+    /// Wait for read `id` to change: what resolves then, and whether the page
+    /// owes its host a read of the record first, which it does once for each
+    /// change of its own. `None` for a read the host has not answered.
+    pub(crate) fn wait(&self, id: &InvocationId) -> Option<(Pending<()>, bool)> {
+        let mut live = self.0.lock_recover();
+        if !live.answered(id) {
+            return None;
+        }
+        let (told, change) = pending();
+        live.waiting.push(told);
+        let owes = live.owed && !live.reading;
+        if owes {
+            live.owed = false;
+            live.reading = true;
+        }
+        drop(live);
+        Some((change, owes))
+    }
+
+    /// End read `id`; whether it was one.
+    pub(crate) fn end(&self, id: &InvocationId) -> bool {
+        let waiting = {
+            let mut live = self.0.lock_recover();
+            if live.reads.remove(id).is_none() {
+                return false;
+            }
+            std::mem::take(&mut live.waiting)
+        };
+        tell(waiting);
+        true
+    }
+
+    /// Whoever waits looks again: something may have changed.
+    pub(crate) fn wake(&self) {
+        let waiting = std::mem::take(&mut self.0.lock_recover().waiting);
+        tell(waiting);
+    }
+
+    /// Whether to set the page's timer that wakes whoever waits: one is set
+    /// at a time.
+    pub(crate) fn tick(&self) -> bool {
+        !std::mem::replace(&mut self.0.lock_recover().ticking, true)
+    }
+
+    /// The page's timer fired: whoever waits looks again.
+    pub(crate) fn ticked(&self) {
+        self.0.lock_recover().ticking = false;
+        self.wake();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The reads every started desktop of this page keeps current.
+    static LIVE: std::cell::RefCell<Vec<std::sync::Weak<LiveDevices>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(target_arch = "wasm32")]
+/// This page changed the person's devices: it approved one that asked, or
+/// announced that one was taken back. Whatever reads their list here has it
+/// read from the host once more.
+pub(crate) fn devices_moved() {
+    let pages: Vec<Arc<LiveDevices>> =
+        LIVE.with_borrow(|pages| pages.iter().filter_map(std::sync::Weak::upgrade).collect());
+    for live in pages {
+        live.moved();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 /// The person's devices as the page's desktop asks for them.
 struct PageIdentity {
     host: SessionActions,
@@ -51,19 +273,38 @@ struct PageIdentity {
     revoked: Revoked,
     /// Raised with each revoke, so the desktop takes it on its next frame.
     woken: Arc<AtomicBool>,
+    /// The reads of the list this page keeps current.
+    live: Arc<LiveDevices>,
+    /// The person's record as their host sends it whenever it changes.
+    sent: Option<tilo_session_client::Events>,
 }
 
 #[cfg(target_arch = "wasm32")]
 /// Serve the desktop `session`'s asks of the person's devices from the
 /// person's record on the host `host` reaches; the devices they take back,
-/// with `revoked`, for the page to sign. `own` is this page's device.
+/// with `revoked`, for the page to sign. `own` is this page's device, and
+/// `link` its session, on which the host sends the record as it changes.
 pub(crate) fn serve(
     session: &DesktopSession,
     host: SessionActions,
     own: [u8; 32],
     revoked: &Revoked,
     woken: &Arc<AtomicBool>,
+    link: Option<&tilo_session_client::Link>,
 ) {
+    let live = Arc::new(LiveDevices::default());
+    LIVE.with_borrow_mut(|pages| {
+        pages.retain(|held| held.strong_count() > 0);
+        pages.push(Arc::downgrade(&live));
+    });
+    let sent = link.map(|link| {
+        let sent =
+            link.events_where(|event| matches!(event, tilo_session_client::Event::Personal(_)));
+        let told = Arc::clone(&live);
+        // Each record the host sends wakes the reads, which take it.
+        link.on_event(&sent, Arc::new(move || told.wake()));
+        sent
+    });
     session.serve_person_api(
         identity_admin::PROVIDER,
         Arc::new(PageIdentity {
@@ -71,8 +312,19 @@ pub(crate) fn serve(
             own,
             revoked: Arc::clone(revoked),
             woken: Arc::clone(woken),
+            live,
+            sent,
         }),
     );
+}
+
+#[cfg(target_arch = "wasm32")]
+/// The person's record on the host: what lists their devices.
+fn personal_record() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: HOST_ACTIONS_PROVIDER.to_owned(),
+        address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, LIST_PERSONAL),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -145,13 +397,52 @@ impl PageIdentity {
         })
     }
 
-    /// The host's answer `state` to the person's record, as the devices it
-    /// lists.
-    fn devices(&self, mut state: InvocationState) -> InvocationState {
-        if let InvocationUpdate::Succeeded { output, .. } = &mut state.update {
-            output.value = Some(fleet(output.value.as_ref(), &self.own));
+    /// Take the records the host sent since the last look: the newest is the
+    /// list now.
+    fn take_sent(&self) {
+        let Some(sent) = &self.sent else {
+            return;
+        };
+        let newest = sent
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                tilo_session_client::Event::Personal(record) => Some(record),
+                _ => None,
+            })
+            .next_back();
+        if let Some(record) = newest
+            && let Ok(record) = serde_json::to_value(&*record)
+        {
+            self.live.sent(fleet(Some(&record), &self.own));
         }
-        state
+    }
+
+    /// Read the person's record from the host once more, after this page
+    /// changed it: its answer is the list every open read has from then on.
+    fn read_again(&self, caller: &Caller) {
+        let record = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: personal_record(),
+            argument: browser_devices(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: Some(READ_WAIT_MS),
+            appearance: None,
+        };
+        let (live, own) = (Arc::clone(&self.live), self.own);
+        self.host.invoke(caller, record).then(move |receipt| {
+            let listed = match receipt {
+                Some(Ok(InvocationReceipt {
+                    status: ReceiptStatus::Completed { output },
+                    ..
+                })) => Some(fleet(output.value.as_ref(), &own)),
+                _ => None,
+            };
+            live.read(listed);
+        });
     }
 }
 
@@ -295,23 +586,35 @@ impl ActionHost for PageIdentity {
             identity_admin::RENAME => self.rename(caller, &request),
             identity_admin::DEVICES => {
                 // Asked of the host as the person's record, under the same
-                // invocation, so its answer is this one's.
+                // invocation. Its answer opens a read this page keeps
+                // current: the caller is admitted, and has the list as the
+                // read's items from here on.
+                let invocation = request.invocation;
                 let record = InvokeRequest {
-                    target: RemoteActionTarget {
-                        provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                        address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, LIST_PERSONAL),
-                    },
+                    target: personal_record(),
                     argument: browser_devices(),
                     ..request
                 };
-                let own = self.own;
+                self.live.expect(invocation);
+                let (live, own) = (Arc::clone(&self.live), self.own);
                 self.host.invoke(caller, record).map(move |receipt| {
-                    receipt.map(|mut receipt| {
-                        if let ReceiptStatus::Completed { output } = &mut receipt.status {
-                            output.value = Some(fleet(output.value.as_ref(), &own));
+                    let mut receipt = receipt.inspect_err(|_| {
+                        live.end(&invocation);
+                    })?;
+                    match &receipt.status {
+                        ReceiptStatus::Completed { output } => {
+                            live.answered(invocation, fleet(output.value.as_ref(), &own));
+                            receipt.status = ReceiptStatus::Accepted;
                         }
-                        receipt
-                    })
+                        // Still read on the host: its answer opens the read.
+                        ReceiptStatus::Accepted => {}
+                        ReceiptStatus::Failed { .. }
+                        | ReceiptStatus::Cancelled { .. }
+                        | ReceiptStatus::Rejected { .. } => {
+                            live.end(&invocation);
+                        }
+                    }
+                    Ok(receipt)
                 })
             }
             _ => Pending::ready(Err(ActionHostError::UnknownAction)),
@@ -319,16 +622,57 @@ impl ActionHost for PageIdentity {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.host
-            .observe(caller, id)
-            .map(|state| self.devices(state))
+        if !self.live.reads(id) {
+            return self.host.observe(caller, id);
+        }
+        self.take_sent();
+        if let Some(state) = self.live.state(id) {
+            return Some(state);
+        }
+        // The host had not answered the record at admission: its answer
+        // opens the read.
+        let state = self.host.observe(caller, id)?;
+        match &state.update {
+            InvocationUpdate::Succeeded { output, .. } => {
+                self.live
+                    .answered(*id, fleet(output.value.as_ref(), &self.own));
+                self.live.state(id)
+            }
+            update if update.is_terminal() => {
+                self.live.end(id);
+                Some(state)
+            }
+            _ => Some(state),
+        }
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.host.next_change(caller, id)
+        if !self.live.reads(id) {
+            return self.host.next_change(caller, id);
+        }
+        self.take_sent();
+        let Some((change, owes)) = self.live.wait(id) else {
+            // Not answered yet: the host says when it is.
+            return self.host.next_change(caller, id);
+        };
+        if owes {
+            self.read_again(caller);
+        }
+        if self.live.tick() {
+            // Bounded, as a waiter's deadline is only checked when woken.
+            let live = Arc::clone(&self.live);
+            wasm_bindgen_futures::spawn_local(async move {
+                crate::browser::sleep_ms(WAIT_WAKE_MS).await;
+                live.ticked();
+            });
+        }
+        Some(change)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        if self.live.end(id) {
+            return Pending::ready(Ok(()));
+        }
         self.host.cancel(caller, id)
     }
 }
@@ -341,6 +685,146 @@ impl ActionHost for PageIdentity {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tilo_actions::remote::PendingPoll;
+
+    /// Read `id`'s latest item: how many lists it was sent, and the list.
+    fn item(live: &LiveDevices, id: &InvocationId) -> (u64, Value) {
+        match live.state(id).expect("the read is open").update {
+            InvocationUpdate::Item {
+                sequence, value, ..
+            } => (sequence, value),
+            other => panic!("a read's state is its latest item: {other:?}"),
+        }
+    }
+
+    /// Whether whoever waits on `change` was told to look again.
+    fn told(change: &mut Pending<()>) -> bool {
+        matches!(change.poll_ready(), PendingPoll::Ready(()))
+    }
+
+    /// A read `id` the host answered with one laptop.
+    fn a_read() -> (LiveDevices, InvocationId) {
+        let live = LiveDevices::default();
+        let id = InvocationId::new();
+        live.expect(id);
+        live.answered(id, json!([{"label": "Laptop"}]));
+        (live, id)
+    }
+
+    tilo_test_env::scenario! {
+        fn a_read_of_the_persons_devices_is_kept_current;
+
+        phase the_hosts_answer_opens_the_read;
+        {
+            let live = LiveDevices::default();
+            let id = InvocationId::new();
+            assert!(!live.reads(&id));
+            live.expect(id);
+            assert!(live.reads(&id));
+            assert!(live.state(&id).is_none(), "the host has not answered yet");
+            assert!(live.wait(&id).is_none(), "the host says when it has");
+            live.answered(id, json!([{"label": "Laptop"}]));
+            assert_eq!(item(&live, &id), (1, json!([{"label": "Laptop"}])));
+        }
+
+        phase a_record_the_host_sends_anew_is_the_reads_next_item;
+        // What the host sends as the record changes: a device paired from
+        // another of the person's devices, or one taken back there.
+        {
+            let (live, id) = a_read();
+            let (mut change, owes) = live.wait(&id).unwrap();
+            assert!(!owes, "nothing of this page's is missing from the list");
+            assert!(!told(&mut change));
+            let both = json!([{"label": "Laptop"}, {"label": "Browser on iPhone"}]);
+            live.sent(both.clone());
+            assert!(told(&mut change));
+            assert_eq!(item(&live, &id), (2, both.clone()));
+            // The same record again changes nothing, and wakes nobody.
+            let (mut change, _) = live.wait(&id).unwrap();
+            live.sent(both.clone());
+            assert!(!told(&mut change));
+            assert_eq!(item(&live, &id), (2, both));
+        }
+
+        phase what_this_page_changed_is_read_from_the_host_once_more;
+        // The page approved a device, or announced that one was taken back:
+        // the list was read before that, and showed it only to a page
+        // loaded again.
+        {
+            let (live, id) = a_read();
+            let (mut change, _) = live.wait(&id).unwrap();
+            live.moved();
+            assert!(told(&mut change), "whoever waits looks again");
+            let (mut change, owes) = live.wait(&id).unwrap();
+            assert!(owes, "the record is read from the host");
+            let (_, again) = live.wait(&id).unwrap();
+            assert!(!again, "once: the read under way answers every waiter");
+            assert_eq!(item(&live, &id).0, 1, "the list stands until the host answers");
+            live.read(Some(json!([{"label": "Laptop", "revoked": true}])));
+            assert!(told(&mut change));
+            assert_eq!(
+                item(&live, &id),
+                (2, json!([{"label": "Laptop", "revoked": true}]))
+            );
+            let (_, owes) = live.wait(&id).unwrap();
+            assert!(!owes, "read: nothing is owed until the page changes it again");
+        }
+
+        phase a_change_made_while_the_record_was_read_is_read_too;
+        {
+            let (live, id) = a_read();
+            live.moved();
+            let (_, owes) = live.wait(&id).unwrap();
+            assert!(owes);
+            // A second device approved before the host answered the first read.
+            live.moved();
+            let (mut change, again) = live.wait(&id).unwrap();
+            assert!(!again, "one read at a time");
+            // The first read comes back as it was asked, without the second.
+            live.read(Some(json!([{"label": "Laptop"}])));
+            assert!(told(&mut change), "whoever waits asks once more");
+            let (_, owes) = live.wait(&id).unwrap();
+            assert!(owes);
+        }
+
+        phase a_host_that_does_not_answer_leaves_the_list_as_it_was;
+        {
+            let (live, id) = a_read();
+            live.moved();
+            let (mut change, owes) = live.wait(&id).unwrap();
+            assert!(owes);
+            live.read(None);
+            assert!(!told(&mut change), "nothing new to look at");
+            assert_eq!(item(&live, &id), (1, json!([{"label": "Laptop"}])));
+            let (_, owes) = live.wait(&id).unwrap();
+            assert!(!owes, "and the host is not asked again for it");
+        }
+
+        phase a_read_that_ended_is_gone_and_its_waiters_hear;
+        {
+            let (live, id) = a_read();
+            let (mut change, _) = live.wait(&id).unwrap();
+            assert!(live.end(&id));
+            assert!(told(&mut change));
+            assert!(!live.reads(&id));
+            assert!(live.state(&id).is_none());
+            assert!(!live.end(&id), "it ends once");
+        }
+
+        phase the_pages_timer_is_set_once_at_a_time;
+        {
+            let (live, id) = a_read();
+            let (mut change, _) = live.wait(&id).unwrap();
+            assert!(live.tick(), "a waiter is woken within a bound");
+            assert!(!live.tick(), "by one timer, however many wait");
+            live.ticked();
+            assert!(told(&mut change), "whoever waits looks again");
+            assert!(live.tick(), "and the next wait sets it again");
+            let (mut change, _) = live.wait(&id).unwrap();
+            live.wake();
+            assert!(told(&mut change));
+        }
+    }
 
     fn cert(label: &str, key: u8, capabilities: Value, issued: u64, expires: Option<u64>) -> Value {
         let bytes = |byte: u8| Value::Array((0..32).map(|_| Value::from(byte)).collect());

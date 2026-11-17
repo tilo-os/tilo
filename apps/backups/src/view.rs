@@ -330,7 +330,7 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
 }
 
 /// The dot a place shows when it needs the person; a healthy one shows none.
-fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
+fn health_status(health: Health) -> Option<ui::widget::RowStatus> {
     match health {
         Health::Ok | Health::Unknown => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),

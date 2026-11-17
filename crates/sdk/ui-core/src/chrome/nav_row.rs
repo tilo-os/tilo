@@ -78,7 +78,7 @@ pub struct NavRowFace<'a> {
     /// A tertiary figure at the trailing edge (a size).
     pub meta: Option<&'a str>,
     /// A status dot at the trailing edge.
-    pub status: Option<RowStatus<'a>>,
+    pub status: Option<RowStatus>,
     /// A quiet tinted badge naming a state ("Active").
     pub status_label: Option<(&'a str, Tone)>,
     /// A short leading code that classifies the row (`GET`).
@@ -222,7 +222,7 @@ impl<'a> NavRowFace<'a> {
 
     /// A status dot at the trailing edge (a drive's health, a connection).
     #[must_use]
-    pub fn status(mut self, status: RowStatus<'a>) -> Self {
+    pub fn status(mut self, status: RowStatus) -> Self {
         self.status = Some(status);
         self
     }

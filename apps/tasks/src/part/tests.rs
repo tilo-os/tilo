@@ -592,3 +592,575 @@ fn an_issue_is_named_by_its_title_its_number_or_its_id() {
     assert!(why.contains("no issue named Nothing"), "{why}");
     assert!(why.contains("Ship it"), "what there is follows: {why}");
 }
+
+/// A day, in milliseconds.
+const DAY_MS: i64 = 86_400_000;
+
+/// What long work on an issue is tested with: the person who gives it, the
+/// agent it is given to, and the issue.
+struct Task {
+    ada: Replica<IssuePart>,
+    agent: Replica<IssuePart>,
+    issue: Id,
+}
+
+impl Task {
+    /// Ada files "Write the market analysis" and gives it to the agent
+    /// `claude` at 1 000 ms; the agent holds the same record.
+    fn given() -> Self {
+        let mut ada = Replica::<IssuePart>::new().as_author("ada");
+        ada.set_now_ms(1_000);
+        ada.apply(IssuePart::CREATE.with(NewIssue {
+            assignee: Some("agent:claude".into()),
+            ..NewIssue::titled(nb("Write the market analysis"))
+        }))
+        .unwrap();
+        let issue = ada.state().unwrap().issues.iter().next().unwrap().0.clone();
+        let agent = ada.fork().as_agent_for("claude", "ada");
+        Self { ada, agent, issue }
+    }
+
+    /// The agent does `invoke` at `now_ms`, and Ada's record takes it.
+    fn agent_does(
+        &mut self,
+        now_ms: i64,
+        invoke: impl Into<Invoke<IssuePart>>,
+    ) -> Result<(), String> {
+        self.ada.sync_with(&mut self.agent).unwrap();
+        self.agent.set_now_ms(now_ms);
+        self.agent
+            .apply(invoke)
+            .map(drop)
+            .map_err(|error| error.to_string())?;
+        self.ada.sync_with(&mut self.agent).unwrap();
+        Ok(())
+    }
+
+    /// Ada does `invoke` at `now_ms`.
+    fn ada_does(
+        &mut self,
+        now_ms: i64,
+        invoke: impl Into<Invoke<IssuePart>>,
+    ) -> Result<(), String> {
+        self.ada.sync_with(&mut self.agent).unwrap();
+        self.ada.set_now_ms(now_ms);
+        self.ada
+            .apply(invoke)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn says(&mut self, now_ms: i64, text: &str) {
+        let issue = self.issue.clone();
+        self.agent_does(
+            now_ms,
+            IssuePart::COMMENT.with(issue_part::Comment {
+                issue,
+                text: nb(text),
+                origin: None,
+            }),
+        )
+        .unwrap();
+    }
+
+    fn begins(&mut self, now_ms: i64) {
+        let issue = self.issue.clone();
+        self.agent_does(
+            now_ms,
+            IssuePart::RUN_BEGAN.with(issue_part::RunBegan { issue }),
+        )
+        .unwrap();
+    }
+
+    fn ends(&mut self, now_ms: i64, cost_micros: u64, worked_ms: u64) {
+        let issue = self.issue.clone();
+        self.agent_does(
+            now_ms,
+            IssuePart::RUN_ENDED.with(issue_part::RunEnded {
+                issue,
+                cost_micros,
+                worked_ms,
+            }),
+        )
+        .unwrap();
+    }
+
+    fn held(&self) -> Issue {
+        self.ada
+            .state()
+            .unwrap()
+            .issues
+            .get(&self.issue)
+            .unwrap()
+            .clone()
+    }
+
+    fn work(&self) -> crate::model::Work {
+        self.held().work.unwrap_or_default()
+    }
+
+    fn standing(&self) -> crate::model::Standing {
+        crate::model::standing(&self.held())
+    }
+
+    /// What asks the agent at `now_ms`, read from the record alone, as a host
+    /// that just started reads it.
+    fn asks(&self, now_ms: i64) -> Vec<crate::model::IssueAsk> {
+        crate::model::agent_asks_at(self.ada.state().unwrap().issues.iter(), now_ms)
+    }
+}
+
+fn reply_wait() -> crate::model::WaitFor {
+    crate::model::WaitFor {
+        kind: crate::model::WaitKind::Reply,
+        what: "a reply from the supplier".into(),
+        on: Some("mail-thread:supplier-17".into()),
+        event: Some("e-reply".into()),
+    }
+}
+
+/// A task that waits two days for a reply costs nothing while it waits, is
+/// asked again when the reply comes, and in a second telling when the two
+/// days are over; a reader that holds only the record reads the same asks.
+#[test]
+fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
+    use crate::model::{Asked, Standing};
+    let until = 2_000 + 2 * DAY_MS;
+    let waiting = || {
+        let mut task = Task::given();
+        assert_eq!(task.asks(1_500).len(), 1, "given, it is asked");
+        task.begins(2_000);
+        let issue = task.issue.clone();
+        task.agent_does(
+            2_100,
+            IssuePart::PLACE.with(issue_part::Place {
+                issue: issue.clone(),
+                status: Status::InProgress,
+                before: None,
+                rank: None,
+            }),
+        )
+        .unwrap();
+        task.agent_does(
+            2_200,
+            IssuePart::WAIT.with(issue_part::Wait {
+                issue,
+                waits: vec![reply_wait()],
+                until_ms: until,
+            }),
+        )
+        .unwrap();
+        task.says(2_300, "I wrote to the supplier and wait for the reply.");
+        task.ends(2_400, 500, 400);
+        task
+    };
+
+    // On the reply.
+    let mut task = waiting();
+    assert_eq!(
+        task.standing(),
+        Standing::Waiting {
+            what: vec!["a reply from the supplier".into()],
+            until_ms: until
+        }
+    );
+    for now in [2_500, 2_000 + DAY_MS, until - 1] {
+        assert!(task.asks(now).is_empty(), "nothing runs while it waits");
+    }
+    let issue = task.issue.clone();
+    task.agent_does(
+        2_000 + DAY_MS,
+        IssuePart::RESUME.with(issue_part::Resume {
+            issue,
+            cause: nb("the supplier replied"),
+        }),
+    )
+    .unwrap();
+    let asked = task.asks(2_001 + DAY_MS);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].asked, Asked::Resumed);
+    assert_eq!(asked[0].words, "the supplier replied");
+    assert_eq!(asked[0].person, ui::tilo_resource::MemberId::person("ada"));
+    assert_eq!(
+        task.standing(),
+        Standing::Working,
+        "it no longer reads as waiting"
+    );
+    task.begins(2_002 + DAY_MS);
+    task.says(2_003 + DAY_MS, "The supplier's prices are in the sheet.");
+    task.ends(2_004 + DAY_MS, 700, 300);
+    assert!(
+        task.asks(until + DAY_MS).is_empty(),
+        "answered, and the old deadline wakes nothing"
+    );
+    let work = task.work();
+    assert_eq!(
+        (work.runs, work.spent_micros, work.worked_ms),
+        (2, 1_200, 700),
+        "both runs are counted"
+    );
+
+    // On the deadline, in a second telling.
+    let mut task = waiting();
+    assert!(task.asks(until - 1).is_empty());
+    let asked = task.asks(until);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].asked, Asked::WaitEnded);
+    assert_eq!(asked[0].cause, format!("waited-{until}"));
+    task.begins(until + 5);
+    assert_eq!(task.standing(), Standing::Working, "the run ended the wait");
+    assert_eq!(task.work().until_ms, None);
+    task.says(until + 6, "No reply came: I wrote again.");
+    assert!(task.asks(until + DAY_MS).is_empty(), "answered once");
+}
+
+/// A run that was lost is asked again from the record alone, and one lost
+/// while the task waited does not start it early. After the most lost runs
+/// in a row the task stops and says so: it never reads as done.
+#[test]
+fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done() {
+    use crate::model::{Asked, MOST_LOST_RUNS, Standing, StoppedWhy};
+    // Lost after it began to wait: the wait still holds.
+    let mut task = Task::given();
+    task.begins(2_000);
+    let issue = task.issue.clone();
+    task.agent_does(
+        2_100,
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue,
+            waits: vec![reply_wait()],
+            until_ms: 9_000,
+        }),
+    )
+    .unwrap();
+    assert!(
+        task.asks(3_000).is_empty(),
+        "what was asked before the wait is not asked again while it waits"
+    );
+    assert_eq!(task.asks(9_000)[0].asked, Asked::WaitEnded);
+
+    // Lost while it worked: asked again, each new run counting the one before.
+    let mut task = Task::given();
+    let issue = task.issue.clone();
+    for run in 0..=MOST_LOST_RUNS {
+        let asked = task.asks(2_000);
+        assert_eq!(asked.len(), 1, "run {run} is asked again: {asked:?}");
+        task.begins(2_000 + i64::try_from(run).unwrap());
+        assert_eq!(task.work().lost, run, "the runs lost in a row");
+    }
+    assert!(task.work().lost >= MOST_LOST_RUNS);
+    task.agent_does(
+        3_000,
+        IssuePart::STOP.with(issue_part::Stop {
+            issue: issue.clone(),
+            why: StoppedWhy::LostWorker,
+            words: nb("I stopped: my work on this was interrupted three times."),
+        }),
+    )
+    .unwrap();
+    let read = task.standing();
+    assert!(
+        matches!(&read, Standing::Stopped { why: StoppedWhy::LostWorker, words } if words.contains("interrupted")),
+        "{read:?}"
+    );
+    assert!(!read.resolved(), "work that lost its worker is not done");
+    assert!(
+        task.asks(4_000).is_empty(),
+        "stopped, it is not started again by what was asked before"
+    );
+    // Whatever its status is set to, it does not read as done.
+    task.agent_does(
+        3_500,
+        IssuePart::PLACE.with(issue_part::Place {
+            issue: issue.clone(),
+            status: Status::Done,
+            before: None,
+            rank: None,
+        }),
+    )
+    .unwrap();
+    assert!(matches!(task.standing(), Standing::Stopped { .. }));
+    task.agent_does(
+        3_600,
+        IssuePart::PLACE.with(issue_part::Place {
+            issue: issue.clone(),
+            status: Status::InProgress,
+            before: None,
+            rank: None,
+        }),
+    )
+    .unwrap();
+
+    // Its person says something new: it is asked again and works again.
+    task.ada_does(
+        5_000,
+        IssuePart::COMMENT.with(issue_part::Comment {
+            issue,
+            text: nb("Try again"),
+            origin: None,
+        }),
+    )
+    .unwrap();
+    let asked = task.asks(5_001);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].asked, Asked::Message);
+    task.begins(5_002);
+    assert_eq!(task.standing(), Standing::Working);
+}
+
+/// A budget is its person's to raise. Once it is spent the task stops with a
+/// plain line, does not read as done, and goes on only after it was raised.
+#[test]
+fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
+    use crate::model::{Asked, BudgetBy, Standing, StoppedWhy};
+    let mut task = Task::given();
+    let issue = task.issue.clone();
+    let budget = |money_micros: Option<u64>, time_ms: Option<u64>| {
+        IssuePart::SET_BUDGET.with(issue_part::SetBudget {
+            issue: issue.clone(),
+            money_micros,
+            time_ms,
+        })
+    };
+    // The agent proposes one where none is set, and holds itself to it.
+    task.agent_does(1_100, budget(Some(1_000_000), None))
+        .unwrap();
+    assert_eq!(task.work().budget_by, BudgetBy::Agent);
+    // The person sets it: from then on only a person raises it.
+    task.ada_does(1_200, budget(Some(2_000_000), None)).unwrap();
+    assert_eq!(task.work().budget_by, BudgetBy::Person);
+    let refused = task
+        .agent_does(1_300, budget(Some(5_000_000), None))
+        .unwrap_err();
+    assert!(
+        refused.contains("Only a person raises a budget a person set"),
+        "{refused}"
+    );
+    assert_eq!(task.work().budget_micros, Some(2_000_000));
+    // It may add a bound of its own beside it, and lower one.
+    task.agent_does(1_400, budget(None, Some(600_000))).unwrap();
+    assert_eq!(task.work().budget_by, BudgetBy::Person);
+    assert!(
+        task.ada_does(1_450, budget(None, None)).is_err(),
+        "a budget names money or time"
+    );
+
+    task.begins(2_000);
+    task.ends(2_500, 2_300_000, 400);
+    assert_eq!(task.work().used_up(), Some(StoppedWhy::Budget));
+    task.agent_does(
+        2_600,
+        IssuePart::STOP.with(issue_part::Stop {
+            issue: issue.clone(),
+            why: StoppedWhy::Budget,
+            words: nb("I stopped: this task's budget of $2.00 is spent."),
+        }),
+    )
+    .unwrap();
+    task.says(2_700, "I stopped: this task's budget of $2.00 is spent.");
+    let read = task.standing();
+    assert!(
+        matches!(&read, Standing::Stopped { why: StoppedWhy::Budget, words } if words.contains("$2.00")),
+        "{read:?}"
+    );
+    assert!(
+        !read.resolved(),
+        "work that stopped at its budget is not done"
+    );
+    assert!(task.asks(3_000).is_empty(), "nothing runs past the budget");
+
+    let resume = || {
+        IssuePart::RESUME.with(issue_part::Resume {
+            issue: issue.clone(),
+            cause: nb("go on"),
+        })
+    };
+    let refused = task.ada_does(3_100, resume()).unwrap_err();
+    assert!(
+        refused.contains("Its budget of $2.00 is spent: raise it first"),
+        "{refused}"
+    );
+    task.ada_does(3_200, budget(Some(5_000_000), None)).unwrap();
+    task.ada_does(3_300, resume()).unwrap();
+    let asked = task.asks(3_400);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].asked, Asked::Resumed);
+    assert!(!matches!(task.standing(), Standing::Stopped { .. }));
+}
+
+/// An agent gives an issue for the one person it acts for; an issue it filed
+/// for itself is a proposal until its person gives it.
+#[test]
+fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_them() {
+    use ui::tilo_resource::MemberId;
+    let asks =
+        |part: &Replica<IssuePart>| crate::model::agent_asks(part.state().unwrap().issues.iter());
+    let mut ada = Replica::<IssuePart>::new().as_author("ada");
+    let mut agent = ada.fork().as_agent_for("claude", "ada");
+    agent.set_now_ms(1_000);
+    agent
+        .apply(IssuePart::CREATE.with(NewIssue {
+            assignee: Some("agent:claude".into()),
+            ..NewIssue::titled(nb("Look at the renewal dates"))
+        }))
+        .unwrap();
+    let proposal = agent
+        .state()
+        .unwrap()
+        .issues
+        .iter()
+        .next()
+        .unwrap()
+        .0
+        .clone();
+    assert!(asks(&agent).is_empty(), "nobody asked for it yet");
+    assert_eq!(
+        crate::model::standing(agent.state().unwrap().issues.get(&proposal).unwrap()),
+        crate::model::Standing::UpNext
+    );
+    // The nod: its person gives it to the agent it is with.
+    let mut ada = agent.fork().as_author("ada");
+    ada.set_now_ms(2_000);
+    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        issue: proposal.clone(),
+        assignee: Some("agent:claude".into()),
+    }))
+    .unwrap();
+    let asked = asks(&ada);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].person, MemberId::person("ada"));
+    // Giving it again asks nothing new.
+    ada.set_now_ms(3_000);
+    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        issue: proposal,
+        assignee: Some("agent:claude".into()),
+    }))
+    .unwrap();
+    assert_eq!(asks(&ada)[0].cause, "assigned-2000");
+
+    // The agent hands a piece on: the other agent works on it for the same person.
+    let mut agent = Replica::<IssuePart>::new().as_agent_for("claude", "ada");
+    agent.set_now_ms(1_000);
+    agent
+        .apply(IssuePart::CREATE.with(NewIssue::titled(nb("Read the price pages"))))
+        .unwrap();
+    let piece = agent
+        .state()
+        .unwrap()
+        .issues
+        .iter()
+        .next()
+        .unwrap()
+        .0
+        .clone();
+    agent
+        .apply(IssuePart::ASSIGN.with(issue_part::Assign {
+            issue: piece,
+            assignee: Some("agent:scout".into()),
+        }))
+        .unwrap();
+    let asked = asks(&agent);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].agent, "scout");
+    assert_eq!(asked[0].person, MemberId::person("ada"));
+
+    // An agent that acts for nobody gives nobody's work to anyone.
+    let mut lone = Replica::<IssuePart>::new().as_member(MemberId::agent("lone"));
+    lone.set_now_ms(1_000);
+    lone.apply(IssuePart::CREATE.with(NewIssue::titled(nb("Nobody's"))))
+        .unwrap();
+    let issue = lone
+        .state()
+        .unwrap()
+        .issues
+        .iter()
+        .next()
+        .unwrap()
+        .0
+        .clone();
+    lone.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        issue,
+        assignee: Some("agent:scout".into()),
+    }))
+    .unwrap();
+    assert!(asks(&lone).is_empty());
+}
+
+/// Only the agent an issue is with counts its runs, a closed issue takes no
+/// wait and no stop, and a place is a folder's path and a note.
+#[test]
+fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
+    use crate::model::StoppedWhy;
+    let mut task = Task::given();
+    let issue = task.issue.clone();
+    let began = || {
+        IssuePart::RUN_BEGAN.with(issue_part::RunBegan {
+            issue: issue.clone(),
+        })
+    };
+    let refused = task.ada_does(1_100, began()).unwrap_err();
+    assert!(
+        refused.contains("Only the agent an issue is assigned to counts its runs"),
+        "{refused}"
+    );
+    let mut other = task.ada.fork().as_agent_for("scout", "ada");
+    assert!(other.apply(began()).is_err(), "another agent is refused");
+
+    task.agent_does(
+        1_200,
+        IssuePart::SET_PLACE.with(issue_part::SetPlace {
+            issue: issue.clone(),
+            folder: " Tasks / 1 Write the market analysis ".into(),
+            note: Some("notes.notebook.pages/pages/7f".into()),
+        }),
+    )
+    .unwrap();
+    let work = task.work();
+    assert_eq!(work.folder, "Tasks/1 Write the market analysis");
+    assert_eq!(work.note, "notes.notebook.pages/pages/7f");
+    assert!(
+        task.agent_does(
+            1_250,
+            IssuePart::SET_PLACE.with(issue_part::SetPlace {
+                issue: issue.clone(),
+                folder: "../outside".into(),
+                note: None,
+            }),
+        )
+        .is_err(),
+        "a place is a folder of the workspace"
+    );
+    let wait = |until_ms: i64| {
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue: issue.clone(),
+            waits: Vec::new(),
+            until_ms,
+        })
+    };
+    let refused = task.agent_does(1_300, wait(1_300)).unwrap_err();
+    assert!(refused.contains("A wait ends later than now"), "{refused}");
+
+    task.ada_does(
+        1_400,
+        IssuePart::PLACE.with(issue_part::Place {
+            issue: issue.clone(),
+            status: Status::Done,
+            before: None,
+            rank: None,
+        }),
+    )
+    .unwrap();
+    let refused = task.ada_does(1_500, wait(9_000)).unwrap_err();
+    assert!(refused.contains("This issue is closed"), "{refused}");
+    assert!(
+        task.ada_does(
+            1_600,
+            IssuePart::STOP.with(issue_part::Stop {
+                issue,
+                why: StoppedWhy::Person,
+                words: nb("Not needed any more"),
+            }),
+        )
+        .is_err()
+    );
+}

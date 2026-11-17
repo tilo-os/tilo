@@ -98,7 +98,7 @@ pub(crate) fn draw_action_presence(
         paint.text,
         paint.theme,
         now,
-        &resolved,
+        (&resolved, &occupied(tree, viewport)),
     );
     for interaction in presence.visible_interactions(now) {
         presence.note_drawn(interaction.invocation, now);
@@ -131,6 +131,26 @@ fn ink_around(
         // A worded box no taller than a row is a line of words: a list or a
         // window that names itself is no line its tag must leave.
         .filter(|bounds| bounds.height() <= line * 2.0)
+        .collect()
+}
+
+/// What a card standing over the frame would hide: each line of words and each control it shows
+/// within `viewport`. A box taller than a few lines (a list, a pane, the window) is room, not ink.
+fn occupied(
+    tree: &crate::a11y_tree::SemanticTree,
+    viewport: vello::kurbo::Rect,
+) -> Vec<vello::kurbo::Rect> {
+    const TALLEST_LINE: f64 = 96.0;
+    let worded = |text: Option<&str>| text.is_some_and(|text| !text.trim().is_empty());
+    tree.iter()
+        .filter(|node| {
+            worded(node.name.as_deref())
+                || worded(node.value.as_deref())
+                || crate::a11y::activation_role(node.role)
+        })
+        .filter_map(|node| node.bounds)
+        .map(|bounds| bounds.intersect(viewport))
+        .filter(|bounds| !bounds.is_zero_area() && bounds.height() <= TALLEST_LINE)
         .collect()
 }
 

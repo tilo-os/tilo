@@ -123,7 +123,14 @@ pub(crate) fn serve(
         // The person's accounts and model providers live on the same host.
         crate::person_settings::serve(session, &api);
         if let Some(own) = crate::peer_sync::device_of(peer) {
-            crate::identity_api::serve(session, api, own, &revoked, woken);
+            crate::identity_api::serve(
+                session,
+                api,
+                own,
+                &revoked,
+                woken,
+                crate::peer_sync::handle_of(peer).as_ref(),
+            );
         }
     }
     revoked

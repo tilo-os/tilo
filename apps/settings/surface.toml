@@ -61,6 +61,10 @@ kind = "read"
 id = "inspect-calendar-choices"
 kind = "read"
 
+[[resources.verbs]]
+id = "inspect-display-configuration"
+kind = "read"
+
 [[resources]]
 kind = "settings.appearance"
 label = "Appearance"

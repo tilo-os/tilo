@@ -45,7 +45,7 @@ const WORDS: &[&str] = &[
     "agent",
     "browser",
     "page",
-    "desk",
+    "draft",
     "tasks",
     "notes",
     "index",

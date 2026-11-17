@@ -47,8 +47,8 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
-    identity_admin, mcp_server, pending, person_accounts, person_models, person_vault,
-    provider_workspace, session_actions, workspace_activity as wire,
+    identity_admin, mcp_server, pending, person_accounts, person_models, person_telling,
+    person_vault, provider_workspace, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -181,7 +181,7 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
 
 /// The providers only the person reaches, each served by an action API the
 /// desktop's host hands the session ([`DesktopSession::serve_person_api`]).
-pub const PERSON_PROVIDERS: [&str; 5] = [
+pub const PERSON_PROVIDERS: [&str; 6] = [
     mcp_server::PROVIDER,
     identity_admin::PROVIDER,
     // The person's mail accounts and model providers, which the host that
@@ -192,6 +192,9 @@ pub const PERSON_PROVIDERS: [&str; 5] = [
     // What the person keeps to sign in with, in the same vault on that host:
     // a protected field in a window hands what was typed there.
     person_vault::PROVIDER,
+    // What the person calls important and what they were told, which that
+    // host keeps too: it is the host that tells while no device is on.
+    person_telling::PROVIDER,
 ];
 
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It

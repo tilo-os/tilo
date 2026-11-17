@@ -103,7 +103,6 @@ impl Holder for NativeHolder {
     fn dial_failed(
         &self,
         via: TransportHint,
-        governor: bool,
         reason: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
@@ -112,7 +111,6 @@ impl Holder for NativeHolder {
                 .send(InternalEvent::NativeDialFailed {
                     ws: self.ws,
                     via: Box::new(via),
-                    governor,
                     reason,
                 })
                 .await;
@@ -699,19 +697,9 @@ impl ActorState {
         }
     }
 
-    /// A dial of `via`, the workspace's governor or another of its hosts, failed.
-    pub(super) fn native_dial_failed(
-        &self,
-        ws: WorkspaceId,
-        via: &TransportHint,
-        governor: bool,
-        reason: &str,
-    ) {
-        self.tally.note(if governor {
-            "NativeGovernorDial"
-        } else {
-            "NativeHostDial"
-        });
+    /// A dial of `via`, one of the workspace's holders, failed.
+    pub(super) fn native_dial_failed(&self, ws: WorkspaceId, via: &TransportHint, reason: &str) {
+        self.tally.note("NativeHostDial");
         if !self.native_routes.contains(ws) {
             return;
         }
@@ -736,12 +724,7 @@ impl ActorState {
         scope: Arc<Scope>,
         held: tokio::sync::oneshot::Sender<()>,
     ) {
-        let governor = scope.reaches_governor();
-        self.tally.note(if governor {
-            "NativeGovernorDial"
-        } else {
-            "NativeHostDial"
-        });
+        self.tally.note("NativeHostDial");
         let Some(route) = self.native_routes.entries.get(&ws) else {
             return;
         };
@@ -749,9 +732,9 @@ impl ActorState {
         // The host is reachable again: a certificate renewal that failed
         // meanwhile tries again.
         tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
-        // A link that stood in for this one is let go: a host that held the
-        // workspace while its governor was away.
+        // An earlier link of the workspace, with whichever holder, is let go.
         self.native_links.remove(&ws);
+        let scope_host = scope.host().host.device_public_key;
         let link = Arc::new(linked.link.clone());
         let pump =
             super::spawn_direct_pump(ws, linked, Arc::clone(&link), self.internal_tx.clone());
@@ -796,7 +779,8 @@ impl ActorState {
         } else {
             // The other half of "a workspace's link ended": from here on the
             // workspace's governance and records reach this device again.
-            tracing::debug!(ws = %ws, governor, "a workspace's link is up");
+            let host = hex::encode(scope_host);
+            tracing::debug!(ws = %ws, %host, "a workspace's link is up");
         }
         self.drive_native_publication(ws);
     }
@@ -815,7 +799,7 @@ fn drop_unpinned(
         !material
             .as_ref()
             .is_ok_and(|(hint, device, continuity)| link.scope.pinned_to(hint, device, *continuity))
-            || !(link.scope.reaches_governor() || hosts.contains(link.scope.host()))
+            || !hosts.contains(link.scope.host())
     });
     if unpinned {
         links.remove(&ws);

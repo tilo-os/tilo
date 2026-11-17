@@ -20,7 +20,7 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{Actor, MemberId};
+use tilo_actions::{Actor, PersonId};
 use ui_core::lazy_code::LazyCode;
 use ui_core::remote_actions::RemoteActions;
 use ui_core::widget::Element;
@@ -34,7 +34,7 @@ pub struct WrittenView {
     /// never as the view or whoever sent it claims: the author of its code.
     pub author: Actor,
     /// Who looks at it. It reads what they may read.
-    pub viewer: MemberId,
+    pub viewer: PersonId,
 }
 
 /// Something a view asked to do that waits for the person: its writer is not trusted to do it
@@ -118,6 +118,7 @@ pub fn code_generation() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::MemberId;
 
     fn fetch() {}
 
@@ -156,7 +157,7 @@ mod tests {
         let view = WrittenView {
             source: "view shown() { text(\"Hello\") }".to_owned(),
             author: Actor::Member(MemberId::person("ada")),
-            viewer: MemberId::person("bo"),
+            viewer: "bo".into(),
         };
         assert!(matches!(place(&view, &api), Placed::Unavailable));
         assert_eq!(code_generation(), 0);

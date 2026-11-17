@@ -1272,10 +1272,18 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         } else {
             // A verb whose first parameter is an item's id acts on the item the
             // caller names: its id, an address it is published under, or the
-            // name its collection publishes it under.
+            // name its collection publishes it under. A verb that makes the item
+            // (`step = "create"`) is given the id of one the record may not hold
+            // yet, which is its to take as it is.
+            let creates = verb
+                .options
+                .step
+                .as_ref()
+                .is_some_and(|step| step == "Create");
             let names_an_item = verb
                 .params
                 .first()
+                .filter(|_| !creates)
                 .filter(|first| last_ident(&first.ty).is_some_and(|(name, _)| name == "Id"));
             let resolve = names_an_item.map(|first| {
                 let ident = &first.ident;

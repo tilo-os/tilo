@@ -110,6 +110,7 @@ tasks-message-step = Ausgeführt
 ## Verlauf
 
 tasks-create = { $title } angelegt
+tasks-create-many = Aufgaben angelegt
 tasks-move-under = { $item } verschoben
 tasks-assign = { $item } zugewiesen
 tasks-place = { $item } auf dem Board verschoben
@@ -122,6 +123,13 @@ tasks-issue-status = { $item } nach { $new } verschoben
 tasks-issue-labels = Labels von { $item } geändert
 tasks-issue-links = Verknüpfungen von { $item } geändert
 tasks-add-label = { $item } mit { $label } versehen
+tasks-set-place = Ablage für { $item } festgelegt
+tasks-wait = { $item } wartet
+tasks-resume = { $item } fortgesetzt
+tasks-set-budget = Budget für { $item } festgelegt
+tasks-run-began = Arbeit an { $item } begonnen
+tasks-run-ended = Lauf an { $item } beendet
+tasks-stop = { $item } angehalten
 
 ## What the app is called in a window and in the launcher
 tasks-app-title = Aufgaben
@@ -136,6 +144,7 @@ tasks-issues-issues-noun = { $count ->
    *[other] Aufgaben
 }
 tasks-issues-create = Neue Aufgabe
+tasks-issues-create-many = Neue Aufgaben
 tasks-issues-rename = Aufgabe umbenennen
 tasks-issues-move-under = Aufgabe verschieben
 tasks-issues-assign = Aufgabe zuweisen
@@ -150,3 +159,10 @@ tasks-issues-set-project = Aufgabe in ein Projekt verschieben
 tasks-issues-attach = Datei anhängen
 tasks-issues-detach = Anhang entfernen
 tasks-issues-start = Nummerierung eines Teils beginnen
+tasks-issues-set-place = Ablage festlegen
+tasks-issues-wait = Aufgabe warten lassen
+tasks-issues-resume = Aufgabe fortsetzen
+tasks-issues-set-budget = Budget festlegen
+tasks-issues-run-began = Lauf beginnen
+tasks-issues-run-ended = Lauf beenden
+tasks-issues-stop = Aufgabe anhalten

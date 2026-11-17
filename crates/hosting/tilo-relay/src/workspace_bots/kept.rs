@@ -15,7 +15,7 @@ use serde_json::Value;
 use tilo_action_policy::Rule;
 use tilo_agent_session::bot::api::AutomationStep;
 use tilo_agent_session::bot::host_steps::{HostStepError, Keeps};
-use tilo_agent_session::bot::kept::{Kept, NoteChange, note_value};
+use tilo_agent_session::bot::kept::{Kept, LastRun, NoteChange, note_value};
 use tilo_lock::MutexRecover as _;
 
 /// One installation's kept state and the file it is written to.
@@ -82,6 +82,17 @@ impl KeptFile {
     pub fn withdraw(&self, permission: &Rule) -> Result<(), HostStepError> {
         self.change(|kept| {
             kept.withdraw(permission);
+            Ok(())
+        })
+    }
+
+    /// Keep how a run of the program ended ([`Kept::ran`]). Kept at once.
+    ///
+    /// # Errors
+    /// The file could not be written.
+    pub fn ran(&self, last: LastRun, again: bool) -> Result<(), HostStepError> {
+        self.change(|kept| {
+            kept.ran(last, again);
             Ok(())
         })
     }

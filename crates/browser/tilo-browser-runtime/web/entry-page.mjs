@@ -22,6 +22,7 @@ import {notifyThisBrowser} from './web-push.mjs';
 import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
+import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
@@ -1511,6 +1512,10 @@ export async function startEntryPage({mode}) {
     document.documentElement.dataset.entry = 'open';
     reachedHost();
     reconnect.done();
+    // A native app that holds this page as its person's device takes the device's own entry
+    // before the mount is named (`native-host.mjs`). A browser has no such host: nothing is
+    // handed to anyone, and no global names the session.
+    if (!embed) handToNativeHost({peer: page.peer, ownWorkspace: () => ensureOwnWorkspace(page.peer)});
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
     // The page's channel state as text (whom each workspace follows, what waits

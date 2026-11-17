@@ -882,6 +882,10 @@ impl SurfaceHost for DesktopHost {
         self.desktop.borrow_mut().host.pointer_axis(scroll);
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.desktop.borrow_mut().host.pointer_modifiers(held);
+    }
+
     fn wants_keyboard(&self) -> bool {
         SurfaceHost::wants_keyboard(&self.desktop.borrow().host)
     }

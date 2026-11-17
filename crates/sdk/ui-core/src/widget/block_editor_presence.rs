@@ -47,73 +47,47 @@ impl BlockEditor {
         // person editing this block afterwards puts it away.
         // Whose action caret stands on this line: the one tag it wears says who and what, so their
         // own caret here draws no second one.
-        let mut acting: Vec<crate::permissions::MemberId> = Vec::new();
-        for interaction in ctx.presence.visible_interactions(now) {
-            let Some((start, end)) =
-                crate::presence::written_in(&interaction, None, &b.id, line.value())
-            else {
-                continue;
-            };
-            let drawn = ctx.presence.interaction_drawn_at(interaction.invocation);
-            if let (Some((edited, at)), Some(drawn)) = (&self.edited_at, drawn)
-                && *edited == b.id
-                && *at >= drawn
-            {
-                ctx.presence.note_shown(interaction.invocation);
-                continue;
-            }
-            let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
-                continue;
-            };
-            let Some(user) = interaction
-                .actor
-                .members()
-                .first()
-                .map(|member| (*member).clone())
-            else {
-                continue;
-            };
-            acting.push(user.clone());
-            let rect = line.selection_rect(ctx.theme, start, end);
-            let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
-            let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
-            ctx.presence.draw_peer_typing(
+        let top = self
+            .blocks
+            .first()
+            .map_or(brect.y0, |first| first.line.get_rect().y0);
+        let edited = self
+            .edited_at
+            .as_ref()
+            .filter(|(edited, _)| *edited == b.id)
+            .map(|(_, at)| *at);
+        let acting = ctx.presence.draw_writes_in(
+            &mut crate::paint::PaintCtx::new(
                 ctx.scene,
-                ctx.theme,
-                &user,
-                &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-            );
-            // The characters are the mark: the activity rail leaves this
-            // invocation out rather than naming it a second time.
-            ctx.presence.note_shown(interaction.invocation);
-            ctx.presence.note_drawn(interaction.invocation, now);
-            // One caret, where the write ends: a write over several paragraphs puts it on the
-            // last of them.
-            if self.blocks.get(i + 1..).is_some_and(|later| {
-                later.iter().any(|later| {
-                    crate::presence::written_in(&interaction, None, &later.id, later.line.value())
-                        .is_some()
-                })
-            }) {
-                continue;
-            }
-            let name = ctx.presence.interaction_status_label_written(&interaction);
-            ctx.presence.draw_action_caret_labeled_in(
-                ctx.scene,
-                ctx.theme,
-                ctx.text_renderer,
                 ctx.transform,
-                &user,
-                &name,
-                crate::presence::LabeledCaret::within(
-                    line.caret_rect(ctx.theme, end),
-                    self.blocks
-                        .first()
-                        .map_or(brect.y0, |first| first.line.get_rect().y0),
+                ctx.text_renderer,
+                ctx.theme,
+            ),
+            (None, &b.id, line.value()),
+            edited,
+            &mut |_, interaction, start, end| {
+                // One caret, where the write ends: a write over several paragraphs puts it on
+                // the last of them.
+                let later = self.blocks.get(i + 1..).is_some_and(|later| {
+                    later.iter().any(|later| {
+                        crate::presence::written_in(
+                            interaction,
+                            None,
+                            &later.id,
+                            later.line.value(),
+                        )
+                        .is_some()
+                    })
+                });
+                (
+                    vec![line.selection_rect(ctx.theme, start, end)],
+                    (!later).then(|| {
+                        crate::presence::LabeledCaret::within(line.caret_rect(ctx.theme, end), top)
+                            .among(self.ink_around(i, ctx.theme), text_right)
+                    }),
                 )
-                .among(self.ink_around(i, ctx.theme), text_right),
-            );
-        }
+            },
+        );
         let digest = key.digest_form();
         let carets = ctx.presence.carets.get(&key).into_iter().chain(
             digest
@@ -121,10 +95,6 @@ impl BlockEditor {
                 .and_then(|digest| ctx.presence.carets.get(digest)),
         );
         for list in carets {
-            let top = self
-                .blocks
-                .first()
-                .map_or(brect.y0, |first| first.line.get_rect().y0);
             for (user, byte_pos) in list.iter().filter(|(user, _)| !acting.contains(user)) {
                 let name = ctx.presence.display_name(user);
                 ctx.presence.draw_peer_caret_labeled_in(

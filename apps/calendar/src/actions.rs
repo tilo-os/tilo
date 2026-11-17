@@ -109,6 +109,8 @@ pub struct EventData {
     pub reminder: i64,
     pub project: String,
     pub calendar_id: String,
+    /// What it is filed under, in its person's own words.
+    pub categories: Vec<String>,
 }
 
 fn default_recurrence_interval() -> u32 {
@@ -142,15 +144,20 @@ impl Default for EventData {
             reminder: -1,
             project: String::new(),
             calendar_id: String::new(),
+            categories: Vec::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AttendeeData {
+    /// Its id; one given none is named by its address.
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub email: String,
+    #[serde(default)]
     pub status: String,
 }
 
@@ -210,35 +217,110 @@ impl EventData {
                 .unwrap_or(-1),
             project: e.project.map(|p| p.to_string()).unwrap_or_default(),
             calendar_id: e.calendar_id.clone().unwrap_or_default(),
+            categories: e.categories.iter().cloned().collect(),
         }
     }
 
     pub fn to_event(&self) -> Option<Event> {
-        let id = self.id.parse::<Id>().ok()?;
-        let mut start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
-        let mut end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
-        let timezone = normalize_timezone(&self.timezone)?;
-        if timezone != "floating" {
-            start = crate::timezone::normalize_wall(&timezone, start)?.0;
-            end = crate::timezone::normalize_wall(&timezone, end)?.0;
+        self.event().ok()
+    }
+
+    /// When it is: its start and end as its zone reads them, and that zone.
+    fn moments(&self) -> Result<(NaiveDateTime, NaiveDateTime, String), String> {
+        const MOMENT: &str = "a date and time such as 2026-11-20T09:00";
+        let start = NaiveDateTime::parse_from_str(&self.start, DT_FMT)
+            .map_err(|_| format!("start is {MOMENT}"))?;
+        let end = NaiveDateTime::parse_from_str(&self.end, DT_FMT)
+            .map_err(|_| format!("end is {MOMENT}"))?;
+        let timezone = normalize_timezone(&self.timezone).ok_or_else(|| {
+            "timezone is an IANA time zone such as Europe/Berlin, or `floating` for the same \
+             time of day everywhere"
+                .to_owned()
+        })?;
+        if timezone == "floating" {
+            return Ok((start, end, timezone));
         }
+        let moment = |field: &str, wall| {
+            crate::timezone::normalize_wall(&timezone, wall)
+                .map(|(wall, _)| wall)
+                .ok_or_else(|| format!("{field} names no moment in {timezone}"))
+        };
+        let (start, end) = (moment("start", start)?, moment("end", end)?);
+        Ok((start, end, timezone))
+    }
+
+    /// Who is invited, and which of them organizes it.
+    fn guests(&self) -> Result<(Vec<Attendee>, Option<Id>), String> {
         let attendees = self
             .attendees
             .iter()
             .map(AttendeeData::to_attendee)
-            .collect::<Option<Vec<_>>>()?;
-        let organizer = parse_optional_id(&self.organizer)?;
-        if !crate::timezone::valid_span(&timezone, start, end, self.end_later_fold)
-            || self.color >= Palette::ALL.len()
-            || (self.reminder != -1 && !crate::model::REMINDERS.contains(&self.reminder))
-            || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
-            || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
-            || organizer
-                .is_some_and(|organizer| !attendees.iter().any(|attendee| attendee.id == organizer))
-        {
-            return None;
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                "attendees each have a complete email address, such as name@example.com".to_owned()
+            })?;
+        let organizer = parse_optional_id(&self.organizer)
+            .filter(|organizer| {
+                organizer.is_none_or(|organizer| {
+                    attendees.iter().any(|attendee| attendee.id == organizer)
+                })
+            })
+            .ok_or_else(|| "organizer is the id of one of the attendees".to_owned())?;
+        Ok((attendees, organizer))
+    }
+
+    /// The fields that take one of a few values, each held to them.
+    fn choices(&self) -> Result<(), String> {
+        if self.color >= Palette::ALL.len() {
+            return Err(format!(
+                "color is a number from 0 to {}",
+                Palette::ALL.len().saturating_sub(1)
+            ));
         }
-        Some(Event {
+        if self.reminder != -1 && !crate::model::REMINDERS.contains(&self.reminder) {
+            return Err(
+                "reminder is -1 for none, or 0, 5, 10, 15, 30, 60 or 1440 minutes before the start"
+                    .into(),
+            );
+        }
+        if Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule {
+            return Err(
+                "rrule is empty for an event that does not repeat, or one of FREQ=DAILY, \
+                 FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR, FREQ=WEEKLY, FREQ=MONTHLY, FREQ=YEARLY"
+                    .into(),
+            );
+        }
+        if !self.project.is_empty() && self.project.parse::<Id>().is_err() {
+            return Err("project is the id of one of the calendar's projects".into());
+        }
+        if self.categories.len() > crate::model::MAX_CATEGORIES {
+            return Err("categories are at most 32".into());
+        }
+        Ok(())
+    }
+
+    /// The event this describes.
+    ///
+    /// # Errors
+    /// Which of its fields no calendar can hold, and what that field takes.
+    pub fn event(&self) -> Result<Event, String> {
+        const DATE: &str = "a date such as 2026-11-20";
+        let id = self.id.parse::<Id>().map_err(|_| {
+            "id is the event's id as the calendar lists it; leave it out for a new event".to_owned()
+        })?;
+        let (start, end, timezone) = self.moments()?;
+        let (attendees, organizer) = self.guests()?;
+        if !crate::timezone::valid_span(&timezone, start, end, self.end_later_fold) {
+            return Err("end comes at or after start".into());
+        }
+        self.choices()?;
+        let categories = self
+            .categories
+            .iter()
+            .map(|held| crate::model::category(held))
+            .collect::<Option<_>>()
+            .ok_or_else(|| "categories are each a few words of at most 64 characters".to_owned())?;
+        Ok(Event {
             id,
             title: self.title.clone(),
             start,
@@ -249,19 +331,26 @@ impl EventData {
             color: Palette::from_index(self.color),
             recurrence: Recurrence::from_rrule(&self.rrule),
             recurrence_interval: self.recurrence_interval.max(1),
-            recurrence_until: parse_optional_date(&self.recurrence_until)?,
+            recurrence_until: parse_optional_date(&self.recurrence_until)
+                .ok_or_else(|| format!("recurrence_until is {DATE}"))?,
             recurrence_count: (self.recurrence_count != 0).then_some(self.recurrence_count),
             recurrence_exdates: self
                 .recurrence_exdates
                 .iter()
                 .map(|date| NaiveDate::parse_from_str(date, DATE_FMT))
                 .collect::<Result<_, _>>()
-                .ok()?,
+                .map_err(|_| format!("recurrence_exdates are each {DATE}"))?,
             occurrence_overrides: self
                 .occurrence_overrides
                 .iter()
                 .map(OccurrenceOverrideData::to_override)
-                .collect::<Option<Vec<_>>>()?
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    format!(
+                        "occurrence_overrides each name the date they change as {DATE} and \
+                         their times as a date and time such as 2026-11-20T09:00"
+                    )
+                })?
                 .into(),
             timezone,
             organizer,
@@ -273,6 +362,7 @@ impl EventData {
             } else {
                 Some(self.calendar_id.clone())
             },
+            categories,
         })
     }
 }
@@ -320,7 +410,11 @@ impl AttendeeData {
     fn to_attendee(&self) -> Option<Attendee> {
         let email = self.email.trim();
         Some(Attendee {
-            id: self.id.parse().ok()?,
+            id: if self.id.trim().is_empty() {
+                crate::ics::stable_external_attendee_id(email)
+            } else {
+                self.id.parse().ok()?
+            },
             name: self.name.trim().to_string(),
             email: email_address(email)?.to_string(),
             status: InviteStatus::from_ical(&self.status),

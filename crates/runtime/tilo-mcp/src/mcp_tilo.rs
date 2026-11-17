@@ -982,13 +982,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let steps = self.programs.lock_recover().steps_json();
         let Some(answer) = answer else {
             // `undo`, `undo task` and `history task` answer text: the steps
-            // they report are the typed answer.
-            return json!({
+            // they report are the typed answer, and a failure's words are its
+            // reason.
+            let mut typed = json!({
                 "status": if reply.failed {"failed"} else {"ok"},
                 "output": reply.text.lines().collect::<Vec<&str>>(),
                 "steps": steps,
                 "text": reply.text,
             });
+            if reply.failed
+                && let Some(fields) = typed.as_object_mut()
+            {
+                fields.insert("detail".into(), reply.text.clone().into());
+            }
+            return typed;
         };
         let status = match answer.get("state").and_then(Value::as_str) {
             Some("done") => "ok",

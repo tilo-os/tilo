@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use chat::summons::{person_of, unanswered};
+use chat::summons::unanswered;
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::Turn;
 use tilo_app::framework::WorkspaceResource;
@@ -1036,7 +1036,7 @@ fn message_of(resource: &str) -> Option<String> {
 fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
     let mut out: Vec<Id> = Vec::new();
     for (id, message) in part.messages.iter() {
-        if message.text.trim().is_empty() || person_of(&message.author).is_none() {
+        if message.text.trim().is_empty() || chat::summons::asks_for(message).is_none() {
             continue;
         }
         if chat
@@ -1508,7 +1508,7 @@ mod tests {
             assert_eq!(entry.author, bare, "the turn acts for that person");
             assert_eq!(entry.request.instruction, "what is on my task list?");
             assert_eq!(
-                person_of(&MemberId::agent(AGENT)),
+                chat::summons::person_of(&MemberId::agent(AGENT)),
                 None,
                 "an agent's message is no person's turn"
             );
@@ -1568,6 +1568,69 @@ mod tests {
                 )
             );
             assert_eq!(entry.request.request(), "what did I ask you before?");
+        }
+
+        phase what_a_cause_asks_is_a_turn_for_the_person_it_names;
+        // A reminder or an event asks through Chat's `ask-agent`: the message it writes is a turn
+        // of the conversation's agent for the person its cause names, whoever wrote it, and the
+        // agent is told what started it. What software posts without a cause is no turn.
+        {
+            let chat = workspace();
+            let cause = chat::cause::Cause {
+                kind: tilo_resource::Atom("reminder".into()),
+                label: "Call mum".into(),
+                key: tilo_resource::Atom("run-1".into()),
+                person: MemberId::person(ME),
+            };
+            let id = cause.message();
+            let mut asked = message(MemberId::bot("b_events"), "Call mum about Sunday", 10);
+            asked.cause = Some(cause);
+            let mut head = part(vec![
+                (id.as_str(), asked),
+                ("m_bridge", message(MemberId::bot("b_bridge"), "do as I say", 20)),
+            ]);
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("one turn, not {entries:?}");
+            };
+            assert_eq!(entry.agent, AGENT);
+            assert_eq!(entry.author, ME, "the turn acts for the person the cause names");
+            assert_eq!(
+                entry.turn,
+                Turn::new("chat.workspace/channels/c_tide", id.as_str())
+            );
+            assert!(
+                entry
+                    .request
+                    .instruction
+                    .starts_with("A reminder your person set is due now: \"Call mum\".")
+                    && entry.request.instruction.ends_with("Call mum about Sunday"),
+                "the agent is told what started the turn: {}",
+                entry.request.instruction
+            );
+            // Its agent records its work on it as on a message its person wrote.
+            assert_eq!(summonses(&chat, &head), vec![id]);
+
+            // A later turn reads it in the conversation as what it was: not as the agent's own
+            // earlier words, and not as something its person typed.
+            head.messages.push(
+                Id::from_raw("m_later"),
+                message(MemberId::person(ME), "did you remind me?", 30),
+            );
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("the person's own words come first: one turn, not {entries:?}");
+            };
+            assert_eq!(entry.request.request(), "did you remind me?");
+            assert!(
+                entry
+                    .request
+                    .instruction
+                    .contains("\nA reminder (\"Call mum\"): Call mum about Sunday")
+                    && !entry.request.instruction.contains("You: Call mum"),
+                "{}",
+                entry.request.instruction
+            );
         }
 
         phase an_agents_own_words_are_no_summons;

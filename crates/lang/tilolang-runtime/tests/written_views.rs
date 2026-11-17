@@ -205,7 +205,7 @@ view unread_mail(m: mail.Mail) {\n\
         let apps = apps();
         let ada = Person::new(&apps, "ada");
         let mail = ada.inbox(&apps);
-        let task = person("agent-task:unread");
+        let task = agent("agent-task:unread");
         let v = answer(&ada, &apps, &task);
         // The host recorded the task as its author; nobody can claim another.
         assert_eq!(ada.author(&v), task);
@@ -266,7 +266,7 @@ view unread_mail(m: mail.Mail) {\n\
             "mark_read",
             vec![Value::resource(&launch), Value::Bool(false)],
         );
-        let v = answer(&ada, &apps, &person("agent-task:unread"));
+        let v = answer(&ada, &apps, &agent("agent-task:unread"));
         ada.call(&apps.views, "keep", vec![Value::resource(&v)]);
 
         // Ada sends it to the team's channel. Only the chat travels between them.

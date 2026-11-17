@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@8f97350030092d32";
+export const SURFACE = "so.tilo.chat@7b6b8412b862de0c";
 
 export interface Category {
   name: string;
@@ -276,6 +276,13 @@ export interface Answered {
 /** One of resource, text, image, video, file: an object whose case the app tags it with. */
 export type Attached = Record<string, unknown>;
 
+export interface Cause {
+  kind: string;
+  label: string;
+  key: string;
+  person: string;
+}
+
 export interface Choice {
   id: string;
   label: string;
@@ -332,6 +339,8 @@ export interface Message {
   origin: Origin | null;
   share: WindowShare | null;
   question: Question | null;
+  cause: Cause | null;
+  stopped: Stopped | null;
   attempts: number;
 }
 
@@ -414,6 +423,12 @@ export interface ShownPersona {
   linked: string | null;
 }
 
+export interface Starting {
+  kind: string;
+  label: string;
+  key: string;
+}
+
 export interface Step {
   id: string;
   sequence: number;
@@ -429,6 +444,11 @@ export interface StepUpdate {
   label: string;
   outcome: string;
   why: string | null;
+}
+
+export interface Stopped {
+  attempt: number;
+  at: number;
 }
 
 export interface Transition {
@@ -490,6 +510,9 @@ export interface Agent {
   state: AgentState;
   created_at: number;
   instruction: string | null;
+  sub: Sub | null;
+  sub_depth: number | null;
+  sub_at_once: number | null;
 }
 
 /** One of "active", "retired". */
@@ -501,9 +524,45 @@ export interface Bound {
   answer: string;
 }
 
+export interface NewSubAgent {
+  name: string;
+  job: string;
+  role: string | null;
+  instruction: string | null;
+  kind: string | null;
+  model: string | null;
+  task: string | null;
+  id: string | null;
+}
+
+export interface Note {
+  id: string;
+  by: string;
+  text: string;
+  at: number;
+}
+
 export interface Spent {
   day: string;
   cost_micros: number;
+}
+
+/** One of "working", "needs_person", "done", "failed", "stopped". */
+export type Stands = "working" | "needs_person" | "done" | "failed" | "stopped";
+
+export interface Sub {
+  started_by: string;
+  job: string;
+  role: string;
+  kind: string;
+  runs: string;
+  depth: number;
+  task: string | null;
+  conversation: string;
+  stands: Stands;
+  since: number;
+  line: string;
+  notes: Note[];
 }
 
 /** The arguments of `begin-chat`. */
@@ -788,6 +847,19 @@ export interface SettleQuestionArgs {
   detail?: string;
 }
 
+/** The arguments of `ask-agent`. */
+export interface AskAgentArgs {
+  text: string;
+  channel: string;
+  cause: Starting;
+  members?: unknown[];
+}
+
+/** The arguments of `stop-agent`. */
+export interface StopAgentArgs {
+  message: string;
+}
+
 /** The arguments of `carry-counts`. */
 export interface CarryCountsArgs {
   earlier: Record<string, Record<string, number>>;
@@ -902,6 +974,43 @@ export interface SetAgentBoundArgs {
 /** The arguments of `retire-agent`. */
 export interface RetireAgentArgs {
   agent: string;
+}
+
+/** The arguments of `start-sub-agent`. */
+export interface StartSubAgentArgs {
+  name: string;
+  job: string;
+  role?: string;
+  instruction?: string;
+  kind?: string;
+  model?: string;
+  task?: string;
+  id?: string;
+}
+
+/** The arguments of `note-sub-agent`. */
+export interface NoteSubAgentArgs {
+  agent: string;
+  text: string;
+}
+
+/** The arguments of `stop-sub-agent`. */
+export interface StopSubAgentArgs {
+  agent: string;
+}
+
+/** The arguments of `sub-agent-stands`. */
+export interface SubAgentStandsArgs {
+  agent: string;
+  stands: Stands;
+  line?: string;
+}
+
+/** The arguments of `set-sub-agent-limits`. */
+export interface SetSubAgentLimitsArgs {
+  agent: string;
+  depth?: number;
+  at_once?: number;
 }
 
 /** Chat — `chat.workspace`. */
@@ -1220,6 +1329,19 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
   /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   settleQuestionMany(items: SettleQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  askAgent(args: {
+    text: string;
+    channel: string;
+    cause: Starting;
+    members?: unknown[];
+  }): Promise<void>;
+  /** Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  askAgentMany(items: AskAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  stopAgent(args: {
+    message: string;
+  }): Promise<void>;
+  /** Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stopAgentMany(items: StopAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   carryCounts(args: {
     earlier: Record<string, Record<string, number>>;
   }): Promise<void>;
@@ -1237,7 +1359,7 @@ export interface Messages extends tilo.Resource {
 
 /** The actions `Messages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
+export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
@@ -1392,11 +1514,48 @@ export interface ChatAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retireAgentMany(items: RetireAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  startSubAgent(args: {
+    name: string;
+    job: string;
+    role?: string;
+    instruction?: string;
+    kind?: string;
+    model?: string;
+    task?: string;
+    id?: string;
+  }): Promise<void>;
+  /** Runs `start-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  startSubAgentMany(items: StartSubAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  noteSubAgent(args: {
+    agent: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `note-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  noteSubAgentMany(items: NoteSubAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  stopSubAgent(args: {
+    agent: string;
+  }): Promise<void>;
+  /** Runs `stop-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stopSubAgentMany(items: StopSubAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  subAgentStands(args: {
+    agent: string;
+    stands: Stands;
+    line?: string;
+  }): Promise<void>;
+  /** Runs `sub-agent-stands` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  subAgentStandsMany(items: SubAgentStandsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setSubAgentLimits(args: {
+    agent: string;
+    depth?: number;
+    at_once?: number;
+  }): Promise<void>;
+  /** Runs `set-sub-agent-limits` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setSubAgentLimitsMany(items: SetSubAgentLimitsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `ChatAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "setAgentColour", "setAgentColourMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany"] as const;
+export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "setAgentColour", "setAgentColourMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
 
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {

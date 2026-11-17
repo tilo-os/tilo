@@ -59,7 +59,7 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
-    person_vault, workspace_governance_resource,
+    person_telling, person_vault, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -74,6 +74,8 @@ use tokio::sync::Mutex as AsyncMutex;
 pub(super) mod host;
 #[cfg(not(target_arch = "wasm32"))]
 mod mail;
+#[cfg(not(target_arch = "wasm32"))]
+mod telling;
 
 use super::authority::WorkspaceOp;
 use super::{
@@ -95,7 +97,7 @@ pub(crate) const MEMBERS: &str = "member.list";
 /// governance records, its name, the workspace it reaches and until when.
 pub(crate) const KEYS: &str = "key.list";
 /// Revoke a key the caller holds or one it minted: the workspace records the
-/// revocation, and every holder and front door refuses the key from then on.
+/// revocation, and every holder and API server refuses the key from then on.
 pub(crate) const REVOKE_KEY: &str = "key.revoke";
 /// The calling person's own name in the workspace: what its member list and
 /// the invitations they make show for them, from any of their devices or
@@ -329,7 +331,7 @@ const VERBS: [Verb; 22] = [
         id: KEYS,
         label: "List the keys this workspace admitted",
         // Nothing gates it: a key lists the grants of its own person's, and
-        // the front door shows it only the key itself and the keys it minted.
+        // the API server shows it only the key itself and the keys it minted.
         gate: "",
         kind: ActionKind::Read,
         params: Vec::new,
@@ -1173,6 +1175,15 @@ impl Workspaces {
         {
             offer.add(mail::MAIL, "", mail::assistant_rows());
         }
+        // An agent of a person's finds that person's rule for what is
+        // important here: to read wherever it works for them, to change
+        // in a workspace of theirs.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wants(person_telling::PROVIDER)
+            && let Some(own) = self.tells_as_agent(caller, certificate, workspace_id)
+        {
+            offer.add(telling::TELLING, "", telling::agent_rows(own));
+        }
         offer.page(query)
     }
 
@@ -1265,6 +1276,13 @@ impl Workspaces {
             (person_vault::PROVIDER, _) => {
                 self.person_vault_invoke(workspace_id, caller, certificate, request)
             }
+            // What the person calls important, and what may interrupt
+            // them: theirs, and their own agent's to read and to keep.
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_telling::PROVIDER, _) => {
+                self.person_telling_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
@@ -1341,7 +1359,7 @@ impl Workspaces {
             let workspace = governed.lock().await;
             // A key its person revoked acts no longer: the workspace's record
             // of the revocation refuses every call it would make here, from
-            // whichever front door it comes.
+            // whichever API server it comes.
             let revoked_ms = workspace
                 .peer()
                 .governance()
@@ -1417,8 +1435,8 @@ impl Workspaces {
     }
 
     /// Revoke the key `grant` names, the caller's own or one it minted: the
-    /// workspace records its person's revocation, and every holder and front
-    /// door refuses it from then on.
+    /// workspace records its person's revocation, and every holder and API
+    /// server refuses it from then on.
     async fn governance_revoke_key(
         &self,
         call: GovernanceCall<'_>,
@@ -2468,7 +2486,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 6] = [
+const PROVIDERS: [&str; 7] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2478,6 +2496,8 @@ const PROVIDERS: [&str; 6] = [
     person_models::PROVIDER,
     // What the person keeps to sign in with, in the same vault.
     person_vault::PROVIDER,
+    // What the person calls important, and what may interrupt them.
+    person_telling::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it

@@ -116,7 +116,7 @@ impl ContactDirectory {
 impl ContactDirectory {
     /// Update the label of a Contacts identity, without merging similar names or
     /// reviving a deleted identity.
-    #[action(external)]
+    #[action(external, step = "create")]
     pub fn project_contact(&mut self, person: Id, label: String) -> Result<(), Refusal> {
         validate_person(&person)?;
         if label.len() > 4096 {

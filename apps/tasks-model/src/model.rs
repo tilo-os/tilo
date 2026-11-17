@@ -22,11 +22,13 @@ mod asks;
 mod effect;
 mod goal;
 mod issue;
+mod many;
 mod record;
 pub mod search;
 mod tracker_area;
+mod work;
 
-pub use asks::{IssueAsk, agent_asks};
+pub use asks::{Asked, IssueAsk, agent_asks, agent_asks_at};
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{
@@ -34,8 +36,14 @@ pub use issue::{
     MAX_MESSAGE_CHARS, MAX_TITLE_CHARS, Message, MessageKind, NewIssue, Priority, Status,
     agent_assignee, checked_assignee, outside_assignee, person_assignee,
 };
+pub use many::{ListedIssue, MAX_MANY};
 pub use record::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
+pub use work::{
+    BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_RUNS, Resumed, Standing,
+    Stopped, StoppedWhy, WaitFor, WaitKind, Work, checked_address, checked_folder, checked_line,
+    checked_waits, standing,
+};
 
 /// The kind of the tracker's own record, which keeps its projects and areas.
 pub const KIND: &str = "tasks.tracker";

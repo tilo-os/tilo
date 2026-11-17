@@ -712,9 +712,9 @@ impl Store {
     }
 
     /// The grant a key carries itself, for a token this store never saw: the
-    /// key is the grant the person approved, so every front door reads it
-    /// without holding anything another front door would have to share.
-    /// Revoking it here records the grant under the same id every front door
+    /// key is the grant the person approved, so every API server reads it
+    /// without holding anything another API server would have to share.
+    /// Revoking it here records the grant under the same id every API server
     /// derives from it, so a store that revoked one refuses it from then on.
     fn carried(&self, token: &str, now_ms: u64) -> Result<Grant, Denied> {
         let (name, key) = carried_key(token).ok_or(Denied::Unknown)?;
@@ -756,7 +756,7 @@ impl Store {
         };
         state.grants.insert(grant.id.clone(), grant.clone());
         if let Err(error) = self.save(&state) {
-            tracing::warn!(%error, "could not keep a key a front door was handed");
+            tracing::warn!(%error, "could not keep a key an API server was handed");
         }
         drop(state);
         Ok(grant)
@@ -926,8 +926,8 @@ impl Store {
 pub const KEY_PREFIX: &str = "tilo_sk_";
 
 /// The key a person approved, as the one bearer token a key is: its name,
-/// its secret and the person's certificate, so every front door reads the
-/// grant without a store one front door would have to share with it.
+/// its secret and the person's certificate, so every API server reads the
+/// grant without a store one API server would have to share with it.
 ///
 /// # Errors
 /// The key cannot be encoded.
@@ -961,9 +961,9 @@ fn carried_key(token: &str) -> Option<(String, GrantKey)> {
     Some((carried.name, key))
 }
 
-/// The grant `key` is, by the same id every front door derives from it: its
-/// certificate's device key, so a grant recorded or revoked at one front
-/// door is the same grant at another.
+/// The grant `key` is, by the same id every API server derives from it: its
+/// certificate's device key, so a grant recorded or revoked at one API
+/// server is the same grant at another.
 #[must_use]
 pub fn grant_id_of(key: &GrantKey) -> String {
     tilo_peer_state::WorkspaceGrant::id_of(&key.cert().device_public_key)

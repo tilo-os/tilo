@@ -22,9 +22,8 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// The data half of naming authors, below the toolkit: decoding an actor
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
-    AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, MemberNames, ResolveAuthor,
-    SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_words,
-    author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
+    DeviceActors, MemberNames, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, app_name,
+    app_words, author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
@@ -242,21 +241,24 @@ impl AuthorDirectory {
         NOTED_ACTORS.with_borrow(|actors| {
             for (actor, noted) in actors {
                 let agent = noted.agent || agents.contains(&noted.name);
-                let name = if agent {
-                    format!("{AGENT_NAMESPACE}{}", noted.name)
+                let handle = if agent {
+                    tilo_actions::MemberId::agent(noted.name.clone()).actor_bytes()
                 } else {
-                    noted.name.clone()
+                    noted.name.as_bytes().to_vec()
                 };
                 // The key a member's own handle actor has, so an actor
                 // history resolves by its handle alone agrees too.
-                let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
-                let (shown, rgb) = (!agent)
-                    .then(|| person(&name))
-                    .flatten()
-                    .unwrap_or_else(|| {
-                        let rgb = identity_colour(&name);
-                        (name, rgb)
-                    });
+                let identity = automerge::ActorId::from(handle.as_slice()).to_hex_string();
+                let (shown, rgb) = if agent {
+                    let member = tilo_actions::MemberId::agent(noted.name.clone());
+                    (
+                        agent_display_label(&noted.name),
+                        crate::presence::member_color(&member),
+                    )
+                } else {
+                    person(&noted.name)
+                        .unwrap_or_else(|| (noted.name.clone(), identity_colour(&noted.name)))
+                };
                 self.register(actor, author_coloured(shown, short_id(&identity), rgb));
             }
         });
@@ -425,7 +427,6 @@ impl AuthorDirectory {
             .or_else(|| handle_actor_hex(key).and_then(|handle| self.by_actor.get(&handle)));
         if let Some(a) = registered {
             let mut presented = a.clone();
-            presented.name = member_display_label(&presented.name);
             let override_key = actor_handle(key).unwrap_or_else(|| key.to_owned());
             if let Some(rgb) = self.color_overrides.get(&override_key) {
                 presented = presented.with_rgb(*rgb);
@@ -433,16 +434,17 @@ impl AuthorDirectory {
             return presented;
         }
         let short = short_id(key);
-        match actor_handle(key) {
+        let Some(handle) = actor_handle(key) else {
+            return self.author_from_identity(UNKNOWN_AUTHOR_NAME, key, short);
+        };
+        match tilo_actions::Actor::of_actor_bytes(handle.as_bytes()) {
             // An app's change reads as the app: its own name, with no fragment of its actor id
             // beside it, which would say nothing a person reads.
-            Some(handle) if is_app_actor(&handle) => {
-                self.author_from_identity(member_display_label(&handle), &handle, "")
+            Some(actor @ tilo_actions::Actor::App(_)) => {
+                self.author_from_identity(actor_label(&actor), &handle, "")
             }
-            Some(handle) => {
-                self.author_from_identity(member_display_label(&handle), &handle, short)
-            }
-            None => self.author_from_identity(UNKNOWN_AUTHOR_NAME, key, short),
+            Some(actor) => self.author_from_identity(actor_label(&actor), &handle, short),
+            None => self.author_from_identity(handle.clone(), &handle, short),
         }
     }
 
@@ -763,83 +765,21 @@ pub fn read_as(member: &tilo_actions::MemberId) {
     THREAD_READER.with(|reader| *reader.borrow_mut() = Some(member.clone()));
 }
 
-/// Turn a durable collaboration actor into copy suitable for people-facing
-/// history and audit UI.
-///
-/// Agent actors deliberately remain stored and transported as
-/// `agent:<id>`: the prefix is part of the authorization boundary. Rendering
-/// that wire identifier verbatim, however, makes the UI look unfinished and
-/// obscures the important fact that the actor was software. This projection
-/// removes only the protocol prefix and adds a persistent, readable kind
-/// label. An app reads as its own name in the person's language (`app:so.tilo.lang.today` is
-/// "Today"), never as its id. Human names and other identifiers pass through unchanged.
-pub fn member_display_label(actor: &str) -> String {
-    match agent_actor_name(actor) {
-        Some(name) => agent_display_label(&name),
-        None => match app_actor(actor) {
-            Some(app) => app_name(app, crate::i18n::I18nManager::window_locale().as_str()),
-            None => actor.trim().to_string(),
-        },
+/// What `actor` is called in history and audit: an agent by its name with the agent kind label,
+/// an app by its own name in the person's language, a bot or an automation by its name, a person
+/// by their id, which a registered name replaces.
+pub fn actor_label(actor: &tilo_actions::Actor) -> String {
+    use tilo_actions::{Actor, MemberId};
+    match actor {
+        Actor::Member(MemberId::Agent(id)) => agent_display_label(id),
+        Actor::Member(MemberId::Bot(id)) => name_words(id),
+        Actor::Member(MemberId::Person(person)) => person.as_str().to_owned(),
+        Actor::Automation(id) => name_words(id.as_str()),
+        Actor::App(app) => app_name(
+            app.as_str(),
+            crate::i18n::I18nManager::window_locale().as_str(),
+        ),
     }
-}
-
-/// The actor `id` names an app's own (`app:so.tilo.lang.today`).
-pub fn is_app_actor(id: &str) -> bool {
-    app_actor(id).is_some()
-}
-
-/// The app an actor id names, when it is an app's own.
-fn app_actor(id: &str) -> Option<&str> {
-    id.trim()
-        .strip_prefix(APP_NAMESPACE)
-        .map(str::trim)
-        .filter(|app| !app.is_empty())
-}
-
-/// What the actor `actor` is called to the person reading, by what it is: a person by their
-/// name, an app by its own name in their language, an agent by its name. Never an id, and never
-/// part of one: a member nobody named is [`UNKNOWN_AUTHOR_NAME`].
-pub fn member_name(actor: &str) -> String {
-    actor_name(actor, &CatalogueNames)
-}
-
-/// The names the toolkit's words give: the session's names for the apps installed here, in the
-/// window's language, and no roster of its own.
-struct CatalogueNames;
-
-impl MemberNames for CatalogueNames {
-    fn app(&self, app_id: &str) -> String {
-        app_name(app_id, crate::i18n::I18nManager::window_locale().as_str())
-    }
-}
-
-/// [`member_name`] for an actor that names software (`app:`, `agent:`, `bot:`,
-/// `shortcut:`), and nothing for an id that names no actor: what presence shows for someone
-/// it knows only an id of, until the roster names them.
-pub fn software_name(actor: &str) -> Option<String> {
-    let actor = actor.trim();
-    [
-        APP_NAMESPACE,
-        AGENT_NAMESPACE,
-        BOT_NAMESPACE,
-        SHORTCUT_NAMESPACE,
-    ]
-    .iter()
-    .any(|namespace| actor.starts_with(namespace))
-    .then(|| member_name(actor))
-}
-
-/// The readable name of an `agent:<id>` actor, without the kind label:
-/// the id, or the localized unknown-agent name when it is empty. `None` for
-/// any actor that is not an agent. For surfaces that already mark the
-/// actor as software, such as an agent badge.
-pub fn agent_actor_name(actor: &str) -> Option<String> {
-    let name = actor.trim().strip_prefix("agent:")?.trim();
-    Some(if name.is_empty() {
-        crate::i18n::widget_format("member-unknown-agent", &[])
-    } else {
-        name.to_string()
-    })
 }
 
 /// `name` with the localized agent kind label, as every agent is shown in
@@ -1106,37 +1046,23 @@ mod tests {
 
         phase agent_actors_are_presented_as_named_agents_not_wire_ids;
         {
-            assert_eq!(member_display_label("agent:scribe"), "scribe · Agent");
-            assert_eq!(
-                member_display_label("agent:opaque-runtime-id"),
-                "opaque-runtime-id · Agent"
-            );
-            assert_eq!(member_display_label("agent:"), "Unknown agent · Agent");
-            assert_eq!(member_display_label("Ada"), "Ada");
+            let scribe = tilo_actions::MemberId::agent("scribe");
+            assert_eq!(actor_label(&scribe.clone().into()), "scribe · Agent");
 
-            let actor = automerge::ActorId::from("agent:scribe".as_bytes());
+            let actor = automerge::ActorId::from(scribe.actor_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
             assert_eq!(resolved.name, "scribe · Agent");
             assert!(!resolved.name.contains("agent:"));
-
-            let mut registered = AuthorDirectory::new();
-            registered.register(
-                "aabbccdd",
-                HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
-            );
-            assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
         }
 
         phase an_apps_change_reads_as_the_app_never_as_its_id;
         // An app changing another app's record is named by its own name, and no fragment of its
         // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
         {
-            let app = "app:so.tilo.lang.notes";
-            assert_eq!(member_display_label(app), "Notes");
-            assert!(is_app_actor(app));
-            assert!(!is_app_actor("agent:scribe"));
+            let app = tilo_actions::Actor::App("so.tilo.lang.notes".into());
+            assert_eq!(actor_label(&app), "Notes");
 
-            let actor = automerge::ActorId::from(app.as_bytes());
+            let actor = automerge::ActorId::from(app.actor_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
             assert_eq!(resolved.name, "Notes");
             assert_eq!(

@@ -368,7 +368,7 @@ pub async fn start_relay_lending(
         let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let (relay, actions) = tilo_relay::agents::start_serving_documents(
+        let (relay, actions, events) = tilo_relay::agents::start_serving_documents_and_events(
             cfg,
             identity,
             None,
@@ -383,6 +383,9 @@ pub async fn start_relay_lending(
         .context("start the relay serving its workspaces' records")?;
         // The agents each workspace made to run here work around the clock, on the host's model.
         let host_agents = relay.workspaces().cloned().map(|workspaces| {
+            // What is judged for a person is counted on their assistant's day,
+            // and a question that waits for them reaches their log.
+            tilo_relay::workspace_telling::start(&workspaces);
             let model = args.agents.host_model();
             tracing::info!(
                 model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
@@ -394,6 +397,7 @@ pub async fn start_relay_lending(
                     actions,
                     model.map(tilo_relay::workspace_agents::model_of),
                 )
+                .with_events(events)
                 .run(),
             )
         });

@@ -7,9 +7,10 @@
 //! — so the tab, the apps and the person's other devices hold the one record, and the tab decides
 //! nothing of its own.
 //! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside the
-//! record. An agent the workspace admitted before records were is made one of the record's when the
-//! tab opens it ([`Agents::settle`]), under the id its grants name and kept by whoever admitted it,
-//! so the roster, the name a person reads and the search find the agents that worked here.
+//! record. An agent a person admitted to the workspace before records were is made one of the
+//! record's when that person's tab opens it ([`Agents::settle`]), under the id its grants name and
+//! kept by them, so the roster, the name a person reads and the search find the agents that worked
+//! here. Nobody makes the record of an agent somebody else admitted: whoever makes one keeps it.
 //! The model an agent plans with is the keeper's to choose, alone: their devices run it and their
 //! credentials pay. This device applies the keeper's choice to its own Settings when the tab is
 //! open ([`agent_access::choose_agent_model`]), which is where the agent runner reads it from; the
@@ -241,7 +242,7 @@ impl Agents {
         let manage = may.manage;
         let config = agent_provider_config::ProviderConfig::load();
         let agents: Vec<sheet::Agent> = state
-            .active()
+            .made_by_people()
             .map(|agent| {
                 let mine = agent.keeper == me.id();
                 sheet::Agent {
@@ -558,9 +559,11 @@ impl Agents {
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
-    /// Make the record name every agent `workspace` admitted: one made for each admission that has
-    /// none, under the id its grants carry and kept by whoever admitted it, so the roster, the
-    /// names people read and the search find the agents that worked here before records were.
+    /// Make the record name every agent `person` admitted to `workspace`: one made for each of
+    /// their admissions that has none, under the id its grants carry, so the roster, the names
+    /// people read and the search find the agents that worked here before records were. Whoever
+    /// admitted an agent keeps it, and only they make its record: another member's admission
+    /// gets its record on a device of that member.
     /// An admission names no name of its own — its id is no name a person reads — so each is
     /// numbered, in id order, around the names the workspace already uses.
     /// A model chosen for the agent on this device before the record held one is its keeper's
@@ -588,9 +591,11 @@ impl Agents {
                 .iter()
                 .filter(|grant| grant.id.as_str().starts_with(&prefix))
                 .find_map(|grant| grant.granted_by.person_id().map(str::to_owned));
-            let Some(keeper) = keeper else {
+            // Whoever admitted it makes its record, on a device of their own: the record takes no
+            // keeper a caller names, so another member's admission waits for that member.
+            if keeper.is_none_or(|keeper| keeper != *person) {
                 continue;
-            };
+            }
             let name = loop {
                 number = number.saturating_add(1);
                 let name = t_args(
@@ -605,15 +610,11 @@ impl Agents {
                 continue;
             };
             taken.push(name.as_str().to_owned());
-            let model = (keeper == *person)
-                .then(|| {
-                    agent_access::agent_models(config, &agent)
-                        .and_then(|models| models.chosen.map(|chosen| chosen.key()))
-                })
-                .flatten();
+            let model = agent_access::agent_models(config, &agent)
+                .and_then(|models| models.chosen.map(|chosen| chosen.key()));
             let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
                 name,
-                keeper: Some(keeper),
+                keeper: None,
                 id: Some(agent.clone()),
                 model,
                 colour: None,

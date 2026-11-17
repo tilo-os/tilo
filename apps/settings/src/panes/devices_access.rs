@@ -7,7 +7,9 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
 use ui::tilo_actions::remote::mcp_server::{self, Grant, Reach, Server};
-use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing, session_actions};
+use ui::tilo_actions::remote::{
+    Confirmation, InvokeArgument, RemoteActionTarget, device_pairing, session_actions,
+};
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
     Button, ButtonRole, Column, DisclosureGroup, DisclosureRow, Element, ListRow, Row, Spacer,
@@ -109,7 +111,23 @@ pub(crate) fn answer(
     area.model()
         .borrow_mut()
         .act(&area.remote, &effect, Some(cx.reply()))?;
+    if effect.takes_back() {
+        // Its row says it is being removed from here on: the question the
+        // row asked is answered, and the page is built again.
+        area.removing.set(None);
+        area.shown.set(area.shown.get().wrapping_add(1));
+    }
     Ok(Effected::Pending)
+}
+
+impl DevicesAccessEffect {
+    /// Whether it ends something's access for good.
+    const fn takes_back(&self) -> bool {
+        matches!(
+            self,
+            Self::RevokeDevice { .. } | Self::RevokeBrowser { .. } | Self::RevokeAgent { .. }
+        )
+    }
 }
 
 crate::area::pane_area! {
@@ -119,7 +137,7 @@ crate::area::pane_area! {
     }
     fn next_wake(&self) -> Option<ui::time::Instant> {
         let model = self.model.get()?.try_borrow().ok()?;
-        let wait = model.ask_again_in()?;
+        let wait = model.wakes_in()?;
         Some(ui::time::now() + std::time::Duration::from_millis(wait))
     }
 }
@@ -386,50 +404,165 @@ impl AgentEntry<'_> {
 struct Pending {
     calls: Vec<ui::InvocationCall>,
     reply: Option<EffectReply>,
+    /// What it takes back, as [`AccessModel::leaving`] holds it.
+    leaving: Option<u64>,
 }
 
+/// How a host answers one of the page's lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Kept {
+    /// Not answered yet.
+    #[default]
+    Unanswered,
+    /// The host keeps the read current and sends each change of the list on
+    /// it: it is never asked again.
+    Current,
+    /// The host answered once and cannot say when the list changes.
+    Once,
+    /// Nothing here answers the list.
+    Nowhere,
+}
+
+/// One of the page's lists, as its host answers it.
 #[derive(Default)]
-struct Asked {
-    call: Option<ui::InvocationCall>,
-    error: Option<String>,
+struct Listed {
+    /// The read of it: a host that keeps it current sends each change of the
+    /// list on it, one that answers once ends it with its answer.
+    read: Option<ui::Followed>,
+    seen: u64,
+    kept: Kept,
+    /// Whether the read asked last is still to be answered.
+    awaited: bool,
     answered: bool,
+    error: Option<String>,
+    /// When it was asked last, ms since the epoch.
+    asked_ms: i64,
+}
+
+impl Listed {
+    /// Read the list at `target` from now on. The read this replaces ends.
+    fn ask(&mut self, remote: &ui::RemoteActions, target: RemoteActionTarget, now: i64) {
+        self.read = Some(remote.follow(target, InvokeArgument::None));
+        self.seen = 0;
+        self.awaited = true;
+        self.asked_ms = now;
+    }
+
+    /// What the host answered since the last look: the list as it is now, or
+    /// why there is none.
+    fn take(&mut self) -> Option<Result<Option<serde_json::Value>, String>> {
+        use ui::tilo_actions::InvocationUpdate;
+        use ui::tilo_actions::remote::ActionHostError;
+        let call = self.read.as_ref()?.call();
+        let revision = call.revision();
+        if revision == self.seen {
+            return None;
+        }
+        self.seen = revision;
+        let (kept, answer) = match call.get() {
+            ui::Arrival::Ready(InvocationUpdate::Item { value, .. }) => {
+                (Kept::Current, Ok(Some(value)))
+            }
+            ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
+                (Kept::Once, Ok(output.value))
+            }
+            ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
+                (Kept::Once, Err(error.message))
+            }
+            ui::Arrival::Ready(InvocationUpdate::Cancelled { .. }) => (
+                Kept::Once,
+                Err("the host stopped before it answered".to_owned()),
+            ),
+            ui::Arrival::Failed(
+                error @ (ActionHostError::UnknownAction | ActionHostError::Unavailable { .. }),
+            ) => (Kept::Nowhere, Err(error.to_string())),
+            ui::Arrival::Failed(error) => (Kept::Once, Err(error.to_string())),
+            ui::Arrival::Ready(
+                InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. },
+            )
+            | ui::Arrival::Pending { .. } => return None,
+        };
+        self.kept = kept;
+        self.awaited = false;
+        self.answered = true;
+        self.error = answer.as_ref().err().cloned();
+        Some(answer)
+    }
+
+    /// How long until a host that answered once is asked again, in ms: `None`
+    /// for a list that is not asked again, or whose answer is still awaited.
+    fn asked_again_in(&self, now: i64) -> Option<u64> {
+        if self.kept != Kept::Once || self.awaited {
+            return None;
+        }
+        u64::try_from(
+            ASK_AGAIN_MS
+                .saturating_sub(now.saturating_sub(self.asked_ms))
+                .max(0),
+        )
+        .ok()
+    }
+}
+
+/// Something the person took back here that the lists still name.
+struct Leaving {
+    id: u64,
+    /// What it ends: each device key in hex, or an agent's grant.
+    of: Vec<String>,
+    /// When the host answered that it took the removal, ms since the epoch.
+    taken_ms: Option<i64>,
 }
 
 pub struct AccessModel {
     devices: Vec<DeviceView>,
-    devices_asked: Asked,
+    devices_read: Listed,
     api: Server,
     api_followed: Option<ui::Followed>,
     api_seen: u64,
     asking: Vec<Asking>,
-    asking_asked: Asked,
+    asking_read: Listed,
     pending: Vec<Pending>,
+    /// What the person took back here, until the lists show it gone: its row
+    /// says it is being removed and offers nothing more.
+    leaving: Vec<Leaving>,
+    left: u64,
     now_ms: Option<i64>,
-    /// When the lists were last asked for, ms since the epoch: while the page is
-    /// open they are asked again every [`ASK_AGAIN_MS`], so a device or an agent
-    /// the person connects while looking at it shows up here.
-    asked_ms: Option<i64>,
 }
 
-/// How often an open page asks for the person's devices and asks again.
+/// How often a list is asked for again where its host answered it once and
+/// cannot say when it changes. A host that keeps the read current, as a
+/// page's does for the person's devices, is never asked again.
 const ASK_AGAIN_MS: i64 = 4000;
+
+/// How long a row says it is being removed once the host took the removal
+/// and its list still names it: after that the row shows what the list says.
+const LEAVING_SHOWN_MS: i64 = 10_000;
+
+/// Where the devices asking to be the person are listed.
+fn asking_listed() -> RemoteActionTarget {
+    device_pairing::target(device_pairing::ASKING)
+}
 
 impl AccessModel {
     fn asking(remote: &ui::RemoteActions) -> Self {
         let mut model = Self::empty();
         model.api_followed =
             Some(remote.follow(mcp_server::target(mcp_server::SERVER), InvokeArgument::None));
-        model.ask_lists(remote);
+        let now = model.now();
+        model
+            .devices_read
+            .ask(remote, crate::device_fleet::listed(), now);
+        model.asking_read.ask(remote, asking_listed(), now);
         model
     }
 
     fn shown(sample: AccessSample) -> Self {
         let mut model = Self::empty();
         model.devices = sample.devices;
-        model.devices_asked.answered = true;
+        model.devices_read.answered = true;
         model.api = sample.api;
         model.asking = sample.asking;
-        model.asking_asked.answered = true;
+        model.asking_read.answered = true;
         model.now_ms = Some(sample.now_ms);
         model
     }
@@ -437,15 +570,16 @@ impl AccessModel {
     fn empty() -> Self {
         Self {
             devices: Vec::new(),
-            devices_asked: Asked::default(),
+            devices_read: Listed::default(),
             api: Server::default(),
             api_followed: None,
             api_seen: 0,
             asking: Vec::new(),
-            asking_asked: Asked::default(),
+            asking_read: Listed::default(),
             pending: Vec::new(),
+            leaving: Vec::new(),
+            left: 0,
             now_ms: None,
-            asked_ms: None,
         }
     }
 
@@ -454,29 +588,58 @@ impl AccessModel {
             .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
     }
 
-    /// How long until the open page asks for the lists again, in ms: `None` while an answer is
-    /// still awaited, which wakes the page itself.
-    fn ask_again_in(&self) -> Option<u64> {
-        if self.devices_asked.call.is_some() || self.asking_asked.call.is_some() {
-            return None;
-        }
-        let asked = self.asked_ms?;
-        u64::try_from(
-            ASK_AGAIN_MS
-                .saturating_sub(self.now().saturating_sub(asked))
-                .max(0),
-        )
-        .ok()
+    /// How long until the open page has something to do that nothing tells
+    /// it of, in ms: asking a host that answered a list once again, or
+    /// showing a row the host never showed gone as its list has it. `None`
+    /// where every list is kept current and nothing is being removed.
+    fn wakes_in(&self) -> Option<u64> {
+        let now = self.now();
+        let shown = self
+            .leaving
+            .iter()
+            .filter_map(|leaving| leaving.taken_ms)
+            .filter_map(|taken| {
+                u64::try_from(
+                    LEAVING_SHOWN_MS
+                        .saturating_sub(now.saturating_sub(taken))
+                        .max(0),
+                )
+                .ok()
+            });
+        [
+            self.devices_read.asked_again_in(now),
+            self.asking_read.asked_again_in(now),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(shown)
+        .min()
     }
 
-    fn ask_lists(&mut self, remote: &ui::RemoteActions) {
-        self.asked_ms = Some(self.now());
-        self.devices_asked.call = Some(crate::device_fleet::list(remote));
-        self.asking_asked.call = Some(remote.invoke(
-            device_pairing::target(device_pairing::ASKING),
-            InvokeArgument::None,
-            None,
-        ));
+    /// Hold `of`, what the person just took back, as leaving.
+    fn leave(&mut self, of: Vec<String>) -> u64 {
+        self.left = self.left.wrapping_add(1);
+        self.leaving.push(Leaving {
+            id: self.left,
+            of,
+            taken_ms: None,
+        });
+        self.left
+    }
+
+    /// Whether the person took `key` back here and the lists still name it.
+    fn leaves(&self, key: &str) -> bool {
+        self.leaving
+            .iter()
+            .any(|leaving| leaving.of.iter().any(|of| of == key))
+    }
+
+    /// A list was read after the host took a removal: its rows show what the
+    /// list says from here on. Whether a row said it was being removed.
+    fn listed_anew(&mut self) -> bool {
+        let marked = self.leaving.len();
+        self.leaving.retain(|leaving| leaving.taken_ms.is_none());
+        self.leaving.len() != marked
     }
 
     fn act(
@@ -485,12 +648,14 @@ impl AccessModel {
         effect: &DevicesAccessEffect,
         reply: Option<EffectReply>,
     ) -> Result<(), String> {
+        let mut leaving = None;
         let call = match effect {
             DevicesAccessEffect::RevokeDevice { device, reason } => {
                 let key = self.device(device)?;
                 if !REVOKE_REASONS.contains(&reason.as_str()) {
                     return Err(t("settings-access-reason-unknown"));
                 }
+                leaving = Some(self.leave(vec![device.clone()]));
                 crate::device_fleet::revoke(remote, &key, reason)
             }
             DevicesAccessEffect::RenameDevice { device, name } => {
@@ -510,11 +675,17 @@ impl AccessModel {
                     .iter()
                     .map(|key| crate::device_fleet::revoke(remote, key, reason))
                     .collect();
-                self.pending.push(Pending { calls, reply });
+                let tabs = self.leave(keys.iter().map(hex::encode).collect());
+                self.pending.push(Pending {
+                    calls,
+                    reply,
+                    leaving: Some(tabs),
+                });
                 return Ok(());
             }
             DevicesAccessEffect::RevokeAgent { grant } => {
                 self.grant(grant)?;
+                leaving = Some(self.leave(vec![grant.clone()]));
                 remote.invoke(
                     mcp_server::target(mcp_server::REVOKE),
                     mcp_server::argument(&mcp_server::GrantRef {
@@ -564,6 +735,7 @@ impl AccessModel {
         self.pending.push(Pending {
             calls: vec![call],
             reply,
+            leaving,
         });
         Ok(())
     }
@@ -607,29 +779,64 @@ impl AccessModel {
     }
 
     fn poll(&mut self, remote: &ui::RemoteActions) -> bool {
-        if self.devices_asked.call.is_some()
-            || self.asking_asked.call.is_some()
-            || !self.pending.is_empty()
-        {
-            remote.poll();
-        }
+        // What a host that holds no ask is still running is asked after.
+        remote.poll();
         let mut changed = self.poll_api();
-        let before = (
-            self.devices_asked.answered,
-            self.devices_asked.error.clone(),
-        );
-        if let Some(answer) = settle(&mut self.devices_asked) {
+        changed |= self.take_lists();
+        let now = self.now();
+        // A host that answered a list once cannot say when it changes: it is
+        // asked again while the page is open. One that keeps the read
+        // current says so itself, and is never asked again.
+        if self.pending.is_empty() {
+            if self.devices_read.asked_again_in(now) == Some(0) {
+                self.devices_read
+                    .ask(remote, crate::device_fleet::listed(), now);
+            }
+            if self.asking_read.asked_again_in(now) == Some(0) {
+                self.asking_read.ask(remote, asking_listed(), now);
+            }
+        }
+        if self.settle_pending(now) {
+            // What the person did here changed a list: a host that answered
+            // it once is asked for it again now.
+            if self.devices_read.kept == Kept::Once {
+                self.devices_read
+                    .ask(remote, crate::device_fleet::listed(), now);
+            }
+            if self.asking_read.kept == Kept::Once {
+                self.asking_read.ask(remote, asking_listed(), now);
+            }
+            changed = true;
+        }
+        // A removal the host took and never showed gone: its row shows what
+        // the list says again, so the person can see it and try once more.
+        let marked = self.leaving.len();
+        self.leaving.retain(|leaving| {
+            leaving
+                .taken_ms
+                .is_none_or(|taken| now.saturating_sub(taken) < LEAVING_SHOWN_MS)
+        });
+        changed | (self.leaving.len() != marked)
+    }
+
+    /// Take what the hosts answered of the page's lists since the last look;
+    /// whether the page shows something else for it.
+    fn take_lists(&mut self) -> bool {
+        let mut changed = false;
+        let before = (self.devices_read.answered, self.devices_read.error.clone());
+        if let Some(answer) = self.devices_read.take() {
             match answer.and_then(crate::device_fleet::devices) {
                 Ok(devices) => {
                     changed |= self.devices != devices;
                     self.devices = devices;
                 }
-                Err(error) => self.devices_asked.error = Some(error),
+                Err(error) => self.devices_read.error = Some(error),
             }
-            changed |= before != (true, self.devices_asked.error.clone());
+            changed |= before != (true, self.devices_read.error.clone());
+            changed |= self.listed_anew();
         }
-        let first = !self.asking_asked.answered;
-        if let Some(answer) = settle(&mut self.asking_asked) {
+        let first = !self.asking_read.answered;
+        if let Some(answer) = self.asking_read.take() {
             changed |= first;
             let asking = answer
                 .and_then(|value| {
@@ -641,17 +848,12 @@ impl AccessModel {
             changed |= self.asking != asking;
             self.asking = asking;
         }
-        // An open page follows what the host keeps: a computer or an agent connected from the
-        // sheet this page opened (or from anywhere else) shows up while the person looks.
-        if self.devices_asked.call.is_none()
-            && self.asking_asked.call.is_none()
-            && self.pending.is_empty()
-            && self
-                .asked_ms
-                .is_some_and(|asked| self.now().saturating_sub(asked) >= ASK_AGAIN_MS)
-        {
-            self.ask_lists(remote);
-        }
+        changed
+    }
+
+    /// Hand each thing the person did here its host's answer, once the host
+    /// gave it; whether any was answered.
+    fn settle_pending(&mut self, now: i64) -> bool {
         let mut settled = false;
         for pending in std::mem::take(&mut self.pending) {
             let answers: Option<Vec<_>> = pending
@@ -659,26 +861,32 @@ impl AccessModel {
                 .iter()
                 .map(crate::device_fleet::settled)
                 .collect();
-            match answers {
-                Some(answers) => {
-                    let failed = answers.iter().position(Result::is_err);
-                    let answer = match failed {
-                        Some(at) => answers.into_iter().nth(at),
-                        None => answers.into_iter().last(),
-                    };
-                    if let (Some(reply), Some(answer)) = (pending.reply, answer) {
-                        reply.finish(answer);
-                    }
-                    settled = true;
+            let Some(answers) = answers else {
+                self.pending.push(pending);
+                continue;
+            };
+            let failed = answers.iter().position(Result::is_err);
+            if let Some(id) = pending.leaving {
+                if failed.is_some() {
+                    // Refused: it is still the person's, and its row offers
+                    // what it did before.
+                    self.leaving.retain(|leaving| leaving.id != id);
+                } else if let Some(leaving) =
+                    self.leaving.iter_mut().find(|leaving| leaving.id == id)
+                {
+                    leaving.taken_ms = Some(now);
                 }
-                None => self.pending.push(pending),
             }
+            let answer = match failed {
+                Some(at) => answers.into_iter().nth(at),
+                None => answers.into_iter().last(),
+            };
+            if let (Some(reply), Some(answer)) = (pending.reply, answer) {
+                reply.finish(answer);
+            }
+            settled = true;
         }
-        if settled {
-            self.ask_lists(remote);
-            changed = true;
-        }
-        changed
+        settled
     }
 
     fn poll_api(&mut self) -> bool {
@@ -710,6 +918,7 @@ impl AccessModel {
         match serde_json::from_value::<Server>(value) {
             Ok(api) => {
                 self.api = api;
+                self.listed_anew();
                 true
             }
             Err(error) => {
@@ -845,7 +1054,7 @@ impl AccessModel {
         let now = self.now();
         let items = agents
             .iter()
-            .map(|agent| row(agent_item(cx, state, agent, now)))
+            .map(|agent| row(agent_item(cx, state, agent, now, self.leaves(&agent.id()))))
             .collect();
         section(&title, rows(items))
     }
@@ -861,8 +1070,14 @@ impl AccessModel {
             .iter()
             .map(|entry| {
                 row(match entry {
-                    Entry::Device(device) => device_item(cx, state, device, now),
-                    Entry::Browser(browser) => browser_item(cx, state, browser, now),
+                    Entry::Device(device) => {
+                        let leaving = self.leaves(&hex::encode(device.key));
+                        device_item(cx, state, device, now, leaving)
+                    }
+                    Entry::Browser(browser) => {
+                        let leaving = browser.live().any(|key| self.leaves(&hex::encode(key.key)));
+                        browser_item(cx, state, browser, now, leaving)
+                    }
                 })
             })
             .collect();
@@ -873,11 +1088,11 @@ impl AccessModel {
     }
 
     fn list_note(&self) -> Option<String> {
-        if let Some(error) = &self.devices_asked.error {
+        if let Some(error) = &self.devices_read.error {
             tracing::warn!(target: "tilo::settings", %error, "the host did not list the person's devices");
             return Some(t("settings-access-unlisted"));
         }
-        (!self.devices_asked.answered).then(|| t("settings-access-reading"))
+        (!self.devices_read.answered).then(|| t("settings-access-reading"))
     }
 
     fn requests_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
@@ -917,14 +1132,6 @@ impl PageState {
     fn naming(&self, key: &str) -> bool {
         self.naming.get().as_deref() == Some(key)
     }
-}
-
-fn settle(asked: &mut Asked) -> Option<Result<Option<serde_json::Value>, String>> {
-    let answer = crate::device_fleet::settled(asked.call.as_ref()?)?;
-    asked.call = None;
-    asked.answered = true;
-    asked.error = None;
-    Some(answer.map(|output| output.value))
 }
 
 fn app_of(grant: &Grant) -> String {
@@ -1000,6 +1207,16 @@ fn device_lines(device: &DeviceView, now: i64) -> Vec<String> {
         now,
     ));
     lines
+}
+
+/// What a row says under its name: that it is being removed, once the person
+/// took it back here and until the list shows it gone, else `lines`.
+fn lines_unless_leaving(leaving: bool, lines: Vec<String>) -> Vec<String> {
+    if leaving {
+        vec![t("settings-access-removing")]
+    } else {
+        lines
+    }
 }
 
 fn fact(id: &str, label: &str, value: &str) -> Element {
@@ -1161,8 +1378,13 @@ fn device_row(device: &DeviceView, draft: &str) -> LiveRow {
 /// them to the same action. An address carries one action: the host refuses
 /// a surface that offers an address twice, and withdraws every action of the
 /// app with it.
+///
+/// What it says of itself is what the person reads when they are asked
+/// before it runs: what removing does, said to them, as the row says it.
 fn revocation(effect: DevicesAccessEffect) -> ui::tilo_actions::ActionSpec {
-    SettingsEffect::from(effect).bound_asking(&["reason"])
+    SettingsEffect::from(effect)
+        .bound_asking(&["reason"])
+        .with_description(t("settings-access-remove-device-consequence"))
 }
 
 /// Naming `device`: a button that opens a field holding the name it reads by,
@@ -1218,7 +1440,13 @@ fn rename_control(
     )
 }
 
-fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, now: i64) -> Element {
+fn device_item(
+    cx: &ViewCx<Settings>,
+    state: &PageState,
+    device: &DeviceView,
+    now: i64,
+    leaving: bool,
+) -> Element {
     let key = hex::encode(device.key);
     let id = format!("device.{key}");
     let title = if device.current {
@@ -1227,7 +1455,7 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
         device.label.clone()
     };
     let live = device_row(device, &state.name_draft.get()).into_resource();
-    let removal = (!device.current).then(|| {
+    let removal = (!device.current && !leaving).then(|| {
         Removal::new(
             cx,
             &id,
@@ -1249,7 +1477,7 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
         &id,
         &title,
         crate::device_fleet::device_icon(&device.label),
-        device_lines(device, now),
+        lines_unless_leaving(leaving, device_lines(device, now)),
         removal,
         details(
             key_facts(&id, device.issued_ms, device.expires_ms, &[device]),
@@ -1278,9 +1506,10 @@ fn browser_item(
     state: &PageState,
     browser: &BrowserEntry<'_>,
     now: i64,
+    leaving: bool,
 ) -> Element {
     let id = format!("browser.{}", browser.id);
-    let removal = browser.revocable().then(|| {
+    let removal = (browser.revocable() && !leaving).then(|| {
         Removal::new(
             cx,
             &id,
@@ -1303,7 +1532,7 @@ fn browser_item(
         &id,
         &browser.label(),
         Icon::Globe,
-        browser_lines(browser, now),
+        lines_unless_leaving(leaving, browser_lines(browser, now)),
         removal,
         details(key_facts(&id, added, None, &live), extra),
     )
@@ -1312,7 +1541,12 @@ fn browser_item(
 fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     let id = agent.id();
     let mut row = LiveRow::typed::<AgentGrant>(format!("settings.agent-grant:{id}"), agent.label())
-        .operation(SettingsEffect::from(agent.removal()).bound());
+        .operation(
+            SettingsEffect::from(agent.removal())
+                .bound()
+                // What the person reads when they are asked before it runs.
+                .with_description(t("settings-access-remove-agent-consequence")),
+        );
     // A computer an agent works on is a device of the person's too: they name
     // it here, where two of them enrolled under one name.
     if let Some(key) = agent.key {
@@ -1354,18 +1588,21 @@ fn agent_item(
     state: &PageState,
     agent: &AgentEntry<'_>,
     now: i64,
+    leaving: bool,
 ) -> Element {
     let key = agent.id();
     let id = format!("agent.{key}");
     let live = agent_row(agent, &state.name_draft.get()).into_resource();
     let dispatcher = cx.dispatcher();
-    let removal = Removal::new(
-        cx,
-        &id,
-        &live,
-        agent.removal(),
-        t("settings-access-remove-agent-consequence"),
-    );
+    let removal = (!leaving).then(|| {
+        Removal::new(
+            cx,
+            &id,
+            &live,
+            agent.removal(),
+            t("settings-access-remove-agent-consequence"),
+        )
+    });
     let mut extra: Vec<Element> = Vec::new();
     if let Some(grant) = agent.grant {
         extra.push(caption(&t(if grant.browser_pages {
@@ -1405,8 +1642,8 @@ fn agent_item(
         &id,
         &agent.label(),
         Icon::Bot,
-        agent_lines(agent, now),
-        Some(removal),
+        lines_unless_leaving(leaving, agent_lines(agent, now)),
+        removal,
         details(
             key_facts(&id, agent.connected(), agent.expires(), &keys),
             extra,

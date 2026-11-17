@@ -1317,3 +1317,96 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
         "a due deadline asks for the frame that takes it"
     );
 }
+
+/// An agent renaming an item a list shows is drawn on the row's title where the new title lands:
+/// the title in its colour and its caret wearing what it did, with no card standing for it
+/// anywhere else on the page.
+#[test]
+fn an_agents_rename_is_drawn_on_the_rows_title() {
+    use crate::permissions::MemberId;
+    use crate::widget::ListRow;
+    let title = "Book room 4 for Friday";
+    let rows = || {
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    ListRow::new("a", "First task")
+                        .prefix("#1")
+                        .item("issue-a")
+                        .edits("title"),
+                ))
+                .push(Box::new(
+                    ListRow::new("b", title)
+                        .prefix("#2")
+                        .item("issue-b")
+                        .edits("title"),
+                )),
+        )
+    };
+    let mut plain_frame = frame(rows());
+    plain_frame.relayout();
+    let (width, height) = plain_frame.device_size();
+    let plain = plain_frame.render_rgba();
+
+    let mut event = crate::headless::agent_acting("tasks.issues", "rename");
+    event.actor = tilo_actions::Acting::agent("scribe");
+    event.action.label = "Rename".into();
+    event.action.did = Some("renamed".into());
+    event.resource.label = "Book the room for Friday".into();
+    event.anchor = tilo_actions::InteractionAnchor::Text {
+        region: "title".into(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: "issue-b".into(),
+            start: 0,
+            end: u64::try_from(title.chars().count()).unwrap(),
+        }],
+    };
+    let mut frame = frame(rows());
+    frame.relayout();
+    let at = crate::time::now()
+        .checked_sub(crate::time::Duration::from_secs(1))
+        .expect("the clock is later than a second ago");
+    frame.update_presence(|presence| {
+        presence
+            .names
+            .insert(MemberId::agent("scribe"), "Ada".into());
+        presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies")
+    });
+    frame.poll_frame().unwrap();
+    frame.relayout();
+    let drawn = frame.render_rgba();
+    if crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS").is_some() {
+        let dir = crate::headless::agent_marker_shots();
+        std::fs::create_dir_all(&dir).unwrap();
+        frame.render_png(&dir.join("list-row-agent-rename.png"));
+    }
+    let tags: Vec<String> = frame
+        .presence()
+        .caret_tags()
+        .into_iter()
+        .filter(|tag| tag.user == MemberId::agent("scribe"))
+        .map(|tag| tag.label)
+        .collect();
+    assert_eq!(
+        tags,
+        vec!["Ada: renamed".to_owned()],
+        "the caret on the new title says who renamed it, never the title it had"
+    );
+    let changed = changed_pixels(&plain, &drawn, width, (0, 0, width, height))
+        .expect("the rename shows on the row");
+    let row_b = frame
+        .retained_action_geometry()
+        .and_then(|(tree, _)| {
+            tree.nodes_showing_item("issue-b")
+                .find_map(|node| node.bounds)
+        })
+        .expect("the renamed item's row");
+    let scale = f64::from(width) / 400.0;
+    assert!(
+        f64::from(changed.1) >= (row_b.y0 - 40.0) * scale
+            && f64::from(changed.3) <= (row_b.y1 + 40.0) * scale,
+        "only the renamed row and its caret's tag change, no card elsewhere: {changed:?} vs {row_b:?}"
+    );
+}

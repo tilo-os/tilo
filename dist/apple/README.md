@@ -32,6 +32,8 @@ Sources/TiloShare    the share extension of both
 Sources/TiloLive     Tilo inside a native app: Tilo's page as the client behind a Swift
                      interface, and the view that shows one live Tilo thing
 Sources/TiloLiveProbe  the same with nothing on screen, for a check to drive
+Sources/AssistantTilo  Tilo Assistant's source on Tilo itself: the app as a device of its
+                     person, through the engine
 Sources/AssistantCore  Tilo Assistant: what its window shows, and the one interface it all
                      comes through
 Sources/AssistantUI  its views, shared by the Mac and the iPhone
@@ -243,14 +245,65 @@ left the front, and wake when they come to it (`LiveStage`). In a message it is 
 takes no touch, so the conversation scrolls over it; when the person hops in it fills its room
 and the keyboard is its own, on the same mount.
 
+**Where a paired device stands.** A site lets a new device in where it lets people in, which
+need not be the workspace its pairing link names: the page that paired can stand in the site's
+home workspace under the address of the link's. So once a pairing got in, the engine loads the
+workspace the link names once more, without the link's secret, and the device opens it as
+itself. A page that stands in another workspace than was asked for is moved there, three times
+at most, and then it is said. A device that just got in holds its records before its app has
+published every action: Chat lists its messages a few seconds before it offers its send, so
+`chatSend` asks again at the page's next word of a change (`whenPublished`).
+
+**The person's own providers.** A person's models, their vault, their events and the like are
+kept by the host that runs their workspace, and the host answers them only to the person on a
+device of theirs: it decides by the device's certificate, which the transport verified. Tilo's
+page is that device, and its script already asks the host as the person (`web/peer.mjs`,
+`actions`); it puts no handle on that session where another script finds it. To a native app
+that holds it, the page hands the entry of its device, once
+([`web/native-host.mjs`](../../crates/browser/tilo-browser-runtime/web/native-host.mjs)): the
+engine's script says it is there before any of the page's code runs, keeps what it is handed
+in its own scope, and gives the app's code `TiloEngine.ask` for exactly the providers in
+`PersonProvider`, with typed calls for the models and the vault (`Person.swift`). No new
+authority comes of this: it is the session the page holds anyway.
+
+What keeps it the app's alone:
+
+- The script takes such an ask only with a pass the engine made: thirty-two random bytes that
+  stand in the script's own scope and in the engine, in no function a page could print and on
+  no global. Any other script in the document is answered what an unknown action is answered.
+- Only the first entry of a document is taken, and the name the page looks for cannot be
+  written over.
+- The engine asks only the providers on its list. What else the device could ask its host (a
+  workspace's governance, a machine's commands, pairing) it refuses before the page is asked.
+- The engine's web view loads no frame. Tilo's page draws everything itself and makes none, so
+  content from elsewhere inside a live thing gets no document to run in.
+- What a person typed into a protected field is a `Protected`, which prints nothing of itself.
+  It goes into the one call that carries it to the host and comes back in no answer: the
+  script takes it out of whatever the host says, and the engine hands on no answer that still
+  holds it. No text under a name that only ever holds a secret crosses to the app either, and
+  the page keeps nothing of such a call (`actions.once`).
+
+**The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
+of this: the app as a device of its person. The conversation, a question that waits,
+sub-agents and what was learned are records Chat keeps, read through the page's mount at the
+page's word of a change. The models, the vault and the events are asked of the host when the
+device gets in and after a call of the app changed them, never on a clock. A secret goes to
+the vault, and the question is answered with the item's reference: the conversation holds
+nothing else of it. Where the page says which workspace is the person's own, the app goes
+there, because that is where the assistant lives. What Tilo cannot do from an app yet is
+refused with a sentence: tasks, files, pausing the assistant, a password manager, connections.
+
 What it leans on, until Tilo's page offers each: the page's accessibility tree changing is the
-word that something changed, where the page has no `tiloChanges`; and a second mount is made
-through the page's own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`.
+word that something changed, where the page has no `tiloChanges`; a second mount is made
+through the page's own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the
+person's own providers are reached only on a page that hands a native host its device's entry.
 
 `TiloLiveProbe` is the engine with no window, driven over its standard input: it pairs, prints
 Chat's messages as they arrive, sends through Chat's own send, and shows a document in a
 window that is never put on a screen, with real key presses. A store it keeps holds a device
-key that only the very program that made it reads again.
+key that only the very program that made it reads again. `AssistantMac --drive` is Tilo
+Assistant with no window (`Drive.swift`): the same source and the same model its window's
+views read and call, driven the same way. Both end when whoever drives them is gone.
 
 ## Tilo Assistant
 
@@ -265,9 +318,10 @@ up, a brief, a reminder), the sub-agents, the tasks, what comes at a time and wh
 when something else does, the facts of the assistant view, and pairing. Every read is a
 stream that begins with what is known now, and what a call changed comes back through the
 streams. An implementation speaks to Tilo; `MemorySource` keeps everything in memory, for
-tests and pictures. One line in each app names the implementation (`Source.swift`). Until one
-that speaks to Tilo stands there, the app is what it is before a device is paired: empty, at
-the way in, and a link it is given finds no Tilo.
+tests and pictures. One line in each app names the implementation (`Source.swift`): Tilo
+itself, with the app as a device of its person on the site its build names (`TiloSource`, see
+"Tilo inside a native app"). Until a device is paired, the app is empty and stands at the way
+in.
 
 **The app starts empty.** The drawing's content lives in `AssistantDrawing`, which the tests
 and the picture tool link and no app does. Its people and firms are examples: a test keeps

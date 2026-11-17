@@ -191,6 +191,30 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     assert!(!available("create-key"), "one key per machine");
 }
 
+/// Copying the secret key waits for the clipboard off the UI thread, so it answers later:
+/// through the api it is asked first, as before, then runs as the job it declares.
+#[test]
+fn copying_the_secret_key_is_a_job_that_ends_as_the_clipboard_says() {
+    let _home = home();
+    let (host, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&host);
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.effect_confirmed(&KeyEffect::CreateKey)
+        .expect("create the key");
+    assert!(
+        app.effect(&KeyEffect::CopySecret).is_err(),
+        "copying the secret key asks first"
+    );
+    assert!(recorder.secret_copies().is_empty());
+    app.effect_confirmed(&KeyEffect::CopySecret)
+        .expect("the key is on the clipboard");
+    assert_eq!(
+        recorder.secret_copies().len(),
+        1,
+        "copied once, as a secret the clipboard does not keep"
+    );
+}
+
 #[test]
 fn applying_reports_what_the_registry_answered() {
     fn notice_detail(node: &ui::headless::InspectionNode) -> Option<&str> {

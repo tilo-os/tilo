@@ -91,6 +91,9 @@ python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" --staged || fail=1
 python3 "$root/tools/policy/check_too_many_arguments.py" --staged || fail=1
 python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
+# The words docs/glossary.md does not use: a commit adds none, and lowers the
+# count of those still being renamed when it removes some.
+python3 "$root/tools/policy/check_glossary_words.py" --staged || fail=1
 # A wire enum keeps every variant it had, in its place: bytes already written
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.

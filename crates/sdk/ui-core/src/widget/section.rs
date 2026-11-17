@@ -1727,7 +1727,7 @@ impl Section {
 /// the content edge ("Engine running", "3 containers stopped"), for a list's
 /// footer or a detail's state.
 pub struct StatusLine {
-    status: OwnedStatus,
+    status: RowStatus,
     text: String,
     rect: Rect,
     style: Option<TextStyle>,
@@ -1740,17 +1740,8 @@ pub struct StatusLine {
     layout_dirty: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum OwnedStatus {
-    Active,
-    Warning,
-    Error,
-    Idle,
-    Presence(String),
-}
-
 impl StatusLine {
-    fn with(status: OwnedStatus, text: impl Into<String>) -> Self {
+    fn with(status: RowStatus, text: impl Into<String>) -> Self {
         Self {
             dirty: true,
             layout_dirty: true,
@@ -1764,23 +1755,23 @@ impl StatusLine {
     }
 
     pub fn active(text: impl Into<String>) -> Self {
-        Self::with(OwnedStatus::Active, text)
+        Self::with(RowStatus::Active, text)
     }
 
     pub fn warning(text: impl Into<String>) -> Self {
-        Self::with(OwnedStatus::Warning, text)
+        Self::with(RowStatus::Warning, text)
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self::with(OwnedStatus::Error, text)
+        Self::with(RowStatus::Error, text)
     }
 
     pub fn idle(text: impl Into<String>) -> Self {
-        Self::with(OwnedStatus::Idle, text)
+        Self::with(RowStatus::Idle, text)
     }
 
-    pub fn presence(identity: impl Into<String>, text: impl Into<String>) -> Self {
-        Self::with(OwnedStatus::Presence(identity.into()), text)
+    pub fn presence(person: &crate::component::Person, text: impl Into<String>) -> Self {
+        Self::with(RowStatus::Presence(person.hue), text)
     }
 
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -1791,33 +1782,14 @@ impl StatusLine {
 
     /// Replace what it says and the status it says it in, where the line stands: a count that
     /// moved, a connection that went from healthy to failing.
-    pub fn set_status(&mut self, status: RowStatus<'_>, text: impl Into<String>) {
-        self.set_owned_status(
-            match status {
-                RowStatus::Presence(identity) => OwnedStatus::Presence(identity.to_owned()),
-                RowStatus::Warning => OwnedStatus::Warning,
-                RowStatus::Error => OwnedStatus::Error,
-                RowStatus::Idle => OwnedStatus::Idle,
-                RowStatus::Active => OwnedStatus::Active,
-            },
-            text,
-        );
-    }
-
-    fn set_owned_status(&mut self, status: OwnedStatus, text: impl Into<String>) {
+    pub fn set_status(&mut self, status: RowStatus, text: impl Into<String>) {
         self.dirty = true;
         self.status = status;
         self.set_text(text);
     }
 
-    fn status(&self) -> RowStatus<'_> {
-        match &self.status {
-            OwnedStatus::Active => RowStatus::Active,
-            OwnedStatus::Warning => RowStatus::Warning,
-            OwnedStatus::Error => RowStatus::Error,
-            OwnedStatus::Idle => RowStatus::Idle,
-            OwnedStatus::Presence(id) => RowStatus::Presence(id),
-        }
+    fn status(&self) -> RowStatus {
+        self.status
     }
 }
 

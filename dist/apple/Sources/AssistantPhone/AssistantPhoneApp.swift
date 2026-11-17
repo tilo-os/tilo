@@ -26,7 +26,8 @@ struct AssistantPhoneApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AssistantRoot(model: model) { PhoneRoot() }
+            AssistantRoot(model: model, engine: Source.engine) { PhoneRoot() }
+                .environment(\.liveThingView, { thing in Source.live(thing) })
                 .task(id: model.person?.id) {
                     delegate.source = model.source
                     teller.looksAt = { chat in
@@ -62,7 +63,7 @@ enum Entry {
     @MainActor
     static func main() {
         if AssistantCheck.isAsked {
-            AssistantCheck.run(source: String(describing: type(of: Source.make())))
+            AssistantCheck.run(source: Source.name)
         }
         AssistantPhoneApp.main()
     }

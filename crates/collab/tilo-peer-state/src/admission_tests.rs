@@ -299,7 +299,6 @@ tilo_test_env::scenario! {
     // it as it takes the owner's. A change the writer's role does not permit is
     // refused and lands nowhere.
     {
-        use crate::join::TransportHint;
         use crate::members::MembershipOpCommand;
         use crate::workspace::GovernanceRow;
         use tilo_action_policy::{Grantee, roles};
@@ -307,13 +306,14 @@ tilo_test_env::scenario! {
         let (mut peer, authority_key, _, _, now) = seeded();
         let (editor_key, editor_cert, editor_person) =
             add_member_with(&mut peer, &authority_key, now, 5, 6);
-        let hint = TransportHint {
-            kind: "iroh".into(),
-            opaque_json: "an address".into(),
-            host: editor_cert.clone(),
-            service_public_key: [3; 32],
-            host_signature: [4; 64],
-        };
+        let hint = tilo_workspace_join::sign_transport_hint(
+            "iroh",
+            "an address",
+            editor_cert.clone(),
+            [3; 32],
+            &editor_key,
+        )
+        .unwrap();
         let held = crate::members::ops(peer.admitted_workspace().unwrap()).len();
         assert!(
             peer.governance_mut()
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(
             receiver.governance().workspace_hosts(),
-            peer.governance().workspace_hosts(),
+            [hint],
             "a receiver takes the member's governance change as it takes the owner's"
         );
     }

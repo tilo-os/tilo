@@ -17,7 +17,7 @@ use crate::widget::DrawChild;
 use crate::widget::{
     AppModel, FilterCount, Filterable, ListModel, ModelPath, RowStatus, Theme, Tone, VirtualList,
 };
-use model::{NavModel, NavRowData, NavRowKind, NavState, NavStatus};
+use model::{NavModel, NavRowData, NavRowKind, NavState};
 use row::{NavPaint, NavRow};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -295,12 +295,12 @@ pub struct NavPerson {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NavItemStatus(NavStatus);
+pub struct NavItemStatus(RowStatus);
 
 impl NavItemStatus {
     #[must_use]
-    pub fn row_status(&self) -> RowStatus<'_> {
-        self.0.row_status()
+    pub fn row_status(&self) -> RowStatus {
+        self.0
     }
 }
 
@@ -429,8 +429,8 @@ impl NavItem {
     /// A status dot at the trailing edge: a drive's health, a connection's
     /// state, an account that needs attention, a person's presence.
     #[must_use]
-    pub fn status(mut self, status: RowStatus<'_>) -> Self {
-        self.status = Some(NavItemStatus(NavStatus::of(status)));
+    pub fn status(mut self, status: RowStatus) -> Self {
+        self.status = Some(NavItemStatus(status));
         self
     }
 

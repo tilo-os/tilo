@@ -272,7 +272,7 @@ impl Agents {
         };
         let state = record.get();
         state
-            .active()
+            .made_by_people()
             .find(|agent| agent.mcp_client.is_none() && agent.keeper == person)
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }

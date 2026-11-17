@@ -57,7 +57,7 @@ impl Assistant {
 pub(crate) fn assistant(agents: &WorkspaceAgents, me: &MemberId, day: &str) -> Option<Assistant> {
     let person = me.person_id()?;
     agents
-        .active()
+        .made_by_people()
         .filter(|agent| agent.keeper == person && agent.mcp_client.is_none())
         .min_by(|a, b| {
             a.created_at

@@ -1,0 +1,102 @@
+# Uses of the words docs/glossary.md does not use that mean something outside
+# Tilo (tools/policy/check_glossary_words.py). Each rule names its `words`
+# ("*" for all) and where they are allowed: `paths`, as globs in which `*`
+# spans directories, or `identifiers`, the exact identifier the word is part
+# of. A use of Tilo's own concept never goes here: rename it.
+
+[[allow]]
+reason = "Generated from sources the check already reads."
+words = ["*"]
+paths = [
+    "crates/packaging/app-fleet/src/generated.rs",
+    "crates/browser/tilo-web-desktop/src/apps.rs",
+    "crates/agent/agent-session/src/web_apps.rs",
+    "crates/workspace-hack/*",
+    "docs/codemap.md",
+]
+
+[[allow]]
+reason = "The pinned source of a released relay version, kept byte for byte."
+words = ["*"]
+paths = ["tools/relay-upgrade/*"]
+
+[[allow]]
+reason = "The BIP39 word list."
+words = ["*"]
+paths = ["crates/collab/threshold-identity/src/bip39.rs"]
+
+[[allow]]
+reason = "A Wayland or logind seat: a set of input devices and the session on them."
+words = ["seat"]
+identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "zwp_input_method_v2", "ext_data_control_v1"]
+paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*"]
+
+[[allow]]
+reason = "A seat at a poker table."
+words = ["seat"]
+paths = ["apps/poker/*"]
+
+[[allow]]
+reason = "iroh's NAT relay."
+words = ["relay"]
+identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
+
+[[allow]]
+reason = "An email's subject line."
+words = ["subject"]
+paths = ["apps/mail/*", "apps/tl/mail/*"]
+
+[[allow]]
+reason = "An X.509 certificate's subject."
+words = ["subject"]
+identifiers = ["SubjectAltName", "SubjectKeyIdentifier", "subject_alt_names", "SubjectPublicKeyInfo"]
+
+[[allow]]
+reason = "A participant of a FROST signing or key generation round."
+words = ["participant"]
+paths = ["crates/collab/threshold-identity/*"]
+
+[[allow]]
+reason = "An iCalendar or WhatsApp group participant."
+words = ["participant"]
+paths = [
+    "apps/calendar/src/ics.rs",
+    "apps/calendar/src/model.rs",
+    "apps/calendar/src/app.rs",
+    "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
+]
+
+[[allow]]
+reason = "A security principal of an ACL, of CalDAV or of an OAuth account."
+words = ["principal"]
+paths = [
+    "crates/platform/tilo-files/*",
+    "crates/platform/migration-sources/src/destination_security/*",
+    "apps/imager/src/setup/internal_cache/windows.rs",
+    "crates/system/tilo-dav/*",
+    "apps/calendar/src/setup/tests.rs",
+    "apps/settings/tests/accounts_calendar_loop.rs",
+    "apps/mail/tests/oauth_custody.rs",
+    "crates/system/account-custody/tests/oauth_capabilities.rs",
+    "docs/windows-compatibility.md",
+]
+
+[[allow]]
+reason = "A Spotify playlist's collaborators."
+words = ["collaborator"]
+paths = ["apps/music/*"]
+
+[[allow]]
+reason = "Chat's channels."
+words = ["channel"]
+paths = ["apps/chat/*", "apps/tl/chat/*"]
+
+[[allow]]
+reason = "The room speakers are calibrated in."
+words = ["room"]
+paths = [
+    "apps/settings/src/panes/speakers.rs",
+    "apps/settings/src/panes/speakers/*",
+    "apps/settings/src/speaker_setup.rs",
+    "crates/platform/tilo-media/src/calibration_fusion.rs",
+]

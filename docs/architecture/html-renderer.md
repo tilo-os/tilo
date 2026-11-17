@@ -105,7 +105,7 @@ a widget that is genuinely drawn (`Chart`, `Sparkline`, `Plot`, `Map`,
 `Drawing`, `QR`, `VideoPlayer`, `ImageViewer`, `ImageCrop`, `ProgressRing`)
 shows as its picture inside an element that carries its name. What a widget
 draws itself — a web view, a native surface mounted by the platform, an
-embedded app, a capture's canvas, a display arrangement, a split's rule — is a
+embedded app, a capture's canvas, a display placement, a split's rule — is a
 picture of that paint, with the controls it names (`HtmlCx::targets`) as real
 buttons over it: `HtmlCx::painted` takes the count a widget bumps each time it
 paints, so the page fetches a new picture when there is one. The controls' own

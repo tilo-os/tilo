@@ -6,8 +6,8 @@
 //! answer an agent's authorization gets). What comes back is one bearer
 //! token, `tilo_sk_…`, lasting as long as the certificate, instead of a code
 //! for a client. The token carries the grant — its name, its key and the
-//! person's certificate — so it is the person's approval itself: any front
-//! door reads and accepts it, and the workspace it reaches records the grant
+//! person's certificate — so it is the person's approval itself: any API
+//! server reads and accepts it, and the workspace it reaches records the grant
 //! when the key enters. Scope checks, History attribution and revocation at
 //! `/grants` are the grant's.
 //!

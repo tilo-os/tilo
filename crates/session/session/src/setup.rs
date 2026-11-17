@@ -330,6 +330,10 @@ impl SurfaceHost for Setup {
         self.widgets_mut().pointer_axis(scroll);
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.widgets_mut().pointer_modifiers(held);
+    }
+
     fn wants_keyboard(&self) -> bool {
         self.up()
     }

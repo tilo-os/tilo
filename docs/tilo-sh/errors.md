@@ -36,8 +36,15 @@ naming a path.
 | `not_permitted` | The key reaches this workspace but may not do this in it |
 | `rate_limited` | The host is busy with the person's changes; nothing ran |
 | `no_payment_method` | The account's plan does not include it yet; `next_steps` says what adds it |
+| `unknown_app` | The path names an app the workspace does not have; `message` lists the ones it has |
+| `action_failed` | The action ran and refused: `message` is what the app tells a person, and nothing else ran |
+| `unavailable` | The host could not run it just now, saying why: try again |
+| `stale_revision` | The resource changed since the revision the call named: list it again and invoke what is offered now |
 
 Nothing ran when a refusal is raised, unless the app says otherwise in its steps.
+
+The refusal's `message` is what a person would be told and never repeats the code. A tool answer's text
+starts with the code (`unknown_action: …`), so a reader of the text can tell it too.
 
 ## AskPending
 

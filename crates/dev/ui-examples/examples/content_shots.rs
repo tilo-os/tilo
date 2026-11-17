@@ -31,7 +31,10 @@ fn rows() -> Element {
                     .two_line_secondary()
                     .meta("09:41")
                     .emphasized(true)
-                    .presence("ada@example.org")
+                    .presence(&tilo_ui::component::Person::new(
+                        tilo_actions::MemberId::person("ada"),
+                        "Ada Lovelace",
+                    ))
                     .on_view(|| {}),
             ),
             Box::new(

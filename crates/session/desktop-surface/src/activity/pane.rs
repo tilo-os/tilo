@@ -42,7 +42,7 @@ use ui::widget::{
 use ui::{
     ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRange,
     DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
-    HistorySource, NamedRange, NarrativeRequest, format_relative_time, member_display_label,
+    HistorySource, NamedRange, NarrativeRequest, format_relative_time,
 };
 
 use super::index::{
@@ -76,7 +76,7 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
         authors.register_member(
             &member.id,
             ui::history_source::author_coloured(
-                member_display_label(&member.name),
+                member.name.clone(),
                 ui::history_source::short_id(member.id.id()),
                 rgb,
             ),
@@ -181,9 +181,6 @@ fn author_is_local(author: &ui::widget::history::HistoryAuthor, local: &str) -> 
         return false;
     }
     author.name.eq_ignore_ascii_case(local)
-        || author
-            .name
-            .eq_ignore_ascii_case(&member_display_label(local))
         || author.identity_short == ui::history_source::short_id(local)
 }
 

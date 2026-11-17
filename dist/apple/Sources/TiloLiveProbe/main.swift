@@ -25,6 +25,7 @@ import WebKit
 //   {"do": "type", "text": "…"}           real key presses, as the system delivers them
 //   {"do": "shot", "file": "…png"}        what the web view drew, from the web view itself
 //   {"do": "quit"}
+// After every read of Chat it prints {"looked": {...}}. It ends when its standard input ends.
 //
 // The window of "window" is never put on a screen and never the key window of the system: it
 // is made and not ordered in, and only answers that it is visible and key, so the web view
@@ -52,7 +53,8 @@ final class Probe {
     private var signals = 0
     private var reads = 0
     private var looking = false
-    private var again = false
+    /// What asked for one more read while one was going on.
+    private var again: String?
     private let began = Date()
     private var window: HeldWindow?
     private let size = NSSize(width: 900, height: 600)
@@ -80,41 +82,57 @@ final class Probe {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
         switch standing {
         case .away: break
-        case .arriving(let step): say(["standing": "arriving", "step": .string(step), "s": seconds])
+        case .arriving(let step):
+            // A page that stopped on its way in and is loaded once more says why it stopped.
+            var line: [String: JSON] = ["standing": "arriving", "step": .string(step), "s": seconds]
+            if step == "load", let why = engine.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
+            say(.object(line))
         case .pairing(let code):
             if let codeFile { keep(code, in: codeFile) }
             say(["standing": "pairing", "s": seconds])
         case .open(let route):
             if let routeFile { keep(route, in: routeFile) }
-            say(["standing": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""), "s": seconds])
+            // The workspace by the start of its id: enough to tell two apart, and no address.
+            let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
+            say(["standing": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""),
+                 "workspace": .string(workspace), "s": seconds])
             Task { await look(after: "getting in") }
         case .refused(let why): say(["standing": "refused", "why": .string(why), "s": seconds])
         case .failed(let why): say(["standing": "failed", "why": .string(why), "s": seconds])
         }
     }
 
-    /// Read Chat's newest messages and print the ones not printed yet.
+    /// Read Chat's newest messages and print the ones not printed yet. What asks for a read
+    /// while one is going on gets one more read of its own, so every message is printed under
+    /// what really started the read that found it. After every read it says so (`looked`): a
+    /// check then knows the program has caught up with what was there.
     private func look(after why: String) async {
         guard case .open = engine.standing else { return }
-        guard !looking else { again = true; return }
+        guard !looking else { again = why; return }
         looking = true
         defer { looking = false }
-        repeat {
-            again = false
+        var reason = why
+        while true {
+            again = nil
+            var printed = 0
             do {
                 reads += 1
                 for item in try await engine.chatLatest(50) where !known.contains(item) {
                     guard let message = try await engine.chatMessage(item) else { continue }
                     known.append(item)
+                    printed += 1
                     say(["message": ["id": .string(String(item.split(separator: "/").last ?? "")), "channel": .string(message.channel),
                                      "author": .string(String(message.author.prefix(6))), "text": .string(message.text),
                                      "at": .number(message.at.timeIntervalSince1970)],
-                         "after": .string(why), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+                         "after": .string(reason), "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
                 }
             } catch {
                 say(["error": .string("reading Chat: \(error)")])
             }
-        } while again
+            say(["looked": ["after": .string(reason), "printed": .number(Double(printed)), "known": .number(Double(known.count))]])
+            guard let next = again else { break }
+            reason = next
+        }
     }
 
     func take(_ line: String) async {
@@ -315,13 +333,16 @@ do {
     stop("that is no address of \(settings.origin)")
 }
 
-// Steps arrive on a thread of their own, so reading them never holds the page up.
+// Steps arrive on a thread of their own, so reading them never holds the page up. When whoever
+// drives the program is gone, so is its standard input, and the program ends: it never stays
+// behind as a device nobody looks after.
 Thread.detachNewThread {
     while let line = readLine() {
         let step = line.trimmingCharacters(in: .whitespaces)
         if step.isEmpty { continue }
         Task { @MainActor in await probe.take(step) }
     }
+    exit(0)
 }
 app.run()
 #else

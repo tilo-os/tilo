@@ -1436,3 +1436,303 @@ mod tasks_screen {
         }
     }
 }
+
+/// What the calendar's published read answers for `item`, as an agent's
+/// read is answered it.
+fn read_item(
+    app: &TestApp<CalendarShell>,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    app.read_document(|doc| {
+        <Calendar as tilo_resource::Resource>::read_content(&read_doc(doc), doc, item)
+    })
+}
+
+/// An invitation as a mail carries it: one event under one `UID`.
+fn invitation_ics(method: &str, summary: &str, start: &str, more: &str) -> String {
+    format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//Mail//EN\r\nMETHOD:{method}\r\n\
+         BEGIN:VEVENT\r\nUID:quarterly-review-7@example.org\r\nSUMMARY:{summary}\r\n\
+         DTSTART;TZID=Europe/Berlin:{start}\r\nDURATION:PT1H\r\n\
+         ORGANIZER;CN=Mara:mailto:mara@example.org\r\n\
+         ATTENDEE;CN=Ada;PARTSTAT=NEEDS-ACTION:mailto:ada@example.org\r\n{more}\
+         BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT45M\r\nEND:VALARM\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+}
+
+tilo_test_env::scenario! {
+    /// What an agent does with a calendar through its published actions: it files an event under
+    /// a category, reads a span with its repeats and the free time around them, takes an
+    /// invitation in once, and is told which field of an event is wrong.
+    fn an_agent_files_reads_and_takes_invitations_through_the_calendars_actions;
+
+    phase a_category_is_set_read_and_written_as_the_servers_own_field;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let id = Uuid::new_v4();
+        app.call(
+            "new-event",
+            serde_json::json!({"event": {
+                "id": id.to_string(),
+                "title": "Board meeting",
+                "start": "2026-11-17T10:00",
+                "end": "2026-11-17T11:00",
+                "timezone": "Europe/Berlin",
+                "categories": ["Board"],
+            }}),
+        )
+        .expect("an event comes with its categories");
+        let before = state_of(&app).event(id).cloned().expect("the event");
+        assert_eq!(before.categories.iter().collect::<Vec<_>>(), ["Board"]);
+
+        app.call(
+            "set-categories",
+            serde_json::json!({"event": id.to_string(), "categories": ["Board", " Deal, signed "]}),
+        )
+        .expect("categories are a person's own words");
+        let read = read_item(&app, None).expect("the calendar reads");
+        assert_eq!(
+            read["events"][0]["categories"],
+            serde_json::json!(["Board", "Deal, signed"]),
+            "trimmed, and read with the event"
+        );
+        let filed = state_of(&app).event(id).cloned().expect("the event");
+        assert_ne!(
+            fingerprint(&before),
+            fingerprint(&filed),
+            "a server that holds the event is sent its categories"
+        );
+
+        // The server's own field: a list, a comma inside a category escaped.
+        let written = crate::ics::export(&state_of(&app));
+        assert!(written.contains("CATEGORIES:Board,Deal\\, signed\r\n"), "{written}");
+        let (back, _) = crate::ics::parse(&written);
+        assert_eq!(back[0].categories, filed.categories, "and read back as it was written");
+        // A server may send the property more than once.
+        let twice = written.replace(
+            "CATEGORIES:Board,Deal\\, signed\r\n",
+            "CATEGORIES:Board\r\nCATEGORIES:Deal\\, signed,Board\r\n",
+        );
+        assert_eq!(crate::ics::parse(&twice).0[0].categories, filed.categories);
+
+        for (categories, why) in [
+            (serde_json::json!(["  "]), "a category is a few words"),
+            (serde_json::json!(["x".repeat(65)]), "a category is a few words"),
+            (serde_json::json!(vec!["a"; 33]), "at most 32 categories"),
+        ] {
+            let refused = app
+                .call("set-categories", serde_json::json!({"event": id.to_string(), "categories": categories}))
+                .expect_err("no event holds that");
+            assert!(format!("{refused:?}").contains(why), "{refused:?}");
+        }
+        app.call("set-categories", serde_json::json!({"event": id.to_string(), "categories": []}))
+            .expect("none takes them all off");
+        assert!(state_of(&app).event(id).expect("the event").categories.is_empty());
+        assert!(!crate::ics::export(&state_of(&app)).contains("CATEGORIES"));
+    }
+
+    phase a_span_reads_every_occurrence_and_the_free_time_around_them;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.call(
+            "new-event",
+            serde_json::json!({"event": {
+                "title": "Standup",
+                "start": "2026-11-16T09:30",
+                "end": "2026-11-16T09:45",
+                "timezone": "Europe/Berlin",
+                "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+                "recurrence_exdates": ["2026-11-18"],
+            }}),
+        )
+        .expect("a weekday series");
+        let whole = read_item(&app, None).expect("the calendar reads");
+        assert_eq!(whole["events"].as_array().map(Vec::len), Some(1), "one line for the series");
+        assert!(
+            whole["between"].as_str().is_some_and(|how| how.contains("span:FROM/TO")),
+            "the read says how a span is asked for"
+        );
+
+        let span = read_item(&app, Some("span:2026-11-16/2026-11-23?zone=Europe/Berlin"))
+            .expect("a span reads");
+        let starts: Vec<&str> = span["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .filter_map(|entry| entry["start"].as_str())
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                "2026-11-16T09:30:00+01:00",
+                "2026-11-17T09:30:00+01:00",
+                "2026-11-19T09:30:00+01:00",
+                "2026-11-20T09:30:00+01:00",
+            ],
+            "its weekdays without the one it leaves out"
+        );
+        assert_eq!(span["zone"], "Europe/Berlin");
+        assert_eq!(span["partial"], false);
+        assert_eq!(span["entries"][0]["repeats"], true);
+        // The record's own resource id names the same read.
+        let named = read_item(&app, Some("calendar.calendar/span:2026-11-16/2026-11-17"))
+            .expect("a span reads by the record's name too");
+        assert_eq!(named["zone"], "Europe/Berlin", "a reader who names no zone gets the calendar's");
+        assert_eq!(named["entries"].as_array().map(Vec::len), Some(1));
+
+        let free = read_item(
+            &app,
+            Some("free:2026-11-16/2026-11-17?zone=Europe/Berlin&dayStart=09:00&dayEnd=12:00&atLeastMinutes=20"),
+        )
+        .expect("free time reads");
+        let gaps: Vec<(&str, i64)> = free["free"]
+            .as_array()
+            .expect("gaps")
+            .iter()
+            .filter_map(|gap| gap["start"].as_str().zip(gap["minutes"].as_i64()))
+            .collect();
+        assert_eq!(
+            gaps,
+            [("2026-11-16T09:00:00+01:00", 30), ("2026-11-16T09:45:00+01:00", 135)]
+        );
+        assert_eq!(free["busy"], 1);
+
+        for (item, why) in [
+            ("span:2026-11-16", "a span is written FROM/TO"),
+            ("span:soon/2026-11-23", "from is a date"),
+            ("span:2026-11-16/2026-11-23?colour=red", "narrows no span"),
+            ("span:2026-11-16/2026-11-23?zone=Berlin", "zone is an IANA time zone"),
+            ("free:2026-11-16/2026-11-17?dayStart=nine", "dayStart is a time of day"),
+            ("free:2026-11-16/2026-11-17?category=Board", "narrows no free time"),
+        ] {
+            let refused = read_item(&app, Some(item)).expect_err("that asks for nothing");
+            assert!(refused.contains(why), "{item}: {refused}");
+        }
+    }
+
+    phase an_invitation_is_one_event_however_often_it_comes;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let add = |app: &mut TestApp<CalendarShell>, ics: String| {
+            app.call("add-invitation", serde_json::json!({"ics": ics}))
+                .map(Option::unwrap_or_default)
+        };
+        let first = invitation_ics("REQUEST", "Quarterly review", "20261120T140000", "");
+        let made = add(&mut app, first.clone()).expect("an invitation is taken in");
+        assert_eq!(made["made"], "created", "{made}");
+        let id: Uuid = made["id"].as_str().expect("its id").parse().expect("an id");
+        let held = state_of(&app).event(id).cloned().expect("the event it made");
+        assert_eq!(held.title, "Quarterly review");
+        assert_eq!(held.timezone, "Europe/Berlin");
+        assert_eq!(held.start.to_string(), "2026-11-20 14:00:00");
+        assert_eq!(held.attendees.len(), 2, "its organizer and its guest");
+        assert_eq!(held.reminder_min, None, "its sender's alarm is not its person's");
+
+        let again = add(&mut app, first).expect_err("the same invitation again");
+        assert!(
+            format!("{again:?}").contains("already holds this invitation"),
+            "{again:?}"
+        );
+        assert_eq!(state_of(&app).events.len(), 1, "one event, not two");
+
+        // What its person made of it stays when a later version comes.
+        app.call(
+            "set-categories",
+            serde_json::json!({"event": id.to_string(), "categories": ["Board"]}),
+        )
+        .expect("filed");
+        let moved = invitation_ics("REQUEST", "Quarterly review", "20261120T160000", "SEQUENCE:1\r\n");
+        let updated = add(&mut app, moved).expect("a later version of it");
+        assert_eq!(updated["made"], "updated", "{updated}");
+        let state = state_of(&app);
+        assert_eq!(state.events.len(), 1, "still one event");
+        let held = state.event(id).expect("the same event");
+        assert_eq!(held.start.to_string(), "2026-11-20 16:00:00");
+        assert_eq!(held.categories.iter().collect::<Vec<_>>(), ["Board"]);
+
+        let cancelled = add(&mut app, invitation_ics("CANCEL", "Quarterly review", "20261120T160000", ""))
+            .expect("its cancellation");
+        assert_eq!(cancelled["made"], "cancelled", "{cancelled}");
+        assert!(state_of(&app).events.is_empty());
+        let nothing = add(
+            &mut app,
+            invitation_ics("CANCEL", "Quarterly review", "20261120T160000", ""),
+        )
+        .expect_err("a cancellation of nothing");
+        assert!(
+            format!("{nothing:?}").contains("no event of this invitation to cancel"),
+            "{nothing:?}"
+        );
+
+        let one = invitation_ics("REQUEST", "Quarterly review", "20261120T140000", "");
+        let event = one
+            .split("BEGIN:VEVENT")
+            .nth(1)
+            .and_then(|rest| rest.split("END:VEVENT").next())
+            .expect("its event");
+        for (ics, why) in [
+            ("Dear Ada, see you on Friday.".to_owned(), "it begins with BEGIN:VCALENDAR"),
+            (one.replace("UID:quarterly-review-7@example.org\r\n", ""), "has no UID"),
+            (
+                one.replace("END:VCALENDAR", &format!("BEGIN:VEVENT{event}END:VEVENT\r\nEND:VCALENDAR")),
+                "this text holds 2",
+            ),
+            ("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".to_owned(), "this text holds none"),
+        ] {
+            let refused = add(&mut app, ics).expect_err("that is no invitation");
+            assert!(format!("{refused:?}").contains(why), "{refused:?}");
+        }
+        assert!(state_of(&app).events.is_empty(), "a refused invitation leaves nothing");
+    }
+
+    phase an_event_no_calendar_holds_names_the_field_that_is_wrong;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let event = |field: &str, value: serde_json::Value| {
+            let mut event = serde_json::json!({
+                "title": "Review",
+                "start": "2026-11-17T10:00",
+                "end": "2026-11-17T11:00",
+            });
+            event[field] = value;
+            serde_json::json!({"event": event})
+        };
+        for (field, value, why) in [
+            ("rrule", serde_json::json!("weekdays"), "rrule is empty for an event that does not repeat, or one of FREQ=DAILY"),
+            ("start", serde_json::json!("tomorrow at ten"), "start is a date and time such as 2026-11-20T09:00"),
+            ("end", serde_json::json!("2026-11-17"), "end is a date and time"),
+            ("end", serde_json::json!("2026-11-17T09:00"), "end comes at or after start"),
+            ("timezone", serde_json::json!("Berlin"), "timezone is an IANA time zone"),
+            ("reminder", serde_json::json!(7), "reminder is -1 for none"),
+            ("color", serde_json::json!(99), "color is a number from 0 to"),
+            ("recurrence_until", serde_json::json!("next year"), "recurrence_until is a date"),
+            ("attendees", serde_json::json!([{"email": "nobody"}]), "attendees each have a complete email address"),
+            ("categories", serde_json::json!([""]), "categories are each a few words"),
+        ] {
+            let refused = app.call("new-event", event(field, value)).expect_err("no calendar holds that");
+            let said = format!("{refused:?}");
+            assert!(
+                said.contains("that is not an event this calendar can hold") && said.contains(why),
+                "{field}: {said}"
+            );
+        }
+        assert!(state_of(&app).events.is_empty());
+
+        // Whoever is invited needs no id made up for them.
+        app.call(
+            "new-event",
+            event("attendees", serde_json::json!([{"email": "bo@example.org", "name": "Bo"}])),
+        )
+        .expect("an attendee comes by their address");
+        let state = state_of(&app);
+        let held = state.events.iter().next().expect("the event");
+        assert_eq!(held.attendees.iter().next().map(|bo| bo.email.as_str()), Some("bo@example.org"));
+        let imported = app.call(
+            "import-items",
+            serde_json::json!({"events": [{"title": "Offsite", "start": "soon", "end": "later"}], "tasks": []}),
+        )
+        .expect_err("an import names what is wrong too");
+        assert!(format!("{imported:?}").contains("an imported event is invalid: start is"), "{imported:?}");
+    }
+}

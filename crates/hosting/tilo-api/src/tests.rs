@@ -1336,10 +1336,10 @@ async fn a_form_the_server_forgot_returns_the_person_to_their_grants_page() {
 }
 
 /// A key is the grant the person approved, carried in the key itself: a
-/// front door that never saw the approval accepts the same key, reads the
+/// API server that never saw the approval accepts the same key, reads the
 /// same grant, and revokes that one grant.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_key_carries_its_grant_to_every_front_door() {
+async fn a_key_carries_its_grant_to_every_api_server() {
     let alice = Person::new(1);
     let first = server();
     let (poll, asked) = ask_for_key(&first, &json!({"name": "Visa backend"})).await;
@@ -1365,7 +1365,7 @@ async fn a_key_carries_its_grant_to_every_front_door() {
     assert!(carried.key().is_some(), "the key travels with its grant");
     assert_eq!(carried.id, first.store.access(&token, now).unwrap().id);
 
-    // Revoked at one front door, that grant is revoked at that one for good.
+    // Revoked at one API server, that grant is revoked at that one for good.
     assert!(
         !second
             .store

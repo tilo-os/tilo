@@ -81,6 +81,15 @@ pub enum SheetsEffect {
     /// Keeps every sheet as an `.xlsx` workbook in the content store, with no file to write.
     #[effect(content, kind = "read", idempotent)]
     ExportXlsxContent,
+    /// Export a sheet as CSV content
+    ///
+    /// Keeps one sheet as a CSV file in the content store, with no file to write and whatever
+    /// the window shows: the text `export-csv` saves. It reads back with `read-content`.
+    #[effect(content, kind = "read", idempotent)]
+    ExportCsvContent {
+        #[param("The sheet's id or name; the first sheet shown when none")]
+        sheet: Option<String>,
+    },
     /// Read a spreadsheet file
     ///
     /// What an `.xlsx`, `.ods` or `.csv` file holds, read where it is: the workbook stays as it
@@ -125,14 +134,19 @@ pub enum SheetsEffect {
     ToggleFormulaView,
     /// Read cells
     ///
-    /// What a range of a sheet holds and shows: computed values row by row,
-    /// the formulas and the bold cells by reference.
-    #[effect(view, returns, audience = "agents")]
+    /// What a range of a sheet holds, as values: numbers as numbers and dates as ISO text, row
+    /// by row, with the formulas, formats and bold cells by reference. It needs no window. A
+    /// range of more than 10,000 cells answers in parts: read on from `next`.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadCells {
         #[param("The sheet's id or name")]
         sheet: String,
         #[param("Cell or range, e.g. A1:D6; every used cell when none")]
         range: Option<String>,
+        #[param("The row to read from, as the sheet numbers it; the range's first when none")]
+        from: Option<u32>,
+        #[param("Also what each cell shows, as `shown`: its value in its format, e.g. $12,375.00")]
+        shown: Option<bool>,
     },
     /// Open
     ///

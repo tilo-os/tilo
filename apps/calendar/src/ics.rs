@@ -68,6 +68,12 @@ pub fn export(model: &Calendar) -> String {
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
         }
+        if !e.categories.is_empty() {
+            // A list: each category escaped as text, the commas between
+            // them the list's own.
+            let listed: Vec<String> = e.categories.iter().map(|held| escape(held)).collect();
+            raw(&mut out, "CATEGORIES", &listed.join(","));
+        }
         let notes = model.notes_text(e.id);
         if !notes.trim().is_empty() {
             line(&mut out, "DESCRIPTION", notes.trim_end());
@@ -223,6 +229,95 @@ pub fn invitation_request(event: &Event) -> String {
         "CALSCALE:GREGORIAN\r\nMETHOD:REQUEST\r\n",
         1,
     )
+}
+
+/// The most iCalendar text one invitation is.
+pub const MAX_INVITATION_BYTES: usize = 256 * 1024;
+
+/// What an invitation a message carried asks of a calendar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Invitation {
+    /// The event it describes, under the id its `UID` gives: the same for
+    /// every version of the invitation, so it is one event however often
+    /// it comes.
+    pub event: Event,
+    /// Whether it takes the event back: `METHOD:CANCEL`, or the event's
+    /// own `STATUS:CANCELLED`.
+    pub cancels: bool,
+}
+
+/// The one event the iCalendar text of an invitation describes. Its alarm
+/// is its sender's and is left out: when a person is reminded is their own.
+///
+/// # Errors
+/// What is wrong with the text, for whoever handed it over.
+pub fn invitation(text: &str) -> Result<Invitation, String> {
+    if text.len() > MAX_INVITATION_BYTES {
+        return Err("an invitation is at most 256 KiB of iCalendar text".into());
+    }
+    let lines: Vec<ContentLine> = pim_lines::unfold(text)
+        .iter()
+        .filter_map(|line| ContentLine::parse(line))
+        .collect();
+    if !lines.iter().any(|line| line.begins("VCALENDAR")) {
+        return Err("an invitation is iCalendar text: it begins with BEGIN:VCALENDAR".into());
+    }
+    // The method is the calendar's. An event's identity and standing are
+    // its own, and a component that names one moved occurrence is no event
+    // of its own.
+    let mut cancels = false;
+    let mut events = 0_usize;
+    let mut named = true;
+    let mut within: Option<(bool, bool, bool)> = None;
+    for line in &lines {
+        match (&mut within, line.name.as_str()) {
+            (None, "METHOD") => cancels |= line.value.trim().eq_ignore_ascii_case("CANCEL"),
+            (None, _) if line.begins("VEVENT") => within = Some((false, false, false)),
+            (Some(_), _) if line.ends("VEVENT") => {
+                if let Some((uid, occurrence, cancelled)) = within.take()
+                    && !occurrence
+                {
+                    events += 1;
+                    named &= uid;
+                    cancels |= cancelled;
+                }
+            }
+            (Some((uid, _, _)), "UID") => *uid = !line.value.trim().is_empty(),
+            (Some((_, occurrence, _)), "RECURRENCE-ID") => *occurrence = true,
+            (Some((_, _, cancelled)), "STATUS") => {
+                *cancelled = line.value.trim().eq_ignore_ascii_case("CANCELLED");
+            }
+            _ => {}
+        }
+    }
+    match events {
+        0 => return Err("an invitation holds one event, and this text holds none".into()),
+        1 => {}
+        more => {
+            return Err(format!(
+                "an invitation holds one event, and this text holds {more}: add them one at a time"
+            ));
+        }
+    }
+    if !named {
+        return Err(
+            "the invitation's event has no UID, so a second copy of it could not be told from \
+             the first"
+                .into(),
+        );
+    }
+    let event = parse_calendar(text)
+        .events
+        .into_iter()
+        .next()
+        .ok_or("the invitation's event has no start that reads")?;
+    Ok(Invitation {
+        event: Event {
+            reminder_min: None,
+            ..event
+        },
+        cancels,
+    })
 }
 
 fn recurrence_rule(event: &Event) -> String {
@@ -568,6 +663,7 @@ fn parse_vevent(
     let mut exdates: Vec<String> = Vec::new();
     let mut recurrence_id = None;
     let mut cancelled = false;
+    let mut categories: Vec<String> = Vec::new();
 
     while i < lines.len() {
         let Some(slot) = lines.get(i) else { break };
@@ -627,6 +723,17 @@ fn parse_vevent(
                             .any(|item: &Attendee| item.id == attendee.id)
                         {
                             attendees.push(attendee);
+                        }
+                    }
+                }
+                "CATEGORIES" => {
+                    // The property may come more than once, each a list.
+                    for listed in pim_lines::split_unescaped(&val, ',') {
+                        if let Some(held) = crate::model::category(&unescape(listed))
+                            && !categories.contains(&held)
+                            && categories.len() < crate::model::MAX_CATEGORIES
+                        {
+                            categories.push(held);
                         }
                     }
                 }
@@ -729,6 +836,7 @@ fn parse_vevent(
                 reminder_min: reminder,
                 calendar_id: None,
                 project: None,
+                categories: categories.into_iter().collect(),
             },
             recurrence_id,
             cancelled,
@@ -885,7 +993,7 @@ fn parse_participant(line: &ContentLine) -> Option<Attendee> {
     })
 }
 
-fn stable_external_attendee_id(email: &str) -> Uuid {
+pub(crate) fn stable_external_attendee_id(email: &str) -> Uuid {
     fn fnv1a(bytes: &[u8], key: u64) -> u64 {
         let mut hasher = fnv::FnvHasher::with_key(key);
         std::hash::Hasher::write(&mut hasher, bytes);

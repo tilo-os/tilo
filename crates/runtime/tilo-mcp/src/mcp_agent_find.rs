@@ -715,7 +715,8 @@ fn searched_apps(
     }
     if let Some(reason) = unread {
         return Err(format!(
-            "no running app is named {name}, and the installed apps could not be read: {reason}"
+            "no running app is named {name}, and the installed apps could not be read: {}",
+            super::answer::words(reason)
         ));
     }
     let listed = app_names(&all);

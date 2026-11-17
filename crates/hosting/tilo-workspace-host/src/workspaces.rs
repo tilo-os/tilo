@@ -88,6 +88,12 @@ pub use mail_watch::MailListening;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_model;
+// What the person calls important, what may interrupt them, and what
+// they were told.
+#[cfg(not(target_arch = "wasm32"))]
+mod person_telling;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_telling::{Spenders, ToTell};
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
@@ -998,6 +1004,10 @@ struct WorkspacesInner {
     /// ([`mail_watch`]).
     #[cfg(not(target_arch = "wasm32"))]
     mail_watches: mail_watch::MailWatches,
+    /// What its people call important, one writer at a time
+    /// ([`person_telling`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    telling: person_telling::Telling,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_documents`]).
@@ -1268,6 +1278,8 @@ impl Workspaces {
                 )),
                 #[cfg(not(target_arch = "wasm32"))]
                 mail_watches: mail_watch::MailWatches::default(),
+                #[cfg(not(target_arch = "wasm32"))]
+                telling: person_telling::Telling::default(),
                 #[cfg(feature = "agents")]
                 repairs: repaired_documents::Repairs::default(),
                 content: content::ContentSlot::default(),
