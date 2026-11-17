@@ -2962,7 +2962,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             tilo_actions::ActionContext {
                 group: Some(run),
-                invoker: Some(tilo_actions::ActionInvoker::person(self.actor.clone())),
+                // Who acts is the caller the session was admitted as: an agent for its person,
+                // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
+                invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
                 gesture: STEP.try_with(|step| *step).ok(),
                 ..tilo_actions::ActionContext::default()
             }
