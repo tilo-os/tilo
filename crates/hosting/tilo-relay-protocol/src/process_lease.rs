@@ -6,6 +6,7 @@
 //! a dead or replaced compositor cannot leave an enrollment running.
 
 use std::io;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,7 @@ impl ProcessLease {
     }
 }
 
+#[cfg(unix)]
 fn proc_path(pid: u32) -> PathBuf {
     PathBuf::from("/proc").join(pid.to_string())
 }
