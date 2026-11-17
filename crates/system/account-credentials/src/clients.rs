@@ -331,7 +331,7 @@ mod tests {
             // has no inference scope.
             let downloads = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::ModelDownloads);
             let (provider, client) = table.config(downloads).expect("Hugging Face is configured");
-            assert_eq!(provider.scopes, ["openid", "profile", "guarded-repos"]);
+            assert_eq!(provider.scopes, ["openid", "profile", "gated-repos"]);
             assert!(provider.device_authorization_endpoint.is_some());
             assert_eq!(client.redirect_ports, RedirectPorts::Any);
             assert_eq!(client.redirect.path, "/callback");

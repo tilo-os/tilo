@@ -2408,7 +2408,7 @@ impl JoiningProbe {
         drop(self.answer.lock_recover().take());
     }
     /// The reason [`Self::refuse`] gives.
-    pub const REFUSAL: &'static str = "fixture join check dropped";
+    pub const REFUSAL: &'static str = "fixture join hold dropped";
     /// The broker reports the workspace as `status` from now on.
     pub fn set_workspace_status(&self, status: runtime_collab::WorkspaceStatus) {
         let _ = self.workspace.send(Ok(status));
