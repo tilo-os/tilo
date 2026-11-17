@@ -76,7 +76,7 @@ def in_guest() -> dict[str, list[str]]:
     # The host suspends a VM that went idle, and takes no new run while it does:
     # it says so, and the run once it finished wakes the VM again. Saving a
     # VM's memory takes as long as the machine holding it takes to write.
-    deadline = time.monotonic() + 240
+    deadline = time.monotonic() + 900
     while True:
         ran = subprocess.run(command, text=True, capture_output=True, timeout=900)
         held = (ran.stdout + ran.stderr).find("is being suspended") >= 0
