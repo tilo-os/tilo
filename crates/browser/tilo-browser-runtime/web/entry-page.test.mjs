@@ -636,3 +636,20 @@ test('a new device the host turns away for its clock is told so, not that its li
   assert.equal(screen['arrival-failure-body'].textContent, PAIRING_CLOCK);
   assert.doesNotMatch(screen['arrival-failure-body'].textContent, /expired|used already/);
 });
+
+test('a device that came in by pairing is set up: it stays in its workspace and is never sent to the first screen', async () => {
+  // A pairing link shows no first screen, so nothing marked a paired browser
+  // as set up, and the page it opened handed itself to the bare site: which
+  // opened the same workspace as the same device, and handed itself on again,
+  // for as long as the tab was open.
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const paired = {[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER, paired: true}};
+  const {calls, failure, at} = await fixture({entry: {base: 'https://web.example/', home},
+    local: {'tilo-host-memberships': JSON.stringify(paired)}});
+  assert.equal(failure, null);
+  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [],
+    'the page stays in the workspace its link opened');
+  assert.notEqual(at(), 'https://web.example/');
+  assert.equal(JSON.parse(localStorage.getItem('tilo-setup'))?.step, 'done',
+    'and the bare site, opened later, shows it no first screen either');
+});
