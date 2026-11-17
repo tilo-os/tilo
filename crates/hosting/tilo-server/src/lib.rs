@@ -107,7 +107,6 @@ pub mod placed_programs;
 pub mod placed_shells;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
-#[cfg(all(not(target_arch = "wasm32"), feature = "web"))]
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(not(target_arch = "wasm32"))]
