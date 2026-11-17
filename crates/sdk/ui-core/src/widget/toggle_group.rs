@@ -1498,13 +1498,7 @@ impl ToggleGroup {
                 _ => *seg,
             };
             let body = RoundedRect::from_rect(seg.inset(-metrics.inset), metrics.thumb_radius);
-            crate::chrome::paint_selector(
-                scene,
-                transform,
-                &body,
-                crate::chrome::SelectorRole::Item(&tier),
-                theme,
-            );
+            crate::chrome::paint_selector(scene, transform, &body, &tier, theme);
         }
 
         let selected_style = metrics.label.clone().strong();

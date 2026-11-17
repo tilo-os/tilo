@@ -106,6 +106,7 @@ pub(crate) fn background(
     activity: &crate::activity::Activity,
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
+    wallpaper: ui::backdrop::wallpaper::Source,
     looked: Background,
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let Background {
@@ -146,7 +147,7 @@ pub(crate) fn background(
                 Rc::clone(&asks),
                 beneath,
             )
-            .with_wallpaper(move |workspace| pictures.picture(workspace))
+            .with_wallpaper(wallpaper, move |workspace| pictures.picture(workspace))
             .with_reveals(Rc::clone(&band_reveals)),
         )
     });

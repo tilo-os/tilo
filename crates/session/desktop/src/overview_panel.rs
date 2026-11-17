@@ -209,6 +209,9 @@ pub struct OverviewPanel {
     /// The keyboard is on the overview.
     focused: bool,
     dirty: bool,
+    /// The shell's wallpaper, the one source the session hands every host: the ground the panel
+    /// stands on is the backdrop's own picture, blurred, never a copy of it.
+    wallpaper: ui::backdrop::wallpaper::Source,
 }
 
 impl Default for OverviewPanel {
@@ -256,6 +259,7 @@ impl OverviewPanel {
             drawn_progress: 0.0,
             focused: false,
             dirty: true,
+            wallpaper: ui::backdrop::wallpaper::Source::new(),
         }
     }
 
@@ -265,6 +269,11 @@ impl OverviewPanel {
             self.offer_add = offered;
             self.bump();
         }
+    }
+
+    /// The ground is `wallpaper` , the shell's one source, read when the panel draws.
+    pub fn set_wallpaper(&mut self, wallpaper: ui::backdrop::wallpaper::Source) {
+        self.wallpaper = wallpaper;
     }
 
     /// Pictures of the windows are drawn by the host through `flight` , and the overview arrives
@@ -653,7 +662,9 @@ impl Widget for OverviewPanel {
             transform,
             (ui::scene_parts::PartKey::new("overview.ground", 0), rect),
             ui::lift::Pose::faded(p),
-            |scene, transform| ui::overlay::scrim::whole_view(scene, transform, rect, theme),
+            |scene, transform| {
+                ui::overlay::scrim::whole_view(scene, transform, rect, &self.wallpaper, theme)
+            },
         );
         self.paint_panel_at(scene, transform, text, theme, panel_curve(p));
         let pictures = self.paint_picture(scene, transform, text, theme, progress);

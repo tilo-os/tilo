@@ -11,6 +11,7 @@
 )]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Shape};
@@ -19,74 +20,109 @@ use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, ImageBrush, ImageData
 use crate::floating_surface::Material;
 use crate::theme::Theme;
 
-/// One display's shell, blurred: `brush` placed by `brush_transform` over `rect`, all in the
-/// coordinates `transform` maps into the shell's.
-#[derive(Clone, Debug)]
-pub struct WallpaperPiece {
-    pub transform: Affine,
-    pub rect: Rect,
-    pub brush: Brush,
-    pub brush_transform: Affine,
-}
-
 const MAX_EDGE: u32 = 512;
 
 const REACH: f64 = 3.0;
 
-type CoverKey = (u64, u64, u64, u32);
+/// What a blurred cover is made for: the picture, the rectangle it covers and the blur.
+type CoverKey = (u64, [u64; 4], u32);
+
+fn cover_key(picture: &ImageData, rect: Rect, blur_px: f32) -> CoverKey {
+    let sides = [
+        rect.x0.to_bits(),
+        rect.y0.to_bits(),
+        rect.width().to_bits(),
+        rect.height().to_bits(),
+    ];
+    (picture.data.id(), sides, blur_px.to_bits())
+}
 
 thread_local! {
-    static PIECES: RefCell<Vec<WallpaperPiece>> = const { RefCell::new(Vec::new()) };
     static COVERS: RefCell<Vec<(CoverKey, ImageData)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The shell a frame draws, blurred, in the coordinates of the scene the shell is drawn into.
-pub fn publish(pieces: Vec<WallpaperPiece>) {
-    PIECES.with(|slot| *slot.borrow_mut() = pieces);
+/// The shell's wallpaper: one source, the picture the session decoded once for all its hosts.
+/// The backdrop that shows it draws this picture; every surface that stands on the shell frosts
+/// the same picture, so a host of its own — the chrome drawing the overview — draws over exactly
+/// what the backdrop under it shows, never a copy of its own.
+///
+/// The session holds one and hands it to both hosts; the picture, and the blur of it, are kept here
+/// alone, so what one host draws and what the other draws over it never differ.
+#[derive(Clone, Debug, Default)]
+pub struct Source {
+    state: Rc<RefCell<State>>,
 }
 
-/// Whether a shell is published on this thread.
-#[must_use]
-pub fn published() -> bool {
-    PIECES.with(|slot| !slot.borrow().is_empty())
+#[derive(Debug, Default)]
+struct State {
+    picture: Option<ImageData>,
 }
 
-/// Fill `shape` with `material` over the published shell: the blurred shell behind it, under the
-/// material's tint of `ground`.
+impl Source {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take `picture` as the shell's wallpaper, or none for a shell without one.
+    pub fn set(&self, picture: Option<ImageData>) {
+        let mut state = self.state.borrow_mut();
+        let known = state.picture.as_ref().map(|known| known.data.id());
+        if known == picture.as_ref().map(|image| image.data.id()) {
+            return;
+        }
+        state.picture = picture;
+    }
+
+    /// The picture the shell shows now, as the session holds it.
+    #[must_use]
+    pub fn picture(&self) -> Option<ImageData> {
+        self.state.borrow().picture.clone()
+    }
+
+    /// The picture covering `rect`, blurred by `blur_px` logical pixels: what a surface standing on
+    /// the shell shows of it, made once per picture, rectangle and blur ([`blurred_cover`] keeps
+    /// it).
+    #[must_use]
+    pub fn cover(&self, rect: Rect, blur_px: f32) -> Option<(ImageData, Affine)> {
+        let picture = self.state.borrow().picture.clone()?;
+        blurred_cover(&picture, rect, blur_px)
+    }
+}
+
+/// Fill `shape` with `material` over `source`: the shell's wallpaper, blurred and fitted to the
+/// shape, behind it under the material's tint of `ground`; the tint alone where the shell has no
+/// wallpaper.
 pub(crate) fn fill(
     scene: &mut Scene,
-    (transform, wallpaper_to_scene): (Affine, Affine),
+    source: &Source,
+    transform: Affine,
     shape: &impl Shape,
     material: Material,
     theme: &Theme,
     ground: Color,
 ) {
-    let pieces = PIECES.with(|slot| slot.borrow().clone());
-    if !super::blurs(material, theme) || pieces.is_empty() {
+    let cover = if super::blurs(material, theme) {
+        source.cover(
+            shape.bounding_box(),
+            theme.tokens.colors.surfaces.material_blur_px,
+        )
+    } else {
+        None
+    };
+    let Some((image, placed)) = cover else {
         scene.fill(Fill::NonZero, transform, ground, None, shape);
         return;
-    }
+    };
+    let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
-    for (index, piece) in pieces.iter().enumerate() {
-        let to_scene = wallpaper_to_scene * piece.transform;
-        if index == 0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                &piece.brush,
-                Some(transform.inverse() * to_scene * piece.brush_transform),
-                shape,
-            );
-        } else {
-            scene.fill(
-                Fill::NonZero,
-                to_scene,
-                &piece.brush,
-                Some(piece.brush_transform),
-                &piece.rect,
-            );
-        }
-    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(transform.inverse() * placed),
+        shape,
+    );
     scene.pop_layer();
     super::settle(scene, transform, shape, theme, ground);
     scene.fill(
@@ -111,12 +147,7 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
         .max(1.0);
     let width = (rect.width() / texel).ceil().max(1.0) as u32;
     let height = (rect.height() / texel).ceil().max(1.0) as u32;
-    let key = (
-        image.data.id(),
-        rect.width().to_bits(),
-        rect.height().to_bits(),
-        blur_px.to_bits(),
-    );
+    let key = cover_key(image, rect, blur_px);
     let placed = Affine::translate((rect.x0, rect.y0)).pre_scale_non_uniform(
         rect.width() / f64::from(width),
         rect.height() / f64::from(height),
@@ -146,33 +177,6 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
         covers.push((key, blurred.clone()));
     });
     Some((blurred, placed))
-}
-
-/// The shell's pieces with no wallpaper: `brush` (a gradient, already as smooth as its blur) over
-/// `rect`.
-#[must_use]
-pub fn smooth_piece(transform: Affine, rect: Rect, brush: Brush) -> WallpaperPiece {
-    WallpaperPiece {
-        transform,
-        rect,
-        brush,
-        brush_transform: Affine::IDENTITY,
-    }
-}
-
-/// A blurred wallpaper's piece, from [`blurred_cover`].
-#[must_use]
-pub fn image_piece(
-    transform: Affine,
-    rect: Rect,
-    (image, placed): (ImageData, Affine),
-) -> WallpaperPiece {
-    WallpaperPiece {
-        transform,
-        rect,
-        brush: Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad)),
-        brush_transform: placed,
-    }
 }
 
 fn cover_sample(

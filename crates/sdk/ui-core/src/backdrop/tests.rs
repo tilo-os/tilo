@@ -499,12 +499,13 @@ tilo_test_env::scenario! {
             }
         }
         let wallpaper = crate::raster::rgba8(wallpaper, 64, 64);
-        let display = Rect::new(0.0, 0.0, 256.0, 192.0);
+        let source = wallpaper::Source::new();
         let draw = |theme: &Theme| {
             let mut scene = Scene::new();
             wallpaper::fill(
                 &mut scene,
-                (Affine::IDENTITY, Affine::IDENTITY),
+                &source,
+                Affine::IDENTITY,
                 &panel(),
                 Material::Floating,
                 theme,
@@ -512,11 +513,11 @@ tilo_test_env::scenario! {
             );
             scene
         };
-        wallpaper::publish(Vec::new());
         assert!(
             draw(&theme).encoding().resources.patches.is_empty(),
-            "nothing published: opaque"
+            "no picture on the shell: opaque"
         );
+        let display = panel().bounding_box();
         let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
         let again = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("cached");
         assert_eq!(
@@ -531,11 +532,7 @@ tilo_test_env::scenario! {
             * 4;
         let grey = pixels[mid];
         assert!((100..=155).contains(&grey), "the checks still show: {grey}");
-        wallpaper::publish(vec![wallpaper::image_piece(
-            Affine::IDENTITY,
-            display,
-            blurred,
-        )]);
+        source.set(Some(wallpaper));
         let frosted = draw(&theme);
         assert_eq!(
             frosted.encoding().resources.patches.len(),
@@ -554,7 +551,6 @@ tilo_test_env::scenario! {
                 .is_empty(),
             "reduced transparency is opaque"
         );
-        wallpaper::publish(Vec::new());
     }
 
     phase a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder;
@@ -680,10 +676,17 @@ fn frost_cost_at_1080p() {
     }
     let wallpaper = crate::raster::rgba8(wallpaper, 3840, 2160);
     let display = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-    let started = crate::time::now();
-    let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
-    let blur_us = started.elapsed().as_micros();
     let ground = crate::chrome::panel_ground(&theme);
+    let source = wallpaper::Source::new();
+    source.set(Some(wallpaper.clone()));
+    let started = crate::time::now();
+    let cover = source.cover(display, 24.0).expect("pixels in memory");
+    let blur_us = started.elapsed().as_micros();
+    assert_eq!(
+        source.cover(display, 24.0).expect("cached").0.data.id(),
+        cover.0.data.id(),
+        "the blur of a picture and a size is made once"
+    );
     let frame = |material: Material| {
         let mut scene = Scene::new();
         let brush = ImageBrush::new(wallpaper.clone());
@@ -704,7 +707,8 @@ fn frost_cost_at_1080p() {
             );
             wallpaper::fill(
                 &mut scene,
-                (Affine::IDENTITY, Affine::IDENTITY),
+                &source,
+                Affine::IDENTITY,
                 &strip,
                 material,
                 &theme,
@@ -713,11 +717,6 @@ fn frost_cost_at_1080p() {
         }
         scene
     };
-    wallpaper::publish(vec![wallpaper::image_piece(
-        Affine::IDENTITY,
-        display,
-        blurred,
-    )]);
     let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -753,7 +752,6 @@ fn frost_cost_at_1080p() {
     };
     let frosted = time(&frame(Material::Floating));
     let opaque = time(&frame(Material::Opaque));
-    wallpaper::publish(Vec::new());
     let info = gpu.device.adapter_info();
     println!(
         "frosted strips at {width}x{height} on {} ({:?}): blurring a 3840x2160 wallpaper once \

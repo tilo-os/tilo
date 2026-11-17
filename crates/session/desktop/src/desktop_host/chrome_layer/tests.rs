@@ -485,3 +485,88 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
         )]
     );
 }
+
+/// The overview's ground is the shell's wallpaper, not the flat fallback: the chrome draws it
+/// through the one source the session hands every host, so the picture the backdrop under it shows
+/// is the picture the overview draws over — blurred and dimmed as the scrim says — though the
+/// chrome is a host of its own and never draws the backdrop.
+#[test]
+fn the_overviews_ground_is_the_wallpapers_and_not_the_fallback() {
+    en();
+    // Two displays, so the overview stands on the one the person works on and has an area of its
+    // own: without one it would be drawn nowhere and this test would prove nothing.
+    let mut tree = layout_tree();
+    tree.outputs.reconcile(
+        &tree.workspaces,
+        &[
+            tilo_desktop_model::partition::Display {
+                id: 0,
+                monitor: "panel".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 800.0,
+                primary: false,
+            },
+            tilo_desktop_model::partition::Display {
+                id: 1,
+                monitor: "monitor".into(),
+                x: 1280.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 800.0,
+                primary: false,
+            },
+        ],
+    );
+    tree.outputs.set_focused(1);
+    let (mut chrome, _handle) = chrome_over(&tree);
+    let wallpaper = ui::backdrop::wallpaper::Source::new();
+    chrome.set_wallpaper(wallpaper.clone());
+    let theme = ui::Theme::dark();
+    let draw = |chrome: &mut DesktopChrome| {
+        use ui::widget::Widget as _;
+        let mut scene = ui::vello::Scene::new();
+        chrome.draw(
+            &mut scene,
+            ui::kurbo::Affine::IDENTITY,
+            &mut ui::TextRenderer::new(),
+            &theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+        scene
+    };
+    // The picture the ground draws is one image patch; the flat fallback draws a gradient and no
+    // patch at all, whatever else the chrome shows.
+    let image_fills = |scene: &ui::vello::Scene| {
+        scene
+            .encoding()
+            .resources
+            .patches
+            .iter()
+            .filter(|patch| matches!(patch, ui::vello_encoding::Patch::Image { .. }))
+            .count()
+    };
+    let bare = image_fills(&draw(&mut chrome));
+    chrome.toggle_overview();
+    assert_eq!(
+        image_fills(&draw(&mut chrome)),
+        bare,
+        "a shell with no wallpaper stands on its ground"
+    );
+    // A picture a host decodes once, as the session's is.
+    let mut pixels = Vec::new();
+    for y in 0..64_u32 {
+        for x in 0..64_u32 {
+            let v = if (x / 8 + y / 8) % 2 == 0 { 10 } else { 240 };
+            pixels.extend_from_slice(&[v, v / 2, 255 - v, 255]);
+        }
+    }
+    let picture = ui::raster::rgba8(pixels, 64, 64);
+    wallpaper.set(Some(picture.clone()));
+    assert_eq!(
+        image_fills(&draw(&mut chrome)),
+        bare + 1,
+        "the overview draws the shell's wallpaper, and the one it reads is the backdrop's"
+    );
+}

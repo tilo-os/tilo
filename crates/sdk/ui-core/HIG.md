@@ -1152,15 +1152,16 @@ stands on and paints with `chrome::paint_selector`:
 The active fill is a surface step of the ground, as `selection_tier_on`'s is, so a chosen tab and a selected
 row move the same distance off the same ground; the hover film, composited
 on an opaque ground, also clears `SELECTION_MIN_STEP` and stays short of the
-active step. The window group's tab strip stands on a body of its own,
-`SelectorRole::Strip`, one body behind the whole strip rather than one per
+active step. The window group's tab strip stands on a body of its own
+(`chrome::strip_shape`), one body behind the whole strip rather than one per
 tab: the floating material (blur and 72 % panel-ground tint, as menus and
 the palette) over the shell behind it. Windows never overlap, so that is
-all that is behind a strip: the shell's painter publishes itself blurred
-once per wallpaper, size and radius (`backdrop::wallpaper`), and the strip is
-an ordinary image fill of it, so it costs no blur pass per frame, a tab's
-hover damages only the tab, and a strip panned as a retained layer carries
-its frosting along until it rests. On a light palette the active tab rises
+all that is behind a strip: the session holds one wallpaper source
+(`ui::backdrop::wallpaper::Source`), which the backdrop drawing the shell
+fills and every surface standing on the shell reads, and the strip is an
+ordinary image fill of the blurred picture, so it costs no blur pass per
+frame, a tab's hover damages only the tab, and a strip panned as a retained
+layer carries its frosting along until it rests. On a light palette the active tab rises
 toward the light (white on the frosted strip) wherever the ground leaves a
 full `SELECTION_MIN_STEP` above it; a hover raises its film's opacity where
 the theme's would not clear that step. In-app
@@ -1369,7 +1370,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | App chrome Toolbar band (`toolbar::paint_band`) | none: the region's ground | `chrome_hairline` along the bottom |
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none; chosen and hovered through `paint_selector` (§9.3) |
-| Window group tab strip | the floating material over the shell (`SelectorRole::Strip`), opaque panel ground without blur | `edge_on(panel_ground)` |
+| Window group tab strip | the floating material over the shell (`chrome::strip_shape`), opaque panel ground without blur | `edge_on(panel_ground)` |
 
 Forced-colour accessibility is the field-edge exception: when
 `Theme::colors_are_forced()` collapses surface levels, the shared field painter

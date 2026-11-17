@@ -806,6 +806,12 @@ impl DesktopChrome {
         self.overview_open = Some(open);
     }
 
+    /// The ground the overview stands on is `wallpaper` , the shell's one source: the same picture
+    /// the backdrop under it shows, blurred, rather than a copy the chrome keeps.
+    pub fn set_wallpaper(&mut self, wallpaper: ui::backdrop::wallpaper::Source) {
+        self.overview.set_wallpaper(wallpaper);
+    }
+
     /// Close the menus the chrome opened: the host opens a popover of its own, one at a time.
     pub fn close_menus(&mut self) {
         self.workspace_menu.close();
