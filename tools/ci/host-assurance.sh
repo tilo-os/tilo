@@ -218,7 +218,11 @@ grep -q 'not paired yet' "$out/server-health.txt" \
 ok 'the boot judged itself: not paired yet, multi-user reached' 
 as_root 'systemctl start tilo-boot-health.service' >/dev/null 2>&1 \
   || die 'tilo-boot-health does not accept the server probe as this machine'"'"'s verdict'
-ok 'tilo-boot-health judges the server by tilo-server-health' 
+ok 'tilo-boot-health judges the server by tilo-server-health'
+# Leave the machine as its boot left it: this boot was not counted, so its own
+# verdict is "not assessed", and the rollback check downstream reads exactly
+# that. A unit this check started would read as a verdict the boot gave.
+as_root 'systemctl stop tilo-boot-health.service' >/dev/null 2>&1 || true
 
 say 'stage the update and break it on the staged deployment only'
 as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --quiet \
