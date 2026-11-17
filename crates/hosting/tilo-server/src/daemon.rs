@@ -703,7 +703,6 @@ impl Server {
         if let Some(governed) = &governed {
             // A server of the person's own takes part in their admin workspace,
             // whose record of their servers says what it should be.
-            #[cfg(feature = "agents")]
             if enrolled_server {
                 crate::servers::enroll(governed, &identity.device_cert)
                     .await
@@ -1379,27 +1378,18 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                // The person's servers are written in their admin workspace, which only a server
-                // that runs workspaces' agents keeps.
-                #[cfg(not(feature = "agents"))]
-                return Err(AcceptError::from_err(std::io::Error::other(
-                    "this home peer keeps no admin workspace",
-                )));
-                #[cfg(feature = "agents")]
-                {
-                    let workspaces = self.workspaces.as_ref().ok_or_else(|| {
-                        AcceptError::from_err(std::io::Error::other(
-                            "this home peer keeps no admin workspace",
-                        ))
-                    })?;
-                    let device = crate::servers::device_id(&self.identity.cert.device_public_key);
-                    crate::servers::apply(
-                        workspaces,
-                        crate::servers::Servers::RENAME_SERVER.with((device, label.to_owned())),
-                    )
-                    .await
-                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
-                }
+                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
+                    AcceptError::from_err(std::io::Error::other(
+                        "this home peer keeps no admin workspace",
+                    ))
+                })?;
+                let device = crate::servers::device_id(&self.identity.cert.device_public_key);
+                crate::servers::apply(
+                    workspaces,
+                    crate::servers::Servers::RENAME_SERVER.with((device, label.to_owned())),
+                )
+                .await
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
             HomePeerManagementRequest::Decommission { revocation } => {
                 if !peer.cert.capabilities.can_admit_devices {
@@ -1420,7 +1410,6 @@ impl ProtocolHandler for ManagementProtocol {
                 // Its entry among the person's servers is retired first, while
                 // its device still signs: none of their devices counts it as
                 // serving anything from then on.
-                #[cfg(feature = "agents")]
                 if let Some(workspaces) = &self.workspaces {
                     let device = crate::servers::device_id(&self.identity.cert.device_public_key);
                     crate::servers::apply(

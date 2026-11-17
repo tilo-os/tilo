@@ -27,6 +27,13 @@ use super::{GovernedWorkspace, SystemTime, Workspaces};
 /// Member writes followed before a failed compaction is tried again. A
 /// record whose history does not merge yet does not compact; trying on every
 /// write opened and merged its whole history each time.
+#[cfg_attr(
+    not(any(feature = "agents", feature = "web")),
+    allow(
+        dead_code,
+        reason = "sealed histories are followed only where they are read"
+    )
+)]
 const COMPACTION_RETRY: usize = 256;
 
 /// The content keys of one record's channel, as the node holds them.
@@ -173,6 +180,13 @@ impl GovernedWorkspace {
 
     /// Whether this host holds the workspace's keys: it can then read sealed
     /// writes.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
     pub(super) async fn holds_keys(&self) -> bool {
         matches!(self.route_keys().await, Some(Ok(_)))
     }
@@ -210,6 +224,13 @@ impl GovernedWorkspace {
     /// # Errors
     ///
     /// The keys cannot be read, or the write does not open with them.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
     pub(super) async fn open_write(
         &self,
         app: &str,
@@ -561,6 +582,13 @@ impl Workspaces {
     /// for access and holds its keys once one admits it. `false` when it takes
     /// part in no group of the workspace. Asked before the workspace is locked,
     /// since the ask waits on the key service for the group to admit this device.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
     pub(crate) async fn join_keys(&self, workspace: &str) -> bool {
         let Some(device) = self.device_keys() else {
             return false;
@@ -877,6 +905,13 @@ impl Workspaces {
     /// its bound into one sealed checkpoint, and commit and publish the
     /// compactions. A record whose history does not merge yet (a write it
     /// depends on has not arrived) waits for a later call.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
     pub(super) async fn compact_sealed_histories(
         &self,
         workspace: &mut GovernedWorkspace,

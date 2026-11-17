@@ -207,7 +207,6 @@ impl Workspaces {
             .collect();
         let mut read = WholeDocuments::default();
         for (app, record) in routes {
-            #[cfg(any(feature = "agents", feature = "web"))]
             let document = super::sealed_documents::whole_document(
                 &peer,
                 device.as_ref(),
@@ -215,16 +214,6 @@ impl Workspaces {
                 (&app, &record),
             )
             .await;
-            #[cfg(not(any(feature = "agents", feature = "web")))]
-            let document = {
-                let _ = &device;
-                if peer.publication().is_sealed_document(&app, &record) {
-                    Err("it is sealed and this host opens no sealed records".to_owned())
-                } else {
-                    peer.document(&app, &record)
-                        .ok_or_else(|| "the host holds no copy of it".to_owned())
-                }
-            };
             let document = document.and_then(|document| {
                 peer.document_revision(&app, &record)
                     .map(|revision| (document, revision))

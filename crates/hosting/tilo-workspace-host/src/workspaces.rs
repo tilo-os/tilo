@@ -27,7 +27,6 @@ pub mod app_files;
 mod appended;
 #[cfg(feature = "agents")]
 mod applications;
-#[cfg(any(feature = "agents", feature = "web"))]
 mod authored;
 mod authority;
 mod bootstrap;
@@ -118,7 +117,6 @@ mod publisher;
 pub mod repaired_documents;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
-#[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_documents;
 pub use device_keys::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
@@ -292,7 +290,13 @@ struct GovernedWorkspace {
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
     compaction_wait: usize,
     /// The workspace's shared desktop as members' writes of it are decided,
     /// followed from the first such write ([`desktop_writes`]).
@@ -439,7 +443,6 @@ impl GovernedWorkspace {
             record,
             peer: Replica::new(peer),
             publisher: Arc::default(),
-            #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
@@ -522,7 +525,6 @@ impl GovernedWorkspace {
             path,
             device: device.cloned(),
             publisher: Arc::default(),
-            #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
@@ -1007,7 +1009,6 @@ struct WorkspacesInner {
     directory: listing::Directory,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the server's `reseal`).
-    #[cfg(any(feature = "agents", feature = "web"))]
     resealing: std::sync::atomic::AtomicBool,
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
@@ -1259,7 +1260,6 @@ impl Workspaces {
                 session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 directory: listing::Directory::default(),
-                #[cfg(any(feature = "agents", feature = "web"))]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
