@@ -394,7 +394,7 @@ fn action_text(answer: &Value) -> String {
     let mut said = match text(answer, "status") {
         "ok" => named("ok"),
         "pending" => {
-            let mut said = format!("pending {}: it waits for you", text(answer, "run"));
+            let mut said = format!("pending {}: it waits for you", text(answer, "invocation"));
             if let Some(url) = answer.pointer("/ask/url").and_then(Value::as_str) {
                 let _ = write!(said, ", at {url}");
             }
@@ -832,7 +832,7 @@ async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Resu
     ) {
         ("pending", _) => format!(
             "pending {}: it waits for you on your approving device",
-            text(&answer, "run")
+            text(&answer, "invocation")
         ),
         (_, Some(Value::Bool(true))) => format!(
             "{named}: keys made for it alone run commands in its Linux machine without asking you"
@@ -1802,7 +1802,7 @@ mod tests {
             ),
             ("POST", route) if route.ends_with("/actions/open") => json_reply(
                 200,
-                json!({"status": "ok", "path": "files#open", "run": "run-1",
+                json!({"status": "ok", "path": "files#open", "invocation": "inv-1",
                     "result": {"path": "passport.png", "content": "tilo.content:abc"}}),
             ),
             ("GET", route) if route.contains("/content/") => {
@@ -2195,7 +2195,7 @@ mod tests {
         phase an_action_answer_says_what_ran_and_where_it_is;
         {
             let done = serde_json::json!({"status": "ok", "path": "notes#open",
-                "run": "run-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
+                "invocation": "inv-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
             assert_eq!(
                 action_text(&done),
                 "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
@@ -2208,11 +2208,11 @@ mod tests {
                 action_text(&created),
                 "ok tasks#create\n-> tasks.tracker/issues/7"
             );
-            let pending = serde_json::json!({"status": "pending", "run": "run-2",
+            let pending = serde_json::json!({"status": "pending", "invocation": "inv-2",
                 "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
             assert_eq!(
                 action_text(&pending),
-                "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
+                "pending inv-2: it waits for you, at https://tilo.sh/approve/1 \
              (pdf-viewer#import-pdf-content)"
             );
         }
