@@ -3,13 +3,13 @@
 //!
 //! On a device, a Terminal session record's `run` queues the command line
 //! for the process running the session, which types it at its shell and
-//! records the run it became (`record-run`). A workspace the host serves has
+//! records the command it became (`record-command`). A workspace the host serves has
 //! no such process on any device: the host is where its sessions run. So a
 //! person's device (an agent on one of their computers among them) asking
 //! the host for a session's `run` has it run here, by the host's
 //! [`WorkspaceShell`], in that session's shell (an agent's run in a shell of its
 //! own, which keeps its directory between commands), and the host records the
-//! run on the session record through the record's own `record-run`, under
+//! run on the session record through the record's own `record-command`, under
 //! the invocation's context: History keeps it as the agent's run, with its
 //! command, directory, exit status and output.
 //!
@@ -58,8 +58,8 @@ pub use ui::apps::TERMINAL as TERMINAL_APP;
 const RUN: &str = "run";
 /// The session record's action that stops the command line it is running.
 const STOP: &str = "stop";
-/// The session record's action that records a run that ended.
-const RECORD_RUN: &str = "record-run";
+/// The session record's action that records a command that ended.
+const RECORD_COMMAND: &str = "record-command";
 /// The longest command line a session runs, as Terminal takes it.
 const MAX_COMMAND_BYTES: usize = 4096;
 /// What an answer carries of a run's output at most: its end, where a
@@ -612,7 +612,7 @@ impl Worker {
             .invoke_with(
                 Some(&invoker),
                 context.as_ref(),
-                &ActionAddress::new(&ended.request.target.address.resource, RECORD_RUN),
+                &ActionAddress::new(&ended.request.target.address.resource, RECORD_COMMAND),
                 &finished,
                 true,
             )
