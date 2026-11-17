@@ -1591,6 +1591,123 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 }
             }
         }
+
+        /// The `UID` lines of the entry `text`, each whole.
+        fn uid_lines(text: &str) -> Vec<String> {
+            text.replace("\r\n ", "")
+                .lines()
+                .filter(|line| line.starts_with("UID"))
+                .map(str::to_owned)
+                .collect()
+        }
+
+        tilo_test_env::scenario! {
+            /// The live client against the same server: an entry another calendar program
+            /// made goes up under the `UID` its server holds it under. An event is known by
+            /// its `UID`: an entry written over by one under another is refused (RFC 4791,
+            /// 5.3.2.1), or, by a server that takes it, read as another event.
+            fn an_entry_made_elsewhere_goes_up_under_the_uid_its_server_holds;
+
+            phase a_server_that_keeps_the_standard_takes_her_change_to_it;
+            {
+                let (server, account, work) = adas();
+                let stored = held_entry(
+                    "lunch-4@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    LEFT_TO_SERVER,
+                );
+                server.put("work", "lunch.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Lunch moved".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "her change to an entry made elsewhere did not go up: {:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Lunch moved"), "{text}");
+                assert_eq!(uid_lines(&text), ["UID:lunch-4@example.org"], "{text}");
+                // The table's row SERVER, column SERVER: the server goes on writing to the
+                // one it already wrote to, about the event he knows.
+                assert_eq!(server.mailed(), ["REQUEST to bo@example.test"]);
+                // Read again, it is the event this calendar already has.
+                assert_eq!(as_pulled(&account, &work).event.id, job.event.id);
+            }
+
+            phase a_server_that_takes_another_uid_is_given_the_one_it_holds;
+            {
+                let (server, account, work) = adas();
+                server.takes_another_uid();
+                let stored = held_entry(
+                    "lunch-4@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    LEFT_TO_SERVER,
+                );
+                server.put("work", "lunch.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Lunch moved".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                // Under another UID this server reads another event: the lunch it held
+                // off for Bo, and a lunch he is invited to anew.
+                assert_eq!(
+                    server.mailed(),
+                    ["REQUEST to bo@example.test"],
+                    "her calendar server called the lunch off and invited to it again"
+                );
+                let text = held_text(&server);
+                assert_eq!(uid_lines(&text), ["UID:lunch-4@example.org"], "{text}");
+            }
+
+            phase every_part_of_an_entry_that_repeats_keeps_the_uid_as_it_is_held;
+            {
+                let (server, account, work) = adas();
+                // As a calendar program elsewhere stores it: an identifier in capitals with
+                // nothing after it, on the event and on its one moved occurrence.
+                let uid = "UID:6F1E2C3A-0B1D-4E5F-8A9B-0C1D2E3F4A5B";
+                let stored = format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//Elsewhere//EN\r\n\
+                     BEGIN:VEVENT\r\n{uid}\r\nSUMMARY:Standup\r\nDTSTART:20261116T090000Z\r\n\
+                     DTEND:20261116T091500Z\r\nRRULE:FREQ=WEEKLY\r\n\
+                     ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:{ADA}\r\n\
+                     ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:bo@example.test\r\nEND:VEVENT\r\n\
+                     BEGIN:VEVENT\r\n{uid}\r\nRECURRENCE-ID:20261123T090000Z\r\n\
+                     SUMMARY:Standup\r\nDTSTART:20261123T100000Z\r\nDTEND:20261123T101500Z\r\n\
+                     END:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                server.put("work", "standup.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                assert_eq!(
+                    job.event.occurrence_overrides.iter().count(),
+                    1,
+                    "its moved occurrence is read"
+                );
+                job.event.title = "Standup shortened".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Standup shortened"), "{text}");
+                assert_eq!(uid_lines(&text), [uid, uid], "{text}");
+                assert_eq!(server.mailed(), NOBODY);
+            }
+        }
     }
 }
 
