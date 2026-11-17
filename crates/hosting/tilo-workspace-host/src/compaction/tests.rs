@@ -617,6 +617,62 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
     assert_eq!(late_join(&store).get_heads(), doc.get_heads());
 }
 
+/// Changes too large for one frame travel in segments, which carry them deflated. The fold reads
+/// the joined segments as the changes their writer made: a late joiner reads the whole
+/// document, and the fold holds them with what was written before and after them, each segment
+/// among the writes it replaces.
+#[test]
+fn changes_larger_than_one_frame_fold_from_their_segments() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
+    let mut seq = 0;
+    let (_, mut doc) = history(&store, 2, &mut seq);
+    // A file put into the document: bytes that do not compress, more than one segment of them.
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let file: Vec<u8> = (0..collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES * 3 / 2)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    let before = doc.get_heads();
+    doc.put(ROOT, "file", file).unwrap();
+    doc.commit();
+    let written = DocumentMutation::Incremental(doc.save_after(&before));
+    let frames = device_frames(1, &written, false, seq.saturating_add(10));
+    let segments = frames.len();
+    assert!(segments > 1, "the changes travel as segments");
+    retain(&store, frames, &mut seq);
+    // What is written next builds on the file's change.
+    extend(&store, &mut doc, 1, &mut seq);
+
+    let (entries, folded, _) = round(&store, &mut Signatures::default());
+    assert!(
+        units(checked(&entries)).units.iter().any(|unit| {
+            unit.entries.len() == segments && unit.mutation.as_ref() == Some(&written)
+        }),
+        "the segments join into the changes as they were written"
+    );
+    assert_eq!(
+        late_join(&store).get_heads(),
+        doc.get_heads(),
+        "a late joiner reads the document with the file"
+    );
+    assert!(!folded.stuck, "nothing waits for the file's changes");
+    assert_eq!(
+        folded.removed.len(),
+        entries.len(),
+        "the fold holds every write, each segment among them"
+    );
+    assert_eq!(
+        folded_doc(&folded).get_heads(),
+        doc.get_heads(),
+        "the fold's snapshot is the document with the file"
+    );
+}
+
 /// `observe` before it borrowed the body and peeked the variant tag: an owned
 /// decode of the payload and a full decode of its `NeighbourMsg`.
 fn observe_by_full_decode(delta: &[u8]) -> Option<([u8; 32], usize)> {
