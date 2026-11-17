@@ -95,7 +95,11 @@ person's, and another person's only for the workspaces its operator names or
 for anyone when it says so, so a relay never holds strangers' workspaces
 unasked. From then on both hold it: each carries what is written through it
 to the other, signed by the device that wrote it, so its history and
-authors are the same on both, and each picks up again after a restart.
+authors are the same on both, and each picks up again after a restart. A
+member's device dials the holders alike, starting with the one it last
+reached, and keeps its link with whichever answers. Every receiver reads a
+holder's address only with that host's own signature on it, whoever wrote it
+into the governance.
 Detached, the other host lets the workspace go and keeps its files.
 
 ### A machine copied from another

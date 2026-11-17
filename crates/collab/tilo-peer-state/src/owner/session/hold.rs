@@ -1,8 +1,8 @@
 //! Holding an enrolled workspace's link for as long as the workspace is held:
-//! dialling the governor its enrollment pins, standing in with another
-//! host its governance names while the governor is out of reach, renewing
-//! this device's membership once custody renewed its certificate, and
-//! dialling again after each loss.
+//! dialling its holders, every one alike, until one answers, keeping the link
+//! with that one for as long as it lasts, renewing this device's membership
+//! once custody renewed its certificate, and dialling again after each loss,
+//! starting with the holder it last reached.
 use super::{Connect, Linked, Reach, Scope};
 use crate::join::TransportHint;
 use std::{
@@ -24,20 +24,19 @@ const LONGEST_PAUSE: Duration = Duration::from_secs(60);
 
 /// Whoever holds a workspace's link: what [`hold`] asks of it.
 pub trait Holder: Send + Sync {
-    /// How the workspace's host is reached now.
+    /// How the workspace's holders are reached now.
     fn reach(&self) -> Reach;
     /// Whether [`hold`] dials again on its own after a pause; otherwise it
     /// dials only once told to ([`Link::retry`]).
     fn paces_itself(&self) -> bool {
         true
     }
-    /// Dialling `via`, the workspace's `governor` or a host standing in for it,
-    /// failed with `reason`. The hold no longer counts as establishing a
-    /// link unless it goes on to another host.
+    /// Dialling `via`, one of the workspace's holders, failed with `reason`.
+    /// The hold no longer counts as establishing a link unless it goes on to
+    /// another holder.
     fn dial_failed(
         &self,
         via: TransportHint,
-        governor: bool,
         reason: String,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// Run `linked`, the workspace's link, pinned by `scope`, until it ends.
@@ -82,7 +81,7 @@ impl Link {
 enum Outcome {
     /// A link ran, or the material moved on: dial again soon.
     Again,
-    /// Nothing reached the host: dial again after a growing pause.
+    /// No holder answered: dial again after a growing pause.
     Failed,
     /// Nothing to dial until [`Link::retry`].
     Wait,
@@ -103,8 +102,11 @@ pub async fn hold(
     };
     let paced = holder.paces_itself();
     let mut pause = FIRST_PAUSE;
+    // The holder the last link reached: dialled first next time, so a holder
+    // that went away is not waited on again before every redial.
+    let mut last: Option<[u8; 32]> = None;
     while Connect::new(connect.owner().clone(), connect.workspace()).is_ok() {
-        let outcome = Box::pin(once(&connect, holder, link, &identity)).await;
+        let outcome = Box::pin(once(&connect, holder, link, &identity, &mut last)).await;
         link.settled();
         match outcome {
             Outcome::Again => {
@@ -133,17 +135,12 @@ async fn wait(link: &Link, pause: Option<Duration>) {
     }
 }
 
-/// The link `once` dials, and the pin it is checked against.
-struct Dialled {
-    linked: Linked,
-    via: TransportHint,
-}
-
 async fn once(
     connect: &Connect,
     holder: &dyn Holder,
     link: &Link,
     identity: &HostIdentity,
+    last: &mut Option<[u8; 32]>,
 ) -> Outcome {
     let Ok((hint, cert, _)) = connect.material(identity) else {
         return renew(connect, holder, link, identity).await;
@@ -154,78 +151,57 @@ async fn once(
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
         return Outcome::Wait;
     }
-    let dial = |via: TransportHint, reach: Reach| {
-        let signer = Arc::clone(&identity.signer);
-        async move {
-            reach
-                .session(connect, &via, signer)
-                .await
-                .map(|linked| Dialled { linked, via })
-        }
+    let Ok(mut holders) = connect.hosts(&own) else {
+        return Outcome::Failed;
     };
-    link.establishing.store(true, Ordering::Release);
-    let governor = dial(hint.clone(), reach.clone()).await;
-    let dialled = match governor {
-        Ok(dialled) => dialled,
-        Err(reason) => {
-            // A host that did not answer stands for one out of reach: the
-            // workspace goes on through the next host its governance names.
-            let next = connect.next_host(&own, None).ok().flatten();
-            link.establishing.store(next.is_some(), Ordering::Release);
-            holder.dial_failed(hint.clone(), true, reason).await;
-            let Some(dialled) = fail_over(connect, holder, link, (own, next), |via| {
-                dial(via, reach.clone())
-            })
-            .await
-            else {
-                return Outcome::Failed;
-            };
-            dialled
-        }
-    };
-    let mut current = dialled;
-    loop {
-        // The workspace's security may have moved on while dialling (another
-        // member joined): the link is still this device's as long as
-        // its host and certificate are, and its standing checks out now.
-        let Some(continuity) =
-            connect
-                .material(identity)
-                .ok()
-                .and_then(|(current_hint, device, continuity)| {
-                    (current_hint == hint && device == cert).then_some(continuity)
-                })
-        else {
-            return Outcome::Again;
-        };
-        link.establishing.store(false, Ordering::Release);
-        let Dialled { linked, via } = current;
-        let reaches_governor = via == hint;
-        let scope = Arc::new(Scope::via(
-            connect.clone(),
-            hint.clone(),
-            via,
-            cert.clone(),
-            continuity,
-        ));
-        if reaches_governor {
-            holder.run(linked, scope).await;
-            return Outcome::Again;
-        }
-        // A host stands in for the governor until the governor's own
-        // link is up again.
-        let mut run = holder.run(linked, scope);
-        current = loop {
-            tokio::select! {
-                () = &mut run => return Outcome::Again,
-                () = wait(link, holder.paces_itself().then_some(LONGEST_PAUSE)) => {}
-            }
-            match dial(hint.clone(), reach.clone()).await {
-                Ok(back) => break back,
-                Err(reason) => holder.dial_failed(hint.clone(), true, reason).await,
-            }
-        };
+    if let Some(index) = last.and_then(|last| {
+        holders
+            .iter()
+            .position(|via| via.host.device_public_key == last)
+    }) {
+        holders.rotate_left(index);
     }
+    link.establishing
+        .store(!holders.is_empty(), Ordering::Release);
+    let mut holders = holders.into_iter().peekable();
+    let (linked, via) = loop {
+        let Some(via) = holders.next() else {
+            return Outcome::Failed;
+        };
+        let signer = Arc::clone(&identity.signer);
+        match reach.session(connect, &via, signer).await {
+            Ok(linked) => break (linked, via),
+            Err(reason) => {
+                link.establishing
+                    .store(holders.peek().is_some(), Ordering::Release);
+                tracing::info!(
+                    workspace = %connect.workspace(),
+                    host = %hex::encode(via.host.device_public_key),
+                    %reason,
+                    "a holder of the workspace is out of reach; dialling the next"
+                );
+                holder.dial_failed(via, reason).await;
+            }
+        }
+    };
+    *last = Some(via.host.device_public_key);
+    // The workspace's security may have moved on while dialling (another
+    // member joined): the link is still this device's as long as its
+    // enrollment and certificate are, and its standing checks out now.
+    let Some(continuity) =
+        connect
+            .material(identity)
+            .ok()
+            .and_then(|(current_hint, device, continuity)| {
+                (current_hint == hint && device == cert).then_some(continuity)
+            })
+    else {
+        return Outcome::Again;
+    };
+    link.establishing.store(false, Ordering::Release);
+    let scope = Arc::new(Scope::via(connect.clone(), hint, via, cert, continuity));
+    holder.run(linked, scope).await;
+    Outcome::Again
 }
 
 /// Custody no longer matches the workspace's record: once it renewed the
@@ -249,36 +225,6 @@ async fn renew(
         Err(error) => {
             tracing::warn!(%workspace, %error, "this device's renewed certificate was not taken");
             Outcome::Failed
-        }
-    }
-}
-
-/// Dial `next` and each host the workspace names after it until one answers.
-async fn fail_over<F, D>(
-    connect: &Connect,
-    holder: &dyn Holder,
-    link: &Link,
-    (own, mut next): ([u8; 32], Option<TransportHint>),
-    dial: D,
-) -> Option<Dialled>
-where
-    D: Fn(TransportHint) -> F,
-    F: Future<Output = Result<Dialled, String>>,
-{
-    loop {
-        let via = next?;
-        tracing::info!(
-            workspace = %connect.workspace(),
-            host = %hex::encode(via.host.device_public_key),
-            "the workspace's governor is out of reach; dialling another of its hosts"
-        );
-        match dial(via.clone()).await {
-            Ok(dialled) => return Some(dialled),
-            Err(reason) => {
-                next = connect.next_host(&own, Some(&via)).ok().flatten();
-                link.establishing.store(next.is_some(), Ordering::Release);
-                holder.dial_failed(via, false, reason).await;
-            }
         }
     }
 }

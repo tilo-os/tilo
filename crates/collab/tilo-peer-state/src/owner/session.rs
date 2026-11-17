@@ -97,43 +97,28 @@ impl Connect {
             Ok((cert, view.continuity()))
         })
     }
-    /// The hosts the workspace's governor named besides itself
-    /// ([`crate::workspace_hosts_of`]), in the order governance holds
-    /// them: where a member's link goes while the governor is out of
-    /// reach. A host the workspace revoked, or one naming this device, is left
-    /// out.
+    /// Every holder of the workspace a link may reach, each alike: the host
+    /// this device's enrollment names, then each holder the workspace's
+    /// governance names ([`crate::workspace_hosts_of`]) in the order it holds
+    /// them. A holder the workspace revoked, or another naming this device,
+    /// is left out.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
         self.owner.with_current(self.workspace, |view| {
-            let governor = view.transport_hint()?.host.device_public_key;
+            let enrolled = view.transport_hint()?.clone();
             let revocations = view.peer().revocations();
-            Ok(view
+            let named = view
                 .peer()
                 .governance()
                 .workspace_hosts()
                 .into_iter()
                 .filter(|hint| {
                     let device = hint.host.device_public_key;
-                    device != governor
+                    device != enrolled.host.device_public_key
                         && &device != own
                         && !its_root_revoked(revocations.iter().cloned(), &hint.host)
-                })
-                .collect())
+                });
+            Ok(std::iter::once(enrolled.clone()).chain(named).collect())
         })
-    }
-
-    /// The host to dial after `after` (the first when `None`)
-    /// among [`Self::hosts`]: where the workspace's link goes next while its
-    /// governor is out of reach. `None` once every host was tried.
-    pub fn next_host(
-        &self,
-        own: &[u8; 32],
-        after: Option<&TransportHint>,
-    ) -> Result<Option<TransportHint>, String> {
-        let hosts = self.hosts(own)?;
-        let next = after
-            .and_then(|after| hosts.iter().position(|host| host == after))
-            .map_or(0, |index| index.saturating_add(1));
-        Ok(hosts.into_iter().nth(next))
     }
 
     /// Whether this device is the workspace's host itself: the host its
@@ -186,17 +171,17 @@ impl Connect {
 /// redialling every member for one person's join.
 pub struct Scope {
     connect: Connect,
+    /// The host this device's enrollment names.
     hint: TransportHint,
-    /// The host the link reached: the governor `hint` names, or a host the
-    /// workspace's governance names while the governor is out of reach.
+    /// The holder the link reached: any of the workspace's holders
+    /// ([`Connect::hosts`]).
     via: TransportHint,
     device: DeviceCert,
     /// The owner continuity the link last validated against.
     continuity: std::sync::atomic::AtomicU64,
 }
 impl Scope {
-    /// A link pinned to the workspace's governor `hint` that reached the host
-    /// `via` instead.
+    /// A link of the enrollment `hint` names that reached the holder `via`.
     #[must_use]
     pub fn via(
         connect: Connect,
@@ -235,11 +220,6 @@ impl Scope {
     #[must_use]
     pub fn host(&self) -> &TransportHint {
         &self.via
-    }
-    /// Whether this link reached the workspace's governor itself.
-    #[must_use]
-    pub fn reaches_governor(&self) -> bool {
-        self.via == self.hint
     }
     /// The owner continuity this link last validated against.
     fn continuity(&self) -> u64 {
