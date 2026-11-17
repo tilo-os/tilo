@@ -380,3 +380,196 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
         "it tells the person it stopped at the limit: {said:?}"
     );
 }
+
+/// The first part of the chat's messages, as the workspace keeps it.
+async fn conversation_part(
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspace: &str,
+) -> chat::parts::ChatPart {
+    let saved = workspaces
+        .resource_document(workspace, CHAT, chat::parts::part(0).as_str())
+        .await
+        .ok()
+        .flatten();
+    saved.map_or_else(chat::parts::ChatPart::default, |saved| {
+        chat::messages::read_part(&automerge::AutoCommit::load(&saved).unwrap())
+    })
+}
+
+/// The person writes `text` to the agent in their conversation with it, through the host's action
+/// service, as their page does. The message's id.
+async fn write_to_agent(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspaces: &tilo_relay::workspaces::Workspaces,
+    workspace: &str,
+    (root, browser): (&SigningKey, &crate::support::Device),
+    text: &str,
+) -> Id {
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let id = WorkspaceId::parse(workspace).unwrap();
+    let host = tilo_relay::workspace_agents::WorkspaceActionHost::new(actions.clone(), id);
+    let caller = tilo_actions::remote::Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        browser.cert.device_public_key,
+    )
+    .in_workspace(workspace);
+    let route = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.into(),
+        record: String::new(),
+    };
+    let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
+    let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});
+    tilo_relay::workspace_agents::invoke_named(
+        &host,
+        &caller,
+        &route,
+        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        "post",
+        arguments.as_object().unwrap().clone(),
+    )
+    .await
+    .expect("the person writes to the agent");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let part = conversation_part(workspaces, workspace).await;
+        if let Some((id, _)) = part.messages.iter().find(|(_, held)| held.text == text) {
+            return id.clone();
+        }
+        assert!(Instant::now() < deadline, "the host never holds {text:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &host,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+
+    // The workspace's chat, and the person in it, as their own Chat window introduces them the
+    // first time it opens: a conversation takes messages from the people the chat knows.
+    let catalogue = crate::common::catalogue();
+    let governor = workspaces.governor().clone();
+    workspaces
+        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+        .await
+        .unwrap();
+    workspaces
+        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
+            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+
+    // They write to the agent, and no device of theirs has to be on for what follows: the host
+    // reads the turn from its own copy of the chat.
+    let written = (&root, &browser);
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "what is planned?",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(looks_then_answers(1_000, Arc::clone(&asked))),
+    );
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(
+        turns.len(),
+        1,
+        "the message is the agent's one turn: {turns:?}"
+    );
+    assert_eq!(turns[0].person, person, "it works for whoever wrote to it");
+    assert_eq!(turns[0].cause, first.to_string());
+    assert!(
+        turns[0].request.contains("what is planned?"),
+        "the turn asks what the person wrote: {}",
+        turns[0].request
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+
+    // Its answer is the reply Chat derives for the message: the agent's own, in the model's
+    // words, with its work ended, so the message asks nothing more.
+    let part = conversation_part(&workspaces, &workspace).await;
+    let reply = part
+        .messages
+        .get(&chat::record::reply_id(&first, &MemberId::agent(SCOUT)))
+        .unwrap_or_else(|| {
+            panic!(
+                "the agent's reply is in the conversation: {:?}",
+                part.messages
+                    .iter()
+                    .map(|(_, held)| (held.author.clone(), held.text.clone()))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(reply.text.contains("the plan is ready"), "{}", reply.text);
+    assert_eq!(reply.author, MemberId::agent(SCOUT), "the agent wrote it");
+    assert!(
+        !chat::summons::unanswered(Some(reply)),
+        "its work ended: {:?}",
+        reply.work
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        2,
+        "one turn to look, one to answer"
+    );
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "answered once"
+    );
+
+    // Of two messages the agent has not answered, the newest is the turn: it replaces the one
+    // before it.
+    write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "and who owns it?",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let newest = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "no: when is it due?",
+    )
+    .await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
+    assert_eq!(
+        turns[0].cause,
+        newest.to_string(),
+        "the newest message is the one asked"
+    );
+    page.peer.close();
+}
