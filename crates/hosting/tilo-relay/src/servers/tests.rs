@@ -14,6 +14,23 @@ fn enrolled() -> Replica<Servers> {
     record
 }
 
+/// The record answers a read with what each server is set to, so an agent or
+/// a script with no window open reads a person's servers as any record.
+#[test]
+fn the_record_answers_a_read_with_what_each_server_is_set_to() {
+    use tilo_resource::Resource as _;
+    const { assert!(<Servers as tilo_resource::Resource>::READABLE) };
+    let mut record = enrolled();
+    record
+        .apply(Servers::SET_UPDATE_CHANNEL.with((device(), "stable".into())))
+        .unwrap();
+    let read = Servers::read_content(&record.state().unwrap(), record.doc(), None).unwrap();
+    let said = read.to_string();
+    assert!(read.is_object(), "{said}");
+    assert!(said.contains("Attic"), "the server's name is read: {said}");
+    assert!(said.contains("stable"), "and what it is set to: {said}");
+}
+
 #[test]
 fn a_servers_configuration_is_typed_actions_with_history() {
     let mut record = enrolled();
