@@ -2,23 +2,17 @@
 //!
 //! The workspaces' records are written by their apps, by the person's other devices and by this
 //! session's own services. Whoever writes one notes it in the one [`Changes`] stream of this host,
-//! and the roles that follow records — the activity and the person's mentions — read that stream
-//! and keep no watcher of their own. On a Linux desktop the store every in-process write lands in
-//! notes what it writes, the store's files are watched for the writes their apps make from their
-//! own processes ([`follow`]), and the record index notes what the broker receives from the apps;
-//! on the web the page's replication notes what it takes in.
+//! and the roles that follow records — the activity, the person's mentions and search — read that
+//! stream and keep no watcher of their own. On a Linux desktop the records are the engine's
+//! ([`Held`]), and the record index notes what the broker receives from the apps and what the
+//! session writes; on the web the page's replication notes what it takes in ([`Kept`]).
 
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use automerge::AutoCommit;
-use durable_store::{
-    Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
-    StoreError, Stored, WriteOp,
-};
+use durable_store::{DurableStore, StorageKey};
 use ui::resource::DocumentCheckout;
 
 use super::Store;
@@ -58,9 +52,6 @@ struct Inner {
     wake: Mutex<Option<tilo_service::Wake>>,
     /// The workers following the records, told each change as it is noted.
     readers: Mutex<Vec<mpsc::Sender<Changed>>>,
-    /// The route of each record document a write was noted at, by its storage key: the key is a
-    /// hash of the record's id, so the route is read once from the document's own identity.
-    routes: Mutex<BTreeMap<StorageKey, String>>,
 }
 
 impl Changes {
@@ -114,49 +105,6 @@ impl Changes {
         {
             wake();
         }
-    }
-
-    /// Note the write of `key` in `store` by the route of the record kept there: the empty one for
-    /// an app's workspace document, the id a record's document names itself by for any other.
-    pub fn wrote(&self, store: &dyn DurableStore, key: &StorageKey) {
-        match key {
-            StorageKey::Document { app, workspace, .. } => {
-                if let Some(route) = self.route_at(store, key) {
-                    self.note(workspace, app, &route, false);
-                }
-            }
-            StorageKey::WorkspaceIndex { app, workspace } => self.note(workspace, app, "", false),
-            _ => {}
-        }
-    }
-
-    /// The route of the record whose document is kept at `key`, read from the document once.
-    fn route_at(&self, store: &dyn DurableStore, key: &StorageKey) -> Option<String> {
-        let StorageKey::Document { document, .. } = key else {
-            return None;
-        };
-        if let Some(known) = self
-            .0
-            .routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(key)
-        {
-            return Some(known.clone());
-        }
-        // A document read while its first write is still landing names no identity yet: the next
-        // write of it is read again.
-        let id = ui::resource::identity(&stored_document(store, key)?)?.id;
-        if id.storage_key() != *document {
-            return None;
-        }
-        let route = id.route().to_owned();
-        self.0
-            .routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key.clone(), route.clone());
-        Some(route)
     }
 
     /// Wake the session's loop through `wake` whenever a record changed.
@@ -410,6 +358,10 @@ pub trait Records {
         let _ = workspace;
         Vec::new()
     }
+    /// The workspaces this host holds records of.
+    fn workspaces(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// What a role that reads on a worker of its own reads the workspaces through.
@@ -465,12 +417,26 @@ impl Records for Kept {
             })
             .collect()
     }
+
+    fn workspaces(&self) -> Vec<String> {
+        let mut workspaces: Vec<String> = self
+            .store
+            .workspace_indexes()
+            .inspect_err(|error| tracing::warn!(%error, "the workspace indexes are not listed"))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, workspace)| workspace)
+            .collect();
+        workspaces.sort();
+        workspaces.dedup();
+        workspaces
+    }
 }
 
 /// The checkouts the index of `app`'s records in `workspace` names, as its app wrote it, each with
 /// what the index says it is called.
 #[must_use]
-pub fn named_checkouts(
+fn named_checkouts(
     store: &dyn DurableStore,
     app: &str,
     workspace: &str,
@@ -812,178 +778,6 @@ mod loaded {
     }
 }
 
-/// `store` as the workspaces' records are kept in it, noting every record and index written
-/// through it in `changes`: what this session's own writers land in, and what the roles that
-/// follow records hear.
-#[must_use]
-pub fn noting(store: Store, changes: Changes) -> Store {
-    #[cfg(target_os = "linux")]
-    {
-        Arc::new(Noted { store, changes }) as Store
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        std::rc::Rc::new(Noted { store, changes }) as Store
-    }
-}
-
-/// Note every write to the records kept under `root` in `changes`, for as long as the watch is
-/// held: the store is a directory tree the apps of the workspaces write from their own processes,
-/// so its files are what tells the one change stream that a record moved when this session did not
-/// write it. Only the workspaces below a package are watched; the rest of the data home is watched
-/// for them appearing, and nothing it holds is a record.
-#[cfg(target_os = "linux")]
-#[must_use]
-pub fn follow(
-    root: &Path,
-    store: &Store,
-    changes: &Changes,
-) -> Option<tilo_files::native::ChangeWatch> {
-    let watched = root.to_path_buf();
-    let noting = changes.clone();
-    let reading = Store::clone(store);
-    let top = root.to_path_buf();
-    tilo_files::native::Watcher::tree(root)
-        .skip(move |directory| !holds_records(directory, &watched))
-        .start(move |events| {
-            for event in events {
-                if let Some(key) = changed_at(&event.path, &top) {
-                    noting.wrote(reading.as_ref(), &key);
-                }
-            }
-        })
-        .map_err(|error| tracing::warn!(%error, "writes to the records are not followed"))
-        .ok()
-}
-
-/// Whether a watch of the records' tree watches `directory`: a package of the store, or anything
-/// below the workspaces of one, which is where the workspaces' indexes and records are.
-#[cfg(target_os = "linux")]
-fn holds_records(directory: &Path, root: &Path) -> bool {
-    let Ok(below) = directory.strip_prefix(root) else {
-        return false;
-    };
-    let mut parts = below.components();
-    // A package of the store: its workspaces may appear below it at any time.
-    if parts.next().is_none() {
-        return false;
-    }
-    match parts.next() {
-        None => true,
-        Some(part) => part.as_os_str() == app_state::WORKSPACES_DIR,
-    }
-}
-
-/// The key a write to `path` under `root` landed at: the workspace index of an app in a workspace,
-/// or the document of one of its records.
-#[cfg(target_os = "linux")]
-fn changed_at(path: &Path, root: &Path) -> Option<StorageKey> {
-    let below = path.strip_prefix(root).ok()?;
-    let names: Vec<&str> = below
-        .components()
-        .map(|part| part.as_os_str().to_str())
-        .collect::<Option<_>>()?;
-    let [app, workspaces, workspace, rest @ ..] = names.as_slice() else {
-        return None;
-    };
-    if *workspaces != app_state::WORKSPACES_DIR {
-        return None;
-    }
-    Some(match rest {
-        [records, record, ..] if *records == app_state::DOCUMENTS_DIR => {
-            StorageKey::document(*app, *workspace, *record)
-        }
-        _ => StorageKey::workspace_index(*app, *workspace),
-    })
-}
-
-/// A store whose writes of the workspaces' records are noted in the change stream.
-struct Noted {
-    store: Store,
-    changes: Changes,
-}
-
-impl DurableStore for Noted {
-    fn namespace(&self) -> &str {
-        self.store.as_ref().namespace()
-    }
-
-    fn read(&self, key: &StorageKey) -> Result<Option<Stored>, StoreError> {
-        self.store.as_ref().read(key)
-    }
-
-    fn write(
-        &self,
-        key: &StorageKey,
-        op: WriteOp,
-        writer: Option<&[u8]>,
-    ) -> Result<Revision, StoreError> {
-        let revision = self.store.as_ref().write(key, op, writer)?;
-        self.changes.wrote(self.store.as_ref(), key);
-        Ok(revision)
-    }
-
-    fn durability(&self, key: &StorageKey, revision: Revision) -> Durability {
-        self.store.as_ref().durability(key, revision)
-    }
-
-    fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError> {
-        self.store.as_ref().flush(key)
-    }
-
-    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), StoreError> {
-        self.store.as_ref().flush_without_waiting(key)
-    }
-
-    fn flush_where_allowed(&self, key: &StorageKey) -> Result<(), StoreError> {
-        self.store.as_ref().flush_where_allowed(key)
-    }
-
-    fn is_settled(&self, key: &StorageKey) -> bool {
-        self.store.as_ref().is_settled(key)
-    }
-
-    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
-        self.store.as_ref().wake_when_settled(key, wake)
-    }
-
-    fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
-        self.store.as_ref().lease(key)
-    }
-
-    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError> {
-        self.store.as_ref().lease_shared(key)
-    }
-
-    fn declined_waiting_here(&self) -> bool {
-        self.store.as_ref().declined_waiting_here()
-    }
-
-    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
-        self.store.as_ref().claim(key, claimant)
-    }
-
-    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
-        self.store.as_ref().documents(app, workspace)
-    }
-
-    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
-        self.store.as_ref().workspace_indexes()
-    }
-
-    fn local_path(&self, key: &StorageKey) -> Option<std::path::PathBuf> {
-        self.store.as_ref().local_path(key)
-    }
-
-    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), StoreError> {
-        self.store.as_ref().write_hint(key, hint)
-    }
-
-    fn read_hint(&self, key: &StorageKey) -> Option<Vec<u8>> {
-        self.store.as_ref().read_hint(key)
-    }
-}
-
 /// What each workspace holds, as this device's engine keeps it: what its apps write, what the
 /// person's other devices replicate and what search reads, with the changes noted as they land.
 #[cfg(target_os = "linux")]
@@ -1055,5 +849,13 @@ impl Records for Held {
             .records(workspace)
             .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))
             .unwrap_or_default()
+    }
+
+    fn workspaces(&self) -> Vec<String> {
+        self.engine
+            .workspaces()
+            .into_iter()
+            .map(|workspace| workspace.to_string())
+            .collect()
     }
 }

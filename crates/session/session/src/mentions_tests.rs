@@ -37,7 +37,7 @@ fn name(id: &str) -> String {
 /// A device's records: the store they are kept in, the one stream their writes land in, and the
 /// reader the role looks at them through — what a session hands its mentions.
 struct Device {
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
     store: Store,
     changes: Changes,
 }
@@ -57,12 +57,9 @@ impl Device {
     fn empty() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let changes = Changes::default();
-        let store = crate::platform::records::noting(
-            std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store,
-            changes.clone(),
-        );
+        let store: Store = std::sync::Arc::new(app_state::FsStore::new(dir.path()));
         Self {
-            dir,
+            _dir: dir,
             store,
             changes,
         }
@@ -72,13 +69,13 @@ impl Device {
     /// the stream as it lands.
     fn writes(&self, app: &str, route: &str, doc: &mut AutoCommit) {
         Self::write_through(&self.store, app, route, doc);
+        self.changes.note(WORKSPACE, app, route, false);
     }
 
     /// The workspace held `doc` before this device followed it: written where the store keeps it,
     /// and noted as what the device already had rather than as news.
     fn already_held(&self, app: &str, route: &str, doc: &mut AutoCommit) {
-        let plain: Store = std::sync::Arc::new(app_state::FsStore::new(self.dir.path()));
-        Self::write_through(&plain, app, route, doc);
+        Self::write_through(&self.store, app, route, doc);
         self.changes.note(WORKSPACE, app, route, true);
     }
 
@@ -97,6 +94,7 @@ impl Device {
             &StorageKey::workspace_index(app, WORKSPACE),
             &mut doc,
         );
+        self.changes.note(WORKSPACE, app, "", false);
     }
 
     fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
@@ -296,6 +294,7 @@ tilo_test_env::scenario! {
             &StorageKey::workspace_index(NOTES, WORKSPACE),
             &mut written,
         );
+        device.changes.note(WORKSPACE, NOTES, "", false);
         mentions.step();
         let up = shown.up.borrow();
         assert_eq!(up.len(), 1, "{up:?}");
