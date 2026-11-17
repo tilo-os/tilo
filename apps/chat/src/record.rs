@@ -168,6 +168,25 @@ pub struct Chat {
     /// not take, rather than posting one that never reaches it.
     #[model(readonly)]
     pub files: WorkspaceFiles,
+    /// What each agent keeps of a conversation it answers in, by the conversation's id and then
+    /// under the agent's [`member_slot`]: the summary its turns are told in place of the
+    /// messages they are no longer told as written ([`crate::recall`]). Kept here and not with
+    /// the messages, so a device that holds only the newest part still has it. Written only by
+    /// [`Chat::keep_summary`].
+    #[model(readonly)]
+    pub summaries: BTreeMap<String, BTreeMap<String, Summary>>,
+}
+
+/// What an agent keeps of a conversation it answers in: everything up to one message, in its own
+/// words.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    /// The summary.
+    pub text: String,
+    /// The last message it takes in, by its id.
+    pub through: Atom,
+    /// When that message was written, in seconds since the epoch.
+    pub through_ts: i64,
 }
 
 /// What a workspace's host keeps of the files its members post; zero where it
@@ -1504,6 +1523,54 @@ impl Chat {
         if *mark < read {
             *mark = read;
         }
+        Ok(())
+    }
+
+    /// Keep a summary.
+    ///
+    /// What the agent answering in a conversation keeps of it, through the message it names:
+    /// what its later turns are told in place of the messages before ([`crate::recall`]). Only
+    /// an agent the conversation is with keeps one, under its own name, and a summary only
+    /// reaches further: one that ends before the one kept changes nothing, so two runtimes
+    /// answering for the same agent keep the further of the two.
+    #[action(item = channels, housekeeping, audience = "agents")]
+    pub fn keep_summary(
+        &mut self,
+        cx: &mut ActionCx,
+        channel: &Id,
+        #[param("The last message it takes in")] through: String,
+        #[param("When that message was written, in seconds since the epoch")] through_ts: i64,
+        #[param("The summary")] text: String,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        if me.is_person() || !self.conversation_members(channel).contains(&me) {
+            return Err(Refusal::new(
+                "only an agent the conversation is with keeps its summary",
+            ));
+        }
+        let text = text.trim();
+        if text.is_empty() || text.len() > ui::collaboration::recall::SUMMARY_BYTES {
+            return Err(Refusal::new(format!(
+                "a summary is 1 to {} bytes of text",
+                ui::collaboration::recall::SUMMARY_BYTES
+            )));
+        }
+        let through = through.trim();
+        if through.is_empty() || through.len() > 256 || through.chars().any(char::is_control) {
+            return Err(Refusal::new("a summary names the last message it takes in"));
+        }
+        let kept = self
+            .summaries
+            .entry(channel.to_string())
+            .or_default()
+            .entry(member_slot(&me).to_string())
+            .or_default();
+        if !kept.text.is_empty() && through_ts < kept.through_ts {
+            return Ok(());
+        }
+        text.clone_into(&mut kept.text);
+        kept.through = Atom(through.to_owned());
+        kept.through_ts = through_ts;
         Ok(())
     }
 

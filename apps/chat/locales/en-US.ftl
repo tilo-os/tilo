@@ -218,6 +218,7 @@ chat-deliver-message = Delivered a message from { $author }
 chat-edit-message = Edited a message: { $text }
 chat-delete-message = Deleted a message
 chat-mark-read = Marked #{ $item } read
+chat-keep-summary = Kept a summary of the conversation
 chat-record-work = Recorded what it is doing
 chat-submit-feedback = Filed feedback in #{ $item }
 chat-triage = Triaged feedback
@@ -518,6 +519,7 @@ chat-workspace-report-person = Report person
 chat-workspace-decide-reports = Decide on a report
 chat-workspace-overturn-decision = Overturn a decision
 chat-workspace-mark-read = Mark as read
+chat-workspace-keep-summary = Keep a summary
 chat-workspace-submit-feedback = Submit feedback
 chat-workspace-triage = Triage feedback
 # A message moved from another chat: its author there, and the tool.
