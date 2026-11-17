@@ -196,9 +196,8 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
             .as_ref()
             .unwrap()
             .acting
-            .by
-            .key(),
-        "agent:canvas-finder"
+            .by,
+        ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("canvas-finder"))
     );
     let undo = app
         .call_by(

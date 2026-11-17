@@ -22,12 +22,12 @@ pub(crate) struct Sending {
 impl Sending {
     pub(crate) fn new(
         client: Option<MessagingClient>,
-        actor: Option<&str>,
+        actor: Option<&ui::tilo_resource::PersonId>,
         drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
         direct: bool,
     ) -> Self {
         Self {
-            client: client.filter(|c| actor == Some(c.actor())),
+            client: client.filter(|c| actor.is_some_and(|actor| actor.as_str() == c.actor())),
             direct,
             draft: LocalState::new(String::new()),
             operation: LocalState::new(uuid::Uuid::new_v4().to_string()),

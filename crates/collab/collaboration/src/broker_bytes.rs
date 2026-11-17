@@ -27,10 +27,8 @@ impl ByteMeter {
         self.add(value.capacity());
     }
 
-    /// A member's id as its key is written: `agent:<id>`, `bot:<id>`, or a
-    /// person's bare root key.
     pub(super) fn member(&mut self, member: &tilo_actions::MemberId) {
-        self.add(member.key().len());
+        self.add(member.id().len());
     }
 
     pub(super) fn bytes(&mut self, value: &Vec<u8>) {

@@ -707,7 +707,7 @@ impl RoutedOwners {
         u64,
         Option<u64>,
         Vec<(
-            String,
+            tilo_actions::MemberId,
             crate::application::InstanceId,
             crate::undo::UndoStatus,
         )>,
@@ -1102,7 +1102,7 @@ impl RoutedPrimary {
         u64,
         Option<u64>,
         Vec<(
-            String,
+            tilo_actions::MemberId,
             crate::application::InstanceId,
             crate::undo::UndoStatus,
         )>,

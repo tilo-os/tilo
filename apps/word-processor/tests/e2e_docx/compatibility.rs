@@ -14,7 +14,7 @@ use crate::support::{apply, launched, save_as};
 // legacy comment container. Read the same combined view that Save As uses.
 fn snapshot(app: &crate::support::App) -> DocSnapshot {
     app.read_document(|doc| {
-        word_processor::model::export_copy(doc)
+        word_processor::model::export_copy(doc, &|_| String::new())
             .unwrap()
             .materialize()
     })

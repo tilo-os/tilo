@@ -20,7 +20,7 @@ use ui::record::person::PersonRecords;
 /// The person's records kept in one store, by app and person.
 struct Kept {
     owners: RecordOwners,
-    records: HashMap<(String, String), PersonRecords>,
+    records: HashMap<(String, MemberId), PersonRecords>,
 }
 
 thread_local! {
@@ -41,23 +41,19 @@ fn key<T: ?Sized>(store: &Rc<T>) -> usize {
 pub(crate) fn of(
     store: &Rc<dyn DurableStore>,
     app_id: &str,
-    author: &str,
+    author: &MemberId,
 ) -> Result<PersonRecords, String> {
     KEPT.with_borrow_mut(|kept| {
         let kept = kept.entry(key(store)).or_insert_with(|| Kept {
             owners: RecordOwners::with_store(Rc::clone(store)),
             records: HashMap::new(),
         });
-        let held = (app_id.to_owned(), author.to_owned());
+        let held = (app_id.to_owned(), author.clone());
         if let Some(records) = kept.records.get(&held) {
             return Ok(records.clone());
         }
-        let records = PersonRecords::open(
-            &mut kept.owners,
-            app_id,
-            MemberId::person(author.to_owned()),
-        )
-        .map_err(|error| error.to_string())?;
+        let records = PersonRecords::open(&mut kept.owners, app_id, author.clone())
+            .map_err(|error| error.to_string())?;
         kept.records.insert(held, records.clone());
         Ok(records)
     })
@@ -75,7 +71,7 @@ pub(crate) fn provide(
     if context.is_private() {
         return Ok(());
     }
-    let records = of(store, context.app_id(), &context.author().key())?;
+    let records = of(store, context.app_id(), context.author())?;
     context.provide_person_records(records);
     Ok(())
 }
@@ -237,11 +233,11 @@ mod tests {
         phase every_mount_of_the_page_shares_one_writer;
         {
             let store = page();
-            write(&of(&store, APP, PERSON).unwrap(), "see you at six");
+            write(&of(&store, APP, &MemberId::person(PERSON)).unwrap(), "see you at six");
             // A second desktop of the page opens the same records, not a
             // replica that stores nothing.
             assert_eq!(
-                read(&of(&store, APP, PERSON).unwrap()).as_deref(),
+                read(&of(&store, APP, &MemberId::person(PERSON)).unwrap()).as_deref(),
                 Some("see you at six")
             );
         }
@@ -252,7 +248,7 @@ mod tests {
         {
             let memory = Rc::new(durable_store::MemoryStore::queued());
             let store: Rc<dyn DurableStore> = memory.clone();
-            write(&of(&store, APP, PERSON).unwrap(), "back in five");
+            write(&of(&store, APP, &MemberId::person(PERSON)).unwrap(), "back in five");
             assert_eq!(store_all(&store), Vec::<String>::new());
             assert!(
                 !memory.drain().is_empty(),
@@ -263,7 +259,7 @@ mod tests {
         phase what_the_person_wrote_outlives_the_page;
         {
             let store = page();
-            write(&of(&store, APP, PERSON).unwrap(), "on my way");
+            write(&of(&store, APP, &MemberId::person(PERSON)).unwrap(), "on my way");
             flush(&store);
             // The page closes; the next one reads what its profile stored.
             KEPT.with_borrow_mut(HashMap::clear);

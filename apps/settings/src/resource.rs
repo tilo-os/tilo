@@ -476,7 +476,7 @@ mod own_record_tests {
             .expect("each member keeps their own Settings record");
         assert_eq!(
             own.id,
-            ui::record::DocumentId::of_member(&person.key(), "settings.root").unwrap()
+            ui::record::DocumentId::of_member(person.id(), "settings.root").unwrap()
         );
     }
 }

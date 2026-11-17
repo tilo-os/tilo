@@ -902,6 +902,8 @@ pub struct Editor {
     record_file: Option<PathBuf>,
     bound: BoundRows,
     pending_local: Option<(LocalVersion, crate::actions::presence::PresenceView)>,
+    /// The workspace's names for its members: what a saved file calls the writer of a comment.
+    people: Option<ui::framework::People>,
     #[cfg(test)]
     last_dispatched: Option<crate::actions::RichTextAction>,
 }
@@ -1131,6 +1133,7 @@ impl Editor {
             record_file: None,
             bound: BoundRows::default(),
             pending_local: None,
+            people: None,
             #[cfg(test)]
             last_dispatched: None,
         }
@@ -1140,10 +1143,12 @@ impl Editor {
         &mut self,
         live: ui::framework::Live<crate::framework::Document>,
         dispatcher: ui::framework::Dispatcher<crate::framework::Document>,
+        people: ui::framework::People,
     ) {
         self.inner.attach(dispatcher.clone());
         self.dispatch = Some(dispatcher);
         self.source = Some(live);
+        self.people = Some(people);
     }
 
     #[cfg(test)]
@@ -1545,7 +1550,14 @@ impl Editor {
         if self.inner.containers.is_none() {
             return Err("document has no writable path or initialized body".into());
         }
-        let file = crate::model::export_copy(state)?;
+        let people = self.people.clone();
+        let file = crate::model::export_copy(state, &|member| {
+            people
+                .as_ref()
+                .and_then(|people| people.member(member))
+                .map(|candidate| candidate.name)
+                .unwrap_or_default()
+        })?;
         format
             .export(file.as_ref(), self.inner.content_store())
             .map_err(|e| {

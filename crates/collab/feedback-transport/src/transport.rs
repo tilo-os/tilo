@@ -122,7 +122,12 @@ impl Enrollment {
             .at_current_time()
             .map_err(|_| Error::Invalid("feedback policy time unavailable"))?;
         if self.permissions.role().is_none()
-            || self.permissions.user().key() != hex::encode(pin.reporter.user)
+            || self
+                .permissions
+                .user()
+                .as_person()
+                .and_then(tilo_actions::policy::PersonId::root)
+                != Some(pin.reporter.user)
         {
             return Err(Error::Invalid("reporter admission required"));
         }

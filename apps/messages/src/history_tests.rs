@@ -818,26 +818,33 @@ tilo_test_env::scenario! {
     // The conversation with a person reads from Chat's messages as the record api answers
     // them: only theirs with this person, in each part's order, the person's as incoming.
     {
-        let (me, peer) = ("aa", "bb");
-        let channel = "direct:aa|bb";
+        use ui::tilo_resource::{MemberId, PersonId};
+        let (me, peer) = (PersonId::expect("aa"), PersonId::expect("bb"));
+        // Chat's own spelling of the conversation and of its authors.
+        let channel = chat::Chat::direct_id([MemberId::Person(peer.clone()), MemberId::Person(me.clone())]);
+        let channel = channel.as_str();
+        let (me_author, peer_author) = (
+            serde_json::to_value(MemberId::Person(me.clone())).unwrap(),
+            serde_json::to_value(MemberId::Person(peer.clone())).unwrap(),
+        );
         let route = routing::Route {
             person: Id::from_raw("bb"),
             association: Id::from_raw("tilo"),
             sender: Id::from_raw("me"),
             service: "tilo".into(),
             scope: String::new(),
-            recipient: peer.into(),
+            recipient: peer.as_str().into(),
             revision: String::new(),
         };
         let readings = serde_json::json!({"revision": "r", "records": [
             {"record": "part.0", "value": {"messages": {
-                "m2": {"k": "b", "v": {"channel": channel, "author": me, "text": "fine", "ts": 2}},
-                "m1": {"k": "a", "v": {"channel": channel, "author": peer, "text": "hi", "ts": 1}},
-                "x": {"k": "a", "v": {"channel": "general", "author": peer, "text": "elsewhere", "ts": 1}},
+                "m2": {"k": "b", "v": {"channel": channel, "author": me_author, "text": "fine", "ts": 2}},
+                "m1": {"k": "a", "v": {"channel": channel, "author": peer_author, "text": "hi", "ts": 1}},
+                "x": {"k": "a", "v": {"channel": "general", "author": peer_author, "text": "elsewhere", "ts": 1}},
             }}},
             {"record": "part.1", "arriving": true},
         ]});
-        let page = crate::history::direct_page(route, (me, peer), &readings);
+        let page = crate::history::direct_page(route, (&me, &peer), &readings);
         let read: Vec<_> = page
             .messages
             .iter()

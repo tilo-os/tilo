@@ -706,10 +706,14 @@ pub fn open(doc: &AutoCommit) -> Result<tilo_doc::Containers, String> {
 }
 
 /// `doc` as a file holds it: the comment threads written into the text as file
-/// formats keep them, for the codecs.
-pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
+/// formats keep them, each member who wrote in them by the name `name` gives them, for the
+/// codecs.
+pub fn export_copy(
+    doc: &AutoCommit,
+    name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
+) -> Result<tilo_doc::Document, String> {
     let document = <Document as Resource>::read(doc).map_err(|error| error.to_string())?;
-    let threads = document.comment_views(doc);
+    let threads = document.comment_views_named(doc, name);
     let mut copy = reopen(doc.clone())?;
     for thread in threads {
         let Some((block, start, end)) = &thread.range else {
@@ -833,11 +837,24 @@ fn reply_blocks(id: &Id, reply: &Reply) -> Vec<tilo_doc::snapshot::BlockView> {
 impl Document {
     #[must_use]
     pub fn comment_views(&self, doc: &AutoCommit) -> Vec<tilo_doc::snapshot::CommentView> {
+        self.comment_views_named(doc, &|_| String::new())
+    }
+
+    /// The comment threads, each member who wrote in them by the name `name` gives them.
+    fn comment_views_named(
+        &self,
+        doc: &AutoCommit,
+        name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
+    ) -> Vec<tilo_doc::snapshot::CommentView> {
+        let author = |author: &Author| match author {
+            Author::Member(member) => name(member),
+            Author::Named(named) => named.clone(),
+        };
         self.comments
             .iter()
             .map(|(id, comment)| tilo_doc::snapshot::CommentView {
                 id: id.to_string(),
-                author: comment.author.file_name().to_owned(),
+                author: author(&comment.author),
                 date: comment.date.clone(),
                 blocks: vec![paragraph(format!("{id}.0"), &comment.text)],
                 replies: comment
@@ -845,7 +862,7 @@ impl Document {
                     .iter()
                     .map(|(reply_id, reply)| tilo_doc::snapshot::CommentReplyView {
                         id: reply_id.to_string(),
-                        author: reply.author.file_name().to_owned(),
+                        author: author(&reply.author),
                         date: reply.date.clone(),
                         blocks: reply_blocks(reply_id, reply),
                     })
@@ -1171,7 +1188,7 @@ mod tests {
                     text: "Seven sharp?".parse().unwrap(),
                 }))
                 .unwrap();
-            let file = export_copy(replica.doc()).unwrap();
+            let file = export_copy(replica.doc(), &|_| String::new()).unwrap();
             let bytes = crate::WpFormat::Docx
                 .export(file.as_ref(), &tilo_content::NoContent)
                 .unwrap();

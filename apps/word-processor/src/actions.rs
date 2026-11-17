@@ -1359,6 +1359,14 @@ mod tests {
                 crate::model::Author::Member(ui::tilo_resource::MemberId::person("Jonas"))
             );
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
+            let file =
+                crate::model::export_copy(&a.doc, &|member| format!("{} Weber", member.id()))
+                    .unwrap()
+                    .materialize();
+            assert_eq!(
+                file.comments[0].replies[0].author, "Jonas Weber",
+                "a file names the member who answered by the workspace's name for them"
+            );
 
             let resolve = verb(crate::model::DocumentAction::ResolveComment(
                 crate::model::document::ResolveComment {

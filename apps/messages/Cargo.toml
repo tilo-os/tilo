@@ -18,6 +18,8 @@ runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# A direct conversation's id, as Chat derives it.
+chat = { path = "../chat", default-features = false }
 tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 # The person's accounts, in the messaging service the launcher connects
 # this app to.

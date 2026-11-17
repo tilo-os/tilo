@@ -68,6 +68,17 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// Someone outside the workspace, by `name`: what an item moved from elsewhere names
+    /// until they join.
+    #[must_use]
+    pub fn outside(name: &str) -> Self {
+        Self {
+            member: None,
+            name: name.trim().to_owned(),
+            hue: PresenceHue::of_identity(name),
+        }
+    }
+
     /// The id a face takes its photograph from.
     #[must_use]
     pub fn identity(&self) -> &str {
@@ -153,31 +164,6 @@ impl People {
             name: self.name(member),
             hue: self.hue(member),
             member: Some(member.clone()),
-        }
-    }
-
-    /// Who the id an action recorded names: a person by their bare root key (as
-    /// an assignee or a mention holds them), an agent as the action API names
-    /// it (`agent:<id>`), or someone outside the workspace by their name
-    /// (`outside:<name>`). A person is never spelled with a prefix, so an id
-    /// that has one names software or nobody, and reads as what it says.
-    pub fn actor(&self, id: &str) -> Actor {
-        // Someone outside the workspace, named where an item came from
-        // until they join: their name is all the record knows of them.
-        if let Some(name) = id.strip_prefix("outside:") {
-            return Actor {
-                member: None,
-                name: name.trim().to_owned(),
-                hue: PresenceHue::of_identity(id),
-            };
-        }
-        match MemberId::parse(id) {
-            Some(member) => self.actor_of(&member),
-            None => Actor {
-                member: None,
-                name: id.to_owned(),
-                hue: PresenceHue::of_identity(id),
-            },
         }
     }
 
@@ -296,7 +282,7 @@ impl People {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
-    /// A chip showing whom the resource assigns `read` to — their avatar and
+    /// A chip showing whom the resource assigns (`read`, as the view shows them) — their avatar and
     /// name, or `nobody` while it names no one — that opens the workspace's
     /// people and agents, each with their avatar, and invokes `action` with
     /// the value the record stores for the one picked (`None` for nobody).
@@ -311,7 +297,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         label: String,
         nobody: String,
         value_of: impl Fn(&MentionCandidate) -> Option<String> + 'static,
-        read: impl Fn(&T) -> Option<String> + 'static,
+        read: impl Fn(&T) -> Option<Actor> + 'static,
         action: B,
     ) -> Element {
         let people = self.people();
@@ -326,12 +312,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 let read = Rc::clone(&read);
                 cx.value(move |state: &T| read(state))
             };
-            let people = people.clone();
             let (label, nobody, value_of) =
                 (Rc::clone(&label), Rc::clone(&nobody), Rc::clone(&value_of));
             let held_action = action.clone();
-            cx.switch(&held, move |cx, held| {
-                let who = held.as_deref().map(|value| people.actor(value));
+            cx.switch(&held, move |cx, who| {
                 let mut choices = Stack::new();
                 choices = choices.push(cx.person_choice(
                     &format!("{id}-none"),
@@ -345,8 +329,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     let Some(value) = value_of(member) else {
                         continue;
                     };
+                    let kind = match member.id {
+                        MemberId::Person(_) => "person",
+                        MemberId::Agent(_) => "agent",
+                        MemberId::Bot(_) => "bot",
+                    };
                     choices = choices.push(cx.person_choice(
-                        &format!("{id}-{}", member.id.id()),
+                        &format!("{id}-{kind}-{}", member.id.id()),
                         &member.name,
                         Some(value),
                         Some((&member.name, member.id.id(), member.hue)),
@@ -475,28 +464,6 @@ mod tests {
             assert!(people.follow(&presence));
             assert_eq!(people.name(&me), "Ada (1)");
             assert_eq!(people.name(&peer), "ada (2)");
-        }
-
-        phase a_persons_bare_root_reads_as_the_name_the_workspace_gives;
-        {
-            let people = People::new(None);
-            let mut presence = PresenceCtx::default();
-            presence.set_display_name(MemberId::person("bob"), "Bob");
-            presence.set_display_name(MemberId::agent("scribe"), "Scribe");
-            assert!(people.follow(&presence));
-
-            let bob = people.actor("bob");
-            assert_eq!(bob.name, "Bob", "an assignee's bare root reads by its name");
-            assert_eq!(bob.member, Some(MemberId::person("bob")));
-            let scribe = people.actor("agent:scribe");
-            assert_eq!(scribe.name, "Scribe · Agent");
-            assert!(scribe.agent());
-            let old = people.actor("person:bob");
-            assert_eq!(
-                old.member, None,
-                "the old prefixed spelling names nobody the workspace knows"
-            );
-            assert_eq!(old.name, "person:bob", "and reads as what it says");
         }
     }
 }

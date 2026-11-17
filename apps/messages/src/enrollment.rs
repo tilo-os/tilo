@@ -26,9 +26,13 @@ pub(crate) struct EnrollmentView {
     epoch: LocalState<u64>,
 }
 impl EnrollmentView {
-    pub(crate) fn new(client: Option<EnrollmentClient>, actor: Option<&str>) -> Self {
+    pub(crate) fn new(
+        client: Option<EnrollmentClient>,
+        actor: Option<&ui::tilo_resource::PersonId>,
+    ) -> Self {
         Self {
-            client: client.filter(|client| actor == Some(client.actor())),
+            client: client
+                .filter(|client| actor.is_some_and(|actor| actor.as_str() == client.actor())),
             state: LocalState::new(Projection::default()),
             epoch: LocalState::new(0),
         }

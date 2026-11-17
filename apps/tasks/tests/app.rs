@@ -417,6 +417,7 @@ tilo_test_env::scenario! {
             let presence = app.harness().presence_mut();
             presence.set_display_name(ui::permissions::MemberId::person("bob"), "Bob");
             presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
+            presence.set_display_name(ui::permissions::MemberId::person("scribe"), "Sam");
         }
         app.settle();
 
@@ -436,19 +437,25 @@ tilo_test_env::scenario! {
                 .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
             app.settle();
         };
-        pick(&mut app, "tasks-issue-assignee-bob");
+        pick(&mut app, "tasks-issue-assignee-person-bob");
         assert_eq!(assignee(&app).as_deref(), Some("bob"));
         assert!(
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
             "the chip says the person's name, never the record's spelling"
         );
-        pick(&mut app, "tasks-issue-assignee-scribe");
+        pick(&mut app, "tasks-issue-assignee-agent-scribe");
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
                 .a11y_node_named("Assignee: Scribe · Agent")
                 .is_some(),
             "an agent reads by name, and as an agent"
+        );
+        pick(&mut app, "tasks-issue-assignee-person-scribe");
+        assert_eq!(
+            assignee(&app).as_deref(),
+            Some("scribe"),
+            "a person whose id an agent also has is their own choice"
         );
         pick(&mut app, "tasks-issue-assignee-none");
         assert_eq!(assignee(&app), None);

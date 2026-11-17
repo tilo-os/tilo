@@ -89,15 +89,16 @@ impl Conversations {
         }
     }
 
-    /// The person at this device: whose changes what the service records are theirs, and the author
-    /// a message or a record of work is written by when the caller names nobody else.
+    /// The member at this device: whose changes what the service records are theirs, and the
+    /// author a message or a record of work is written by when the caller names nobody else.
+    /// Nobody while no workspace is open.
     #[must_use]
-    pub fn person(&self) -> String {
+    pub fn member(&self) -> MemberId {
         let open = self.open.borrow();
-        open.values()
-            .next()
-            .map(|opened| opened.records.author().key())
-            .unwrap_or_default()
+        open.values().next().map_or_else(
+            || MemberId::person(""),
+            |opened| opened.records.author().clone(),
+        )
     }
 
     /// The workspace's agents by their id, as the workspace keeps their names: what a
@@ -123,9 +124,9 @@ impl Conversations {
         if !held {
             return None;
         }
-        let standing = tilo_action_policy::Standing::person(
+        let standing = tilo_action_policy::Standing::new(
             opened.policy.clone(),
-            opened.records.author().key(),
+            tilo_action_policy::Acting::member(opened.records.author().clone()),
         );
         let permissions = PermissionContext::from_standing(standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
@@ -684,7 +685,7 @@ impl tilo_service::Service for TurnSummonses {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
-        let invoker = tilo_actions::ActionInvoker::person(self.conversations.person());
+        let invoker = tilo_actions::ActionInvoker::member(self.conversations.member());
         self.invoke_as(&invoker, resource, action, arguments)
     }
 
@@ -723,7 +724,7 @@ impl tilo_service::Service for TurnSummonses {
         // person's (or the invoker's) own arranging step.
         if action == CONVERSATION && resource.starts_with(TURNS) {
             let asked = if invoker.acting.by.id().is_empty() {
-                tilo_actions::MemberId::person(self.conversations.person()).into()
+                self.conversations.member().into()
             } else {
                 invoker.acting.by.clone()
             };

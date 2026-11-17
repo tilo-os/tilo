@@ -211,6 +211,7 @@ fn status_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
 fn assignee_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     let read_id = id.clone();
     let assign_id = id.clone();
+    let people = cx.people();
     cx.person_picker(
         "tasks-issue-assignee",
         tr("tasks-field-assignee"),
@@ -223,7 +224,7 @@ fn assignee_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
         move |part: &IssuePart| {
             part.issues
                 .get(&read_id)
-                .and_then(|issue| issue.assignee.as_ref().map(|assignee| assignee.0.clone()))
+                .and_then(|issue| crate::board::assignee(&people, issue))
         },
         IssuePart::ASSIGN.map(move |assignee: Option<String>| issue_part::Assign {
             issue: assign_id.clone(),

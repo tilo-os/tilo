@@ -1430,7 +1430,7 @@ tilo_test_env::scenario! {
         let agent = workspace
             .members
             .iter()
-            .find(|member| member.id.key() == "agent:scribe")
+            .find(|member| member.id == collab_types::MemberId::agent("scribe"))
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
         let rows = crate::people::roster_rows(&tree, "me-root");

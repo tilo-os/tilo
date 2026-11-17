@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
     {
         let mut definition = definition(true);
         definition.member_record = true;
-        let own = DocumentId::of_member(&author().key(), definition.record_kind.as_str())
+        let own = DocumentId::of_member(author().id(), definition.record_kind.as_str())
             .expect("a root key names an own record");
         let (_memory, store) = page(&definition);
         assert!(matches!(

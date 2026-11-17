@@ -185,7 +185,7 @@ fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
     if cx.mode() == RunMode::Live {
         editor.follow_preferences(cx.settings(), cx.settings());
     }
-    editor.attach_framework(cx.live().clone(), cx.dispatcher());
+    editor.attach_framework(cx.live().clone(), cx.dispatcher(), cx.people());
 }
 
 fn answer(

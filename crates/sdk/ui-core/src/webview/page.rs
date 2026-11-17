@@ -177,7 +177,9 @@ impl PageActor {
         } else if let Some(id) = name.strip_prefix("app:") {
             Actor::App(nonempty(id)?.into())
         } else {
-            Actor::Member(MemberId::parse(name)?)
+            Actor::Member(MemberId::Person(
+                tilo_actions::policy::PersonId::parse(name).ok()?,
+            ))
         })
     }
 

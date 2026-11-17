@@ -3654,14 +3654,14 @@ impl RecordActionState {
     pub(crate) fn statuses_for_test(
         &self,
     ) -> Vec<(
-        String,
+        tilo_actions::MemberId,
         crate::application::InstanceId,
         crate::undo::UndoStatus,
     )> {
         let mut statuses = self
             .statuses
             .iter()
-            .map(|((author, instance), status)| (author.key(), *instance, status.clone()))
+            .map(|((author, instance), status)| (author.clone(), *instance, status.clone()))
             .collect::<Vec<_>>();
         statuses.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         statuses

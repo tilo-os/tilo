@@ -594,7 +594,7 @@ tilo_test_env::scenario! {
         let agent = Member::named(collab_types::MemberId::agent("scribe"), "Release Notes Agent");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
-            device: agent.id.key(),
+            device: "agent:scribe".to_owned(),
             ..Present::of(agent.id)
         });
         let desktop = Layout {
