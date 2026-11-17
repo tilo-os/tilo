@@ -214,6 +214,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     /// Whether the app is closed: its record written and its components closed, once.
     closed: bool,
     records: ResourceStore,
+    /// The stores of another app's documents that take theirs from the workspace's holders
+    /// ([`Self::awaiting_the_workspace`]): held, so that they stay the ones the window reads.
+    awaited: Vec<ResourceStore>,
     checkout: DocumentCheckout,
     instance: u64,
     profile: Profile,
@@ -867,6 +870,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             harness,
             closed: false,
             records: opened.records,
+            awaited: Vec::new(),
             checkout: opened.checkout,
             instance: opened.instance,
             profile: opened.profile,
@@ -1093,7 +1097,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// ([`ui_core::resource::ResourceStore::wanted_resources`]).
     #[must_use]
     pub fn wanted_resources(&self) -> Vec<DocumentId> {
-        self.records.wanted_resources()
+        let mut wanted = self.records.wanted_resources();
+        for store in &self.awaited {
+            wanted.extend(store.wanted_resources());
+        }
+        wanted
     }
 
     /// The workspace's hosts sent everything they hold of `id`, a record this
@@ -1104,7 +1112,100 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: DocumentId,
         answer: ui_core::resource::WorkspaceAnswer,
     ) {
+        for store in &self.awaited {
+            store.note_workspace_answer(id.clone(), answer);
+        }
         self.records.note_workspace_answer(id, answer);
+    }
+
+    /// The app as its owner opens it in `workspace` on a device that holds nothing yet of
+    /// what `keeper`, another app, keeps for that workspace, and takes it from the
+    /// workspace's holders as a page does: each such document is on its way from the
+    /// window's first view on, until the workspace delivers it
+    /// ([`Self::workspace_delivers`]) or answers that it holds none of it
+    /// ([`Self::workspace_answered`]).
+    ///
+    /// # Errors
+    /// As any launch; and a window that opens no documents of its workspace.
+    pub fn awaiting_the_workspace(
+        workspace: &str,
+        keeper: &'static str,
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let asked = Rc::new(std::cell::RefCell::new(None));
+        let asking = Rc::clone(&asked);
+        let mut app = Self::open(
+            Profile::Temporary(profile, workspace.to_owned(), TEST_DEVICE.to_owned()),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            move |context| {
+                let store = context
+                    .workspace_resources()
+                    .and_then(|beside| beside.store_of(keeper).ok());
+                if let Some(store) = &store {
+                    store.ask_workspace_for_missing();
+                }
+                *asking.borrow_mut() = store;
+            },
+        )?;
+        let store = asked
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| operation("the window opens no documents of its workspace"))?;
+        app.awaited.push(store);
+        Ok(app)
+    }
+
+    /// The workspace delivers the document `P` that `keeper` keeps for it, the first of it
+    /// this device gets, as `write` leaves it: another writer on this device's store founds
+    /// it and applies `write`, as the workspace's replication keeps what its holders sent
+    /// of a document no window has open, and the stores this window awaits `keeper`'s
+    /// documents in ([`Self::awaiting_the_workspace`]) are told that something arrived.
+    /// Nothing else is asked of the window: no frame is laid out or forced, so what it
+    /// shows of the document is what its own frames ([`Self::frame`]) take up.
+    ///
+    /// # Errors
+    /// The document does not open in the device's store, or `write` refuses.
+    pub fn workspace_delivers<P: Resource>(
+        &mut self,
+        keeper: &'static str,
+        write: impl FnOnce(&super::WorkspaceResource<P>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // The same directory the window's own store keeps the profile in, opened once more:
+        // what lands there is what the window's stores read.
+        let directory = match &self.profile {
+            Profile::Temporary(directory, ..) | Profile::Window(directory, ..) => {
+                directory.path().join("state")
+            }
+            Profile::DataDir(_) => {
+                return Err("a --data-dir profile takes nothing from a workspace".into());
+            }
+        };
+        let theirs = ui_core::resource::workspace::WorkspaceResources::in_workspace(
+            ui_core::resource::ResourceOwners::with_store(Rc::new(app_state::FsStore::new(
+                directory,
+            ))),
+            self.profile.workspace().to_owned(),
+            MemberId::person(self.author.as_str()),
+        );
+        let document =
+            super::WorkspaceResource::<P>::open(&theirs, keeper, (keeper, keeper), None, None)
+                .ok_or_else(|| format!("{} does not open in the device's store", P::KIND))?;
+        write(&document)?;
+        // It has landed on the device before the window is told of it.
+        theirs
+            .store_of(keeper)
+            .map_err(|error| error.to_string())?
+            .flush()?;
+        drop(document);
+        for store in &self.awaited {
+            store.note_kept();
+        }
+        Ok(())
     }
 
     /// The workspace's default records of the app's windows kept on this

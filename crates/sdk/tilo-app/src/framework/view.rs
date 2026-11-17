@@ -41,6 +41,7 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
     Switch::keyed(
         LocalState::new(()),
         Box::new(move |(), alive: &Rc<()>| build(alive)),
+        None,
     )
 }
 
@@ -715,6 +716,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view chosen by view-local state — the detail pane of the
     /// selected item, the page of a wizard. The part is built again, with its
     /// own bindings, whenever `key` changes; the previous one is dropped.
+    ///
+    /// It is built again for the key it has, too, once a document of the workspace is here
+    /// that it asked for while it was built and that was still on its way
+    /// ([`ResourceEnv::shared_workspace`]): a part reads such a document where it shows it,
+    /// and shows it when it arrives, while everything around the part stays as it is.
     pub fn switch<K>(
         &self,
         key: &LocalState<K>,
@@ -724,9 +730,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         K: Clone + PartialEq + 'static,
     {
         let scope = self.part_scope();
+        let (building, arrived) = (Rc::clone(&self.storage), Rc::clone(&self.storage));
         Switch::keyed(
             key.clone(),
-            Box::new(move |value: &K, alive: &Rc<()>| part(&mut scope(alive), value)),
+            Box::new(move |value: &K, alive: &Rc<()>| {
+                // What the part asks for while it is built and is still on its way, it is
+                // built again for once that is here.
+                let _building = building.building(alive);
+                part(&mut scope(alive), value)
+            }),
+            Some(Box::new(move |shown: &Rc<()>| arrived.take_arrived(shown))),
         )
     }
 

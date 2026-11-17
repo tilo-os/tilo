@@ -195,7 +195,10 @@ pub(crate) struct Staged {
 #[derive(Clone)]
 pub(crate) struct Reads {
     staged: Option<Rc<Staged>>,
-    agents: Option<WorkspaceResource<WorkspaceAgents>>,
+    /// Opens the workspace's document of its agents. It is asked each time the agents are
+    /// read: a document still on its way when the window opened is read once it is here, by
+    /// every part of the view and every effect.
+    agents: ui::framework::ResourceOpener<WorkspaceAgents>,
     me: Option<MemberId>,
 }
 
@@ -203,14 +206,15 @@ impl Reads {
     pub(crate) fn of(cx: &ViewCx<Window>) -> Self {
         Self {
             staged: cx.fixture::<Staged>(),
-            agents: cx.shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER),
+            agents: cx.resource_opener(workspace_agent::OWNER),
             me: cx.me().cloned(),
         }
     }
 
-    /// The workspace's document of its agents, where this window holds it.
-    pub(crate) fn agents(&self) -> Option<&WorkspaceResource<WorkspaceAgents>> {
-        self.agents.as_ref()
+    /// The workspace's document of its agents, once this window holds it.
+    pub(crate) fn agents(&self) -> Option<WorkspaceResource<WorkspaceAgents>> {
+        self.agents
+            .open(&ui::resource::workspace::document_id(workspace_agent::KIND))
     }
 
     /// The person's assistant in this workspace; `Here(None)` when they keep none.
@@ -218,7 +222,7 @@ impl Reads {
         if let Some(staged) = &self.staged {
             return Read::Here(staged.assistant.clone());
         }
-        let (Some(agents), Some(me)) = (&self.agents, &self.me) else {
+        let (Some(agents), Some(me)) = (self.agents(), &self.me) else {
             return Read::NotHere;
         };
         let day = ui::clock::today().to_string();

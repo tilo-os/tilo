@@ -586,6 +586,24 @@ impl ViewStorage {
             .is_some_and(|workspace| workspace.open_arrived())
     }
 
+    /// The part of a view kept alive by `part` is being built, until what this returns is
+    /// dropped ([`super::workspace::WorkspaceState::building`]). `None` in a window that
+    /// opens no documents of a workspace.
+    pub(crate) fn building(&self, part: &Rc<()>) -> Option<super::workspace::Building> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.building(part))
+    }
+
+    /// Whether the part kept alive by `part` is to be built again: a document of the
+    /// workspace it asked for while it was built, and that was on its way, has opened since
+    /// ([`super::workspace::WorkspaceState::take_arrived`]).
+    pub(crate) fn take_arrived(&self, part: &Rc<()>) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.take_arrived(part))
+    }
+
     /// What the app keeps for its whole workspace beside its own resource, as the API reaches
     /// it: offered by the keeping app's window alone, and decided by the workspace's grants.
     fn workspace_apis(&self) -> Vec<Rc<dyn ResourceApi>> {

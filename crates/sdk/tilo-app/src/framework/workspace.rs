@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
@@ -674,6 +674,24 @@ pub(crate) struct WorkspaceState {
     /// What this app keeps for its whole workspace, as its window offers it to callers from
     /// outside ([`offered`]): none in a window of any other app.
     published: RefCell<Vec<Rc<dyn ResourceApi>>>,
+    /// The parts of the window's views being built now, the innermost last
+    /// ([`Self::building`]).
+    building: RefCell<Vec<Weak<()>>>,
+    /// The parts whose build asked for a document that was on its way, each with that
+    /// document: what it read then was "not here", so it is built again once the document
+    /// opens ([`Self::take_arrived`]).
+    asked: RefCell<Vec<(OpenKey, Weak<()>)>>,
+    /// The parts to build again: what they asked for has opened since they were built.
+    arrived: RefCell<Vec<Weak<()>>>,
+}
+
+/// A part of a view being built ([`WorkspaceState::building`]), until this is dropped.
+pub(crate) struct Building(Rc<WorkspaceState>);
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        self.0.building.borrow_mut().pop();
+    }
 }
 
 impl WorkspaceState {
@@ -695,6 +713,81 @@ impl WorkspaceState {
             owners: RefCell::default(),
             refreshers: RefCell::default(),
             published: RefCell::default(),
+            building: RefCell::default(),
+            asked: RefCell::default(),
+            arrived: RefCell::default(),
+        }
+    }
+
+    /// The part of a view kept alive by `part` is being built, until what this returns is
+    /// dropped. A document it asks for meanwhile that is still on its way from the workspace
+    /// is one it reads as not here, so it is built again, it alone, once that document opens
+    /// ([`Self::take_arrived`]): nothing else would show the part what arrived, since a part
+    /// reads when it is built.
+    pub(crate) fn building(self: &Rc<Self>, part: &Rc<()>) -> Building {
+        self.building.borrow_mut().push(Rc::downgrade(part));
+        Building(Rc::clone(self))
+    }
+
+    /// Whether the part kept alive by `part` asked, while it was built, for a document that
+    /// was on its way and has opened since: answered once, to the part, which builds itself
+    /// again. A window in which nothing arrived answers every part from an empty list.
+    pub(crate) fn take_arrived(&self, part: &Rc<()>) -> bool {
+        let mut arrived = self.arrived.borrow_mut();
+        if arrived.is_empty() {
+            return false;
+        }
+        let this = Rc::downgrade(part);
+        let mut found = false;
+        // A part that went before it was built again is forgotten here.
+        arrived.retain(|waiting| {
+            if waiting.ptr_eq(&this) {
+                found = true;
+                return false;
+            }
+            waiting.strong_count() > 0
+        });
+        found
+    }
+
+    /// The part being built now asked for the document `key`, which is on its way.
+    fn asked_while_building(&self, key: &OpenKey) {
+        let Some(part) = self.building.borrow().last().cloned() else {
+            return;
+        };
+        let mut asked = self.asked.borrow_mut();
+        asked.retain(|(_, waiting)| waiting.strong_count() > 0);
+        if !asked
+            .iter()
+            .any(|(wanted, waiting)| wanted == key && waiting.ptr_eq(&part))
+        {
+            asked.push((key.clone(), part));
+        }
+    }
+
+    /// The document `key` opened: the parts that asked for it while it was on its way are
+    /// built again in the window's next frame, which is asked for.
+    fn opened_for_parts(&self, key: &OpenKey) {
+        let mut asked = self.asked.borrow_mut();
+        if asked.is_empty() {
+            return;
+        }
+        let mut arrived = self.arrived.borrow_mut();
+        let known = arrived.len();
+        asked.retain(|(wanted, waiting)| {
+            if wanted != key {
+                return true;
+            }
+            if waiting.strong_count() > 0 && !arrived.iter().any(|due| due.ptr_eq(waiting)) {
+                arrived.push(waiting.clone());
+            }
+            false
+        });
+        let due = arrived.len() > known;
+        drop(arrived);
+        drop(asked);
+        if due && let Some(window) = &self.wake {
+            window.wake();
         }
     }
 
@@ -771,11 +864,13 @@ impl WorkspaceState {
             .get(&key)
             .is_some_and(|(seen, _)| *seen == arrived)
         {
+            self.asked_while_building(&key);
             return None;
         }
         match open(&self.records) {
             Ok(opened) => {
                 self.unopened.borrow_mut().remove(&key);
+                self.opened_for_parts(&key);
                 self.held(key, Some(opened))
             }
             Err(Unopened::Arriving) => {
@@ -786,6 +881,7 @@ impl WorkspaceState {
                     store.wake_on_arrival(window.clone());
                 }
                 let again = Self::asking_again::<P>(owner, id);
+                self.asked_while_building(&key);
                 self.unopened.borrow_mut().insert(key, (arrived, again));
                 None
             }
