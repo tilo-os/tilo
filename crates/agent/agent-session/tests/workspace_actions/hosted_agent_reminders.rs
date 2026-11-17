@@ -15,6 +15,8 @@ use tilo_server::{
 };
 
 type Actions = tilo_agent_session::workspace_actions::WorkspaceActions;
+/// The agents a server keeps working for its workspaces.
+type Agents = HostAgents;
 
 /// A server that is up, as tilo.sh keeps one: its workspaces' documents served, and its people's
 /// events kept going from its start.
@@ -73,8 +75,8 @@ impl Up {
 
     /// The agents this server keeps working, with `model`: their tools reach its people's
     /// events.
-    fn agents(&self, model: Option<Model>) -> HostAgents {
-        HostAgents::new(self.workspaces.clone(), self.actions.clone(), model)
+    fn agents(&self, model: Option<Model>) -> Agents {
+        Agents::new(self.workspaces.clone(), self.actions.clone(), model)
             .with_events(Some(self.events.clone()))
     }
 

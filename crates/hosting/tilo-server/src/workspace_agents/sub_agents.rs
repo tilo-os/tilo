@@ -202,6 +202,19 @@ impl Own {
     }
 }
 
+/// `members` as Chat binds a typed `@Name` to them (`tilo_resource::members::know`): each name
+/// without the blanks around it, and nobody whose name is empty. The rule reads a name the way
+/// Chat does, so a name Chat would bind is never one the rule did not see.
+fn named(
+    members: impl IntoIterator<Item = (tilo_actions::MemberId, String)>,
+) -> Vec<(tilo_actions::MemberId, String)> {
+    members
+        .into_iter()
+        .map(|(id, name)| (id, name.trim().to_owned()))
+        .filter(|(_, name)| !name.is_empty())
+        .collect()
+}
+
 /// Whether an argument says nothing: left out as null, or an empty list or object.
 fn says_nothing(value: &Value) -> bool {
     match value {
@@ -558,11 +571,12 @@ impl HostAgents {
             .await
             .ok()
             .map(|summary| {
-                summary
-                    .members
-                    .into_iter()
-                    .map(|member| (member.id, member.name))
-                    .collect()
+                named(
+                    summary
+                        .members
+                        .into_iter()
+                        .map(|member| (member.id, member.name)),
+                )
             });
         Some(Own {
             conversation: sub.conversation.clone(),
@@ -836,16 +850,20 @@ impl HostAgents {
         self.stands(&acting.workspace, &turn.agent, stands, said)
             .await;
         let from_starter = from_starter || turn.line.as_ref().is_some_and(|line| line.from_starter);
-        if from_starter
-            && stands != Stands::Stopped
-            && let Err(error) = self
-                .tell_starter(
-                    &acting.workspace,
-                    (&acting.person, &acting.provider),
-                    turn,
-                    (stands, said),
-                )
-                .await
+        if !from_starter || stands == Stands::Stopped {
+            return;
+        }
+        // The server's own write, so through the service as it serves everyone: the one kept to
+        // the sub-agent's conversation takes of Chat only the three writes of its turn.
+        let service = WorkspaceActionProvider::new(self.actions.clone(), acting.workspace_id);
+        if let Err(error) = self
+            .tell_starter(
+                &acting.workspace,
+                (&acting.person, &service),
+                turn,
+                (stands, said),
+            )
+            .await
         {
             tracing::warn!(workspace = %acting.workspace, agent = %turn.agent.id.0, %error, "a sub-agent's starter was not told how its work ended");
         }
@@ -853,6 +871,12 @@ impl HostAgents {
 
     /// Tell the agent that started `turn`'s sub-agent how its work ended, in the starter's own
     /// conversation, as the sub-agent's news: the starter answers it there like any ask.
+    ///
+    /// The server writes it for the turn that ended, so the caller carries that turn and the
+    /// bound the sub-agent's keeper set on it, as every call of a turn this server works does.
+    /// Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
+    /// asking an agent is none of that: this one message upward is the server's, never a call
+    /// of the sub-agent's model, whose turn is served kept to its own conversation.
     async fn tell_starter(
         &self,
         workspace: &str,
@@ -904,7 +928,11 @@ impl HostAgents {
         let caller = person
             .clone()
             .delegated_to(turn.agent.id.0.clone())
-            .named(&turn.agent.name);
+            .named(&turn.agent.name)
+            .on_turn(
+                tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
+                turn.agent.bound_rules().unwrap_or_default(),
+            );
         let label = format!(
             "{}: {how}",
             cut(turn.agent.name.trim(), LABEL_BYTES.saturating_sub(24))
@@ -974,5 +1002,37 @@ mod tests {
         assert_eq!(key, key_of(&long, JOB), "the same every time it is made");
         assert_ne!(key, key_of(&long, "note:n1"));
         assert_eq!(cut("äöü", 3), "ä", "cut at a character");
+    }
+
+    #[test]
+    fn a_sub_agents_words_name_a_member_as_chat_binds_the_name() {
+        let own = |members| Own {
+            conversation: "own".to_owned(),
+            members,
+        };
+        let kept = own(Some(named([
+            (
+                tilo_actions::MemberId::person("ad".repeat(32)),
+                " Ada ".to_owned(),
+            ),
+            (
+                tilo_actions::MemberId::person("b0".repeat(32)),
+                "  ".to_owned(),
+            ),
+        ])));
+        assert!(
+            !kept.names_nobody("@Ada look at this."),
+            "a member is named"
+        );
+        assert!(
+            !kept.names_nobody("ask @ada"),
+            "whatever the case of the letters"
+        );
+        assert!(kept.names_nobody("Half done: the notes are sorted."));
+        assert!(kept.names_nobody("@Adam is no member here"));
+        assert!(
+            !own(None).names_nobody("plain words"),
+            "with no list read, no words are taken"
+        );
     }
 }

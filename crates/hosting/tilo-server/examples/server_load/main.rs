@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 
-use server_process::{ServerProcess, Sample};
+use server_process::{Sample, ServerProcess};
 use workload::Fleet;
 
 /// Length of one workload cycle and of one sample window.
@@ -300,7 +300,9 @@ impl Packets {
             client: self.client.saturating_sub(before.client),
             client_data: self.client_data.saturating_sub(before.client_data),
             server: self.server.saturating_sub(before.server),
-            server_eliciting: self.server_eliciting.saturating_sub(before.server_eliciting),
+            server_eliciting: self
+                .server_eliciting
+                .saturating_sub(before.server_eliciting),
         }
     }
 

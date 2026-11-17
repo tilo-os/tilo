@@ -663,7 +663,9 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let at_site = holder.host.workspaces();
     assert!(
         at_site
-            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free("site.test"))
+            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                "site.test"
+            ))
             .unwrap()
     );
     let home = at_site.create("Home").await.unwrap();

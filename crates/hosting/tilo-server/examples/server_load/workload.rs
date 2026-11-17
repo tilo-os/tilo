@@ -221,9 +221,9 @@ impl Fleet {
                 .map(|&(workspace, member)| {
                     let fleet = self.clone();
                     let server = server.clone();
-                    tokio::spawn(
-                        async move { fleet.join(workspace, member, server, server_device).await },
-                    )
+                    tokio::spawn(async move {
+                        fleet.join(workspace, member, server, server_device).await
+                    })
                 })
                 .collect();
             for dial in dials {
