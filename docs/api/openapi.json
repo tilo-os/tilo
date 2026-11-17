@@ -22154,6 +22154,35 @@
         "required": [],
         "description": ""
       },
+      "sheets.workbook.read-file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {},
+          "sheet": {},
+          "from": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": ""
+      },
+      "sheets.workbook.read-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "content": true,
+            "type": "string"
+          },
+          "name": {},
+          "sheet": {},
+          "from": {}
+        },
+        "required": [
+          "content",
+          "name"
+        ],
+        "description": ""
+      },
       "shortcuts.workbench.draft-proposal.Arguments": {
         "type": "object",
         "properties": {
@@ -31175,6 +31204,18 @@
       "resource": "sheets.workbook",
       "action": "export-xlsx-content",
       "arguments": "#/components/schemas/sheets.workbook.export-xlsx-content.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-file",
+      "arguments": "#/components/schemas/sheets.workbook.read-file.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-content",
+      "arguments": "#/components/schemas/sheets.workbook.read-content.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",

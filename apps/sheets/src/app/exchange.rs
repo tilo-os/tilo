@@ -6,7 +6,153 @@ use super::{
     verbs,
 };
 
+/// The most cells one read of a spreadsheet file answers with; a longer sheet is read in parts.
+const MAX_FILE_READ_CELLS: usize = crate::resource::MAX_READ_CELLS;
+
+/// What a read answers of the spreadsheet `file`, whose sheets are `tables`: the sheets it
+/// holds, and the cells of `sheet` (the first when none) from row `from` on. A CSV file's cells
+/// are its text as written, since the file says nothing more of them; a workbook's are what
+/// each cell holds, a date as its ISO text, with the formulas and formats by reference.
+fn file_page(
+    file: &str,
+    format: Interchange,
+    tables: &[crate::xlsx::SheetTable],
+    sheet: Option<&str>,
+    from: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let width_of =
+        |table: &crate::xlsx::SheetTable| table.rows.iter().map(Vec::len).max().unwrap_or(0);
+    let wanted = sheet.map(str::trim).filter(|name| !name.is_empty());
+    let table = match wanted {
+        Some(name) => tables
+            .iter()
+            .find(|table| table.name.trim().eq_ignore_ascii_case(name)),
+        None => tables.first(),
+    }
+    .ok_or_else(|| {
+        let names: Vec<&str> = tables.iter().map(|table| table.name.as_str()).collect();
+        match wanted {
+            Some(name) => format!(
+                "{file} has no sheet `{name}`: it holds {}",
+                names.join(", ")
+            ),
+            None => format!("{file} holds no sheet"),
+        }
+    })?;
+    let width = width_of(table);
+    let total = table.rows.len();
+    let first = from.unwrap_or(1).clamp(1, total.saturating_add(1));
+    let most_rows = (MAX_FILE_READ_CELLS / width.max(1)).max(1);
+    let last = first.saturating_add(most_rows.saturating_sub(1)).min(total);
+    let mut rows = Vec::new();
+    let mut formulas = serde_json::Map::new();
+    let mut formats = serde_json::Map::new();
+    let shown = table
+        .rows
+        .iter()
+        .enumerate()
+        .skip(first.saturating_sub(1))
+        .take(last.saturating_add(1).saturating_sub(first));
+    for (index, row) in shown {
+        let mut line = vec![serde_json::Value::Null; width];
+        for (column, (slot, cell)) in line.iter_mut().zip(row).enumerate() {
+            let Some(cell) = cell else { continue };
+            *slot = if format == Interchange::Csv {
+                serde_json::Value::String(cell.raw.clone())
+            } else {
+                crate::cell_actions::json_value(
+                    &crate::calc::literal(&cell.raw),
+                    cell.format,
+                    Some(&cell.raw),
+                )
+            };
+            let (Ok(col), Ok(row)) = (u32::try_from(column), u32::try_from(index)) else {
+                continue;
+            };
+            let at = crate::model::addr_to_a1(col, row);
+            if let Some(formula) = &cell.formula {
+                formulas.insert(at.clone(), formula.clone().into());
+            }
+            if cell.format != CellFormat::General {
+                formats.insert(at, crate::cell_actions::format_name(cell.format).into());
+            }
+        }
+        rows.push(serde_json::Value::Array(line));
+    }
+    let sheets: Vec<serde_json::Value> = tables
+        .iter()
+        .map(|table| {
+            serde_json::json!({
+                "name": table.name,
+                "rows": table.rows.len(),
+                "columns": width_of(table),
+                "hidden": table.hidden,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "file": file,
+        "format": format.ext(),
+        "sheets": sheets,
+        "sheet": table.name,
+        "from": first,
+        "rows": rows,
+        "formulas": formulas,
+        "formats": formats,
+        "next": (last < total).then(|| last.saturating_add(1)),
+        "total": total,
+    }))
+}
+
 impl SheetsApp {
+    /// The spreadsheet format the file called `name` is in, by its ending.
+    fn spreadsheet_format(name: &str) -> Result<Interchange, String> {
+        let ending = std::path::Path::new(name)
+            .extension()
+            .map(|ending| ending.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        [Interchange::Xlsx, Interchange::Ods, Interchange::Csv]
+            .into_iter()
+            .find(|format| format.ext() == ending)
+            .ok_or_else(|| {
+                format!("{name} is not a spreadsheet Sheets reads: an .xlsx, .ods or .csv file")
+            })
+    }
+
+    /// What the spreadsheet file at `path` holds, read without adding it to a workbook: its
+    /// sheets, and the cells of `sheet` (the first when none) from row `from` on.
+    pub(super) fn read_file(
+        path: &std::path::Path,
+        sheet: Option<&str>,
+        from: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        let format = Self::spreadsheet_format(&file_label(path))?;
+        let tables = Self::read_tables_at(format, path)?;
+        file_page(&path.display().to_string(), format, &tables, sheet, from)
+    }
+
+    /// [`Self::read_file`] of a spreadsheet's `bytes`, called `name` as its file was.
+    pub(super) fn read_bytes(
+        bytes: &[u8],
+        name: &str,
+        sheet: Option<&str>,
+        from: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        let format = Self::spreadsheet_format(name)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
+            return Err(format!(
+                "{name} is larger than the {} import limit",
+                ui::format::memory(MAX_IMPORT_FILE_BYTES)
+            ));
+        }
+        let tables = Self::read_tables(
+            format,
+            bytes,
+            &sheet_name_from_path(std::path::Path::new(name)),
+        )?;
+        file_page(name, format, &tables, sheet, from)
+    }
+
     /// The one verb that adds a parsed set of tables as new sheets, running
     /// smart inference where a source cell carried no explicit format, with
     /// how many cells it writes. Into a workbook that is still blank, the

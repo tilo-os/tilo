@@ -218,7 +218,11 @@ fn iso_date_text(serial: f64) -> String {
 /// is its ISO date, the way the sheet shows it rather than the serial behind
 /// it; a literal in a text cell is the text typed (`007`, not 7); other
 /// numbers keep 15 significant digits.
-fn json_value(value: &CellValue, format: CellFormat, raw: Option<&str>) -> serde_json::Value {
+pub(crate) fn json_value(
+    value: &CellValue,
+    format: CellFormat,
+    raw: Option<&str>,
+) -> serde_json::Value {
     match value {
         CellValue::Empty => serde_json::Value::Null,
         CellValue::Number(serial) if matches!(format, CellFormat::Date(_)) => {
@@ -304,7 +308,7 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
 
 /// A format as `format-cells` and the `formats` of `new-sheet` take it:
 /// its category, with the currency when it is money (`currency:EUR`).
-fn format_name(format: CellFormat) -> String {
+pub(crate) fn format_name(format: CellFormat) -> String {
     match format {
         CellFormat::Currency(_) => format.as_str(),
         other => other

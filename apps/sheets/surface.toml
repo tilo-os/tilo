@@ -273,6 +273,25 @@ params = [
 id = "export-xlsx-content"
 kind = "read"
 
+[[resources.verbs]]
+id = "read-file"
+kind = "read"
+params = [
+  { name = "file", required = true },
+  { name = "sheet", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "read-content"
+kind = "read"
+params = [
+  { name = "content", type = "text", required = true, schema = { type = "string", content = true } },
+  { name = "name", type = "text", required = true },
+  { name = "sheet", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+]
+
 [[resources.types]]
 name = "Area"
 fields = [

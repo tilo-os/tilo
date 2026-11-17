@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@e50c2e87f6121f0e";
+export const SURFACE = "so.tilo.sheets@3596a81127fd2836";
 
 export interface Area {
   top: string;
@@ -368,6 +368,17 @@ export interface Workbook extends tilo.Resource {
   /** Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteCommentMany(items: DeleteCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   exportXlsxContent(): Promise<void>;
+  readFile(args: {
+    file: unknown;
+    sheet?: string;
+    from?: number;
+  }): Promise<void>;
+  readContent(args: {
+    content: string;
+    name: string;
+    sheet?: string;
+    from?: number;
+  }): Promise<void>;
 }
 
 /** The `sheets.workbook` kind at `path`. */

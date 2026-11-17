@@ -114,6 +114,24 @@ impl Store {
                 self.import_xlsx_content(&content, title, cx)
             }
             E::ExportXlsxContent => self.export_xlsx_content(&cx.live().get()),
+            E::ReadFile { file, sheet, from } => {
+                SheetsApp::read_file(&file, sheet.as_deref(), from).map(Effected::value)
+            }
+            E::ReadContent {
+                content,
+                name,
+                sheet,
+                from,
+            } => {
+                let hash = ui::tilo_actions::named_reference(&content).ok_or_else(|| {
+                    format!("`{content}` names no content: give `tilo.content:<reference>`")
+                })?;
+                let bytes = self
+                    .content_store()
+                    .read(hash)
+                    .ok_or_else(|| format!("{name} is not on this device"))?;
+                SheetsApp::read_bytes(&bytes, &name, sheet.as_deref(), from).map(Effected::value)
+            }
             E::Commands => {
                 self.ask(Ask::Commands);
                 Ok(Effected::done())

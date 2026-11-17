@@ -7,6 +7,9 @@ pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 const DOCUMENT_FORMATS: &[&str] = &["docx", "odt", "rtf", "epub"];
 
+/// Workbooks, whose cells Sheets reads; a `.csv` file is text and reads here.
+const SPREADSHEET_FORMATS: &[&str] = &["xlsx", "ods"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileText {
     pub format: &'static str,
@@ -98,6 +101,12 @@ pub fn read_text(path: &Path) -> Result<FileText, String> {
             path.display()
         ));
     }
+    if SPREADSHEET_FORMATS.contains(&ext.as_str()) {
+        return Err(format!(
+            "{} is a .{ext} spreadsheet: Sheets' `read-file` reads its cells",
+            path.display()
+        ));
+    }
     let bytes = read_bounded(path)?;
     if ext == "pdf" {
         return pdf_text(&bytes).map(|text| FileText {
@@ -141,6 +150,21 @@ pub fn bytes_for(name: &str, text: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workbook_is_refused_by_the_name_of_what_reads_it_and_a_csv_file_reads_as_text() {
+        let root = tempfile::tempdir().unwrap();
+        let workbook = root.path().join("Budget.XLSX");
+        std::fs::write(&workbook, b"PK\x03\x04").unwrap();
+        let refused = read_text(&workbook).unwrap_err();
+        assert!(refused.contains("Sheets' `read-file`"), "{refused}");
+        let leads = root.path().join("leads.csv");
+        std::fs::write(&leads, "Company,Value\nAcme,1200\n").unwrap();
+        assert_eq!(
+            read_text(&leads).unwrap().text,
+            "Company,Value\nAcme,1200\n"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

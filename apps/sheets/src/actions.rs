@@ -81,6 +81,34 @@ pub enum SheetsEffect {
     /// Keeps every sheet as an `.xlsx` workbook in the content store, with no file to write.
     #[effect(content, kind = "read", idempotent)]
     ExportXlsxContent,
+    /// Read a spreadsheet file
+    ///
+    /// What an `.xlsx`, `.ods` or `.csv` file holds, read where it is: the workbook stays as it
+    /// is. Answers the file's sheets and one sheet's cells row by row, with the formulas and
+    /// formats behind them. A long sheet answers in parts: read on from `next`.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ReadFile {
+        #[param("Absolute path of the file")]
+        file: tilo_resource::AbsolutePath,
+        #[param("The sheet to read, by its name; the first when none")]
+        sheet: Option<String>,
+        #[param("The row to read from, counting from 1; the first when none")]
+        from: Option<usize>,
+    },
+    /// Read a spreadsheet kept as content
+    ///
+    /// As `read-file`, for an `.xlsx`, `.ods` or `.csv` file the workspace holds as content.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ReadContent {
+        #[param(content, "The spreadsheet's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("Its file name, e.g. budget.xlsx: its ending says how it is read")]
+        name: String,
+        #[param("The sheet to read, by its name; the first when none")]
+        sheet: Option<String>,
+        #[param("The row to read from, counting from 1; the first when none")]
+        from: Option<usize>,
+    },
     /// Open command palette
     #[effect(view)]
     Commands,
