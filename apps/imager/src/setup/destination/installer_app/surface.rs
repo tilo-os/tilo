@@ -88,21 +88,24 @@ pub(super) fn step_name(step: Step) -> String {
     t(STEP_KEYS[index])
 }
 
-fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> ResourceSpec {
-    for (index, sentence) in guidance.split(". ").enumerate() {
-        resource = resource.with_child(
-            ResourceSpec::new(
-                format!("{id}.guidance:{index}"),
-                "installer.guidance",
-                crate::resource::CATALOG.t("imager-installer-guidance"),
+fn with_guidance(row: LiveRow, guidance: &str) -> LiveRow {
+    let id = row.id().to_owned();
+    guidance
+        .split(". ")
+        .enumerate()
+        .fold(row, |row, (index, sentence)| {
+            row.row(
+                LiveRow::new(
+                    format!("{id}.guidance:{index}"),
+                    "installer.guidance",
+                    crate::resource::CATALOG.t("imager-installer-guidance"),
+                )
+                .presentation(ResourcePresentation {
+                    preview: Some(sentence.to_owned()),
+                    ..ResourcePresentation::default()
+                }),
             )
-            .with_presentation(ResourcePresentation {
-                preview: Some(sentence.to_owned()),
-                ..ResourcePresentation::default()
-            }),
-        );
-    }
-    resource
+        })
 }
 
 pub(super) type Applied = Result<ActionOutput, String>;
@@ -236,13 +239,23 @@ impl InstallerApp {
     }
 
     pub(super) fn published_rows(&self) -> Vec<LiveRow> {
+        let alongside = self.install_method == InstallMethod::Alongside;
         self.items()
             .into_iter()
             .map(|item| {
+                let guidance = match item.id.as_str() {
+                    REVIEW if alongside => Some(self.review_guidance()),
+                    STORAGE if alongside => Some(self.alongside_storage_guidance()),
+                    _ => None,
+                };
                 let row =
                     LiveRow::new(item.id, item.kind, item.label).presentation(item.presentation);
-                match item.operation {
+                let row = match item.operation {
                     Some(operation) => row.operation(operation),
+                    None => row,
+                };
+                match guidance {
+                    Some(guidance) => with_guidance(row, &guidance),
                     None => row,
                 }
             })
@@ -251,12 +264,12 @@ impl InstallerApp {
 
     pub fn published(&self) -> Vec<ResourceSpec> {
         let checks = self.checks();
-        let mut root = ResourceSpec::new(
+        let mut root = LiveRow::new(
             PROVIDER,
             "installer.session",
             crate::resource::CATALOG.t("imager-installer-title"),
         )
-        .with_presentation(ResourcePresentation {
+        .presentation(ResourcePresentation {
             detail: Some(t_args(
                 "installer-detail-step",
                 &[
@@ -278,23 +291,12 @@ impl InstallerApp {
                 Some(check) => check.overlay(spec),
                 None => spec,
             };
-            root = root.with_action(spec);
+            root = root.operation(spec);
         }
-        for item in self.items() {
-            let mut child = ResourceSpec::new(item.id.clone(), item.kind, item.label)
-                .with_presentation(item.presentation);
-            if let Some(operation) = item.operation {
-                child = child.with_action(operation);
-            }
-            if item.id == REVIEW && self.install_method == InstallMethod::Alongside {
-                child = with_guidance(child, REVIEW, &self.review_guidance());
-            }
-            if item.id == STORAGE && self.install_method == InstallMethod::Alongside {
-                child = with_guidance(child, STORAGE, &self.alongside_storage_guidance());
-            }
-            root = root.with_child(child);
+        for row in self.published_rows() {
+            root = root.row(row);
         }
-        vec![root]
+        vec![root.into_resource()]
     }
 
     fn next_check(&self) -> Check {
