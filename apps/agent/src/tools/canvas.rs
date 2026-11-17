@@ -72,6 +72,41 @@ fn showable(offer: &Offer) -> bool {
         && !offer.descriptor.resource_kind.is_empty()
 }
 
+/// What every record publishes about keeping it (its versions, its fields as raw edits, the
+/// windows that open over it) rather than about how the canvas is arranged or shown: the style's
+/// own record carries them like any record, and listing them as arranging steps cost the first
+/// turn a few hundred tokens of ids no arranging uses.
+const RECORD_KEEPING: &[&str] = &[
+    "read",
+    "edit-text",
+    "edit-flag",
+    "restore",
+    "checkpoint",
+    "history",
+    "diff",
+    "review-restore",
+    "restore-reviewed",
+    "retry-query",
+];
+
+fn record_keeping(offer: &Offer) -> bool {
+    let action = offer.address().action.as_str();
+    RECORD_KEEPING.contains(&action)
+        || action.starts_with("open-")
+        || (offer.address().resource.starts_with(TILOLANG_PREFIX)
+            && matches!(action, "undo" | "redo" | "open"))
+        || offer.address().resource.ends_with("layout-record")
+}
+
+/// The tilolang app whose record `resource` is (`tl:<app>:<record>`), whoever publishes it.
+pub fn tilolang_app_of(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(TILOLANG_PREFIX)
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(app, _)| app)
+        .filter(|app| !app.is_empty())
+}
+
 /// Whether `resource` is an app's root rather than one item in it.
 fn is_root(resource: &str) -> bool {
     !resource.contains('/')
@@ -111,7 +146,7 @@ pub fn canvas_section(
     let (places, steps): (Vec<&Offer>, Vec<&Offer>) = catalogue
         .offers
         .iter()
-        .filter(|offer| is_canvas_step(offer) && offer.id() != place.id())
+        .filter(|offer| is_canvas_step(offer) && offer.id() != place.id() && !record_keeping(offer))
         .partition(|offer| offer.address().resource.starts_with(PLACE_PREFIX));
     if !steps.is_empty() {
         s.push_str("\nArranging and how the canvas is shown:\n");
@@ -226,5 +261,20 @@ pub fn without_canvas(catalogue: &Catalogue) -> Catalogue {
             .collect(),
         facts: catalogue.facts.clone(),
         held: catalogue.held.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tilolang_app_tests {
+    /// A step on a tilolang app's record is a step in that app, whoever publishes the record: the
+    /// session serves `tl:<app>:<record>`, and the part the model lists names the app.
+    #[test]
+    fn a_tilolang_record_names_its_app() {
+        assert_eq!(
+            super::tilolang_app_of("tl:so.tilo.lang.tasks:root-fjqi4yze/i358b46da-26"),
+            Some("so.tilo.lang.tasks")
+        );
+        assert_eq!(super::tilolang_app_of("shell:layout"), None);
+        assert_eq!(super::tilolang_app_of("tl::root"), None);
     }
 }

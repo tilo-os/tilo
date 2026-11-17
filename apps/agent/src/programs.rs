@@ -80,8 +80,22 @@ pub fn definition() -> ToolDefinition {
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "true only to run again a program whose answer was a \
-                        preview, unchanged, once the person's request asks for it."
+                    "description": "true when the person's request asks for exactly what \
+                        the program changes: it then runs at once, with no preview. Set it on \
+                        the first call for a program that makes and fills in what was asked (a \
+                        task, a note, a reply) and destroys nothing; leave it out for one that \
+                        changes many things or destroys something the request did not name, \
+                        which answers with a preview to send again with `confirm`."
+                },
+                "reply": {
+                    "type": "string",
+                    "description": "Your reply to the person, shown as soon as the program has \
+                        run; it finishes the task in this response, with no turn after it. \
+                        `{answer}` in it stands for what the program printed, so a question is \
+                        answered by a program that prints the answer for the person to read \
+                        (`print(\"- {t.title}, due {t.due}\")` per item) and \
+                        `\"reply\": \"{answer}\"`. Leave it out only when you must see the \
+                        answer before you can act or reply."
                 }
             },
             "required": ["program"],
@@ -95,6 +109,102 @@ pub fn definition() -> ToolDefinition {
 pub struct Program {
     pub source: String,
     pub confirm: bool,
+    /// The reply the person reads once the program has run, when the model wrote it with the
+    /// program: the task then finishes in the same response, with no turn to read the answer
+    /// first. [`ANSWER_SLOT`] in it stands for what the program printed.
+    pub reply: Option<String>,
+}
+
+/// What a `tilo` call's `reply` writes for what its program printed: a question is answered by a
+/// program that prints the answer, read by the person as the reply, in one response.
+pub const ANSWER_SLOT: &str = "{answer}";
+
+/// `reply` with [`ANSWER_SLOT`] standing for `answer`, the program's answer as the model reads it
+/// without its bookkeeping (the "step 1: 1 change in tasks; `undo` takes it back" lines, which are
+/// the model's, not the person's).
+#[must_use]
+pub fn reply_with_answer(reply: &str, answer: &str) -> String {
+    if !reply.contains(ANSWER_SLOT) {
+        return reply.to_owned();
+    }
+    let printed: Vec<&str> = answer
+        .lines()
+        .filter(|line| !is_bookkeeping(line))
+        .collect();
+    reply.replace(ANSWER_SLOT, printed.join("\n").trim())
+}
+
+#[cfg(test)]
+#[path = "programs/reply_tests.rs"]
+mod reply_tests;
+
+/// The most characters one app's compacted declarations take in the first turn.
+const MOST_DECLARED_CHARS: usize = 3_000;
+
+/// An app's declarations as `describe(app)` answers them, compacted for the first turn: no doc
+/// comments and no header, each type and enum on one line with its fields, each action on its
+/// line as declared. What the model writes a program from without asking `describe` first.
+#[must_use]
+pub fn compact_declarations(described: &str) -> String {
+    let mut out = String::new();
+    let mut open: Option<String> = None;
+    // Braces open inside the declaration being joined (an enum variant's fields).
+    let mut depth = 0usize;
+    for line in described.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("///") || line.starts_with("//") {
+            continue;
+        }
+        // The header, the scenarios and the pointer to `describe` say nothing a program is
+        // written from.
+        if open.is_none()
+            && (line.starts_with("app ")
+                || line.starts_with("scenarios:")
+                || line.starts_with("describe a type"))
+        {
+            continue;
+        }
+        if let Some(body) = open.as_mut() {
+            if line == "}" && depth == 0 {
+                let body = open.take().unwrap_or_default();
+                let body = body.trim_end_matches(", ");
+                out.push_str(body);
+                out.push_str(" }\n");
+            } else if line == "}" {
+                depth -= 1;
+                let trimmed = body.trim_end_matches(", ").len();
+                body.truncate(trimmed);
+                body.push_str(" }, ");
+            } else if line.ends_with('{') {
+                depth += 1;
+                body.push_str(line);
+                body.push(' ');
+            } else {
+                body.push_str(line.trim_end_matches(','));
+                body.push_str(", ");
+            }
+            continue;
+        }
+        if line.ends_with('{') {
+            open = Some(format!("{line} "));
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if out.chars().count() > MOST_DECLARED_CHARS {
+        let cut: String = out.chars().take(MOST_DECLARED_CHARS).collect();
+        let cut = cut.rsplit_once('\n').map_or(cut.as_str(), |(kept, _)| kept);
+        return format!("{cut}\n(more: describe it)\n");
+    }
+    out
+}
+
+/// Whether `line` of a program's answer is the API's bookkeeping about the step rather than what
+/// the program printed.
+fn is_bookkeeping(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("step ") && line.contains("`undo`")
 }
 
 /// Read a `tilo` call.
@@ -113,6 +223,12 @@ pub fn read_program(input: &Value) -> Result<Program, String> {
     Ok(Program {
         source: source.to_owned(),
         confirm: input.get("confirm").and_then(Value::as_bool) == Some(true),
+        reply: input
+            .get("reply")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reply| !reply.is_empty())
+            .map(str::to_owned),
     })
 }
 

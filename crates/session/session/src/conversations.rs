@@ -965,6 +965,15 @@ fn turns(
             // the message's own beneath it.
             let address = format!("{}/channels/{id}", chat::Chat::KIND);
             let (instruction, subject) = request(message);
+            // What came before it in the conversation, oldest first: "what did I ask you
+            // before?" and "move the reminder to Friday" are understood through it.
+            let mut earlier: Vec<&chat::record::Message> = messages
+                .iter()
+                .map(|(_, earlier)| *earlier)
+                .filter(|earlier| earlier.ts < message.ts && !earlier.text.trim().is_empty())
+                .collect();
+            earlier.sort_by_key(|earlier| earlier.ts);
+            let instruction = with_conversation(instruction, &earlier);
             let name = agent_names
                 .get(&agent)
                 .cloned()
@@ -1003,6 +1012,57 @@ fn session_of(workspace: &str, conversation: &str, agent: &str) -> String {
         tilo_broker_core::services::AGENT_SESSION_PREFIX,
         digest.to_hex().get(..32).unwrap_or_default()
     )
+}
+
+/// The most characters of earlier conversation a turn's instruction carries, all messages
+/// together: the newest are kept and the older ones counted, so a long conversation stays within
+/// what a turn's instruction may hold (32 KiB, the agent's `validate`).
+const CONVERSATION_CHARS: usize = 12 * 1024;
+/// The most characters of one earlier message a turn is told.
+const SAID_CHARS: usize = 1_500;
+
+/// `instruction` with the conversation before the turn appended, as the agent reads a request that
+/// continues one ([`runtime_collab::INSTRUCTION_CONVERSATION`]): one line per message, the
+/// person's and the agent's own told apart. The agent reads what the request asks for from the
+/// person's own words alone ([`runtime_collab::TurnRequest::request`]); the conversation is what a
+/// follow-up ("move the reminder to Friday", "what did I ask you before?") is understood through.
+fn with_conversation(instruction: String, earlier: &[&chat::record::Message]) -> String {
+    if earlier.is_empty() {
+        return instruction;
+    }
+    let mut kept = Vec::new();
+    let mut room = CONVERSATION_CHARS;
+    for message in earlier.iter().rev() {
+        let said = message.text.trim();
+        let mut text: String = said.chars().take(SAID_CHARS).collect();
+        if text.len() < said.len() {
+            text.push('…');
+        }
+        let who = if person_of(&message.author.0).is_some() {
+            "Person: "
+        } else {
+            "You: "
+        };
+        let line = format!("\n{who}{}", text.replace('\n', "\n  "));
+        let Some(left) = room.checked_sub(line.len()) else {
+            break;
+        };
+        room = left;
+        kept.push(line);
+    }
+    let mut out = instruction;
+    out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
+    let left_out = earlier.len().saturating_sub(kept.len());
+    if left_out > 0 {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!("\n({left_out} earlier messages left out)"),
+        );
+    }
+    for line in kept.into_iter().rev() {
+        out.push_str(&line);
+    }
+    out
 }
 
 /// What a message asks of the agents it summons: its words, and what it carries as the records
@@ -1222,7 +1282,33 @@ mod tests {
             let [entry] = entries.as_slice() else {
                 panic!("one turn, not {entries:?}");
             };
-            assert_eq!(entry.request.instruction, "second");
+            assert_eq!(entry.request.request(), "second");
+        }
+
+        phase a_turn_reads_the_conversation_before_it;
+        // "What did I ask you before?" and "move the reminder to Friday" are understood through
+        // the conversation before the turn: the person's words and the agent's answers, oldest
+        // first, after the person's own words, which alone say what the turn asks.
+        {
+            let chat = workspace();
+            let reply = chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR);
+            let mut head = part(vec![("m1", message(ME, "remind me to call mum", 10))]);
+            head.messages.push(reply, message(AGENT_ACTOR, "Added \"Call mum\" for tomorrow.", 20));
+            head.messages
+                .push(Id::from_raw("m2"), message(ME, "what did I ask you before?", 30));
+            let entries = read(&chat, &head);
+            let [entry] = entries.as_slice() else {
+                panic!("one turn, not {entries:?}");
+            };
+            assert_eq!(
+                entry.request.instruction,
+                format!(
+                    "what did I ask you before?{}\nPerson: remind me to call mum\nYou: Added \
+                     \"Call mum\" for tomorrow.",
+                    runtime_collab::INSTRUCTION_CONVERSATION
+                )
+            );
+            assert_eq!(entry.request.request(), "what did I ask you before?");
         }
 
         phase an_agents_own_words_are_no_summons;

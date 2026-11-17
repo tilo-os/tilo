@@ -312,6 +312,10 @@ pub struct Session {
     /// The task catalogue survey for [`Self::broker_revision`], shared by
     /// every reader until the broker republishes.
     catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
+    /// What each app whose records the session serves declares, compacted for the first turn,
+    /// by the alias programs name it with: read once through the API's `describe` and kept, as
+    /// an app's declarations change only when it is updated.
+    declarations: std::collections::BTreeMap<String, String>,
     /// The model turn in flight while a task loop runs.
     turn: Option<agent_loop::ActiveTurn>,
     /// The turn the run in progress answers, as its reply is being told.
@@ -408,6 +412,7 @@ impl Session {
             next_broker_request: 1,
             broker_revision: 0,
             catalogue_cache: None,
+            declarations: std::collections::BTreeMap::new(),
             turn: None,
             record: None,
             failure_detail: None,
@@ -723,6 +728,18 @@ impl Session {
     /// and the turn's answer reports it.
     fn report_task(&mut self, run: &Asked, update: TurnUpdate) -> Result<()> {
         self.show_turn(run, &update)?;
+        // How the turn ended, with what the person reads, once: the record a run's
+        // reader (and the live eval, `dist/dev/agent-eval.py`) finds its end by.
+        let ended = match &update {
+            TurnUpdate::Succeeded { message } => Some(("succeeded", message)),
+            TurnUpdate::Failed { message } => Some(("failed", message)),
+            TurnUpdate::Cancelled { message } => Some(("cancelled", message)),
+            _ => None,
+        };
+        if let Some((state, message)) = ended {
+            let steps = self.record.as_ref().map_or(0, |record| record.steps.len());
+            tracing::info!(id = run.id, state, steps, reply = ?message, "the turn ended");
+        }
         let invocation = run.invocation;
         let update = match update {
             // The broker took the turn when it handed it over.

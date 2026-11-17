@@ -46,6 +46,10 @@
 #   --scale S     the headless output's scale (default 1): `--size 2560x1600 --scale 2` is
 #                 the same 1280x800 shell as a HiDPI panel draws it
 #   --window     show the session in a window on this Wayland desktop, drawn on its GPU
+#   --agent-key FILE  start the session with this agent key (`tilo-session --agent-key FILE`, made
+#                 there when FILE is empty or absent): an MCP client presenting it
+#                 (`TILO_AGENT_KEY=FILE`, or the key in its `initialize`) is admitted as the
+#                 person's agent without the sheet, as an external agent such as Claude Code is
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
@@ -86,6 +90,7 @@ apps=(--seed-apps)
 rust_views=0
 window=0
 model_record=
+agent_key=
 profile=debug
 while (($#)); do
     case $1 in
@@ -97,6 +102,7 @@ while (($#)); do
         --dev-rust-views) rust_views=1; shift ;;
         --window) window=1; shift ;;
         --model-record) model_record=${2:?--model-record needs FILE}; shift 2 ;;
+        --agent-key) agent_key=$(realpath -m "${2:?--agent-key needs FILE}"); shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -534,7 +540,9 @@ if ((window)); then
 else
     say "starting the session headless at $size (log: $log)"
 fi
-start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
+agent_key_args=()
+[[ -n $agent_key ]] && agent_key_args=(--agent-key "$agent_key")
+start_session --shell screen --admit-repl "$bin/tilolang" "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
 # A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own

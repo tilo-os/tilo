@@ -15,6 +15,12 @@ use crate::session::{Asked, Session};
 use crate::tools;
 use tilo_actions::remote::task_programs;
 
+/// What the model reads after a program that called an app's actions and changed nothing, in
+/// place of the reply it wrote for a change: nothing it looked for was there.
+const CHANGED_NOTHING: &str = "\nIt changed nothing: no record matched what the program looked \
+     for, so your reply was not shown. Find what the person means another way, or tell them it \
+     is not there.";
+
 /// The app that keeps each person's own views, in their own record: a task's view answer is
 /// one of them, until the person keeps or discards it.
 pub(crate) const VIEWS_APP: &str = "so.tilo.lang.views";
@@ -32,9 +38,23 @@ pub(in crate::session) struct ProgramWorld {
     /// The apps whose records the session serves, by alias, with their root's type, when the
     /// session's api runs programs: what a program names without a window of the app open.
     served: Vec<(String, String)>,
+    /// What each served app declares, compacted ([`programs::compact_declarations`]), by alias:
+    /// what the model writes its programs from without asking `describe` first.
+    declared: BTreeMap<String, String>,
 }
 
 impl ProgramWorld {
+    /// Whether `source` calls one of the actions the apps declare (`tasks.check(`): a program
+    /// meant to change something, rather than only to read.
+    pub(in crate::session) fn calls_an_action(&self, source: &str) -> bool {
+        self.declared
+            .values()
+            .flat_map(|declared| declared.lines())
+            .filter_map(|line| line.split_once("action ").map(|(_, rest)| rest))
+            .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.trim()))
+            .any(|name| !name.is_empty() && source.contains(&format!("{name}(")))
+    }
+
     /// The session's first-message section on the apps, empty when no program can run.
     pub(in crate::session) fn apps_section(&self) -> String {
         if self.mounted.is_empty() {
@@ -44,6 +64,11 @@ impl ProgramWorld {
             let mut lines = String::new();
             for (alias, root) in &self.served {
                 let _ = writeln!(lines, "- `{alias}`: its record is a `{alias}.{root}`");
+                if let Some(declared) = self.declared.get(alias).filter(|d| !d.is_empty()) {
+                    for line in declared.lines() {
+                        let _ = writeln!(lines, "    {line}");
+                    }
+                }
             }
             return format!(
                 "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \
@@ -122,7 +147,7 @@ impl Session {
                 continue;
             };
             if let Ok(Value::Array(signatures)) =
-                self.host_call(run, state, &operation, &serde_json::Map::new())?
+                self.host_call_uncounted(run, state, &operation, &serde_json::Map::new())?
             {
                 let declared = Value::Array(signatures.clone());
                 for (name, of) in programs::types_of(&declared) {
@@ -137,12 +162,82 @@ impl Session {
         }
         state.programs.mounted = mounted;
         state.programs.served = served_apps(&catalogue);
+        self.describe_served(run, state, &catalogue)?;
+        Ok(())
+    }
+
+    /// Read what each served app declares, once per app for the agent's life, through the API's
+    /// `describe`, and give the task its compacted declarations: the first turn then carries every
+    /// app's types and actions with their arguments, and a request is answered by a program
+    /// written straight away rather than after a `describe` turn.
+    fn describe_served(
+        &mut self,
+        run: &Asked,
+        state: &mut LoopState,
+        catalogue: &crate::surface::Catalogue,
+    ) -> Result<()> {
+        let Some(api) = catalogue
+            .offers
+            .iter()
+            .find(|offer| {
+                offer.descriptor.address.resource == task_programs::RESOURCE
+                    && offer.descriptor.address.action == task_programs::RUN
+            })
+            .map(crate::surface::Offer::id)
+        else {
+            return Ok(());
+        };
+        let aliases: Vec<String> = state
+            .programs
+            .served
+            .iter()
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        for alias in aliases {
+            if !self.declarations.contains_key(&alias) {
+                let mut parameters = serde_json::Map::new();
+                parameters.insert(
+                    "program".into(),
+                    Value::String(format!("describe({alias})")),
+                );
+                let described = self
+                    .host_call_uncounted(run, state, &api, &parameters)?
+                    .ok()
+                    .and_then(|value| {
+                        serde_json::from_value::<task_programs::ProgramAnswer>(value).ok()
+                    })
+                    .filter(|answer| !answer.failed)
+                    .map(|answer| programs::compact_declarations(&answer.text))
+                    .unwrap_or_default();
+                self.declarations.insert(alias.clone(), described);
+            }
+            if let Some(declared) = self.declarations.get(&alias) {
+                state.programs.declared.insert(alias, declared.clone());
+            }
+        }
         Ok(())
     }
 
     /// One host operation, checked and performed like any step of the task, answering its value
     /// or the host's refusal in words.
     fn host_call(
+        &mut self,
+        run: &Asked,
+        state: &mut LoopState,
+        operation: &str,
+        parameters: &serde_json::Map<String, Value>,
+    ) -> Result<Result<Value, String>> {
+        let answer = self.host_call_uncounted(run, state, operation, parameters)?;
+        state.step_index += 1;
+        if answer.is_ok() {
+            state.completed += 1;
+        }
+        Ok(answer)
+    }
+
+    /// [`Self::host_call`] for what the task reads to know its world (an app's declarations),
+    /// which is no step the run took: it counts as neither started nor done.
+    fn host_call_uncounted(
         &mut self,
         run: &Asked,
         state: &mut LoopState,
@@ -161,12 +256,8 @@ impl Session {
         };
         let index = state.completed;
         let result = self.run_task_step(run, index, &prepared.action, &prepared.arguments)?;
-        state.step_index += 1;
         Ok(match result {
-            Ok(outcome) => {
-                state.completed += 1;
-                Ok(outcome.output.value.unwrap_or(Value::Null))
-            }
+            Ok(outcome) => Ok(outcome.output.value.unwrap_or(Value::Null)),
             Err(TaskActionStop::Failed(message)) => Err(message),
             Err(TaskActionStop::Cancelled(message)) => {
                 Err(message.unwrap_or_else(|| "cancelled".into()))
@@ -225,8 +316,46 @@ impl Session {
             },
         };
         let step = programs::answer_step(&program.source, &answered, &state.programs.mounted);
+        state.program_did(&step);
         self.record_program(run, &step)?;
-        Ok(Handled::Result(answered.text))
+        // The reply the model wrote with the program is the task's answer once the program has
+        // run to its end: one response, both the steps and the words. A program that failed,
+        // stopped for a preview, or waits on the person is read by the model again instead.
+        // A program that calls an app's actions and changed nothing did not do what its reply
+        // says it did (its `find` matched nothing): the reply is held back and the model reads
+        // that, rather than the person reading a change that never happened.
+        let changed = answered
+            .answer
+            .as_ref()
+            .and_then(|answer| answer.get("changed"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let changed_nothing = changed == 0 && state.programs.calls_an_action(&program.source);
+        let mut text = answered.text;
+        let ran = !answered.failed && step.outcome == ui::tilo_reference::StepOutcome::Done;
+        if ran && changed_nothing && program.reply.is_some() {
+            text.push_str(CHANGED_NOTHING);
+        }
+        let reply = program
+            .reply
+            .as_deref()
+            .filter(|_| ran && !changed_nothing)
+            .map(|reply| programs::reply_with_answer(reply, &text))
+            .and_then(|reply| tools::spoken_reply(&reply));
+        if let Some(reply) = &reply {
+            state.reply = Some(reply.clone());
+        }
+        Ok(match reply {
+            Some(reply) => Handled::ResultFinish(
+                text,
+                tools::Finish {
+                    reply: Some(reply),
+                    done: true,
+                    view: None,
+                },
+            ),
+            None => Handled::Result(text),
+        })
     }
 
     /// Keep the view a finishing `plan` answers with: checked by the Views host first (it must
@@ -393,4 +522,26 @@ fn this_literal(subject: &tilo_actions::SelectionSubject, world: &ProgramWorld) 
         .kind
         .strip_prefix(&format!("tl.{}.", app.app))?;
     Some(format!("@{}.{type_name}:{id}", app.alias))
+}
+
+#[cfg(test)]
+mod tests {
+    /// A program that calls an app's declared action means to change something; one that only
+    /// finds and prints does not. "Move the reminder to Friday" whose `find` matched nothing
+    /// changed nothing, and its reply ("Moved …") is held back rather than told.
+    #[test]
+    fn a_program_that_calls_an_action_is_known_from_its_source() {
+        let mut world = super::ProgramWorld::default();
+        world.declared.insert(
+            "tasks".into(),
+            "type Task { title: Text }\naction tasks.check(t: Task, done: Bool)\nprimary action \
+             tasks.new_task(tasks: Tasks, title: Text) -> Task\n"
+                .into(),
+        );
+        assert!(world.calls_an_action(
+            "for t in find(tasks.Task).filter(t -> t.title == \"x\") { tasks.check(t, done: true) }"
+        ));
+        assert!(world.calls_an_action("tasks.new_task(tasks.tasks, title: \"x\")"));
+        assert!(!world.calls_an_action("for t in find(tasks.Task) { print(t.title) }"));
+    }
 }

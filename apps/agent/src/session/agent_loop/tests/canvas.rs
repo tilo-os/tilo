@@ -328,11 +328,14 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     let offered = tool_names(&bodies[0]);
     drop(bodies);
     let canvas_at = first.find("The canvas: where the person sees things.");
-    let applications_at = first.find("Applications:");
+    // The apps' records are reached by programs, so the hundreds of operations their windows
+    // publish are not listed: one line says where they are.
+    let applications_at = first.find("Other applications' operations");
     assert!(
         canvas_at.is_some() && applications_at.is_some() && canvas_at < applications_at,
-        "the canvas comes before the applications: {first}"
+        "the canvas comes before the pointer to the other operations: {first}"
     );
+    assert!(!first.contains("Applications:\\n"), "{first}");
     assert!(
         first.contains("This conversation stands on it, as `chat.workspace/channels/loop`"),
         "{first}"

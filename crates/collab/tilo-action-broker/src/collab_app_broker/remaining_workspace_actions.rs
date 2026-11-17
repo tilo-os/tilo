@@ -6,6 +6,54 @@ use tilo_actions::remote::{ActionHostError, Caller, Confirmation, InvokeRequest}
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
 use tilo_desktop_model::Workspace;
 
+/// The actor a step from an agent's own connection acts as, when the step is a step of a turn
+/// the agent answers: the connection's admitted agent, in the turn's agent session.
+///
+/// A turn's steps are requests on the agent's connection served as the turn's: the caller carries
+/// the turn's session (`Caller::agent_turn(..).in_agent_session(..)`), which `agent_session_of`
+/// checks goes, while the actor the admitted connection makes carries none, since the connection
+/// itself is in no session. Every step of the turn then acted outside it: a session's own step
+/// (the API's programs, `task_programs`) refused it as "an agent runs programs as a step of its
+/// session", and what the turn changed was not caused by its session. Only the same agent's turn
+/// session is taken, and only when the connection's actor has none of its own.
+fn in_turn_session(actor: BrokerActor, caller: &Caller) -> BrokerActor {
+    if actor.session().is_some() || !actor.is_agent() {
+        return actor;
+    }
+    let acting = caller.acting();
+    match acting.agent_session.as_ref().zip(acting.agent_id()) {
+        Some((session, agent)) if actor.id() == format!("agent:{agent}") => {
+            actor.in_session(session.as_str())
+        }
+        _ => actor,
+    }
+}
+
+#[cfg(test)]
+mod turn_session_tests {
+    use super::{BrokerActor, Caller, in_turn_session};
+
+    /// A step from the agent's connection, for the turn it answers, acts in that turn's
+    /// session; a step that is no turn's, or another agent's, does not.
+    #[test]
+    fn a_turns_step_acts_in_the_turns_session() {
+        let turn = tilo_action_policy::turn::Turn::new("chat.workspace/channels/c", "m1");
+        let caller = Caller::agent_turn("scribe", "person", turn.clone())
+            .in_workspace("w")
+            .in_agent_session("so.tilo.session/agent-session/s1");
+        let connection = BrokerActor::agent("agent:scribe".to_owned()).for_person("person");
+        let acting = in_turn_session(connection.clone(), &caller);
+        assert_eq!(acting.session(), Some("so.tilo.session/agent-session/s1"));
+        assert_eq!(acting.id(), "agent:scribe");
+
+        let other = BrokerActor::agent("agent:other".to_owned()).for_person("person");
+        assert_eq!(in_turn_session(other, &caller).session(), None);
+
+        let no_turn = Caller::agent_turn("scribe", "person", turn).in_workspace("w");
+        assert_eq!(in_turn_session(connection, &no_turn).session(), None);
+    }
+}
+
 #[cfg(test)]
 #[path = "remaining_workspace_actions_tests.rs"]
 mod tests;
@@ -204,7 +252,7 @@ impl AppBrokerState {
                     .map_err(|error| unavailable(error.to_string()))?;
                 self.checked_policy_time(time.as_ref())
                     .map_err(unavailable)?;
-                Some(current.broker_actor())
+                Some(in_turn_session(current.broker_actor(), caller))
             }
             Some(InvocationCaller::NativePerson {
                 workspace: original,

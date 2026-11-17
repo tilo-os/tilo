@@ -88,3 +88,4 @@ agent-failure-refused = The model declined this request.
 agent-failure-transport = The model could not be reached. Try again.
 agent-failure-no-answer = The agent finished without doing anything or saying what it did.
 agent-failure-empty-answer = The agent finished without an answer. Try asking again.
+agent-failure-stalled = The agent stopped: it kept looking without getting further, and changed nothing more.

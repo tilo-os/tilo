@@ -58,7 +58,10 @@ impl TaskProgramHost {
             *current.0.lock_recover() = Arc::clone(&request.host);
             return Arc::clone(api);
         }
-        let current = Arc::new(Current(std::sync::Mutex::new(Arc::clone(&request.host))));
+        let current = Arc::new(Current(
+            std::sync::Mutex::new(Arc::clone(&request.host)),
+            Arc::clone(&self.services),
+        ));
         let api = Arc::new(
             Api::for_task(
                 Arc::clone(&current),
@@ -79,11 +82,106 @@ impl TaskProgramHost {
 
 /// The api the broker serves an agent session's latest step on: each turn of the session is
 /// served on its own, and its programs call through the turn going now.
-pub(crate) struct Current(std::sync::Mutex<Host>);
+pub(crate) struct Current(
+    std::sync::Mutex<Host>,
+    /// The session's own services: the records of the packages it runs itself (every tilolang
+    /// app it serves) are read and changed there, on the loop's pass.
+    Arc<crate::mcp_server::SessionServices>,
+);
 
 impl Current {
     fn host(&self) -> Host {
         Arc::clone(&self.0.lock_recover())
+    }
+
+    fn records(&self) -> TurnRecords {
+        TurnRecords {
+            kept: crate::mcp_server::ServiceRecords {
+                state: None,
+                session: Arc::clone(&self.1),
+                agent_session: None,
+            },
+            services: Arc::clone(&self.1),
+            host: self.host(),
+        }
+    }
+}
+
+/// The records an agent session's programs read and change, as the person's own REPL does at the
+/// session's MCP server: the records the session keeps itself (the tilolang apps it serves) on the
+/// loop's pass, as the session's services decide them for the caller, and every other app's
+/// through the turn's own api. Without the first, a turn's program could neither read Tasks nor
+/// add a task ("this desktop applies no task's changes at a record's origin"): the session keeps
+/// those records and the broker has no origin for them.
+struct TurnRecords {
+    kept: crate::mcp_server::ServiceRecords,
+    services: Arc<crate::mcp_server::SessionServices>,
+    host: Host,
+}
+
+impl TurnRecords {
+    fn elsewhere(
+        &self,
+    ) -> Result<Arc<dyn tilo_actions::remote::RecordReads>, tilo_actions::remote::ActionHostError>
+    {
+        self.host
+            .record_reads()
+            .ok_or_else(|| tilo_actions::remote::ActionHostError::Unavailable {
+                reason: tilo_actions::remote::RECORD_READS_UNAVAILABLE.to_owned(),
+            })
+    }
+}
+
+impl tilo_actions::remote::RecordReads for TurnRecords {
+    fn read(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        address: &tilo_actions::remote::RecordAddress,
+    ) -> Result<tilo_actions::remote::RecordCopy, tilo_actions::remote::ActionHostError> {
+        if self.services.keeps(&address.app) {
+            return self.kept.read(caller, address);
+        }
+        self.elsewhere()?.read(caller, address)
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &tilo_actions::remote::Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        address: &tilo_actions::remote::RecordAddress,
+        wake: &tilo_actions::remote::RecordWake,
+    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+        // The records the session keeps are read as they are on its pass: nothing to wait on.
+        if self.services.keeps(&address.app) {
+            return Ok(());
+        }
+        self.elsewhere()?.watch(caller, address, wake)
+    }
+}
+
+impl tilo_actions::remote::RecordChanges for TurnRecords {
+    fn apply(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        change: &tilo_actions::remote::RecordChange,
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionHostError> {
+        if self.services.keeps(&change.app) {
+            return self.kept.apply(caller, change);
+        }
+        self.host
+            .record_changes()
+            .ok_or_else(|| tilo_actions::remote::ActionHostError::Unavailable {
+                reason: "this desktop applies no task's changes at a record's origin".to_owned(),
+            })?
+            .apply(caller, change)
     }
 }
 
@@ -161,11 +259,11 @@ impl ActionHost for Current {
     }
 
     fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
-        self.host().record_reads()
+        Some(Arc::new(self.records()))
     }
 
     fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
-        self.host().record_changes()
+        Some(Arc::new(self.records()))
     }
 
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {

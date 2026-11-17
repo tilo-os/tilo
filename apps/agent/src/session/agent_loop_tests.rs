@@ -1469,6 +1469,7 @@ fn execution_fixture(
         record: None,
         broker_revision: 0,
         catalogue_cache: None,
+        declarations: std::collections::BTreeMap::new(),
         turn: None,
         failure_detail: None,
         spending: None,
@@ -2010,10 +2011,19 @@ tilo_test_env::scenario! {
 
     phase a_run_goes_on_past_thirty_turns_until_it_is_done;
     // A run has no turn cap of its own: it goes on past the 30 turns the
-    // runner used to allow until it is done.
+    // runner used to allow until it is done, as long as its turns get it
+    // further (a run that only looks is told to finish: `stalled`).
     {
         let mut turns: Vec<Vec<TurnEvent>> = (0..45)
-            .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+            .map(|item| {
+                turn(
+                    &[invoke(
+                        "append-paragraph",
+                        &serde_json::json!({"text": format!("Item {item}.")}),
+                    )],
+                    64,
+                )
+            })
             .collect();
         turns.push(turn(&[finish("Looked everywhere.", true)], 8));
         let mut f = fixture("look around", World::default(), turns);
