@@ -553,7 +553,9 @@ impl<R: Resource> ResourceEnv<R> {
     /// and editors ([`SharedResource`](tilo_resource::SharedResource),
     /// [`PersonResource::editable`](super::PersonResource::editable)); its owner
     /// opens it here too.
-    pub fn shared_person<P: tilo_resource::SharedResource>(&self) -> Option<super::PersonResource<P>> {
+    pub fn shared_person<P: tilo_resource::SharedResource>(
+        &self,
+    ) -> Option<super::PersonResource<P>> {
         self.storage.shared_person::<P>()
     }
 
