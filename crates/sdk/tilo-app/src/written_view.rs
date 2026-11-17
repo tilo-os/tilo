@@ -35,6 +35,10 @@ pub struct WrittenView {
     pub author: Actor,
     /// Who looks at it. It reads what they may read.
     pub viewer: PersonId,
+    /// The apps it reads, by the names it calls them (`tasks`), as its writer listed them where
+    /// the view was posted. It is given these and no other: an app its definition names that is
+    /// not listed is unknown to it.
+    pub reads: Vec<String>,
 }
 
 /// Something a view asked to do that waits for the person: its writer is not trusted to do it
@@ -45,8 +49,15 @@ pub struct Suggestion {
     pub id: u64,
     /// The app it would change, by the name people call it.
     pub app: String,
-    /// What it would do, in the app's words.
+    /// What it would do, in the app's words: the action's own name, never the label of the
+    /// control that asked for it.
     pub action: String,
+    /// What the action is given, exactly as it would be sent: each argument by the name the
+    /// app's action gives it, with its value. Nothing is sent that is not here, so whoever shows
+    /// a suggestion shows these whole, or says how much it left out.
+    pub arguments: Vec<(String, String)>,
+    /// Whether the action destroys something.
+    pub destructive: bool,
     /// Who wrote the view that asked.
     pub by: Actor,
 }
@@ -158,6 +169,7 @@ mod tests {
             source: "view shown() { text(\"Hello\") }".to_owned(),
             author: Actor::Member(MemberId::person("ada")),
             viewer: "bo".into(),
+            reads: Vec::new(),
         };
         assert!(matches!(place(&view, &api), Placed::Unavailable));
         assert_eq!(code_generation(), 0);

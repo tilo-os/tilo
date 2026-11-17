@@ -243,15 +243,19 @@ fn fleet() -> Rc<[Rc<App>]> {
         .into()
 }
 
-/// The apps the view `source` names, each once: an app is named by its short name before a dot
-/// (`tasks.`), wherever in the definition that stands. Naming more than the view reads only loads
-/// a package it does not use; naming less is not possible, since a view reaches an app in no
-/// other way.
-pub(crate) fn named(source: &str) -> Vec<Rc<App>> {
+/// The apps the view `source` names and its writer listed in `listed`, each once: an app is named
+/// by its short name before a dot (`tasks.`), wherever in the definition that stands. Naming more
+/// than the view reads only loads a package it does not use; naming less is not possible, since a
+/// view reaches an app in no other way. An app the definition names that is not listed is not
+/// given to the view: the definition then names something unknown, and says so where it stands.
+pub(crate) fn named(source: &str, listed: &[String]) -> Vec<Rc<App>> {
     let named = dotted(source);
     APPS.with(|apps| {
         let mut out: Vec<Rc<App>> = Vec::new();
         for (name, _) in &named {
+            if !listed.iter().any(|listed| listed == name) {
+                continue;
+            }
             let found = apps.iter().find(|app| app.alias == *name);
             if let Some(app) = found
                 && !out.iter().any(|held| Rc::ptr_eq(held, app))
