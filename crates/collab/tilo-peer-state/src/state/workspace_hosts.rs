@@ -16,7 +16,8 @@ use collab_types::signer::DeviceSigner;
 pub const WORKSPACE_HOSTS_KEY: &str = "hosts_v1";
 
 /// The hosts `doc` names, ordered by device key. An entry this build cannot
-/// read is left out.
+/// read, or one its host did not sign, is left out: whoever wrote the list,
+/// only a host's own signature names where it answers.
 #[must_use]
 pub fn workspace_hosts_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
     let Ok(Some((Value::Object(ObjType::Map), hosts))) = doc.get(ROOT, WORKSPACE_HOSTS_KEY) else {
@@ -31,7 +32,9 @@ pub fn workspace_hosts_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
                 return None;
             };
             let hint: TransportHint = serde_json::from_str(json).ok()?;
-            (hex::encode(hint.host.device_public_key) == device).then_some(hint)
+            (hex::encode(hint.host.device_public_key) == device
+                && tilo_workspace_join::verify_transport_hint(&hint).is_ok())
+            .then_some(hint)
         })
         .collect()
 }
@@ -51,15 +54,16 @@ impl PeerGovernance<'_> {
 
 impl PeerGovernanceMut<'_> {
     /// Name `hint`'s host among the workspace's hosts at that address, authored
-    /// by the governor `key`; it replaces the host's earlier address. Naming
-    /// it as it is named changes nothing. Returns whether it changed the
-    /// workspace.
+    /// by `key`; it replaces the host's earlier address. Naming it as it is
+    /// named changes nothing, and an address its host did not sign is
+    /// refused. Returns whether it changed the workspace.
     pub fn author_workspace_host(
         self,
         hint: &TransportHint,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        tilo_workspace_join::verify_transport_hint(hint)?;
         if self.peer.governance().workspace_hosts().contains(hint) {
             return Ok(false);
         }
@@ -135,27 +139,36 @@ mod tests {
     use crate::join::TransportHint;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn hint(host: &tilo_user_identity::DeviceCert, at: &str) -> TransportHint {
-        TransportHint {
-            kind: "iroh".into(),
-            opaque_json: at.into(),
-            host: host.clone(),
-            service_public_key: [3; 32],
-            host_signature: [4; 64],
-        }
+    /// `host`'s address `at`, signed by its device `key`.
+    fn hint(
+        host: &tilo_user_identity::DeviceCert,
+        key: &ed25519_dalek::SigningKey,
+        at: &str,
+    ) -> Result<TransportHint, String> {
+        tilo_workspace_join::sign_transport_hint("iroh", at, host.clone(), [3; 32], key)
     }
 
     /// The governor names a host and moves or removes it; every member's
-    /// copy reads what it named.
+    /// copy reads what it named. An address its host did not sign is refused.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
     fn the_governor_names_the_workspaces_hosts() -> TestResult {
-        let (mut peer, governor, _, nas, now) = crate::admission_tests::seeded();
+        let (mut peer, governor, nas_key, nas, now) = crate::admission_tests::seeded();
         assert!(peer.governance().workspace_hosts().is_empty());
-        let first = hint(&nas, "first");
+        let first = hint(&nas, &nas_key, "first")?;
+        let forged = TransportHint {
+            opaque_json: "elsewhere".into(),
+            ..first.clone()
+        };
+        assert!(
+            peer.governance_mut()
+                .author_workspace_host(&forged, &governor, now)
+                .is_err(),
+            "only the host signs where it answers"
+        );
         assert!(
             peer.governance_mut()
                 .author_workspace_host(&first, &governor, now)?
@@ -166,7 +179,7 @@ mod tests {
                 .author_workspace_host(&first, &governor, now)?,
             "naming it as it is named changes nothing"
         );
-        let moved = hint(&nas, "moved");
+        let moved = hint(&nas, &nas_key, "moved")?;
         assert!(
             peer.governance_mut()
                 .author_workspace_host(&moved, &governor, now)?
@@ -182,45 +195,57 @@ mod tests {
     }
 
     /// Any device of the owner names the workspace's hosts, not only the one the
-    /// workspace was made on.
+    /// workspace was made on; every receiver leaves out an entry its host did
+    /// not sign, whoever wrote it.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
     fn another_device_of_the_owner_names_a_host() -> TestResult {
+        use automerge::ReadDoc as _;
         use automerge::transaction::Transactable as _;
-        let (mut peer, _, _, member, now) = crate::admission_tests::seeded();
+        let (mut peer, _, member_key, member, now) = crate::admission_tests::seeded();
         assert_eq!(member.user_public_key, peer.owner());
-        let mut doc = peer
-            .admitted_workspace()
-            .ok_or("workspace missing")?
-            .clone();
-        let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-        let hosts = doc.put_object(
-            automerge::ROOT,
-            super::WORKSPACE_HOSTS_KEY,
-            automerge::ObjType::Map,
-        )?;
-        doc.put(
-            &hosts,
-            hex::encode(member.device_public_key).as_str(),
-            serde_json::to_string(&hint(&member, "mine"))?.as_str(),
-        )?;
-        doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        let workspace = peer.workspace_id().to_owned();
-        peer.receive_from(
-            crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
-            crate::NeighbourMsg::SyncResp { changes, workspace },
-            now,
-        )?;
-        assert_eq!(peer.governance().workspace_hosts().len(), 1);
+        let signed = hint(&member, &member_key, "mine")?;
+        let forged = TransportHint {
+            opaque_json: "elsewhere".into(),
+            ..signed.clone()
+        };
+        for (entry, named) in [(forged, 0), (signed, 1)] {
+            let mut doc = peer
+                .admitted_workspace()
+                .ok_or("workspace missing")?
+                .clone();
+            let before = doc.get_heads();
+            doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+            let hosts = match doc.get(automerge::ROOT, super::WORKSPACE_HOSTS_KEY)? {
+                Some((automerge::Value::Object(automerge::ObjType::Map), hosts)) => hosts,
+                _ => doc.put_object(
+                    automerge::ROOT,
+                    super::WORKSPACE_HOSTS_KEY,
+                    automerge::ObjType::Map,
+                )?,
+            };
+            doc.put(
+                &hosts,
+                hex::encode(member.device_public_key).as_str(),
+                serde_json::to_string(&entry)?.as_str(),
+            )?;
+            doc.commit();
+            let changes = doc
+                .get_changes(&before)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect();
+            let workspace = peer.workspace_id().to_owned();
+            peer.receive_from(
+                crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                crate::NeighbourMsg::SyncResp { changes, workspace },
+                now,
+            )?;
+            assert_eq!(peer.governance().workspace_hosts().len(), named);
+        }
         Ok(())
     }
 }
