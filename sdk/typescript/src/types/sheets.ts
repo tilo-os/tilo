@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@fab0785060c7d53d";
+export const SURFACE = "so.tilo.sheets@b0eee8348162106f";
 
 export interface Area {
   top: string;
@@ -389,11 +389,17 @@ export interface Workbook extends tilo.Resource {
     sheet?: string;
     from?: number;
   }): Promise<void>;
+  readCells(args: {
+    sheet: string;
+    range?: string;
+    from?: number;
+    shown?: boolean;
+  }): Promise<void>;
 }
 
 /** The actions `Workbook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKBOOK_ACTIONS = ["newSheet", "setTitle", "setTitleMany", "setRecords", "upsertItem", "duplicateSheet", "duplicateSheetMany", "deleteSheet", "deleteSheetMany", "setCells", "writeCells", "formatCells", "sortRows", "insertRows", "insertRowsMany", "deleteRows", "insertColumns", "insertColumnsMany", "deleteColumns", "deleteColumnsMany", "importSheets", "importSheetsMany", "addChart", "addChartMany", "editChart", "editChartMany", "deleteChart", "deleteChartMany", "renameSheet", "renameSheetMany", "comment", "commentMany", "reply", "replyMany", "editComment", "editCommentMany", "deleteComment", "deleteCommentMany", "exportXlsxContent", "readFile", "readContent"] as const;
+export const WORKBOOK_ACTIONS = ["newSheet", "setTitle", "setTitleMany", "setRecords", "upsertItem", "duplicateSheet", "duplicateSheetMany", "deleteSheet", "deleteSheetMany", "setCells", "writeCells", "formatCells", "sortRows", "insertRows", "insertRowsMany", "deleteRows", "insertColumns", "insertColumnsMany", "deleteColumns", "deleteColumnsMany", "importSheets", "importSheetsMany", "addChart", "addChartMany", "editChart", "editChartMany", "deleteChart", "deleteChartMany", "renameSheet", "renameSheetMany", "comment", "commentMany", "reply", "replyMany", "editComment", "editCommentMany", "deleteComment", "deleteCommentMany", "exportXlsxContent", "readFile", "readContent", "readCells"] as const;
 
 /** The `sheets.workbook` kind at `path`. */
 export function workbook(ws: tilo.Workspace, path: string): Workbook {

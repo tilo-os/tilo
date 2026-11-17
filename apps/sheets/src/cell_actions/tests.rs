@@ -45,7 +45,7 @@ fn snapshot(book: &Replica<Workbook>) -> SheetSnapshot {
 }
 
 fn read_back(book: &Replica<Workbook>, range: Option<&str>) -> serde_json::Value {
-    read(&snapshot(book), range).unwrap()
+    read(&snapshot(book), range, None, false).unwrap()
 }
 
 fn write(book: &mut Replica<Workbook>, cells: Vec<CellWrite>) {
@@ -181,9 +181,26 @@ tilo_test_env::scenario! {
 
     phase a_read_stays_bounded;
     {
+        // A part holds whole rows of at most 10,000 cells, and names the row to read on from.
         let book = workbook(&[&["x"]]);
-        assert!(read(&snapshot(&book), Some("A1:Z1000")).is_err());
-        assert!(read(&snapshot(&book), Some("nowhere")).is_err());
+        let whole = Some("A1:Z1000");
+        let part = read(&snapshot(&book), whole, None, false).unwrap();
+        assert_eq!(part["range"], "A1:Z384");
+        assert_eq!(part["rows"].as_array().unwrap().len(), 384);
+        assert_eq!(part["rows"][0].as_array().unwrap().len(), 26);
+        assert_eq!((&part["of"], &part["next"]), (&json!("A1:Z1000"), &json!(385)));
+        let middle = read(&snapshot(&book), whole, Some(385), false).unwrap();
+        assert_eq!((&middle["range"], &middle["next"]), (&json!("A385:Z768"), &json!(769)));
+        let last = read(&snapshot(&book), whole, Some(769), false).unwrap();
+        assert_eq!(last["range"], "A769:Z1000");
+        assert_eq!(last["of"], "A1:Z1000");
+        assert!(last.get("next").is_none(), "{last}");
+        let small = read(&snapshot(&book), Some("A1:B2"), None, true).unwrap();
+        assert!(small.get("of").is_none() && small.get("next").is_none(), "{small}");
+        assert_eq!(small["shown"], json!([["x", ""], ["", ""]]));
+        assert!(read(&snapshot(&book), whole, Some(1001), false).is_err());
+        assert!(read(&snapshot(&book), whole, Some(0), false).is_err());
+        assert!(read(&snapshot(&book), Some("nowhere"), None, false).is_err());
     }
 
     phase an_import_into_a_blank_workbook_replaces_its_empty_sheet;

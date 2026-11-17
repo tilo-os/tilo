@@ -292,6 +292,16 @@ params = [
   { name = "from", type = { option = "int" }, required = false },
 ]
 
+[[resources.verbs]]
+id = "read-cells"
+kind = "read"
+params = [
+  { name = "sheet", type = "text", required = true },
+  { name = "range", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+  { name = "shown", type = { option = "bool" }, required = false },
+]
+
 [[resources.types]]
 name = "Area"
 fields = [

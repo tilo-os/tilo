@@ -23201,6 +23201,19 @@
         ],
         "description": ""
       },
+      "sheets.workbook.read-cells.Arguments": {
+        "type": "object",
+        "properties": {
+          "sheet": {},
+          "range": {},
+          "from": {},
+          "shown": {}
+        },
+        "required": [
+          "sheet"
+        ],
+        "description": ""
+      },
       "shortcuts.workbench.draft-proposal.Arguments": {
         "type": "object",
         "properties": {
@@ -32361,6 +32374,12 @@
       "resource": "sheets.workbook",
       "action": "read-content",
       "arguments": "#/components/schemas/sheets.workbook.read-content.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-cells",
+      "arguments": "#/components/schemas/sheets.workbook.read-cells.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",

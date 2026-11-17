@@ -436,6 +436,83 @@ fn a_past_version_reads_and_shows_its_cells() {
     );
 }
 
+/// Twenty thousand cells, half of them formulas, read as values: the parts join up, each number
+/// a number, and the words a cell shows come only when asked for.
+#[test]
+fn a_read_of_twenty_thousand_cells_joins_up_from_its_parts() {
+    let mut app = app();
+    call(&mut app, "new-sheet", json!({"name": "Long"}));
+    for half in 0..2u32 {
+        let first = half * 5000 + 1;
+        let rows: Vec<Value> = (first..first + 5000)
+            .map(|n| json!([n, format!("=A{n}*2")]))
+            .collect();
+        call(
+            &mut app,
+            "set-cells",
+            json!({"sheet": "Long", "start": format!("A{first}"), "rows": rows}),
+        );
+    }
+    call(
+        &mut app,
+        "format-cells",
+        json!({"sheet": "Long", "range": "B10000", "format": "currency:USD"}),
+    );
+
+    let mut rows = Vec::new();
+    let mut formulas = 0;
+    let mut parts = 0;
+    let mut from = Value::Null;
+    loop {
+        let part = call(
+            &mut app,
+            "read-cells",
+            json!({"sheet": "Long", "from": from}),
+        );
+        assert_eq!(part["of"], "A1:B10000", "each part names the whole");
+        assert!(part.get("shown").is_none(), "no words unless asked");
+        rows.extend(part["rows"].as_array().unwrap().iter().cloned());
+        formulas += part["formulas"].as_object().unwrap().len();
+        parts += 1;
+        match part.get("next") {
+            Some(next) => from = next.clone(),
+            None => break,
+        }
+    }
+    assert_eq!((parts, rows.len(), formulas), (2, 10_000, 10_000));
+    let wrong: Vec<&Value> = rows
+        .iter()
+        .zip(1u32..)
+        .filter(|(row, n)| **row != json!([f64::from(*n), f64::from(*n) * 2.0]))
+        .map(|(row, _)| row)
+        .take(3)
+        .collect();
+    assert!(wrong.is_empty(), "every row is its two numbers: {wrong:?}");
+
+    let end = call(
+        &mut app,
+        "read-cells",
+        json!({"sheet": "Long", "range": "A9999:B10000", "shown": true}),
+    );
+    assert_eq!(end["rows"], json!([[9999.0, 19998.0], [10000.0, 20000.0]]));
+    assert_eq!(
+        end["shown"],
+        json!([["9999", "19998"], ["10000", "$20,000.00"]])
+    );
+    assert_eq!(end["formats"], json!({"B10000": "currency:USD"}));
+    assert!(
+        end.get("next").is_none() && end.get("of").is_none(),
+        "{end}"
+    );
+
+    let refused = refusal(
+        &mut app,
+        "read-cells",
+        json!({"sheet": "Long", "range": "A1:B10", "from": 11}),
+    );
+    assert!(refused.contains("`from` is a row of A1:B10"), "{refused}");
+}
+
 #[test]
 fn a_read_shows_the_cells_a_formula_spills_into() {
     let mut app = app();

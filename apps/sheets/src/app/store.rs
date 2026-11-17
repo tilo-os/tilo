@@ -95,7 +95,12 @@ impl Store {
             E::ExportCsv { path } => self.export(Interchange::Csv, path, me, cx),
             E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, me, cx),
             E::ExportOds { path } => self.export(Interchange::Ods, path, me, cx),
-            E::ReadCells { sheet, range } => {
+            E::ReadCells {
+                sheet,
+                range,
+                from,
+                shown,
+            } => {
                 let workbook = cx.live().get();
                 let id = workbook
                     .sheet_key(&Id::from_raw(sheet))
@@ -103,12 +108,13 @@ impl Store {
                 let snapshot = workbook
                     .snapshot_of(&id)
                     .ok_or_else(|| "no such sheet".to_owned())?;
-                crate::cell_actions::read(&snapshot, range.as_deref()).map(|mut read| {
-                    if let Some(fields) = read.as_object_mut() {
-                        fields.insert("item".into(), id.as_str().into());
-                    }
-                    Effected::value(read)
-                })
+                crate::cell_actions::read(&snapshot, range.as_deref(), from, shown.unwrap_or(false))
+                    .map(|mut read| {
+                        if let Some(fields) = read.as_object_mut() {
+                            fields.insert("item".into(), id.as_str().into());
+                        }
+                        Effected::value(read)
+                    })
             }
             E::ImportXlsxContent { content, title } => {
                 self.import_xlsx_content(&content, title, cx)

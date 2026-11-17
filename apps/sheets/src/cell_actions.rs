@@ -12,7 +12,8 @@ use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value, parse_
 use crate::resource::{CellWrite, range_label};
 use crate::workbook::SheetSnapshot;
 
-pub const MAX_READ_CELLS: usize = 4096;
+/// The most cells one part of a read answers, as the record's own read and a file's.
+pub const MAX_READ_CELLS: usize = crate::resource::MAX_READ_CELLS;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchableCell {
@@ -169,21 +170,68 @@ pub fn sort_writes(
     writes
 }
 
-pub fn read(snap: &SheetSnapshot, range: Option<&str>) -> Result<serde_json::Value, String> {
-    let used = snap.raw.keys().chain(snap.bold.iter()).copied();
-    let (start, end) = match range {
-        Some(range) => crate::resource::parse_range(range)
-            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?,
-        None => used.fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
-            ((0, 0), (end.0.max(col), end.1.max(row)))
-        }),
+/// What a range of the sheet holds, as values: numbers as numbers and dates as ISO text, with
+/// the formulas, formats and bold cells by reference. `range` is every used cell when none, the
+/// cells a formula spills into among them. A range of more than [`MAX_READ_CELLS`] cells
+/// answers in parts of whole rows: `from` is the row a part starts at, as the sheet numbers it,
+/// and the answer's `next` the row to read on from, beside the whole range as `of`. With
+/// `shown`, what each cell shows comes beside its value.
+///
+/// # Errors
+/// A range that is none, and a `from` outside the range.
+pub fn read(
+    snap: &SheetSnapshot,
+    range: Option<&str>,
+    from: Option<u32>,
+    shown: bool,
+) -> Result<serde_json::Value, String> {
+    let values = crate::calc::recalculate_snapshot(snap);
+    let (start, end) = if let Some(range) = range {
+        crate::resource::parse_range(range)
+            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?
+    } else {
+        let spilled = values
+            .iter()
+            .filter(|(_, value)| **value != CellValue::Empty)
+            .map(|(addr, _)| *addr);
+        snap.raw
+            .keys()
+            .chain(snap.bold.iter())
+            .copied()
+            .chain(spilled)
+            .fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
+                ((0, 0), (end.0.max(col), end.1.max(row)))
+            })
     };
-    let width = (end.0 - start.0) as usize + 1;
-    let height = (end.1 - start.1) as usize + 1;
-    if width.saturating_mul(height) > MAX_READ_CELLS {
-        return Err(format!("read at most {MAX_READ_CELLS} cells at once"));
+    let first = if let Some(row) = from {
+        row.checked_sub(1)
+            .filter(|row| (start.1..=end.1).contains(row))
+            .ok_or_else(|| {
+                format!(
+                    "`from` is a row of {}: {} to {}",
+                    range_label(start, end),
+                    start.1.saturating_add(1),
+                    end.1.saturating_add(1)
+                )
+            })?
+    } else {
+        start.1
+    };
+    let width = usize::try_from(end.0.saturating_sub(start.0))
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let most_rows = u32::try_from((MAX_READ_CELLS / width).max(1)).unwrap_or(u32::MAX);
+    let last = end.1.min(first.saturating_add(most_rows.saturating_sub(1)));
+    let mut content = range_content_of(snap, &values, (start.0, first), (end.0, last), shown);
+    if (first, last) != (start.1, end.1)
+        && let Some(fields) = content.as_object_mut()
+    {
+        fields.insert("of".into(), range_label(start, end).into());
+        if last < end.1 {
+            fields.insert("next".into(), last.saturating_add(2).into());
+        }
     }
-    Ok(range_content(snap, start, end))
+    Ok(content)
 }
 
 /// `number` to the 15 significant digits a spreadsheet keeps, so a read
@@ -259,25 +307,39 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
 
 fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
     let values = crate::calc::recalculate_snapshot(snap);
+    range_content_of(snap, &values, start, end, false)
+}
+
+/// The cells `start..=end` of `snap`, whose cells compute `values`, as a read answers them;
+/// with `shown`, also what each shows.
+fn range_content_of(
+    snap: &SheetSnapshot,
+    values: &HashMap<Addr, CellValue>,
+    start: Addr,
+    end: Addr,
+    shown: bool,
+) -> serde_json::Value {
     let mut rows = Vec::new();
+    let mut words = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut formats = serde_json::Map::new();
     let mut bold = Vec::new();
     for row in start.1..=end.1 {
         let mut line = Vec::new();
+        let mut line_words = Vec::new();
         for col in start.0..=end.0 {
             let raw = snap.raw.get(&(col, row));
-            line.push(
-                values
-                    .get(&(col, row))
-                    .map_or(serde_json::Value::Null, |value| {
-                        json_value(
-                            value,
-                            shown_format(snap, (col, row)),
-                            raw.map(String::as_str),
-                        )
-                    }),
-            );
+            let held = values
+                .get(&(col, row))
+                .map(|value| (value, shown_format(snap, (col, row))));
+            line.push(held.map_or(serde_json::Value::Null, |(value, format)| {
+                json_value(value, format, raw.map(String::as_str))
+            }));
+            if shown {
+                line_words.push(serde_json::Value::String(
+                    held.map_or_else(String::new, |(value, format)| format_value(value, format)),
+                ));
+            }
             if let Some(raw) = raw.filter(|raw| raw.starts_with('=')) {
                 formulas.insert(addr_to_a1(col, row), raw.clone().into());
             }
@@ -289,6 +351,7 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
             }
         }
         rows.push(serde_json::Value::Array(line));
+        words.push(serde_json::Value::Array(line_words));
     }
     let mut content = serde_json::json!({
         "sheet": snap.name,
@@ -297,10 +360,13 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
         "formulas": formulas,
         "bold": bold,
     });
-    if !formats.is_empty()
-        && let Some(fields) = content.as_object_mut()
-    {
-        fields.insert("formats".into(), formats.into());
+    if let Some(fields) = content.as_object_mut() {
+        if !formats.is_empty() {
+            fields.insert("formats".into(), formats.into());
+        }
+        if shown {
+            fields.insert("shown".into(), words.into());
+        }
     }
     note_formula_errors(&mut content, snap, start, end);
     content
