@@ -847,7 +847,7 @@ final class EngineTests: XCTestCase {
         ])
         // Any other action, an action on one agent, a name that is none, and a script without
         // the engine's pass: the server is not asked at all.
-        let cases: [(String, String?)] = [("retire-agent", nil), ("create-agent", "scout"), ("read", "../chat.workspace")]
+        let cases: [(String, String?)] = [("rename-agent", nil), ("create-agent", "scout"), ("read", "../chat.workspace")]
         for (action, agent) in cases {
             do {
                 try await engine.askAgents(action, agent: agent)

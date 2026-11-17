@@ -189,6 +189,17 @@ final class ModelTests: XCTestCase {
         XCTAssertNil(plain.sinceLeft)
     }
 
+    func testTheModelStepNamesAProviderOnlyWhereThatSaysSomething() {
+        let one = [ModelChoice(id: "a/large", name: "Large", provider: "Anthropic"), ModelChoice(id: "a/small", name: "Small", provider: "Anthropic")]
+        let two = one + [ModelChoice(id: "o/large", name: "Large", provider: "OpenRouter")]
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: one), "Anthropic")
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: two), "", "of two providers the box names neither before a model is chosen")
+        XCTAssertEqual(ModelCard.note(chosen: two[2], among: two), "OpenRouter")
+        XCTAssertEqual(ModelCard.note(chosen: two[0], among: two), "Anthropic")
+        XCTAssertEqual(ModelCard.providers(of: two), ["Anthropic", "OpenRouter"])
+        XCTAssertEqual(ModelCard.note(chosen: nil, among: []), "")
+    }
+
     func testASecretIsHandedOnAndHeldNowhere() async throws {
         var content = Drawing.content()
         content.main = Drawing.secretPiece

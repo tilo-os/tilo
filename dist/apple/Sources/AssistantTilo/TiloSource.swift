@@ -413,11 +413,31 @@ public final class TiloSource: AssistantSource {
     /// The person's assistant among a workspace's agents: the active one they keep that no
     /// outside client connects as and that is nobody's sub-agent, the earliest made.
     private static func assistant(among all: [JSON], of person: String) -> JSON? {
+        assistants(among: all, of: person).first
+    }
+
+    /// Every agent that could be the person's assistant, the earliest made first. Two made in
+    /// the same moment stand in the order of their ids, so every device reads the same first.
+    private static func assistants(among all: [JSON], of person: String) -> [JSON] {
         all.filter {
             ChatMember($0["keeper"])?.id == person && ($0["mcp_client"]?.isNull ?? true) && ($0["sub"]?.isNull ?? true)
                 && variant($0["state"]) == "active" && $0["id"]?.string != nil
         }
-        .min { ($0["created_at"]?.number ?? 0) < ($1["created_at"]?.number ?? 0) }
+        .sorted {
+            let made = ($0["created_at"]?.number ?? 0, $1["created_at"]?.number ?? 0)
+            return made.0 == made.1 ? ($0["id"]?.string ?? "") < ($1["id"]?.string ?? "") : made.0 < made.1
+        }
+    }
+
+    /// Chat's own name for the mark that the workspace's server answers for an agent.
+    private static let answeredByServer = "on_host"
+
+    /// Whether an agent beside the assistant is one another device of the person's made as its
+    /// assistant in the same moment: it carries the name the app gives one, and the server
+    /// answers for it nowhere yet. Only such a one is taken back; an agent the person made and
+    /// named, or one that already answers, is theirs to keep.
+    private static func isTwin(_ agent: JSON) -> Bool {
+        agent["name"]?.string == assistantName && agent[answeredByServer]?.bool != true
     }
 
     /// What a new assistant is called until its person renames it.
@@ -467,7 +487,13 @@ public final class TiloSource: AssistantSource {
                 try await engine.askAgents("create-agent", ["name": .string(TiloSource.assistantName)])
                 all = try await agentsOnServer()
                 guard let made = TiloSource.assistant(among: all, of: me)?["id"]?.string else { throw TiloEngine.Problem.noAnswer }
-                try await engine.askAgents("set-agent-on-host", ["agent": .string(made), "on_host": true])
+                try await engine.askAgents("set-agent-on-host", ["agent": .string(made), TiloSource.answeredByServer: true])
+                // Another device of the person's found none in the same moment and made one too.
+                // The earliest made is the assistant on both, and what was made after it is
+                // taken back, so the person keeps one and no agent nobody writes to.
+                for twin in TiloSource.assistants(among: all, of: me).dropFirst() where TiloSource.isTwin(twin) {
+                    if let id = twin["id"]?.string { _ = try? await engine.askAgents("retire-agent", ["agent": .string(id)]) }
+                }
             }
             if let found = TiloSource.assistant(among: all, of: me) {
                 take(found, of: me)

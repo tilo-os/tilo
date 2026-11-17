@@ -177,8 +177,13 @@ final class TiloSourceTests: XCTestCase {
               if (!window.agents) noAgents();
               if (window.mayNotMake) throw Object.assign(new Error('Your role in this workspace may not make an agent'), {code: 'not_permitted'});
               window.madeWith = argument;
+              // Another device of hers made its own in the same moment (`window.twin`: what it is kept with).
+              if (window.twin) window.agents.push(window.kept('twin', {name: argument.name, ...window.twin}));
               window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length,
                 ...(window.wholeRows ? {keeper: ADA, state: 'active'} : {})}));
+              return done(null);
+            case CHAT + ' retire-agent':
+              window.agents.find(agent => agent.id === argument.agent).state = {$variant: 'retired'};
               return done(null);
             case CHAT + ' set-agent-on-host':
               // What was asked is kept on the agent as it was said: which agent, and the flag.
@@ -860,6 +865,62 @@ final class TiloSourceTests: XCTestCase {
         // Nothing was made through the page's own window.
         let throughPage = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
         XCTAssertEqual(throughPage, "0")
+    }
+
+    /// The workspace's agents that are not retired, by id.
+    private func agentsActive() async throws -> String {
+        try await page("return JSON.stringify(window.agents.filter(one => one.state.$variant === 'active').map(one => one.id))")
+    }
+
+    func testWhereAnotherDeviceOfHersMadeOneInTheSameMomentOneIsLeftAndItIsTheEarliest() async throws {
+        try await start(.assistant)
+        // Her other device's was made first: this device writes to that one and takes its own back.
+        try await enter(device: true, "window.byKind = true; window.agents = []; window.twin = {created_at: 1794900000500}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')).map(what => what.split(' ')[1]))")
+        // It made one, had her server answer for the earliest, and took its own back.
+        let steps = JSON(text: asked)?.array?.compactMap(\.string) ?? []
+        XCTAssertEqual(steps.count, 3)
+        XCTAssertEqual(steps.first, "create-agent")
+        XCTAssertEqual(steps.last, "retire-agent")
+        let active = try await agentsActive()
+        XCTAssertEqual(active, #"["twin"]"#)
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["twin",true],["assistant",false]]"#, "her server answers for the one that is left")
+        try await source.send(Draft(text: "Good morning"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "twin", "name": "Assistant"]])
+    }
+
+    func testOfTwoMadeInTheSameMomentTheLaterIsTakenBackAndWhatSheMadeHerselfIsKept() async throws {
+        try await start(.assistant)
+        // This device's is the earlier: the other device's, made after it under the same name, is taken back.
+        try await enter(device: true, "window.byKind = true; window.agents = []; window.twin = {created_at: 1794900090000}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let active = try await agentsActive()
+        XCTAssertEqual(active, #"["assistant"]"#)
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "assistant", "name": "Assistant"]])
+    }
+
+    func testAnAgentMadeInTheSameMomentThatHerServerAlreadyAnswersForIsNotTakenBack() async throws {
+        try await start(.assistant)
+        // Made after this device's and already answered for by her server: it is hers to keep.
+        try await enter(device: true, "window.byKind = true; window.agents = []; window.twin = {created_at: 1794900090000, \(Self.answeredByServer): true}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let active = try await agentsActive()
+        XCTAssertEqual(active, #"["twin","assistant"]"#)
+        let asked = try await page("return String(window.asks.filter(what => what === 'chat retire-agent').length)")
+        XCTAssertEqual(asked, "0")
+    }
+
+    func testAnAgentSheNamedHerselfInTheSameMomentIsNotTakenBack() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = []; window.twin = {created_at: 1794900090000, name: 'Reed'}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let active = try await agentsActive()
+        XCTAssertEqual(active, #"["twin","assistant"]"#)
     }
 
     func testAnAssistantThePersonKeepsIsFoundAndNoneIsMade() async throws {
