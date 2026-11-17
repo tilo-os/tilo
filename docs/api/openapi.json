@@ -7976,7 +7976,44 @@
             "type": "string"
           },
           "person": {
-            "type": "string"
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "reports": {
             "items": {
@@ -9784,6 +9821,121 @@
         ],
         "description": ""
       },
+      "chat.messages.ask.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "answers": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {},
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "text"
+        ],
+        "description": ""
+      },
+      "chat.messages.answer-question.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {}
+        },
+        "required": [
+          "message",
+          "answer"
+        ],
+        "description": ""
+      },
+      "chat.messages.withdraw-question.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "why": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "description": ""
+      },
+      "chat.messages.settle-question.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "outcome"
+        ],
+        "description": ""
+      },
       "chat.messages.carry-counts.Arguments": {
         "type": "object",
         "properties": {
@@ -9957,6 +10109,22 @@
           "agent",
           "day",
           "cost_micros"
+        ],
+        "description": ""
+      },
+      "chat.agent.set-agent-on-host.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "on_host": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent",
+          "on_host"
         ],
         "description": ""
       },
@@ -28142,6 +28310,30 @@
     {
       "app": "so.tilo.chat",
       "resource": "chat.messages",
+      "action": "ask",
+      "arguments": "#/components/schemas/chat.messages.ask.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "answer-question",
+      "arguments": "#/components/schemas/chat.messages.answer-question.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "withdraw-question",
+      "arguments": "#/components/schemas/chat.messages.withdraw-question.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "settle-question",
+      "arguments": "#/components/schemas/chat.messages.settle-question.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
       "action": "carry-counts",
       "arguments": "#/components/schemas/chat.messages.carry-counts.Arguments"
     },
@@ -28192,6 +28384,12 @@
       "resource": "chat.agent",
       "action": "record-agent-spend",
       "arguments": "#/components/schemas/chat.agent.record-agent-spend.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "set-agent-on-host",
+      "arguments": "#/components/schemas/chat.agent.set-agent-on-host.Arguments"
     },
     {
       "app": "so.tilo.chat",

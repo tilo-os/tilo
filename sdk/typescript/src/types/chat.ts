@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@a73427efdc5aa25a";
+export const SURFACE = "so.tilo.chat@29335854a16313e8";
 
 export interface Category {
   name: string;
@@ -260,8 +260,20 @@ export type AgentWorkState = Record<string, unknown>;
 /** One of item, items, text: an object whose case the app tags it with. */
 export type Anchor = Record<string, unknown>;
 
+export interface Answered {
+  answer: string;
+  device: string;
+  at: number;
+  detail: string;
+}
+
 /** One of resource, text, image, video, file: an object whose case the app tags it with. */
 export type Attached = Record<string, unknown>;
+
+export interface Choice {
+  id: string;
+  label: string;
+}
 
 /** One of bool, int, str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
@@ -313,6 +325,7 @@ export interface Message {
   author_name: string | null;
   origin: Origin | null;
   share: WindowShare | null;
+  question: Question | null;
   attempts: number;
 }
 
@@ -326,6 +339,12 @@ export interface Origin {
   updated_ms: number | null;
 }
 
+export interface MessagesOutcome {
+  outcome: string;
+  at: number;
+  detail: string;
+}
+
 export interface ProviderStream {
   run: string;
   sequence: number;
@@ -333,6 +352,16 @@ export interface ProviderStream {
   progress: string;
   finish: AgentFinish | null;
   detail: string;
+}
+
+export interface Question {
+  kind: string;
+  person: string;
+  answers: Choice[];
+  detail: string;
+  answered: Answered | null;
+  outcome: MessagesOutcome | null;
+  withdrawn: Withdrawn | null;
 }
 
 export interface Quote {
@@ -395,6 +424,11 @@ export interface WindowShare {
   ended: boolean;
 }
 
+export interface Withdrawn {
+  at: number;
+  why: string;
+}
+
 export interface Work {
   stream: ProviderStream | null;
   state: Transition | null;
@@ -422,6 +456,7 @@ export interface Agent {
   name: string;
   colour: number | null;
   keeper: string;
+  on_host: boolean;
   model: string | null;
   mcp_client: string | null;
   bound: Bound[];
@@ -556,7 +591,7 @@ export interface ReportPersonArgs {
 /** The arguments of `decide-reports`. */
 export interface DecideReportsArgs {
   id: string;
-  person: string;
+  person: unknown;
   reports: string[];
   ruling: Ruling;
 }
@@ -688,6 +723,37 @@ export interface RecordWorkArgs {
   say?: string;
 }
 
+/** The arguments of `ask`. */
+export interface AskArgs {
+  channel: string;
+  text: string;
+  answers?: Choice[];
+  kind?: string;
+  detail?: unknown;
+  parent?: string;
+}
+
+/** The arguments of `answer-question`. */
+export interface AnswerQuestionArgs {
+  message: string;
+  answer: string;
+  device?: string;
+  detail?: unknown;
+}
+
+/** The arguments of `withdraw-question`. */
+export interface WithdrawQuestionArgs {
+  message: string;
+  why?: string;
+}
+
+/** The arguments of `settle-question`. */
+export interface SettleQuestionArgs {
+  message: string;
+  outcome: string;
+  detail?: string;
+}
+
 /** The arguments of `carry-counts`. */
 export interface CarryCountsArgs {
   earlier: Record<string, Record<string, number>>;
@@ -743,6 +809,12 @@ export interface RecordAgentSpendArgs {
   agent: string;
   day: string;
   cost_micros: number;
+}
+
+/** The arguments of `set-agent-on-host`. */
+export interface SetAgentOnHostArgs {
+  agent: string;
+  on_host: boolean;
 }
 
 /** The arguments of `set-agent-colour`. */
@@ -893,7 +965,7 @@ export interface Workspace extends tilo.Resource {
   reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
   decideReports(args: {
     id: string;
-    person: string;
+    person: unknown;
     reports: string[];
     ruling: Ruling;
   }): Promise<tilo.Run | void>;
@@ -1046,6 +1118,37 @@ export interface Messages extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordWorkMany(items: RecordWorkArgs[]): Promise<tilo.ActionAnswer[]>;
+  ask(args: {
+    channel: string;
+    text: string;
+    answers?: Choice[];
+    kind?: string;
+    detail?: unknown;
+    parent?: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  askMany(items: AskArgs[]): Promise<tilo.ActionAnswer[]>;
+  answerQuestion(args: {
+    message: string;
+    answer: string;
+    device?: string;
+    detail?: unknown;
+  }): Promise<tilo.Run | void>;
+  /** Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  answerQuestionMany(items: AnswerQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  withdrawQuestion(args: {
+    message: string;
+    why?: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  withdrawQuestionMany(items: WithdrawQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  settleQuestion(args: {
+    message: string;
+    outcome: string;
+    detail?: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  settleQuestionMany(items: SettleQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
   carryCounts(args: {
     earlier: Record<string, Record<string, number>>;
   }): Promise<tilo.Run | void>;
@@ -1133,6 +1236,12 @@ export interface ChatAgent extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordAgentSpendMany(items: RecordAgentSpendArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAgentOnHost(args: {
+    agent: string;
+    on_host: boolean;
+  }): Promise<tilo.Run | void>;
+  /** Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAgentOnHostMany(items: SetAgentOnHostArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentColour(args: {
     agent: string;
     colour: number;

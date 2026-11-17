@@ -59,7 +59,9 @@ __all__ = [
     "AgentStepOutcome",
     "AgentWorkState",
     "Anchor",
+    "Answered",
     "Attached",
+    "Choice",
     "ClipAttr",
     "ClipBlock",
     "MarkSpan",
@@ -67,7 +69,9 @@ __all__ = [
     "Mention",
     "Message",
     "Origin",
+    "MessagesOutcome",
     "ProviderStream",
+    "Question",
     "Quote",
     "ResourceAt",
     "Revision",
@@ -78,6 +82,7 @@ __all__ = [
     "StepUpdate",
     "Transition",
     "WindowShare",
+    "Withdrawn",
     "Work",
     "WorkUpdate",
     "Emoji",
@@ -126,6 +131,10 @@ __all__ = [
     "PinArgs",
     "RetryArgs",
     "RecordWorkArgs",
+    "AskArgs",
+    "AnswerQuestionArgs",
+    "WithdrawQuestionArgs",
+    "SettleQuestionArgs",
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
@@ -135,6 +144,7 @@ __all__ = [
     "CreateAgentArgs",
     "SetAgentSpendLimitArgs",
     "RecordAgentSpendArgs",
+    "SetAgentOnHostArgs",
     "SetAgentColourArgs",
     "RenameAgentArgs",
     "SetAgentModelArgs",
@@ -343,8 +353,18 @@ AgentWorkState = dict[str, Any]
 Anchor = dict[str, Any]
 """One of item, items, text: an object whose case the app tags it with."""
 
+class Answered(TypedDict):
+    answer: str
+    device: str
+    at: int
+    detail: str
+
 Attached = dict[str, Any]
 """One of resource, text, image, video, file: an object whose case the app tags it with."""
+
+class Choice(TypedDict):
+    id: str
+    label: str
 
 ClipAttr = dict[str, Any]
 """One of bool, int, str: an object whose case the app tags it with."""
@@ -393,6 +413,7 @@ class Message(TypedDict):
     author_name: str | None
     origin: Origin | None
     share: WindowShare | None
+    question: Question | None
     attempts: int
 
 class Origin(TypedDict):
@@ -404,6 +425,11 @@ class Origin(TypedDict):
     created_ms: int | None
     updated_ms: int | None
 
+class MessagesOutcome(TypedDict):
+    outcome: str
+    at: int
+    detail: str
+
 class ProviderStream(TypedDict):
     run: str
     sequence: int
@@ -411,6 +437,15 @@ class ProviderStream(TypedDict):
     progress: str
     finish: AgentFinish | None
     detail: str
+
+class Question(TypedDict):
+    kind: str
+    person: str
+    answers: list[Choice]
+    detail: str
+    answered: Answered | None
+    outcome: MessagesOutcome | None
+    withdrawn: Withdrawn | None
 
 class Quote(TypedDict):
     text: str
@@ -462,6 +497,10 @@ class WindowShare(TypedDict):
     open: bool
     ended: bool
 
+class Withdrawn(TypedDict):
+    at: int
+    why: str
+
 class Work(TypedDict):
     stream: ProviderStream | None
     state: Transition | None
@@ -486,6 +525,7 @@ class Agent(TypedDict):
     name: str
     colour: int | None
     keeper: str
+    on_host: bool
     model: str | None
     mcp_client: str | None
     bound: list[Bound]
@@ -615,7 +655,7 @@ ReportPersonArgs = TypedDict("ReportPersonArgs", {
 
 DecideReportsArgs = TypedDict("DecideReportsArgs", {
     "id": "str",
-    "person": "str",
+    "person": "Any",
     "reports": "list[str]",
     "ruling": "Ruling",
 })
@@ -748,6 +788,37 @@ RecordWorkArgs = TypedDict("RecordWorkArgs", {
 })
 """The arguments of `record-work`."""
 
+AskArgs = TypedDict("AskArgs", {
+    "channel": "str",
+    "text": "str",
+    "answers": NotRequired["list[Choice] | None"],
+    "kind": NotRequired["str | None"],
+    "detail": NotRequired["Any | None"],
+    "parent": NotRequired["str | None"],
+})
+"""The arguments of `ask`."""
+
+AnswerQuestionArgs = TypedDict("AnswerQuestionArgs", {
+    "message": "str",
+    "answer": "str",
+    "device": NotRequired["str | None"],
+    "detail": NotRequired["Any | None"],
+})
+"""The arguments of `answer-question`."""
+
+WithdrawQuestionArgs = TypedDict("WithdrawQuestionArgs", {
+    "message": "str",
+    "why": NotRequired["str | None"],
+})
+"""The arguments of `withdraw-question`."""
+
+SettleQuestionArgs = TypedDict("SettleQuestionArgs", {
+    "message": "str",
+    "outcome": "str",
+    "detail": NotRequired["str | None"],
+})
+"""The arguments of `settle-question`."""
+
 CarryCountsArgs = TypedDict("CarryCountsArgs", {
     "earlier": "dict[str, dict[str, int]]",
 })
@@ -805,6 +876,12 @@ RecordAgentSpendArgs = TypedDict("RecordAgentSpendArgs", {
 })
 """The arguments of `record-agent-spend`."""
 
+SetAgentOnHostArgs = TypedDict("SetAgentOnHostArgs", {
+    "agent": "str",
+    "on_host": "bool",
+})
+"""The arguments of `set-agent-on-host`."""
+
 SetAgentColourArgs = TypedDict("SetAgentColourArgs", {
     "agent": "str",
     "colour": "int",
@@ -836,7 +913,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@29335854a16313e8"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -1081,7 +1158,7 @@ class Workspace(Resource):
     def decide_reports(self,
         *,
         id: str,
-        person: str,
+        person: Any,
         reports: list[str],
         ruling: Ruling,
     ) -> Run | None:
@@ -1168,7 +1245,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@29335854a16313e8"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -1416,6 +1493,88 @@ class Messages(Resource):
         """Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-work", items)
 
+    def ask(self,
+        *,
+        channel: str,
+        text: str,
+        answers: list[Choice] | None = None,
+        kind: str | None = None,
+        detail: Any | None = None,
+        parent: str | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["text"] = text
+        if answers is not None:
+            args["answers"] = answers
+        if kind is not None:
+            args["kind"] = kind
+        if detail is not None:
+            args["detail"] = detail
+        if parent is not None:
+            args["parent"] = parent
+        return self.action("ask", **args)
+
+    def ask_many(self, items: list[AskArgs]) -> list[dict[str, Any]]:
+        """Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("ask", items)
+
+    def answer_question(self,
+        *,
+        message: str,
+        answer: str,
+        device: str | None = None,
+        detail: Any | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["message"] = message
+        args["answer"] = answer
+        if device is not None:
+            args["device"] = device
+        if detail is not None:
+            args["detail"] = detail
+        return self.action("answer-question", **args)
+
+    def answer_question_many(self, items: list[AnswerQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("answer-question", items)
+
+    def withdraw_question(self,
+        *,
+        message: str,
+        why: str | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["message"] = message
+        if why is not None:
+            args["why"] = why
+        return self.action("withdraw-question", **args)
+
+    def withdraw_question_many(self, items: list[WithdrawQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("withdraw-question", items)
+
+    def settle_question(self,
+        *,
+        message: str,
+        outcome: str,
+        detail: str | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["message"] = message
+        args["outcome"] = outcome
+        if detail is not None:
+            args["detail"] = detail
+        return self.action("settle-question", **args)
+
+    def settle_question_many(self, items: list[SettleQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("settle-question", items)
+
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> Run | None:
         """Runs the app's action."""
         return self.action("carry-counts", earlier=earlier)
@@ -1447,7 +1606,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@29335854a16313e8"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -1461,7 +1620,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@29335854a16313e8"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1495,7 +1654,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@a73427efdc5aa25a"
+    __surface__ = "so.tilo.chat@29335854a16313e8"
     agents: list[Agent]
 
     def create_agent(self,
@@ -1554,6 +1713,18 @@ class ChatAgent(Resource):
     def record_agent_spend_many(self, items: list[RecordAgentSpendArgs]) -> list[dict[str, Any]]:
         """Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-agent-spend", items)
+
+    def set_agent_on_host(self,
+        *,
+        agent: str,
+        on_host: bool,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("set-agent-on-host", agent=agent, on_host=on_host)
+
+    def set_agent_on_host_many(self, items: list[SetAgentOnHostArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-on-host", items)
 
     def set_agent_colour(self,
         *,
