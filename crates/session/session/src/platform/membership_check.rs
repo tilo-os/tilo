@@ -2,8 +2,8 @@
 //!
 //! The owner of a workspace commits only what this device still owns: a device the
 //! workspace removed, or whose certificate ran out, finds out before it commits. The check itself
-//! is the client's service (`tilo_session_client::membership_check::Ownership`); this desktop proves it over the
-//! peer network.
+//! is the client's service (`tilo_session_client::membership_check::MembershipCheck`); this
+//! desktop proves it over the peer network.
 
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::WorkspaceId;
