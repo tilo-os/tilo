@@ -27,7 +27,7 @@ use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_server::workspace_bots::installed::{self, BotRunner};
 use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_server::workspaces::Workspaces;
+use tilo_server::workspaces::{AddMemberRequest, MemberPlace, Workspaces};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
@@ -451,6 +451,24 @@ impl Bridge {
         };
         let owner = hex::encode(cert.user_public_key);
         let ada = hex::encode(ADA);
+        // Ada is a member of the workspace: what the bridge shows as the author of what
+        // she writes in Chat is the workspace's name for her.
+        let mut request_id = [0_u8; 32];
+        getrandom::fill(&mut request_id).unwrap();
+        workspace
+            .workspaces
+            .add_member(
+                &workspace.id,
+                &cert,
+                AddMemberRequest {
+                    request_id,
+                    user_public_key: ADA,
+                    place: MemberPlace::parse("editor").unwrap(),
+                    name: Some("Ada".into()),
+                },
+            )
+            .await
+            .unwrap();
 
         workspace
             .workspaces
