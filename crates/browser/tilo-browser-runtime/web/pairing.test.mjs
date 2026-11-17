@@ -137,15 +137,25 @@ test('a waiting device is told where it is approved and where “Pair a new devi
 
 test('a device says whose it becomes in one sentence, with the name its host gave and nothing that could bend it', async () => {
   const pairing = await import('./pairing.mjs');
-  assert.equal(pairing.pairingWhose('Ada Lovelace'), 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.');
+  // The name is the word of the site's own server, and of no other.
+  const own = {ofSite: true};
+  assert.equal(pairing.pairingWhose('Ada Lovelace', own), 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.');
   // No name from the host: it says so, and what to go by instead.
   for (const none of ['', null, undefined, '   ', '‮‏']) {
-    assert.equal(pairing.pairingWhose(none),
+    assert.equal(pairing.pairingWhose(none, own),
       'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.');
   }
   // A name cannot turn the sentence round, break its line or run on.
-  assert.equal(pairing.pairingWhose('Bo‮\n  Smith⁦‏'), 'You are adding this device to Bo Smith’s devices. If that is not you, stop.');
+  assert.equal(pairing.pairingWhose('Bo‮\n  Smith⁦‏', own), 'You are adding this device to Bo Smith’s devices. If that is not you, stop.');
   assert.equal(Array.from(pairing.shownName('x'.repeat(200))).length, 64);
+  // A server the site does not name as its own names nobody, whatever it
+  // answered, and so does a caller that did not say whose the server is.
+  for (const whose of [undefined, {}, {ofSite: false}, {ofSite: 'yes'}, {ofSite: 1}]) {
+    for (const name of ['Ada Lovelace', '', null]) {
+      assert.equal(pairing.pairingWhose(name, whose),
+        'You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop.');
+    }
+  }
 });
 
 test('a device that stopped is told that nothing was paired', async () => {

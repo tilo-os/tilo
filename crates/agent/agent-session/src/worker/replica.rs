@@ -90,6 +90,10 @@ struct Inner {
     /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
     /// answered they hold none of: told again to a worker that replaces it.
     asks_workspace: Option<BTreeMap<String, ui::resource::WorkspaceAnswer>>,
+    /// What the worker was told of the workspace unasked ([`ConfinedReplica::workspace_answered`]
+    /// for a store that asks nothing): told again to a worker that replaces it, since what
+    /// the app keeps for its whole workspace opens only on that word.
+    told: BTreeMap<String, ui::resource::WorkspaceAnswer>,
 }
 
 impl Inner {
@@ -207,6 +211,7 @@ impl ConfinedReplica {
                 kept: Vec::new(),
                 held: BTreeSet::new(),
                 asks_workspace: None,
+                told: BTreeMap::new(),
             }),
         };
         if fresh {
@@ -394,6 +399,18 @@ impl ConfinedReplica {
                             _ => return Err(worker_error("the worker answered out of turn")),
                         }
                     }
+                } else {
+                    for (id, answer) in &inner.told {
+                        let again = Request::Answered {
+                            record: id.clone(),
+                            answer: *answer,
+                        };
+                        match process.call(&again).map_err(worker)? {
+                            Reply::Done => {}
+                            Reply::Failed(reason) => return Err(worker_error(reason)),
+                            _ => return Err(worker_error("the worker answered out of turn")),
+                        }
+                    }
                 }
                 inner.process = Some(process);
                 inner.dirty = false;
@@ -448,9 +465,11 @@ impl ConfinedReplica {
         answer: ui::resource::WorkspaceAnswer,
     ) -> Result<(), AppError> {
         let mut inner = self.lock();
-        if let Some(answered) = &mut inner.asks_workspace {
-            answered.insert(record.as_str().to_owned(), answer);
-        }
+        let id = record.as_str().to_owned();
+        match &mut inner.asks_workspace {
+            Some(answered) => answered.insert(id, answer),
+            None => inner.told.insert(id, answer),
+        };
         let reply = self.call(
             &mut inner,
             &Request::Answered {
@@ -1121,7 +1140,7 @@ impl ConfinedReplica {
         if record == &self.record {
             return self.apply(mutation);
         }
-        if record.chain_part().is_none() {
+        if record.chain_part().is_none() && !self.keeps_for_workspace(record) {
             return Err(AppError::Merge(format!(
                 "{} is held on its own, not beside {}",
                 record.as_str(),
@@ -1185,7 +1204,7 @@ impl ConfinedReplica {
         result
     }
 
-    /// This member's changes to the records held beside this one since
+    /// This member's changes to the documents held beside this one since
     /// the last call, by record, admitted here first:
     /// [`crate::Replica::take_document_mutations`]. A part the worker started
     /// comes whole; it must be a part of a chain not held here yet.
@@ -1226,7 +1245,7 @@ impl ConfinedReplica {
         Ok(out)
     }
 
-    /// Admit one change the worker made to a record held beside this one
+    /// Admit one change the worker made to a document held beside this one
     /// to its mirror: a part it started whole, a part held here as changes
     /// on top of it.
     fn admit_beside(
@@ -1237,7 +1256,10 @@ impl ConfinedReplica {
         bytes: Vec<u8>,
     ) -> Result<(DocumentId, DocumentMutation), AppError> {
         let record = DocumentId::parse(record)
-            .filter(|record| record.chain_part().is_some() && record != &self.record)
+            .filter(|record| {
+                (record.chain_part().is_some() || self.keeps_for_workspace(record))
+                    && record != &self.record
+            })
             .ok_or_else(|| worker_error("the worker named a record it does not hold beside"))?;
         match (snapshot, beside.get_mut(&record)) {
             (true, None) => {
@@ -1261,7 +1283,14 @@ impl ConfinedReplica {
         }
     }
 
-    /// The records held beside this one ([`Self::apply_document`]), by id.
+    /// Whether `id` is what this app keeps for its whole workspace beside its own document
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]): held with it and mirrored here as a chain's
+    /// parts are, since the app's actions reach it through the same view.
+    fn keeps_for_workspace(&self, id: &DocumentId) -> bool {
+        collab_types::workspace_document(&self.app_id, id.as_str()).is_some()
+    }
+
+    /// The documents held beside this one ([`Self::apply_document`]), by id.
     #[must_use]
     pub fn resources_beside(&self) -> Vec<DocumentId> {
         self.lock().beside.keys().cloned().collect()

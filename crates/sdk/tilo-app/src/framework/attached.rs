@@ -1,5 +1,5 @@
-//! An app's view of one record, attached and never drawn: how a host
-//! without a screen — an agent host, a server, a workspace service — performs
+//! An app's view of one record, attached and never drawn: how a device
+//! without a screen — an agent's, a server, a workspace service — performs
 //! actions.
 //!
 //! Nothing is drawn if no one is looking, but no action is performed out of
@@ -13,9 +13,9 @@
 //!
 //! Sync is the caller's: [`AttachedView::take_changes`] returns this
 //! member's own changes since the last call (the whole document the
-//! first time, for a record it created) and [`AttachedView::merge`] takes a
+//! first time, for a document it created) and [`AttachedView::merge`] takes a
 //! peer's, through the record store's replication frontier as a browser
-//! page's mounts do. The parts of a chain the app keeps beside the record
+//! page's mounts do. The parts of a chain the app keeps beside the document
 //! ([`Chain`](super::Chain)) sync the same way on routes of their own
 //! ([`AttachedView::take_resource_changes`], [`AttachedView::merge_resource`]),
 //! and the app's actions reach them through the chain the view publishes.
@@ -26,8 +26,7 @@ use std::rc::Rc;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
 use ui_core::application::{
-    ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
-    RestoreInput,
+    ApplicationDefinition, ComponentRunnerInputs, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
@@ -118,14 +117,26 @@ pub struct AttachedView {
     /// What this member sent of the record, and its own changes set
     /// aside for the next publication.
     sync: DocumentSync,
-    /// Each record the view holds beside its own (the parts of a chain), by
+    /// Each document the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
     beside: std::collections::HashMap<ui_core::resource::DocumentId, DocumentSync>,
     /// Where the view keeps its records, and the workspace: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
     workspace: String,
+    /// What the app keeps for its whole workspace beside its own document
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]) that whoever holds this view has neither
+    /// handed over ([`Self::merge_resource`]) nor said the workspace holds none of
+    /// ([`Self::workspace_answered`]). The app's store opens for them only once this is
+    /// empty: one founded here before that would give a document the workspace already
+    /// holds a second beginning.
+    awaited: Awaited,
+    /// Whether the app keeps anything for its whole workspace.
+    keeps_for_workspace: bool,
 }
+
+/// What an app keeps for its whole workspace that its view was not told of yet, by id.
+type Awaited = Rc<RefCell<std::collections::BTreeSet<ui_core::resource::DocumentId>>>;
 
 /// An [`AttachedView`] about to open ([`AttachedView::opening`]): whom it
 /// is for, what they may do, and what the host lends the view.
@@ -248,6 +259,49 @@ impl AttachedView {
         }
     }
 
+    /// Give `context` what whoever holds the view lends it: the workspace's content, and for
+    /// an app that keeps documents for its whole workspace
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]) its own `store` for them, which opens only once
+    /// each was handed over or is known to be new; until then they are on their way, which
+    /// asks nothing and founds nothing. With those still awaited, and whether the app
+    /// keeps any. Another app's are not handed to this view at all.
+    fn lent(
+        context: &mut ui_core::application::HostContext,
+        lends: Option<tilo_content::ContentStore>,
+        definition: &'static ApplicationDefinition,
+        store: &ResourceStore,
+        me: &MemberId,
+    ) -> (Awaited, bool) {
+        if let Some(lends) = lends {
+            context.provide_content(lends);
+        }
+        let awaited: Awaited = Rc::new(RefCell::new(
+            collab_types::WORKSPACE_DOCUMENTS
+                .iter()
+                .filter(|kept| kept.app == definition.app_id())
+                .filter_map(|kept| {
+                    ui_core::resource::DocumentId::parse(&collab_types::workspace_document_id(
+                        kept.kind,
+                    ))
+                })
+                .collect(),
+        ));
+        let keeps = !awaited.borrow().is_empty();
+        if keeps {
+            let (waiting, own, store) = (Rc::clone(&awaited), definition.app_id(), store.clone());
+            context.provide_workspace_resources(
+                ui_core::resource::workspace::WorkspaceResources::new(me.clone(), move |owner| {
+                    if owner == own && waiting.borrow().is_empty() {
+                        Ok(store.clone())
+                    } else {
+                        Err(ui_core::resource::ResourceOpenError::Arriving)
+                    }
+                }),
+            );
+        }
+        (awaited, keeps)
+    }
+
     fn open_view(view: OpenView<'_>) -> Result<Self, String> {
         let OpenView {
             definition,
@@ -290,7 +344,7 @@ impl AttachedView {
             checkout: checkout.clone(),
             reveal: None,
         };
-        let context = HostContext::prepare(
+        let mut context = ui_core::application::HostContext::prepare(
             definition,
             HostContextInputs {
                 records: records.clone(),
@@ -305,10 +359,8 @@ impl AttachedView {
             &target,
         )
         .map_err(|error| error.to_string())?;
-        let mut context = context;
-        if let Some(store) = content {
-            context.provide_content(store);
-        }
+        let (awaited, keeps_for_workspace) =
+            Self::lent(&mut context, content, definition, &records, me);
         let component = definition
             .instantiate(context, target, RestoreInput::None)
             .map_err(|error| error.to_string())?;
@@ -354,6 +406,8 @@ impl AttachedView {
             beside: std::collections::HashMap::new(),
             cache: cache_kept,
             workspace: workspace.to_owned(),
+            awaited,
+            keeps_for_workspace,
         })
     }
 
@@ -1110,8 +1164,10 @@ impl AttachedView {
         record: ui_core::resource::DocumentId,
         answer: ui_core::resource::WorkspaceAnswer,
     ) {
+        self.awaited.borrow_mut().remove(&record);
         self.records.note_workspace_answer(record, answer);
         self.unsettle_merged();
+        self.take_up_kept();
     }
 
     /// The chains of records the app keeps beside its own
@@ -1134,10 +1190,14 @@ impl AttachedView {
     }
 
     /// `record` as the view holds it beside its own: a part of one of the
-    /// app's chains ([`Self::chains`]), of that chain's kind. `None` for
-    /// any other record.
+    /// app's chains ([`Self::chains`]), of that chain's kind, or what the app
+    /// keeps for its whole workspace ([`Self::kept_for_workspace`]). `None`
+    /// for any other document.
     #[must_use]
     pub fn beside(&self, record: &ui_core::resource::DocumentId) -> Option<DocumentCheckout> {
+        if let Some(kept) = self.kept_for_workspace(record) {
+            return Some(kept);
+        }
         let (chain, _) = record.chain_part()?;
         let kind = self.chain_kind(&chain)?;
         Some(DocumentCheckout::new(record.clone(), kind))
@@ -1152,6 +1212,59 @@ impl AttachedView {
         let id = super::chain_resource_id(chain);
         self.found(|frame| frame.resource(&id))
             .map(|resource| ui_core::resource::ResourceType::new(resource.kind))
+    }
+
+    /// `id` as what the app keeps for its whole workspace beside its own document
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]), of that document's kind, when it is one of
+    /// those: held here like a chain's parts, on a route of its own.
+    fn kept_for_workspace(&self, id: &ui_core::resource::DocumentId) -> Option<DocumentCheckout> {
+        if !self.keeps_for_workspace {
+            return None;
+        }
+        collab_types::workspace_document(self.definition.app_id(), id.as_str()).map(|kept| {
+            DocumentCheckout::new(id.clone(), ui_core::resource::ResourceType::new(kept.kind))
+        })
+    }
+
+    /// Have the app open what it keeps for its whole workspace, once the view was told of
+    /// all of it. Its declaration asked for each once, when the view opened and they were
+    /// still awaited, and a view no window shows is laid out and never refreshed, so nothing
+    /// else asks again.
+    fn take_up_kept(&mut self) {
+        if !self.keeps_for_workspace || !self.awaited.borrow().is_empty() {
+            return;
+        }
+        let _ = self
+            .frame
+            .get_mut()
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| root.storage.open_arrived());
+    }
+
+    /// What the app keeps for its whole workspace that is open here and holds something of
+    /// this member's to send: one a peer's change was merged into, or one founded here that
+    /// holds more than its founding. One only founded is nobody's change yet, and sending
+    /// it would be a write by a member who made none.
+    fn kept_changed(&self) -> Vec<DocumentCheckout> {
+        if !self.keeps_for_workspace {
+            return Vec::new();
+        }
+        let founding = tilo_actions::FrameworkChange::Genesis.change_message();
+        self.records
+            .open_resources()
+            .into_iter()
+            .filter(|checkout| self.kept_for_workspace(&checkout.id).is_some())
+            .filter(|checkout| {
+                self.beside.contains_key(&checkout.id)
+                    || self
+                        .records
+                        .with(&checkout.id, |doc| {
+                            doc.get_changes(&[])
+                                .iter()
+                                .any(|change| change.message() != Some(founding.as_str()))
+                        })
+                        .unwrap_or(false)
+            })
+            .collect()
     }
 
     /// The records the view holds beside its own: the parts of the app's
@@ -1184,7 +1297,7 @@ impl AttachedView {
 
     /// The member's changes to `record`, one the view holds beside
     /// its own ([`Self::resources_beside`]), since the last call: the whole
-    /// record the first time, for one the member started.
+    /// document the first time, for one the member started.
     ///
     /// # Errors
     /// As [`Self::take_changes`].
@@ -1196,7 +1309,7 @@ impl AttachedView {
         publish(sync, &self.records, record)
     }
 
-    /// The member's changes to every record the view holds beside its
+    /// The member's changes to every document the view holds beside its
     /// own ([`Self::take_resource_changes`]), by record; all or none of them.
     ///
     /// # Errors
@@ -1206,7 +1319,9 @@ impl AttachedView {
         &mut self,
     ) -> Result<Vec<(ui_core::resource::DocumentId, DocumentMutation)>, String> {
         let mut taken = Vec::new();
-        for checkout in self.resources_beside() {
+        let mut held = self.resources_beside();
+        held.extend(self.kept_changed());
+        for checkout in held {
             match self.take_resource_changes(&checkout.id) {
                 Ok(Some(mutation)) => taken.push((checkout.id, mutation)),
                 Ok(None) => {}
@@ -1283,6 +1398,9 @@ impl AttachedView {
                 .map_err(|error| set_aside_failed(record, &error))?;
         }
         let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
+        // What the workspace holds of it is here now: nothing founds another.
+        self.awaited.borrow_mut().remove(record);
+        self.take_up_kept();
         // A part opened here is new to the view even when the change merged
         // into it is what it opened from.
         if changed || opened {

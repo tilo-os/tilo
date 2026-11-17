@@ -322,17 +322,98 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
 
 /// `text` as a calendar keeps it: the event an invitation carried, without
 /// the `METHOD` it travelled with, which an entry a server stores may not
-/// have.
+/// have, and with every line that names somebody saying that the server is
+/// not the one to write to them ([`client_scheduled`]).
 #[must_use]
 pub fn kept_text(text: &str) -> String {
     let mut out = String::new();
     for line in pim_lines::unfold(text) {
-        if ContentLine::parse(&line).is_some_and(|parsed| parsed.name == "METHOD") {
-            continue;
+        match ContentLine::parse(&line) {
+            Some(parsed) if parsed.name == "METHOD" => {}
+            Some(parsed) if names_somebody(&parsed) => client_scheduled(&mut out, &parsed),
+            _ => fold_into(&mut out, &line),
         }
-        fold_into(&mut out, &line);
     }
     out
+}
+
+/// Whether `line` names somebody a calendar server could write to: who
+/// organises an entry, or somebody it invites.
+fn names_somebody(line: &ContentLine) -> bool {
+    matches!(line.name.as_str(), "ORGANIZER" | "ATTENDEE")
+}
+
+/// Append `line`, which names somebody, so that the server it is stored on
+/// writes to nobody about it: `SCHEDULE-AGENT=CLIENT` (RFC 6638) tells a
+/// server that schedules by itself that the calendar's own client does. What
+/// a text says of that itself (`SCHEDULE-AGENT`, `SCHEDULE-FORCE-SEND`) does
+/// not stay; every other parameter stays as it was.
+fn client_scheduled(out: &mut String, line: &ContentLine) {
+    let mut marked = String::new();
+    if let Some(group) = &line.group {
+        marked.push_str(group);
+        marked.push('.');
+    }
+    marked.push_str(&line.name);
+    marked.push_str(";SCHEDULE-AGENT=CLIENT");
+    for param in &line.params {
+        if matches!(
+            param.name.as_str(),
+            "SCHEDULE-AGENT" | "SCHEDULE-FORCE-SEND"
+        ) {
+            continue;
+        }
+        marked.push(';');
+        marked.push_str(&param.name);
+        for (place, value) in param.values.iter().enumerate() {
+            marked.push(if place == 0 { '=' } else { ',' });
+            marked.push_str(&pim_lines::encode_param_value(value));
+        }
+    }
+    marked.push(':');
+    marked.push_str(&line.value);
+    fold_into(out, &marked);
+}
+
+/// Whom an entry's text names, each by the address the text gives, once and
+/// in the order it gives them. Every component of the text counts, since a
+/// server that writes to people reads them all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Named {
+    /// Who organises it.
+    pub organizers: Vec<String>,
+    /// Everyone it invites.
+    pub attendees: Vec<String>,
+}
+
+/// Whom the iCalendar `text` names ([`Named`]). An address is a line's value
+/// without its `mailto:`, in lower case; a value that is no mail address is
+/// kept as it is written, so nobody a text names goes unseen.
+#[must_use]
+pub fn named(text: &str) -> Named {
+    let mut named = Named::default();
+    for line in pim_lines::unfold(text) {
+        let Some(line) = ContentLine::parse(&line) else {
+            continue;
+        };
+        let list = match line.name.as_str() {
+            "ORGANIZER" => &mut named.organizers,
+            "ATTENDEE" => &mut named.attendees,
+            _ => continue,
+        };
+        let value = line.value.trim();
+        let address = value
+            .get(..7)
+            .filter(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
+            .and_then(|_| value.get(7..))
+            .unwrap_or(value)
+            .trim()
+            .to_ascii_lowercase();
+        if !list.contains(&address) {
+            list.push(address);
+        }
+    }
+    named
 }
 
 /// `text` with its event filed under `categories`, in the property a
@@ -2004,6 +2085,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What a calendar keeps of an invitation tells the server it is stored
+    /// on to write to nobody, whatever the text says of that itself, and
+    /// loses nothing else of the lines that name somebody.
+    #[test]
+    fn the_kept_text_of_an_invitation_leaves_writing_to_people_to_nobody() {
+        let invitation = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+             UID:offsite-9@example.org\r\nSUMMARY:Offsite\r\nDTSTART:20261119T140000Z\r\n\
+             ORGANIZER;CN=\"Bo: Ops\";SCHEDULE-AGENT=SERVER:mailto:Bo@Example.test\r\n\
+             ATTENDEE;DELEGATED-FROM=\"mailto:a@example.test\",\"mailto:b@example.test\";\
+             SCHEDULE-FORCE-SEND=REQUEST;PARTSTAT=NEEDS-ACTION:mailto:ada@example.test\r\n\
+             ATTENDEE;RSVP=TRUE:MAILTO:cy@example.test\r\n\
+             ATTENDEE:urn:uuid:5d2b\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let kept = kept_text(invitation);
+        let lines = pim_lines::unfold(&kept);
+        let holds = |line: &str| lines.iter().any(|kept| kept == line);
+        assert!(
+            !lines.iter().any(|line| line.starts_with("METHOD")),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ORGANIZER;SCHEDULE-AGENT=CLIENT;CN=\"Bo: Ops\":mailto:Bo@Example.test"),
+            "{lines:?}"
+        );
+        assert!(
+            holds(
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT;DELEGATED-FROM=\"mailto:a@example.test\",\
+                 \"mailto:b@example.test\";PARTSTAT=NEEDS-ACTION:mailto:ada@example.test"
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ATTENDEE;SCHEDULE-AGENT=CLIENT;RSVP=TRUE:MAILTO:cy@example.test"),
+            "{lines:?}"
+        );
+        assert!(
+            holds("ATTENDEE;SCHEDULE-AGENT=CLIENT:urn:uuid:5d2b"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("SCHEDULE-AGENT=SERVER") || line.contains("SCHEDULE-FORCE-SEND")
+            }),
+            "{lines:?}"
+        );
+        // The same event either way, and the same people named.
+        assert_eq!(parse(&kept).0, parse(invitation).0);
+        let people = named(&kept);
+        assert_eq!(people.organizers, ["bo@example.test"]);
+        assert_eq!(
+            people.attendees,
+            ["ada@example.test", "cy@example.test", "urn:uuid:5d2b"]
+        );
+        assert_eq!(people, named(invitation));
     }
 
     fn outlook_zone(tzid: &str) -> String {

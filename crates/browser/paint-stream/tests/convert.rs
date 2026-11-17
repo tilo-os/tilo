@@ -631,8 +631,8 @@ fn controls() -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture")).expect("fixture json")
 }
 
-/// The engine's number for the element of `snapshot` whose `id` is `id`.
-fn node_of(snapshot: &serde_json::Value, id: &str) -> u64 {
+/// Where the element of `snapshot` whose `id` is `id` stands among its document's nodes.
+fn element_of(snapshot: &serde_json::Value, id: &str) -> usize {
     let strings = snapshot["strings"].as_array().expect("strings");
     let string = |index: &serde_json::Value| {
         index
@@ -641,8 +641,7 @@ fn node_of(snapshot: &serde_json::Value, id: &str) -> u64 {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
     };
-    let nodes = &snapshot["documents"][0]["nodes"];
-    let found = nodes["attributes"]
+    snapshot["documents"][0]["nodes"]["attributes"]
         .as_array()
         .expect("attributes")
         .iter()
@@ -652,8 +651,39 @@ fn node_of(snapshot: &serde_json::Value, id: &str) -> u64 {
                 .chunks_exact(2)
                 .any(|pair| string(&pair[0]) == "id" && string(&pair[1]) == id)
         })
-        .unwrap_or_else(|| panic!("no element is called {id}"));
-    nodes["backendNodeId"][found].as_u64().expect("a node")
+        .unwrap_or_else(|| panic!("no element is called {id}"))
+}
+
+/// The engine's number for the element of `snapshot` whose `id` is `id`.
+fn node_of(snapshot: &serde_json::Value, id: &str) -> u64 {
+    let found = element_of(snapshot, id);
+    snapshot["documents"][0]["nodes"]["backendNodeId"][found]
+        .as_u64()
+        .expect("a node")
+}
+
+/// Have the page of `snapshot` draw the field whose `id` is `id` as dots, as an engine leaves
+/// a plain field it wrote a secret into.
+fn draw_as_dots(snapshot: &mut serde_json::Value, id: &str) {
+    let found = element_of(snapshot, id);
+    let style = tilo_paint_stream::snapshot::COMPUTED_STYLES
+        .iter()
+        .position(|name| *name == "-webkit-text-security")
+        .expect("a capture asks how a field's text is drawn");
+    let disc = snapshot["strings"]
+        .as_array()
+        .expect("strings")
+        .iter()
+        .position(|text| *text == "disc")
+        .expect("the page draws some field as dots");
+    let layout = &mut snapshot["documents"][0]["layout"];
+    let place = layout["nodeIndex"]
+        .as_array()
+        .expect("the nodes that are laid out")
+        .iter()
+        .position(|node| node.as_u64() == u64::try_from(found).ok())
+        .unwrap_or_else(|| panic!("{id} is not laid out"));
+    layout["styles"][place][style] = disc.into();
 }
 
 /// What a frame draws of one element.
@@ -786,6 +816,17 @@ fn no_character_of_a_secret_is_drawn_whatever_kind_of_field_holds_it() {
     };
     let shown = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
     assert_eq!(held(&shown.frame, name), ["\u{2022}".repeat(12)]);
+
+    // A field its page draws as dots is a secret the same way, with nothing told: that is how
+    // an engine leaves a plain field it wrote a text released for one site into.
+    let mut dotted = controls();
+    draw_as_dots(&mut dotted, "name");
+    let drawn = convert_with(&dotted, WINDOW, 1, &Told::default()).expect("convert");
+    assert_eq!(held(&drawn.frame, name), ["\u{2022}".repeat(12)]);
+    assert!(
+        drawn.asks.iter().all(|(node, _)| *node != name),
+        "the engine is never asked what such a field shows"
+    );
 }
 
 #[test]

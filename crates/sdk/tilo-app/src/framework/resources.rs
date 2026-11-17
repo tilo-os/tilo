@@ -65,6 +65,10 @@ pub struct Held<P: Resource> {
     id: String,
     label: String,
     editable: bool,
+    /// Whether the workspace's grants decide its changes, whoever asks, as they decide the
+    /// app's own: a document the app keeps for its whole workspace. Any other is one
+    /// person's own, which only they change.
+    granted: bool,
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
@@ -94,6 +98,7 @@ impl<P: Resource> Held<P> {
             id,
             label,
             editable,
+            granted: false,
             live,
             sync: Box::new(sync),
             apply: Box::new(apply),
@@ -114,6 +119,13 @@ impl<P: Resource> Held<P> {
             document(&mut |doc| answered = read_resource::<P>(doc, payload));
             answered
         }));
+        self
+    }
+
+    /// The same document, its changes decided by the workspace's grants on the app that
+    /// keeps it instead of being left to one person.
+    pub(crate) fn decided_by_grants(mut self) -> Self {
+        self.granted = true;
         self
     }
 
@@ -185,7 +197,11 @@ impl<P: Resource> Held<P> {
                 .map_or_else(|| "the record does not read".to_owned(), |why| why.reason);
             tilo_resource::resource::unreadable_parts::<P>(&self.id, &self.label, &why)
         };
-        let mut published = route(published, &self.id, self.editable);
+        let mut published = if self.granted {
+            route_granted(published, &self.id, self.editable)
+        } else {
+            route(published, &self.id, self.editable)
+        };
         // Read whether it is changed here or not: whoever may act on it
         // reads what it holds.
         if P::READABLE && self.read.is_some() && self.live.unreadable().is_none() {
@@ -213,6 +229,26 @@ pub(crate) fn route(
     resource.children = std::mem::take(&mut resource.children)
         .into_iter()
         .map(|child| route(child, record, editable))
+        .collect();
+    resource
+}
+
+/// [`route`] for what an app keeps for its whole workspace, published as `id`: each action
+/// needs what it declares, so the workspace's grants decide it instead of its being left to
+/// one person.
+fn route_granted(
+    mut resource: tilo_actions::ResourceSpec,
+    id: &str,
+    editable: bool,
+) -> tilo_actions::ResourceSpec {
+    resource.actions = std::mem::take(&mut resource.actions)
+        .into_iter()
+        .filter(|spec| editable && spec.kind == OperationKind::Document)
+        .map(|spec| route_operation(spec, RESOURCE_ACTION_TYPE, id))
+        .collect();
+    resource.children = std::mem::take(&mut resource.children)
+        .into_iter()
+        .map(|child| route_granted(child, id, editable))
         .collect();
     resource
 }
@@ -260,6 +296,11 @@ pub(crate) trait ResourceApi {
     fn id(&self) -> &str;
     /// Whether this app changes the record; it is read here otherwise.
     fn editable(&self) -> bool;
+    /// Whether it is one person's own, which only they change; what the workspace's grants
+    /// decide instead answers whoever they admit.
+    fn own(&self) -> bool {
+        true
+    }
     /// Increases whenever what the record holds changed, read now.
     fn revision(&self) -> u64;
     fn publish(&self) -> tilo_actions::ResourceSpec;
@@ -320,6 +361,10 @@ impl<P: Resource> ResourceApi for Held<P> {
 
     fn editable(&self) -> bool {
         self.editable
+    }
+
+    fn own(&self) -> bool {
+        !self.granted
     }
 
     fn revision(&self) -> u64 {
@@ -403,6 +448,14 @@ pub(crate) fn answer(
         .iter()
         .find(|api| api.id() == request.record)
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
+    if !api.own() {
+        // Whoever asks: the workspace's grants decide it where the document applies it.
+        let invoker = ui_core::invocation_scope::current_invoker()
+            .or_else(|| me.map(|me| ActionInvoker::member(me.clone())))
+            .ok_or("this window changes nothing for nobody")?;
+        api.apply_encoded(&request.action, &invoker)?;
+        return Ok(tilo_actions::ActionOutput::default());
+    }
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
     let theirs = invoker.acting.by.member_id() == Some(me)

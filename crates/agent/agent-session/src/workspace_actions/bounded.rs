@@ -683,6 +683,9 @@ impl Worker {
                 },
             );
         }
+        let untold =
+            super::catch_up::kept_untold(&holder, self.bounded.get(&key).map(|held| &held.held));
+        let kept = self.kept_held(untold);
         let held = self
             .bounded
             .get_mut(&key)
@@ -693,6 +696,7 @@ impl Worker {
         // merged before it acts, only the changes after the heads it holds.
         super::catch_up::catch_up(&holder, &mut held.held, state);
         super::catch_up::hold_parts(&holder, &mut held.held, state);
+        super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held

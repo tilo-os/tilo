@@ -131,14 +131,7 @@ fn telling(
         kind: Kind::Question,
         tell: Tell {
             words: message.text.clone(),
-            about: Some(About {
-                workspace: workspace.to_owned(),
-                app: CHAT.to_owned(),
-                record: record.to_owned(),
-                resource: tilo_resource::items::item_resource_id::<chat::parts::ChatPart>(
-                    "messages", id,
-                ),
-            }),
+            about: Some(at_message(workspace, record, id)),
             actions,
             ..Tell::default()
         },
@@ -149,6 +142,17 @@ fn telling(
         workspace: Some(workspace.to_owned()),
         words_stay: secret,
         spender: None,
+    }
+}
+
+/// Where the message `id` in the part `part` of `workspace`'s conversations
+/// is, as a thing told about it says where it leads.
+pub(super) fn at_message(workspace: &str, part: &str, id: &Id) -> About {
+    About {
+        workspace: workspace.to_owned(),
+        app: CHAT.to_owned(),
+        record: part.to_owned(),
+        resource: tilo_resource::items::item_resource_id::<chat::parts::ChatPart>("messages", id),
     }
 }
 

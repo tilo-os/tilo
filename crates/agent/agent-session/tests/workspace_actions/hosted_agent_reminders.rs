@@ -471,3 +471,7 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
     assert_eq!(invocations(&up.events_of(&workspace, &me)[0]).0, 1);
     up.down().await;
 }
+
+/// What a turn that a reminder started tells its person when it ends.
+#[path = "hosted_agent_tells.rs"]
+mod tells;

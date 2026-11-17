@@ -102,7 +102,7 @@ use crate::host::CatalogueFactory;
 use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::WorkspaceDocuments;
-use catch_up::{catch_up, hold_parts};
+use catch_up::{catch_up, hold_parts, kept_untold, tell_kept};
 use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
@@ -2048,12 +2048,14 @@ impl Worker {
                 },
             );
         }
+        let kept = self.kept_held(kept_untold(route, self.mounted.get(route)));
         let mounted = self
             .mounted
             .get_mut(route)
             .ok_or_else(|| "the record did not mount".to_string())?;
         mounted.used = clock;
         hold_parts(route, mounted, state);
+        tell_kept(mounted, state, kept);
         Ok(())
     }
 

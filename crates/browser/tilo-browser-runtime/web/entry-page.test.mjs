@@ -743,9 +743,13 @@ test('a person already set up keeps the workspace a link into the site’s own h
 
 /** A person whose root is on another device: whom a pairing link names. */
 const ELSEWHERE = 'bb'.repeat(32);
-/** A page that opened a pairing link for `person` into the workspace `current`. */
-const pairingBoot = person => async ({deps}, page) => {
-  deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home: null}});
+/** A site whose home workspace the server at `ORIGIN` keeps: that server is the site's own. */
+const HOME_AT_ORIGIN = {name: 'Lounge', host: {origin: ORIGIN}};
+/** A page that opened a pairing link for `person` into the workspace `current`
+ * at the server `ORIGIN`, on a site whose home workspace is `home` (`null`:
+ * the site names no server but the one its page came from). */
+const pairingBoot = (person, home = null) => async ({deps}, page) => {
+  deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home}});
   await deps.pairDevice({origin: ORIGIN, workspace: 'current', userPublicKey: person, invite: '0f'.repeat(16), listed: null});
   return page;
 };
@@ -920,6 +924,7 @@ test('a device that follows a pairing link says whose device it becomes before i
   // the link, and the device said nothing of whose it would be. It asked the
   // host at once and showed a code. Now it names that person first, as the
   // host that keeps them names them, and asks nobody until its person goes on.
+  // The site's own server is the one taken at its word, and the card says so.
   const words = await import('./pairing.mjs');
   for (const [profile, sentence] of [
     [{display_name: 'Ada Lovelace'}, 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.'],
@@ -927,10 +932,11 @@ test('a device that follows a pairing link says whose device it becomes before i
   ]) {
     const asked = [];
     let shown = null;
-    const {failure, screen} = await fixture({boot: pairingBoot(ELSEWHERE), identity: null, profile,
+    const {failure, screen} = await fixture({boot: pairingBoot(ELSEWHERE, HOME_AT_ORIGIN), identity: null, profile,
       whose: card => { shown = cardAndButtons(card); return 'stop'; },
       pair: async options => { asked.push(options); return {workspace: 'current'}; }});
-    assert.deepEqual(shown, ['Add this device?', sentence, words.PAIRING_WHOSE.consequence, 'Add this device', 'Stop']);
+    assert.deepEqual(shown, ['Add this device?', sentence, 'The server that adds it is this site’s own, node.example.',
+      words.PAIRING_WHOSE.consequence, 'Add this device', 'Stop']);
     assert.deepEqual(asked, [], 'the host is asked nothing: the link is not spent, and nobody is asked to approve');
     assert.equal(localStorage.getItem('tilo-host-memberships'), null, 'this browser is kept as nobody’s device');
     assert.equal(failure?.code, 'pairing');
@@ -947,7 +953,8 @@ test('a device that waits to be approved says again whose it becomes, and its St
   let waiting = null;
   const letGo = [];
   // This browser holds a person of its own (`identity`), and the link names another.
-  const {failure, screen, calls, at} = await fixture({boot: pairingBoot(ELSEWHERE), profile: {display_name: 'Ada Lovelace'},
+  const server = 'The server that adds it is this site’s own, node.example.';
+  const {failure, screen, calls, at} = await fixture({boot: pairingBoot(ELSEWHERE, HOME_AT_ORIGIN), profile: {display_name: 'Ada Lovelace'},
     whose: card => { said = cardAndButtons(card); return 'go'; },
     pair: async options => {
       options.onPairingCode('123456');
@@ -957,14 +964,88 @@ test('a device that waits to be approved says again whose it becomes, and its St
       card.children.find(part => part.textContent === 'Stop').listeners.get('click')();
       return {workspace: 'current', dispose: async () => letGo.push('device')};
     }});
-  assert.deepEqual(said, ['Add this device?', sentence, words.PAIRING_WHOSE.consequence, words.PAIRING_WHOSE.already, 'Add this device', 'Stop'],
+  assert.deepEqual(said, ['Add this device?', sentence, server, words.PAIRING_WHOSE.consequence, words.PAIRING_WHOSE.already, 'Add this device', 'Stop'],
     'a browser that is somebody already is told it would act as another here');
-  assert.deepEqual(waiting.slice(0, 4), ['Waiting for approval on your other device…', words.PAIRING_WAIT.where, '123456', sentence]);
+  assert.deepEqual(waiting.slice(0, 5), ['Waiting for approval on your other device…', words.PAIRING_WAIT.where, '123456', sentence, server],
+    'while it waits it says again whose it becomes, and which server adds it');
   assert.deepEqual(calls.filter(call => call === 'assign' || call === 'reload'), ['assign', 'reload'],
     'the page leaves, so the host hears its request go and nobody can approve it any more');
   assert.equal(at(), 'https://web.example/', 'for the bare site: the link is gone from the address');
   assert.deepEqual(letGo, ['device'], 'the device an approval made meanwhile is let go');
   assert.equal(localStorage.getItem('tilo-host-memberships'), null, 'and this browser is kept as nobody’s device');
+  assert.equal(failure?.code, 'pairing');
+  assert.equal(screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
+});
+
+test('only the server a site names is its own, and a device says which server adds it', async () => {
+  // The words the cards above are made of, and the rule that says whose a
+  // server is. (pairing.test.mjs is not among the suites the build server
+  // takes, so what decides a card is held here, where it is.)
+  const {ofThisSite, pairingWhere, pairingWhose} = await import('./pairing.mjs');
+  const site = {page: 'https://web.example/app/#/w/current', entry: {base: 'https://web.example/', home: {host: {origin: 'https://node.example'}}}};
+  assert.equal(ofThisSite('https://web.example', site), true, 'the server the page came from');
+  assert.equal(ofThisSite('https://node.example/', site), true, 'the server that keeps the site’s home workspace');
+  // A link names any server: one that looks alike, another port, plain
+  // http, or nothing that reads as a server at all.
+  for (const other of ['https://elsewhere.example', 'https://node.example.elsewhere.example', 'https://node.example:8443', 'http://node.example',
+    'node.example', 'about:blank', '', null, undefined]) {
+    assert.equal(ofThisSite(other, site), false, String(other));
+  }
+  assert.equal(ofThisSite('https://node.example', {page: 'https://web.example/', entry: {base: 'https://web.example/', home: null}}), false,
+    'a site without a home names itself alone');
+  assert.equal(ofThisSite('https://node.example', {page: 'https://web.example/'}), false);
+  assert.equal(ofThisSite('https://node.example', {page: 'about:blank', entry: {base: 'about:blank'}}), false);
+
+  assert.equal(pairingWhere('https://node.example', {ofSite: true}), 'The server that adds it is this site’s own, node.example.');
+  const other = 'which is not this site’s own. What you type here afterwards goes to that server, not to this site. Go on only if you know that server is yours.';
+  assert.equal(pairingWhere('https://node.example:8443', {ofSite: false}), `This device would join another server, node.example:8443, ${other}`);
+  assert.equal(pairingWhere('https://node.example'), `This device would join another server, node.example, ${other}`,
+    'a caller that did not say is told it is another’s');
+  assert.equal(pairingWhere('https://node.example', {ofSite: 'yes'}), `This device would join another server, node.example, ${other}`);
+  // A name spelled with a letter of another script reads as its address writes it.
+  assert.match(pairingWhere('https://nod\u0435.example'), /^This device would join another server, xn--[a-z0-9-]+\.example, which is not/);
+  assert.equal(pairingWhere('nowhere', {ofSite: true}), `This device would join another server, ${other}`);
+  // A server the site does not name as its own names nobody, whatever it
+  // answered, and so does a caller that did not say whose the server is.
+  for (const whose of [undefined, {}, {ofSite: false}, {ofSite: 'yes'}, {ofSite: 1}]) {
+    for (const name of ['Ada Lovelace', '', null]) {
+      assert.equal(pairingWhose(name, whose),
+        'You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop.');
+    }
+  }
+  assert.equal(pairingWhose('Ada Lovelace', {ofSite: true}), 'You are adding this device to Ada Lovelace’s devices. If that is not you, stop.');
+});
+
+test('a pairing link that names a server this site does not name as its own puts no name on the card, and the card says which server it is', async () => {
+  // Whoever writes a link writes the server it names (`#/@<server>/w/…`),
+  // and the card asked that server who the link's person is. A server of the
+  // link's maker answers any name for the key, its reader's own too, and the
+  // card said it under this site's address as if the site knew that person.
+  const words = await import('./pairing.mjs');
+  const asked = [];
+  const paired = [];
+  let shown = null;
+  // The site is web.example and names no server but itself; the link names node.example.
+  const boot = async ({deps}, page) => {
+    globalThis.__entryPageFixture.findProfile = async (person, origins) => {
+      asked.push(origins);
+      return {version: 1, user_public_key: person, display_name: 'Bo Smith'};
+    };
+    deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home: null}});
+    await deps.pairDevice({origin: ORIGIN, workspace: 'current', userPublicKey: ELSEWHERE, invite: '0f'.repeat(16), listed: null});
+    return page;
+  };
+  const {failure, screen} = await fixture({boot, identity: null,
+    whose: card => { shown = cardAndButtons(card); return 'stop'; },
+    pair: async options => { paired.push(options); return {workspace: 'current'}; }});
+  assert.ok(shown, 'the card is shown');
+  assert.ok(!shown.join('\n').includes('Bo Smith'), `the card names a person on the word of the link’s own server alone: “${shown[1]}”`);
+  assert.deepEqual(asked, [], 'a server this site does not name is asked nothing before the person goes on');
+  assert.deepEqual(shown, ['Add this device?',
+    'You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop.',
+    'This device would join another server, node.example, which is not this site’s own. What you type here afterwards goes to that server, not to this site. Go on only if you know that server is yours.',
+    words.PAIRING_WHOSE.consequence, 'Add this device', 'Stop']);
+  assert.deepEqual(paired, [], 'Stop asks that server nothing either');
   assert.equal(failure?.code, 'pairing');
   assert.equal(screen['arrival-failure-body'].textContent, words.PAIRING_STOPPED);
 });

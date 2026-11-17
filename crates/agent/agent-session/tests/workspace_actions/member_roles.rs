@@ -20,7 +20,7 @@ const TASKS: &str = "so.tilo.tasks";
 
 /// The workspace's word on one member: their role, whether their device is
 /// revoked, and what they answer when the host asks them.
-struct Membership {
+pub(super) struct Membership {
     member: HostDevice,
     /// The host's workspaces, which hand the service the keys its device holds.
     workspaces: tilo_server::workspaces::Workspaces,
@@ -34,6 +34,39 @@ struct Membership {
 }
 
 impl Membership {
+    /// The workspace's word on `member`, a viewer until it says otherwise, as the service of
+    /// `server`'s device reads it.
+    pub(super) fn of(
+        hosted: &Hosted,
+        server: &Device,
+        member: &Device,
+        content: std::path::PathBuf,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            member: HostDevice {
+                endpoint: tilo_agent_session::HostEndpoint::iroh(
+                    hosted.server.node_addr(),
+                    server.cert.clone(),
+                ),
+                key: server.key.clone(),
+                runtime: tokio::runtime::Handle::current(),
+            },
+            workspaces: hosted.server.workspaces().unwrap().clone(),
+            person: member.cert.user_public_key,
+            device: member.cert.device_public_key,
+            role: Mutex::new(Some(Role::Viewer)),
+            revoked: AtomicBool::new(false),
+            answer: Mutex::new(None),
+            asked: AtomicUsize::new(0),
+            content: tilo_content::ContentStore::in_dir(content),
+        })
+    }
+
+    /// The member's role from now on; none once the workspace removed them.
+    pub(super) fn set_role(&self, role: Option<Role>) {
+        *self.role.lock().unwrap() = role;
+    }
+
     fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         let role = (*self.role.lock().unwrap())?;
         (!self.revoked.load(Ordering::SeqCst)
@@ -126,7 +159,7 @@ fn served(
 }
 
 /// The status `caller`'s `request` is answered with.
-fn invoked(
+pub(super) fn invoked(
     actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
@@ -243,10 +276,10 @@ fn got(
     }
 }
 
-/// The actions `caller` is listed on the record `provider` names, at every
+/// The actions `caller` is listed on the document `provider` names, at every
 /// level of it: a listing holds the actions of the resources directly under
 /// the one it names, so the record is walked as an agent walks it.
-fn listed(
+pub(super) fn listed(
     actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
@@ -297,7 +330,14 @@ fn listed(
     listed
 }
 
-fn json(value: serde_json::Value) -> InvokeArgument {
+/// End a test's page and its server.
+pub(super) async fn ended(browser: Browser, hosted: Hosted) {
+    browser.peer.close();
+    hosted.agents.shutdown();
+    hosted.server.shutdown().await;
+}
+
+pub(super) fn json(value: serde_json::Value) -> InvokeArgument {
     let serde_json::Value::Object(map) = value else {
         panic!("arguments are an object")
     };
@@ -402,24 +442,12 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         "{filed:?}"
     );
 
-    let membership = Arc::new(Membership {
-        member: HostDevice {
-            endpoint: tilo_agent_session::HostEndpoint::iroh(
-                hosted.server.node_addr(),
-                host.cert.clone(),
-            ),
-            key: host.key.clone(),
-            runtime: tokio::runtime::Handle::current(),
-        },
-        workspaces: hosted.server.workspaces().unwrap().clone(),
-        person: guest_device.cert.user_public_key,
-        device: guest_device.cert.device_public_key,
-        role: Mutex::new(Some(Role::Viewer)),
-        revoked: AtomicBool::new(false),
-        answer: Mutex::new(None),
-        asked: AtomicUsize::new(0),
-        content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
-    });
+    let membership = Membership::of(
+        &hosted,
+        &host,
+        &guest_device,
+        state.path().join("member-content"),
+    );
     let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(membership.clone()).unwrap();
     let workspace = browser.workspace;
@@ -784,7 +812,10 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
                 && invoker.acting.acted_for_person() == Some(person.as_str())),
         "{invokers:?}"
     );
-    browser.peer.close();
-    hosted.agents.shutdown();
-    hosted.server.shutdown().await;
+    ended(browser, hosted).await;
 }
+
+// What an app keeps for its whole workspace is reached the same way and judged by the same
+// membership, so its tests stand below this fixture.
+#[path = "workspace_documents.rs"]
+mod workspace_documents;

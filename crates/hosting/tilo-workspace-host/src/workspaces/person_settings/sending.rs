@@ -33,9 +33,9 @@ use super::PendingConfirmation;
 /// a refusal.
 const WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// The most addresses one question names.
-const MOST_ADDRESSES: usize = 20;
+pub(super) const MOST_ADDRESSES: usize = 20;
 /// The longest address, and the longest sender's name, a row shows whole.
-const ADDRESS_CHARS: usize = 100;
+pub(super) const ADDRESS_CHARS: usize = 100;
 /// How much of a subject, of a message and of a file's name a question
 /// shows before it says that more follows.
 const SUBJECT_CHARS: usize = 200;
@@ -43,7 +43,7 @@ const MESSAGE_CHARS: usize = 600;
 const FILE_NAME_CHARS: usize = 80;
 /// The most a question's rows hold together: every waiting question of a
 /// person travels to their device in one frame of sixteen kilobytes.
-const QUESTION_BYTES: usize = 6 * 1024;
+pub(super) const QUESTION_BYTES: usize = 6 * 1024;
 
 /// What a person is shown of one message before it leaves.
 pub(super) struct Shown {
@@ -167,10 +167,9 @@ impl Shown {
     }
 }
 
-/// `address` as a row shows it, when a person reads it for what it is at a
-/// glance: plain ASCII, one `@`, nothing quoted, and short enough to stand
-/// whole.
-fn plain(address: &str) -> Result<String, String> {
+/// Whether a person reads `address` for what it is at a glance: plain ASCII,
+/// one `@`, nothing quoted, and short enough to stand whole in a row.
+pub(super) fn reads_plainly(address: &str) -> bool {
     const FIRST_PART: &[u8] = b".!#$%&'*+/=?^_`{|}~-";
     let readable = address.split_once('@').is_some_and(|(user, domain)| {
         let user_reads = user
@@ -181,7 +180,13 @@ fn plain(address: &str) -> Result<String, String> {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-');
         !user.is_empty() && !domain.is_empty() && user_reads && domain_reads
     });
-    if readable && address.len() <= ADDRESS_CHARS {
+    readable && address.len() <= ADDRESS_CHARS
+}
+
+/// `address` as a row shows it, when a person reads it for what it is at a
+/// glance ([`reads_plainly`]).
+fn plain(address: &str) -> Result<String, String> {
+    if reads_plainly(address) {
         return Ok(address.to_owned());
     }
     let start: String = address.chars().take(ADDRESS_CHARS).collect();
@@ -194,7 +199,7 @@ fn plain(address: &str) -> Result<String, String> {
 
 /// Add the row `label` with `text`, whole when it is at most `most`
 /// characters; else its start, and a row after it saying how much follows.
-fn by_its_start(rows: &mut Vec<(String, String)>, label: &str, text: &str, most: usize) {
+pub(super) fn by_its_start(rows: &mut Vec<(String, String)>, label: &str, text: &str, most: usize) {
     let all = text.chars().count();
     if all <= most {
         rows.push((label.to_owned(), text.to_owned()));
@@ -236,7 +241,7 @@ fn named_file(file: &SendFile) -> String {
 }
 
 /// `count` of something, in words.
-fn counted(count: usize, one: &str, many: &str) -> String {
+pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
     if count == 1 {
         format!("1 {one}")
     } else {
