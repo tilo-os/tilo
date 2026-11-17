@@ -187,9 +187,10 @@ pub(super) fn worked_here(agent: &Agent) -> bool {
 pub(super) struct Own {
     /// Its own conversation.
     conversation: String,
-    /// The members Chat binds a name in a message to. None when Chat could not be read: then
-    /// its turn is taken no words, since nothing says whom they would name.
-    members: Option<Vec<chat::chat::Person>>,
+    /// The members Chat binds a name in a message to, as the workspace's member list names them.
+    /// None when the list could not be read: then its turn is taken no words, since nothing says
+    /// whom they would name.
+    members: Option<Vec<(tilo_actions::MemberId, String)>>,
 }
 
 impl Own {
@@ -552,11 +553,17 @@ impl HostAgents {
     pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
         let sub = turn.agent.sub.as_ref()?;
         let members = self
-            .read::<Chat>(workspace, CHAT, "")
+            .workspaces
+            .summary(workspace)
             .await
             .ok()
-            .flatten()
-            .map(|chat| chat.members());
+            .map(|summary| {
+                summary
+                    .members
+                    .into_iter()
+                    .map(|member| (member.id, member.name))
+                    .collect()
+            });
         Some(Own {
             conversation: sub.conversation.clone(),
             members,

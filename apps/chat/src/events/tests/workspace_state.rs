@@ -178,12 +178,13 @@ tilo_test_env::scenario! {
         let who = app
             .members()
             .into_iter()
-            .find(|member| !app.is_me(&member.id) && member.name.len() > 2)
+            .find(|(id, name)| !app.is_me(id) && name.len() > 2)
             .expect("the demo workspace has someone to mention");
-        let prefix: String = who.name.chars().take(2).collect();
+        let (who, who_name) = who;
+        let prefix: String = who_name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
         feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-        let label = format!("@{}", who.name);
+        let label = format!("@{who_name}");
         assert_eq!(app.composer_main.value(), format!("ping {label} "));
         type_str(&mut app, &mut doc, "now");
         feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
@@ -193,13 +194,13 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(sent.text, format!("ping {label} now"));
         assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
-        assert_eq!(sent.mentions[0].user, who.id);
+        assert_eq!(sent.mentions[0].user, who);
         assert_eq!(sent.mentions[0].slice(&sent.text), label);
         assert!(
             sent.blocks()[0]
                 .marks
                 .iter()
-                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.clone())),
             "the body keeps the mention as written"
         );
         // Rendered through the read-only view, it lays out at its width.
@@ -457,7 +458,7 @@ tilo_test_env::scenario! {
     /// names the cases that failed.
     fn the_roster_and_voice_channel_show_who_the_workspace_says_is_here;
 
-    phase the_roster_shows_who_the_workspace_says_is_here_not_who_once_introduced_themselves;
+    phase the_roster_shows_who_the_workspace_says_is_here_not_everyone_it_lists;
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
@@ -477,7 +478,7 @@ tilo_test_env::scenario! {
                 .find(|(u, _)| u.id == *id)
                 .map(|(u, _)| u.status)
         };
-        // Without a workspace the resource's word stands.
+        // Without a workspace's answer, the listed status stands.
         assert_eq!(status(&app, &others[1]), Some(Presence::Online));
         // The workspace knows the first person is here; the second has left.
         app.workspace_names.insert(others[0].clone(), "Here".into());
@@ -496,8 +497,8 @@ tilo_test_env::scenario! {
 
     phase a_workspace_whose_answer_names_nobody_marks_everyone_else_offline;
     // A workspace that answers with nobody in it — every visitor closed their tab,
-    // or this is the first one in — reads as empty rather than as everybody who
-    // ever introduced themselves still being online.
+    // or this is the first one in — reads as empty rather than as everybody
+    // the member list names still being online.
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
@@ -568,7 +569,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_private_workspace_keeps_collaboration_controls_out_of_the_header() {
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, model::ME, "You", "QD");
+    crate::testing::starter(&mut doc, model::ME, "You");
     let mut app = ChatApp::new_ephemeral();
     app.active_channel = crate::chat::CHAT_CHANNEL.into();
     app.thread_open = None;

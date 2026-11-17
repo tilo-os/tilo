@@ -50,7 +50,10 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
 /// Who `blocks` mention: every mention mark, at its byte offset in
 /// [`plain_text`], and every `@name` typed by hand that no mark covers,
 /// resolved against `members` as a hand-typed mention always was.
-pub fn mentions(blocks: &[BlockContent], members: &[crate::chat::Person]) -> Vec<Mention> {
+pub fn mentions(
+    blocks: &[BlockContent],
+    members: &[(ui::tilo_resource::MemberId, String)],
+) -> Vec<Mention> {
     let mut found = Vec::new();
     let mut offset = 0usize;
     for block in blocks {
@@ -83,11 +86,8 @@ pub fn mentions(blocks: &[BlockContent], members: &[crate::chat::Person]) -> Vec
 mod tests {
     use super::*;
 
-    fn ada() -> crate::chat::Person {
-        crate::chat::Person {
-            name: "Ada".into(),
-            ..crate::chat::Person::unnamed(ui::tilo_resource::MemberId::person("u-ada"))
-        }
+    fn ada() -> (ui::tilo_resource::MemberId, String) {
+        (ui::tilo_resource::MemberId::person("u-ada"), "Ada".into())
     }
 
     tilo_test_env::scenario! {

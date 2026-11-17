@@ -50,7 +50,7 @@ impl Part {
     fn new() -> Self {
         Self {
             doc: AutoCommit::new(),
-            chat: crate::demo::demo(ME),
+            chat: crate::demo::demo(),
             now_ms: 1_000_000,
         }
     }

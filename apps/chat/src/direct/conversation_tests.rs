@@ -77,25 +77,11 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Ada's and Bob's windows in one workspace, each having introduced themself,
-/// the resource delivered both ways.
+/// Ada's and Bob's windows in one workspace, each listing the other as a member,
+/// the record delivered both ways.
 fn a_pair_of_windows(workspace: &str, ada: &str, bob: &str) -> (Window, Window) {
-    use crate::chat::chat::Introduce;
-
     let mut ada_window = Window::for_person_in(ada, workspace).expect("Ada's window opens");
     let mut bob_window = Window::for_person_in(bob, workspace).expect("Bob's window opens");
-    for (window, name, initials, color) in [
-        (&mut ada_window, "Ada", "A", 1),
-        (&mut bob_window, "Bob", "B", 2),
-    ] {
-        window
-            .invoke(Chat::INTRODUCE.with(Introduce {
-                name: name.into(),
-                initials: initials.into(),
-                color,
-            }))
-            .expect("each person introduces themself");
-    }
     ada_window
         .deliver_changes_to(&mut bob_window)
         .expect("one resource");
@@ -285,13 +271,6 @@ fn a_box_send_reaches_a_member_who_never_opened_chat() {
     let ada = "ad".repeat(32);
     let ben = "be".repeat(32);
     let mut ada_window = Window::for_person_in(&ada, WORKSPACE).expect("Ada's window opens");
-    ada_window
-        .invoke(Chat::INTRODUCE.with(crate::chat::chat::Introduce {
-            name: "Ada".into(),
-            initials: "A".into(),
-            color: 1,
-        }))
-        .expect("Ada introduces herself");
     lists_member(&mut ada_window, &ben, "Ben");
 
     let sent = ada_window

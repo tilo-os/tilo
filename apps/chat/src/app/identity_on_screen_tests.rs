@@ -2,73 +2,27 @@ use super::*;
 use tilo_actions::policy::MemberId;
 use ui::widget::Widget;
 
-/// A window's person joins the roster through `introduce`.
+/// A record that does not read is not an empty chat: nothing is derived from the read that
+/// failed, and what last read whole stays.
 #[test]
-fn a_live_peer_joins_through_the_user_action() {
+fn a_record_that_does_not_read_keeps_the_channels() {
     let mut app = ChatApp::new(
         crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
-    )
-    .announcing();
+    );
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
         &ui::tilo_resource::MemberId::person("person-1"),
     ));
     let mut state = ui::State::new();
-    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
-    Widget::sync(&mut app, &state.doc, &state.root);
-    app.land(&mut state.doc);
-    let recorded = app
-        .last_dispatched()
-        .expect("the live peer is submitted as introduce");
-    assert_eq!(
-        serde_json::to_value(&recorded).unwrap(),
-        crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::chat::chat::Introduce {
-                name: app.me.name.clone(),
-                initials: app.me.initials.clone(),
-                color: u32::try_from(app.me.color_idx).unwrap(),
-            }
-        ))
-    );
-    let joined = crate::testing::users(&state.doc)
-        .into_iter()
-        .find(|user| user.id == app.me.id)
-        .expect("the window's person is in the roster");
-    assert_eq!(
-        (joined.name, joined.initials, joined.status),
-        (
-            app.me.name.clone(),
-            app.me.initials.clone(),
-            crate::model::Presence::Online
-        )
-    );
-}
-
-/// A resource that does not read is not an empty chat: the window's person
-/// is introduced once it reads, not lost to the read that failed, and what
-/// last read whole stays.
-#[test]
-fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
-    let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
-        ChatRuntime::Unavailable,
-        ContentStore::memory(),
-    )
-    .announcing();
-    app.attach_framework(ui::framework::Dispatcher::detached(
-        "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person("person-1"),
-    ));
-    let mut state = ui::State::new();
-    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
+    crate::testing::starter(&mut state.doc, "owner", "Owner");
     let mut broken = state.doc.clone();
     ui::tilo_resource::write_key(
         &mut broken,
         &automerge::ROOT,
-        "people",
-        &ui::tilo_resource::Atom("not a roster".into()),
+        "read",
+        &ui::tilo_resource::Atom("not a set of read marks".into()),
     )
     .expect("the field is written");
     assert!(<crate::chat::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
@@ -87,21 +41,6 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
         app.channels.len(),
         channels,
         "the channels that last read stay"
-    );
-
-    Widget::sync(&mut app, &state.doc, &state.root);
-    let recorded = app
-        .last_dispatched()
-        .expect("the introduction waited for a resource that reads");
-    assert_eq!(
-        serde_json::to_value(&recorded).unwrap(),
-        crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-            crate::chat::chat::Introduce {
-                name: app.me.name.clone(),
-                initials: app.me.initials.clone(),
-                color: u32::try_from(app.me.color_idx).unwrap(),
-            }
-        ))
     );
 }
 
@@ -137,7 +76,6 @@ fn user(id: &str, is_agent: bool) -> User {
         },
         name: id.into(),
         initials: "U".into(),
-        color_idx: 0,
         status: crate::model::Presence::Online,
         is_agent,
     }
@@ -150,7 +88,7 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     let mut state = ui::State::new();
     let stranger = "peer@9007495404254172154";
     let mut workspace = crate::testing::Workspace::default();
-    crate::testing::starter(&mut workspace, stranger, "You", "Y");
+    crate::testing::starter(&mut workspace, stranger, "You");
     crate::testing::say(
         &mut workspace,
         stranger,
@@ -182,7 +120,7 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     );
     assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
     assert_eq!(
-        crate::testing::users(&state.doc)[0].name,
+        crate::testing::users()[0].name,
         "You",
         "presentation must not rewrite saved person data"
     );
@@ -257,7 +195,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
         assert_eq!(app.user_name(&MemberId::person("z-peer")), "Kim");
-        let offered: Vec<String> = app.members().into_iter().map(|p| p.name).collect();
+        let offered: Vec<String> = app.members().into_iter().map(|(_, name)| name).collect();
         assert!(
             offered.contains(&"sam (1)".to_owned()),
             "the @ picker offers the numbered name, got {offered:?}"
@@ -321,7 +259,7 @@ fn a_call_names_each_person_once() {
     let offered = app
         .members()
         .into_iter()
-        .filter(|p| p.name == "Clever Crane")
+        .filter(|(_, name)| name == "Clever Crane")
         .count();
     assert_eq!(offered, 1, "the @ picker offers them once");
 }
@@ -337,7 +275,6 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
         id: MemberId::person("ada-root"),
         name: "Swift Lynx".into(),
         initials: "SL".into(),
-        color_idx: 0,
         status: crate::model::Presence::default(),
         is_agent: false,
     });
@@ -366,7 +303,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
 #[test]
 fn an_agents_answer_reads_by_the_workspaces_agent_resource() {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
     // The workspace's document of its agents names it; presence never saw it.

@@ -93,9 +93,6 @@ pub enum ChatEffect {
         #[param("Offset unit", choices = ["Chars", "Bytes"])]
         unit: String,
     },
-    /// Open person
-    #[effect(view, row, item = people)]
-    OpenPerson { user: String },
     /// Open the conversation with an agent: where search's agent hit goes.
     #[effect(view, returns, presence)]
     OpenAgent { agent: String },
@@ -273,8 +270,7 @@ impl ChatApp {
                 end,
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
-            ChatEffect::OpenPerson { user } => self.open_person(&user)?,
-            // A direct conversation is read and written in the resource and the
+            // A direct conversation is read and written in the record and the
             // parts, which the effect context holds: one invoked without it
             // cannot answer.
             ChatEffect::OpenDirectConversation { .. }
@@ -678,52 +674,13 @@ impl ChatApp {
         self.reselect();
         Ok(())
     }
-
-    /// The person the resource keeps under `slot` ([`crate::chat::member_slot`]).
-    fn person_at(&self, slot: &str) -> Option<&crate::model::User> {
-        self.search_users
-            .iter()
-            .find(|user| crate::chat::member_slot(&user.id).as_str() == slot)
-    }
-
-    fn open_person(&mut self, slot: &str) -> Result<(), String> {
-        let Some(user) = self.person_at(slot).map(|user| user.id.clone()) else {
-            return Err("person no longer exists".into());
-        };
-        let user = &user;
-        // Prefer the workspace's people when they already evidence this person;
-        // otherwise open the first conversation where they wrote.
-        if !self.users.iter().any(|item| item.id == *user)
-            && let Some(channel) = self
-                .search_messages
-                .iter()
-                .find(|message| {
-                    message.author == *user
-                        || message.mentions.iter().any(|mention| mention.user == *user)
-                        || message.reactions.iter().any(|reaction| {
-                            reaction.reactors.iter().any(|reactor| reactor.by == *user)
-                        })
-                })
-                .and_then(|message| self.channel(&message.channel))
-                .map(|channel| channel.id.clone())
-        {
-            self.active_channel = channel;
-        }
-        self.thread_open = None;
-        self.revealed_message = None;
-        self.revealed_person = Some(user.clone());
-        self.focus = Focus::Main;
-        self.right_flap.open();
-        self.reselect();
-        Ok(())
-    }
 }
 
 impl ChatApp {
     /// The effects offered on what the window shows: each category and
     /// channel (a voice channel with its call), the latest
-    /// messages of every conversation, the reviewed reports and the people.
-    /// They are rows merged into the item resources the resource publishes.
+    /// messages of every conversation and the reviewed reports.
+    /// They are rows merged into the item resources the record publishes.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
         let categories = self
             .categories
@@ -746,10 +703,6 @@ impl ChatApp {
                 .filter_map(|message| self.message_row(&message.id))
                 .collect::<Vec<_>>()
         });
-        let people = self
-            .search_users
-            .iter()
-            .filter_map(|user| self.person_row(crate::chat::member_slot(&user.id).as_str()));
         let reports = self
             .reports
             .iter()
@@ -757,7 +710,6 @@ impl ChatApp {
         categories
             .chain(channels)
             .chain(messages)
-            .chain(people)
             .chain(reports)
             .chain(self.direct_conversation_rows())
             .collect()
@@ -774,7 +726,6 @@ impl ChatApp {
             "categories" => self.category_row(item),
             "channels" => self.channel_row(item),
             "messages" => self.message_row(item),
-            "people" => self.person_row(item),
             "feedback" => self.report_row(item),
             _ => None,
         }
@@ -935,15 +886,6 @@ impl ChatApp {
         Some(row)
     }
 
-    fn person_row(&self, id: &str) -> Option<LiveRow> {
-        let user = self.person_at(id)?;
-        Some(LiveRow::new(
-            item_row_id("people", id),
-            "chat.workspace.people",
-            crate::identity::shared_name_label(&user.id, &user.name),
-        ))
-    }
-
     fn report_row(&self, id: &str) -> Option<LiveRow> {
         let (_, text) = self.reports.iter().find(|(report, _)| report == id)?;
         let message = crate::feedback::message_id(id);
@@ -1012,7 +954,6 @@ fn opening(anchor: &str) -> Option<ChatEffect> {
         "channels" => ChatEffect::OpenChannel { channel: id },
         "categories" => ChatEffect::OpenCategory { category: id },
         "messages" => ChatEffect::RevealMessage { message: id },
-        "people" => ChatEffect::OpenPerson { user: id },
         "feedback" => ChatEffect::RevealMessage {
             message: crate::feedback::message_id(&id),
         },
@@ -1074,13 +1015,6 @@ mod opening_tests {
             opening(&message),
             Some(ChatEffect::RevealMessage {
                 message: "m_wheel".to_owned()
-            })
-        );
-        let person = item_resource_id::<Chat>("people", &Id::from_raw("u_aria"));
-        assert_eq!(
-            opening(&person),
-            Some(ChatEffect::OpenPerson {
-                user: "u_aria".to_owned()
             })
         );
         assert_eq!(opening("chat.workspace"), None);

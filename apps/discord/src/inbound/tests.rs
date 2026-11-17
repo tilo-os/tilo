@@ -93,10 +93,9 @@ tilo_test_env::scenario! {
             user_name: "alice".into(),
             ..Link::default()
         });
-        let chat = crate::tilo::ChatRead::new(
-            json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace", "avatar": "blob-ada"}}}),
-            Vec::new(),
-        );
+        let chat = crate::tilo::ChatRead::new(json!({}), Vec::new()).knowing(&json!({
+            "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace", "avatar": "blob-ada"}]
+        }));
         let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
         assert_eq!(
             post.appearance.name, "Ada Lovelace",
@@ -114,7 +113,7 @@ tilo_test_env::scenario! {
         );
 
         // Unlinked again, or a person Chat does not know: their Discord name.
-        let unknown = crate::tilo::ChatRead::new(json!({"people": {}}), vec![]);
+        let unknown = crate::tilo::ChatRead::new(json!({}), vec![]);
         let post = &plan_created(&g, &unknown, &created("dm2", "hi")).posts[0];
         assert_eq!(post.appearance.name, "alice");
         g.links.clear();
@@ -783,8 +782,7 @@ fn named(user_name: &str, display_name: Option<&str>) -> UserName {
 }
 
 fn chat_with_ada() -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace"}}}),
-        vec![],
-    )
+    crate::tilo::ChatRead::new(json!({}), vec![]).knowing(&json!({
+        "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace"}]
+    }))
 }

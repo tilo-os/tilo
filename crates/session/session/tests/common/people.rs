@@ -2140,18 +2140,12 @@ impl HeldChat {
     /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
         use chat::chat::Chat;
-        let people = self.chat["people"]
-            .as_object()
-            .filter(|people| !people.is_empty());
-        let Some(people) = people else {
-            return Err("the workspace's people are not in Chat's record yet".into());
-        };
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
             chat::chat::member_slot(member).as_str().to_owned()
         };
-        if peer == self.me || people.get(&slot(&them)).is_none() {
+        if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
         }
         // A message keeps its author as the member's JSON, in a string.

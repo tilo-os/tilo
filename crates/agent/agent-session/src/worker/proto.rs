@@ -146,6 +146,9 @@ pub(crate) enum Request {
         context: Option<String>,
         /// JSON `Appearance` the API admitted, if any.
         appearance: Option<String>,
+        /// The workspace's members, each by what it calls them
+        /// ([`ui::tilo_resource::members`]).
+        members: Vec<(tilo_actions::MemberId, String)>,
     },
     /// The holder's own changes since the last call.
     TakeMutation,

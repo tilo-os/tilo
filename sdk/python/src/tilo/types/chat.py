@@ -36,8 +36,6 @@ __all__ = [
     "Outcome",
     "Outcome2",
     "Part",
-    "Person",
-    "Presence",
     "ReadMark",
     "RecordingRef",
     "Report",
@@ -115,7 +113,6 @@ __all__ = [
     "WorkspaceEmoji",
     "ChatAgent",
     "BeginChatArgs",
-    "IntroduceArgs",
     "CreateCategoryArgs",
     "CreateChannelArgs",
     "CreateChannelWithIdArgs",
@@ -267,15 +264,6 @@ Outcome2 = Literal["no-action", "restrict", "ban"]
 class Part(TypedDict):
     text: str
     hidden: Hidden | None
-
-class Person(TypedDict):
-    id: str
-    name: str
-    initials: str
-    color: int
-    status: Presence
-
-Presence = Literal["online", "idle", "dnd", "offline"]
 
 class ReadMark(TypedDict):
     part: int
@@ -717,18 +705,8 @@ class Sub(TypedDict):
     coding: Coding | None
 
 BeginChatArgs = TypedDict("BeginChatArgs", {
-    "name": "str",
-    "initials": "str",
-    "color": "int",
 })
 """The arguments of `begin-chat`."""
-
-IntroduceArgs = TypedDict("IntroduceArgs", {
-    "name": "str",
-    "initials": "str",
-    "color": "int",
-})
-"""The arguments of `introduce`."""
 
 CreateCategoryArgs = TypedDict("CreateCategoryArgs", {
     "name": "str",
@@ -819,7 +797,7 @@ ReportMessageArgs = TypedDict("ReportMessageArgs", {
 """The arguments of `report-message`."""
 
 ReportPersonArgs = TypedDict("ReportPersonArgs", {
-    "person": "str",
+    "person": "Any",
     "reason": "str",
 })
 """The arguments of `report-person`."""
@@ -1209,7 +1187,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1218,7 +1196,6 @@ class Workspace(Resource):
     def channels(self) -> list[Entry[Conversation]]:
         """Read only."""
         return self.fields["channels"]
-    people: list[Entry[Person]]
     read: dict[str, dict[str, ReadMark]]
     feedback: list[Entry[FeedbackReport]]
     moderation: Moderation
@@ -1231,31 +1208,13 @@ class Workspace(Resource):
         """Read only."""
         return self.fields["summaries"]
 
-    def begin_chat(self,
-        *,
-        name: str,
-        initials: str,
-        color: int,
-    ) -> None:
+    def begin_chat(self) -> None:
         """Runs the app's action."""
-        return self.action("begin-chat", name=name, initials=initials, color=color)
+        return self.action("begin-chat")
 
     def begin_chat_many(self, items: list[BeginChatArgs]) -> list[dict[str, Any]]:
         """Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("begin-chat", items)
-
-    def introduce(self,
-        *,
-        name: str,
-        initials: str,
-        color: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("introduce", name=name, initials=initials, color=color)
-
-    def introduce_many(self, items: list[IntroduceArgs]) -> list[dict[str, Any]]:
-        """Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("introduce", items)
 
     def create_category(self, *, name: str) -> None:
         """Runs the app's action."""
@@ -1445,7 +1404,7 @@ class Workspace(Resource):
 
     def report_person(self,
         *,
-        person: str,
+        person: Any,
         reason: str,
     ) -> None:
         """Runs the app's action."""
@@ -1558,12 +1517,12 @@ class Workspace(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"begin_chat", "begin_chat_many", "introduce", "introduce_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
+    __actions__ = frozenset({"begin_chat", "begin_chat_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
 
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -2011,7 +1970,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -2029,7 +1988,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -2080,7 +2039,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2118,7 +2077,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
+    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

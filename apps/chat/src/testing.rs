@@ -44,13 +44,19 @@ pub(crate) fn apply_part_as(
     workspace.apply_part_as(&ui::tilo_resource::MemberId::person(author), invoke)
 }
 
-/// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`.
-pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
-    crate::demo::start(doc, me, name, initials).unwrap();
+/// Start the chat in `doc` as `me`, called `name`, would: the workspace's `#chat` and `#voice`.
+pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str) {
+    crate::demo::start(doc, me).unwrap();
+    member(me, name);
 }
 
-pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
-    crate::demo::introduce(doc, me, name, initials).unwrap();
+/// The person `me` is a member of the workspace, called `name`, as its member list says.
+pub(crate) fn member(me: &str, name: &str) {
+    let me = ui::tilo_resource::MemberId::person(me);
+    let mut members = ui::tilo_resource::members::named();
+    members.retain(|(id, _)| *id != me);
+    members.push((me, name.to_owned()));
+    ui::tilo_resource::members::know(members);
 }
 
 /// Post `text` in `channel` as `author`; the new message's id.
@@ -158,8 +164,8 @@ pub(crate) fn channels(doc: &AutoCommit) -> Vec<Channel> {
 }
 
 /// The people in the workspace.
-pub(crate) fn users(doc: &AutoCommit) -> Vec<User> {
-    crate::projection::read(doc).user_rows()
+pub(crate) fn users() -> Vec<User> {
+    crate::projection::member_rows()
 }
 
 /// How many top-level messages `channel` has.

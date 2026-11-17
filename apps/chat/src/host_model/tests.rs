@@ -75,7 +75,7 @@ fn backend(text: &str) -> Rc<Backend> {
 
 fn chat(backend: Rc<Backend>) -> (ChatApp, crate::testing::Workspace) {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
     crate::testing::say(&mut doc, crate::model::ME, "c_chat", "Question");
     let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend));
     app.attach_workspace(&doc);
@@ -416,7 +416,6 @@ tilo_test_env::scenario! {
             id: MemberId::person("u_dana"),
             name: "Dana".into(),
             initials: "D".into(),
-            color_idx: 0,
             status: crate::model::Presence::Online,
             is_agent: false,
         });
@@ -458,13 +457,10 @@ tilo_test_env::scenario! {
         let mut base = reply(&doc, &start["reply"]);
         base.work = None;
         let channel = base.channel.clone();
-        let mut record = crate::chat::Chat::default();
-        for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
-            record.people.push(crate::chat::Person {
-                name: name.into(),
-                ..crate::chat::Person::unnamed(MemberId::person(id))
-            });
-        }
+        ui::tilo_resource::members::know([
+            (MemberId::person("u_dana"), "Dana".to_owned()),
+            (MemberId::person("u_other_dana"), "Dana".to_owned()),
+        ]);
         let mut other = base.clone();
         other.author = MemberId::person("u_other_dana");
         let mut bridged = base;
@@ -478,7 +474,7 @@ tilo_test_env::scenario! {
                 linked: Some("u_dana".into()),
             }),
         });
-        app.users = app.workspace_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
+        app.users = app.workspace_people_from(&[(channel, vec![other, bridged.clone()])]);
         assert!(
             app.users.iter().any(|user| user.id == MemberId::person("u_dana")),
             "the linked member is one of the workspace's people"
@@ -596,7 +592,7 @@ tilo_test_env::scenario! {
     {
         let backend = backend("Answer");
         let mut doc = automerge::AutoCommit::new();
-        crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+        crate::testing::starter(&mut doc, crate::model::ME, "You");
         let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend.clone()));
         app.reload(&doc);
         assert!(app.model_controls("c_chat").is_empty());

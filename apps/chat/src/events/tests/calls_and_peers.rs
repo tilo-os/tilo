@@ -113,7 +113,7 @@ fn voice_channels(app: &ChatApp) -> usize {
 /// A workspace whose only channel is `#chat`: its voice channel deleted.
 fn text_only_workspace() -> (ChatApp, crate::testing::Workspace) {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, model::ME, "You");
     crate::testing::apply_as(
         &mut doc,
         model::ME,
@@ -285,13 +285,12 @@ fn emoji_search_enter_picks_the_best_match() {
 
 /// A distinct member: a fresh app bound to the shared workspace
 /// starter, authoring under `id` — genuinely different from any other peer.
-fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
+fn peer(id: &str, name: &str, initials: &str) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
     app.me = crate::identity::LocalIdentity {
         id: MemberId::person(id),
         name: name.into(),
         initials: initials.into(),
-        color_idx: color,
     };
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
@@ -327,14 +326,14 @@ tilo_test_env::scenario! {
         // Alice opens the workspace's chat; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let snapshot = doc_a.save(); // resets alice's incremental cursor
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
+        crate::testing::member("u_bob", "Bob");
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         let parts = crate::testing::Workspace::default();
         a.attach_workspace(&parts);
         b.attach_workspace(&parts);
@@ -453,14 +452,14 @@ tilo_test_env::scenario! {
         // (begin_edit → insert_text → commit_edit → edit-message), then
         // shuttles the incremental delta a peer would receive from the broker.
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
+        crate::testing::member("u_bob", "Bob");
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         let parts = crate::testing::Workspace::default();
         a.attach_workspace(&parts);
         b.attach_workspace(&parts);
@@ -1279,10 +1278,10 @@ tilo_test_env::scenario! {
     phase two_peers_join_through_native_service_without_publishing_legacy_tickets;
     {
         let mut doc_a = AutoCommit::new();
-        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice");
         let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_alice", "Alice", "AL");
+        let mut b = peer("u_bob", "Bob", "BO");
         a.reload(&doc_a);
         b.reload(&doc_b);
         let before_a = doc_a.save();

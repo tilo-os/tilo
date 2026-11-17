@@ -1241,8 +1241,14 @@ impl App {
 
     /// The self row carries the address others use for this member (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
-    /// host-assigned name; it never enters the roster itself.
+    /// host-assigned name; it never enters the roster itself. The records this window runs read
+    /// every member by the name the list gives them ([`tilo_resource::members`]).
     fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
+        tilo_resource::members::know(
+            members
+                .iter()
+                .map(|member| (member.id.clone(), member.name.clone())),
+        );
         self.presence_ctx.apply_members(members);
     }
 

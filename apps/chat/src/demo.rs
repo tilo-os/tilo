@@ -9,9 +9,9 @@ use automerge::AutoCommit;
 use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
-use crate::chat::{Category, Chat, Conversation, Message, Person, Revision, chat};
+use crate::chat::{Category, Chat, Conversation, Message, Revision, chat};
 use crate::messages::{Messages, chat_part};
-use crate::model::{ChannelKind, EditEntry, Presence};
+use crate::model::{ChannelKind, EditEntry};
 use crate::parts::ChatPart;
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
@@ -338,27 +338,32 @@ impl Demo {
     }
 }
 
-/// The demo workspace, with `me` as the person reading it: its people and
-/// channels. Its conversation is [`demo_part`].
+/// The demo workspace's members, with `me` as the person reading it, each by
+/// what its member list calls them.
 #[must_use]
-pub fn demo(me: &str) -> Chat {
+pub fn demo_members(me: &str) -> Vec<(ui::tilo_resource::MemberId, String)> {
+    [
+        (me, crate::identity::DEMO_NAME),
+        ("u_aria", "Aria Chen"),
+        ("u_milo", "Milo Park"),
+        ("u_sora", "Sora Vega"),
+        ("u_devon", "Devon Reyes"),
+        ("u_iris", "Iris Wolfe"),
+    ]
+    .into_iter()
+    .map(|(id, name)| (ui::tilo_resource::MemberId::person(id), name.to_owned()))
+    .chain([(
+        ui::tilo_resource::MemberId::agent("tide"),
+        "Tide".to_owned(),
+    )])
+    .collect()
+}
+
+/// The demo workspace's chat record: its channels. Its members are
+/// [`demo_members`], its conversation [`demo_part`].
+#[must_use]
+pub fn demo() -> Chat {
     let mut chat = Chat::default();
-    for (id, name, initials, color, status) in [
-        (me, crate::identity::DEMO_NAME, "QD", 0u32, Presence::Online),
-        ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
-        ("u_milo", "Milo Park", "MP", 2, Presence::Idle),
-        ("u_sora", "Sora Vega", "SV", 3, Presence::Online),
-        ("u_devon", "Devon Reyes", "DR", 5, Presence::Dnd),
-        ("u_iris", "Iris Wolfe", "IW", 6, Presence::Offline),
-    ] {
-        chat.people.push(Person {
-            id: ui::tilo_resource::MemberId::person(id),
-            name: name.to_owned(),
-            initials: initials.to_owned(),
-            color,
-            status,
-        });
-    }
     for (id, name) in [
         ("cat_acme_main", "Channels"),
         ("cat_acme_voice", "Voice"),
@@ -394,7 +399,7 @@ pub fn demo(me: &str) -> Chat {
 /// `me` as the person reading it.
 #[must_use]
 pub fn demo_part(me: &str) -> ChatPart {
-    let members = demo(me).members();
+    let members = demo_members(me);
     let mut part = ChatPart::default();
     let mine = |id: &str| {
         if id == crate::model::ME {
@@ -507,13 +512,6 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
         for (id, channel) in chat.channels.iter() {
             add(&mut held.channels, id, channel.clone())?;
         }
-        for person in &chat.people {
-            let id = crate::chat::member_slot(&person.id);
-            if held.people.find(&id).is_some() {
-                return Err(ModelError::invalid(format!("an item `{id}` exists")));
-            }
-            held.people.push(person.clone());
-        }
         for (id, report) in chat.feedback.iter() {
             add(&mut held.feedback, id, report.clone())?;
         }
@@ -565,10 +563,12 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     Ok(())
 }
 
-/// The demo workspace's chat resource in `doc`, read by [`crate::model::ME`]: its
-/// people and channels, without the conversation.
+/// The demo workspace's chat record in `doc`, read by [`crate::model::ME`]: its
+/// channels, without the conversation, and its members named
+/// ([`ui::tilo_resource::members`]).
 pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
-    write(doc, &demo(crate::model::ME))
+    ui::tilo_resource::members::know(demo_members(crate::model::ME));
+    write(doc, &demo())
 }
 
 /// The demo workspace in `workspace`, read by [`crate::model::ME`]: its chat resource,
@@ -808,41 +808,12 @@ pub fn apply_at(
 }
 
 /// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`
-/// when it has no channels yet, and `me` in it.
+/// when it has no channels yet.
 ///
 /// # Errors
 /// As [`apply_as`].
-pub fn start(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) -> Result<(), ApiError> {
-    apply_as(
-        doc,
-        me,
-        Chat::BEGIN_CHAT.with(chat::BeginChat {
-            name: name.into(),
-            initials: initials.into(),
-            color: 0,
-        }),
-    )
-}
-
-/// Introduce `me` into the chat in `doc`.
-///
-/// # Errors
-/// As [`apply_as`].
-pub fn introduce(
-    doc: &mut AutoCommit,
-    me: &str,
-    name: &str,
-    initials: &str,
-) -> Result<(), ApiError> {
-    apply_as(
-        doc,
-        me,
-        Chat::INTRODUCE.with(chat::Introduce {
-            name: name.into(),
-            initials: initials.into(),
-            color: 1,
-        }),
-    )
+pub fn start(doc: &mut AutoCommit, me: &str) -> Result<(), ApiError> {
+    apply_as(doc, me, Chat::BEGIN_CHAT.with(chat::BeginChat {}))
 }
 
 /// `post` of `text` in `channel`, optionally in the thread of `parent`.

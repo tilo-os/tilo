@@ -114,7 +114,7 @@ impl ChatApp {
             .iter()
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
-        self.search_users = chat.user_rows();
+        self.search_users = crate::projection::member_rows();
         // Which direct conversations hold something, so the sidebar lists
         // those and not every person in the workspace.
         self.direct_held = per_channel
@@ -138,7 +138,7 @@ impl ChatApp {
         // Who is in a call is projected only from the authenticated local
         // voice service's response.
         self.refresh_native_streams();
-        self.users = self.workspace_people_from(&chat, &per_channel);
+        self.users = self.workspace_people_from(&per_channel);
         self.sync_reload_composers(doc);
         // A share started, switched or ended reaches the workspace as soon as
         // the resource says so, not at the window's next settled frame,
@@ -310,11 +310,7 @@ impl ChatApp {
     /// channels. Channel activity and voice membership are durable evidence;
     /// the local identity is included so a brand-new workspace remains a valid
     /// one-person surface.
-    pub(crate) fn workspace_people_from(
-        &self,
-        chat: &crate::chat::Chat,
-        per_channel: &[(Id, Vec<Message>)],
-    ) -> Vec<User> {
+    pub(crate) fn workspace_people_from(&self, per_channel: &[(Id, Vec<Message>)]) -> Vec<User> {
         let mut ids: HashSet<MemberId> = HashSet::from([self.me.id.clone()]);
         ids.extend(self.former_ids.iter().cloned());
 
@@ -351,8 +347,7 @@ impl ChatApp {
             }
         }
 
-        let mut people: Vec<_> = chat
-            .user_rows()
+        let mut people: Vec<_> = crate::projection::member_rows()
             .into_iter()
             .filter(|user| ids.contains(&user.id))
             .collect();
@@ -361,7 +356,6 @@ impl ChatApp {
                 id: self.me.id.clone(),
                 name: self.me.name.clone(),
                 initials: self.me.initials.clone(),
-                color_idx: self.me.color_idx,
                 status: model::Presence::Online,
                 is_agent: false,
             });
@@ -372,41 +366,6 @@ impl ChatApp {
                 .then_with(|| left.id.cmp(&right.id))
         });
         people
-    }
-
-    /// Announce this window's person into the shared roster once, under the
-    /// name this device knows them by: what every member shows for them
-    /// until the workspace names them. A repeat writes nothing.
-    pub(super) fn announce_me(&mut self, doc: &AutoCommit) {
-        if self.announce.is_none() {
-            return;
-        }
-        // The introduction waits for a resource that reads.
-        let Some(chat) = read_resource(doc) else {
-            return;
-        };
-        let Some(me) = self.announce.take() else {
-            return;
-        };
-        let color = u32::try_from(me.color_idx).unwrap_or_default();
-        if (chat.channels.is_empty() && chat.people.is_empty())
-            || chat.people.iter().any(|person| {
-                person.id == me.id
-                    && person.name == me.name
-                    && person.initials == me.initials
-                    && person.color == color
-                    && person.status == model::Presence::Online
-            })
-        {
-            return;
-        }
-        self.submit(
-            crate::resource::Chat::INTRODUCE.with(crate::chat::chat::Introduce {
-                name: me.name,
-                initials: me.initials,
-                color,
-            }),
-        );
     }
 
     /// Advance the local read watermark for the channel currently in view so

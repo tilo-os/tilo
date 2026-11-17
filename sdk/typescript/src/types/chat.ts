@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@38c6b58b5e923b5b";
+export const SURFACE = "so.tilo.chat@a7f9e5790ecdce7e";
 
 export interface Category {
   name: string;
@@ -119,17 +119,6 @@ export interface Part {
   text: string;
   hidden: Hidden | null;
 }
-
-export interface Person {
-  id: string;
-  name: string;
-  initials: string;
-  color: number;
-  status: Presence;
-}
-
-/** One of "online", "idle", "dnd", "offline". */
-export type Presence = "online" | "idle" | "dnd" | "offline";
 
 export interface ReadMark {
   part: number;
@@ -635,16 +624,6 @@ export interface Sub {
 
 /** The arguments of `begin-chat`. */
 export interface BeginChatArgs {
-  name: string;
-  initials: string;
-  color: number;
-}
-
-/** The arguments of `introduce`. */
-export interface IntroduceArgs {
-  name: string;
-  initials: string;
-  color: number;
 }
 
 /** The arguments of `create-category`. */
@@ -737,7 +716,7 @@ export interface ReportMessageArgs {
 
 /** The arguments of `report-person`. */
 export interface ReportPersonArgs {
-  person: string;
+  person: unknown;
   reason: string;
 }
 
@@ -1128,26 +1107,14 @@ export interface SetSubAgentLimitsArgs {
 export interface Workspace extends tilo.Resource {
   readonly categories: Array<tilo.Entry<Category>>;
   readonly channels: Array<tilo.Entry<Conversation>>;
-  people: Array<tilo.Entry<Person>>;
   read: Record<string, Record<string, ReadMark>>;
   feedback: Array<tilo.Entry<FeedbackReport>>;
   moderation: Moderation;
   readonly files: WorkspaceFiles;
   readonly summaries: Record<string, Record<string, Summary>>;
-  beginChat(args: {
-    name: string;
-    initials: string;
-    color: number;
-  }): Promise<void>;
+  beginChat(): Promise<void>;
   /** Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   beginChatMany(items: BeginChatArgs[]): Promise<tilo.ActionAnswer[]>;
-  introduce(args: {
-    name: string;
-    initials: string;
-    color: number;
-  }): Promise<void>;
-  /** Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  introduceMany(items: IntroduceArgs[]): Promise<tilo.ActionAnswer[]>;
   createCategory(args: {
     name: string;
   }): Promise<void>;
@@ -1237,7 +1204,7 @@ export interface Workspace extends tilo.Resource {
   /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   reportPerson(args: {
-    person: string;
+    person: unknown;
     reason: string;
   }): Promise<void>;
   /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1296,7 +1263,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "introduce", "introduceMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
+export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
 
 /** The `chat.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {

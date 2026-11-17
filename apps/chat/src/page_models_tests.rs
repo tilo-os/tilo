@@ -115,12 +115,7 @@ fn chat_asks_the_provider_set_up_in_the_page_through_its_lent_service() {
 
     let identity = LocalIdentity::demo();
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     crate::testing::say(&mut doc, identity.id.id(), "c_chat", "What is on today?");
     let mut app = ChatApp::new(
         identity.clone(),

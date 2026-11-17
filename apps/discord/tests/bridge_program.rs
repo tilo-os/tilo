@@ -856,11 +856,7 @@ fn program() -> Shortcut {
 /// connected guild publish.
 fn catalog() -> tilo_automation::ActionCatalog {
     let mut chat = TestApp::<ChatShell>::new().unwrap();
-    chat.call(
-        "begin-chat",
-        json!({"name": "Ada", "initials": "A", "color": 1}),
-    )
-    .unwrap();
+    chat.call("begin-chat", json!({})).unwrap();
     let state = chat.state();
     let (channel, _) = state.channels.iter().next().unwrap();
     chat.call_on(

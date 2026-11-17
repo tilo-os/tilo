@@ -186,11 +186,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
             crate::testing::apply_as(
                 doc,
                 "visitor",
-                crate::resource::Chat::BEGIN_CHAT.with(crate::chat::chat::BeginChat {
-                    name: "Visitor".into(),
-                    initials: "V".into(),
-                    color: 0,
-                }),
+                crate::resource::Chat::BEGIN_CHAT.with(crate::chat::chat::BeginChat {}),
             )
             .map_err(|error| error.to_string())?;
             crate::testing::insert_category(doc, "feedback-category", "Feedback");

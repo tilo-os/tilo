@@ -425,9 +425,6 @@ pub struct PresenceCtx {
     /// The members of the workspace's last member list ([`Self::apply_members`]): a list that
     /// replaces it retires whoever is no longer on it.
     members: std::collections::HashSet<MemberId>,
-    /// What the member list calls the people the workspace removed: no longer here, but still
-    /// named wherever something of theirs is shown ([`Self::departed_name`]).
-    departed: HashMap<MemberId, String>,
     /// Faces that bounce because their person waved at this one.
     bounces: HashMap<MemberId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(MemberId, SelectionRange)>>,

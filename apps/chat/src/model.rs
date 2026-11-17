@@ -208,7 +208,6 @@ pub struct User {
     pub id: MemberId,
     pub name: String,
     pub initials: String,
-    pub color_idx: usize,
     pub status: Presence,
     /// An automated agent acting in the workspace rather than a person. The
     /// roster draws the distinction; a mention carries it forward.

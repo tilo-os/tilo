@@ -513,7 +513,7 @@ tilo_test_env::scenario! {
         // demo defaults the app boots with, the reload must re-home the
         // active channel and drop the stale demo thread.
         let mut doc = AutoCommit::new();
-        crate::testing::starter(&mut doc, model::ME, "You", "Y");
+        crate::testing::starter(&mut doc, model::ME, "You");
         let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
         app.reload(&doc);
         if app.ensure_selection() {
@@ -2092,14 +2092,6 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
 }
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
-    for (author, invoke) in crate::resource::agent_work_steps() {
-        let mut replica = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(
-            std::mem::take(&mut doc.chat),
-        )
-        .as_member(author);
-        replica.apply_confirmed(invoke).unwrap();
-        std::mem::swap(&mut doc.chat, replica.doc_mut());
-    }
     let mut head = crate::parts::ChatPart::clone(&doc.messages().parts()[0].1);
     let (summons, message) = crate::resource::agent_summons();
     head.messages.push(summons, message);

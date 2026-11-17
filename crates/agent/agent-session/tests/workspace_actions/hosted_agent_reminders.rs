@@ -171,12 +171,6 @@ async fn team_on(
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
         .unwrap();
-    up.workspaces
-        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
-            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
     (up, workspace, page)
 }
 

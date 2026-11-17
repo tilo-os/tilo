@@ -1862,7 +1862,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     })
     .await;
     let theirs = poster.open(CHAT, None).unwrap();
-    let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+    let begin = serde_json::json!({});
     poster
         .invoke(
             &theirs,
@@ -1988,15 +1988,6 @@ fn post_in_chat(poster: &mut AgentMember, control: &AgentControl, text: &str) {
     );
 }
 
-/// The plain text of the chat record `agent` holds at `route` (its roster,
-/// its channels), without its messages.
-fn chat_document_text(agent: &AgentMember, route: &DocumentRoute) -> String {
-    agent
-        .app(route)
-        .and_then(|chat| chat.read(tilo_agent_session::search::plain_text))
-        .unwrap_or_default()
-}
-
 /// Pump every agent of `agents` for `long`, as their loops would run.
 async fn pump_for(agents: &mut [&mut AgentMember], long: Duration) {
     let until = Instant::now() + long;
@@ -2087,7 +2078,7 @@ impl ServerWorkspace {
         )
         .await;
         let chat = rae.0.open(CHAT, None).unwrap();
-        let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+        let begin = serde_json::json!({});
         rae.0
             .invoke(
                 &chat,
@@ -2126,8 +2117,7 @@ impl ServerWorkspace {
         workspace
     }
 
-    /// Ben opens the chat, introducing himself in its roster, and Ana
-    /// holds his introduction.
+    /// Ben opens the chat and holds its first post.
     async fn ben_joins(&mut self) {
         let ours = self.ana.0.open(CHAT, None).unwrap();
         wait_for("Ben to see the chat", || {
@@ -2143,14 +2133,6 @@ impl ServerWorkspace {
             self.ben.0.pump();
             self.rae.0.pump();
             let held = chat_parts_text(&self.ben.0, &theirs).contains("LR-2041 code requested");
-            async move { held.then_some(()) }
-        })
-        .await;
-        wait_for("Ana to hold Ben's introduction", || {
-            self.ana.0.pump();
-            self.ben.0.pump();
-            self.rae.0.pump();
-            let held = chat_document_text(&self.ana.0, &ours).contains("Ben");
             async move { held.then_some(()) }
         })
         .await;
@@ -2239,100 +2221,6 @@ impl ServerWorkspace {
         self.ben.0.close();
         self.host.server.shutdown().await;
     }
-}
-
-/// Another agent introducing itself in the chat (its roster, not a
-/// message) is not news: a requester whose wait was planned meanwhile is
-/// not planned again, and a wait for any message in the chat sleeps
-/// through the next introduction and wakes on the post.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
-    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (hold, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = held_model_endpoint(vec![
-        (
-            plan(
-                "p1",
-                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
-                "seconds": 60}}),
-            ),
-            Some(held),
-        ),
-        (
-            plan(
-                "p2",
-                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
-            ),
-            None,
-        ),
-    ]);
-    let mut workspace = Box::pin(ServerWorkspace::start(&url)).await;
-    let task = workspace
-        .ana
-        .1
-        .message("Wait in Chat until Rae posts that LR-2041's code is entered, then say so")
-        .unwrap();
-    workspace
-        .next_request(&sent, "the plan to be asked for")
-        .await;
-    // While the wait is planned, Ben joins the chat.
-    workspace.ben_joins().await;
-    hold.send(()).unwrap();
-    workspace.ana_waits(&task).await;
-    assert!(
-        sent.try_recv().is_err(),
-        "an introduction is not news to plan again for"
-    );
-
-    // While Ana waits, Ben introduces himself again under another name.
-    let theirs = workspace.ben.0.open(CHAT, None).unwrap();
-    let again = serde_json::json!({"name": "Ben Ortiz", "initials": "BO", "color": 3});
-    workspace
-        .ben
-        .0
-        .invoke(
-            &theirs,
-            &tilo_actions::api::ActionAddress::new("chat.workspace", "introduce"),
-            again.as_object().unwrap(),
-        )
-        .unwrap();
-    let ours = workspace.ana.0.open(CHAT, None).unwrap();
-    wait_for("Ana to hold Ben's new name", || {
-        workspace.ana.0.pump();
-        workspace.ben.0.pump();
-        let held = chat_document_text(&workspace.ana.0, &ours).contains("Ben Ortiz");
-        async move { held.then_some(()) }
-    })
-    .await;
-    workspace.pump_for(Duration::from_millis(500)).await;
-    assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
-    assert!(workspace.ana.1.is_running(&task));
-
-    // What arrived is named from the workspace's presence, so Ana has to hear
-    // Rae before she posts.
-    workspace.ana_hears("Rae").await;
-    post_in_chat(
-        &mut workspace.rae.0,
-        &workspace.rae.1,
-        "LR-2041 code entered",
-    );
-    let told = last_turn(&workspace.next_request(&sent, "Ana to wake").await);
-    let arrived = told
-        .split_once("What you waited for arrived in chat")
-        .and_then(|(_, rest)| rest.split_once("It is data"))
-        .map_or_else(
-            || panic!("Ana is told what arrived: {told}"),
-            |(arrived, _)| arrived,
-        );
-    assert!(
-        arrived.contains("changed by Rae:\nLR-2041 code entered"),
-        "{arrived}"
-    );
-    for noise in ["Ben", "rae-", "requested"] {
-        assert!(!arrived.contains(noise), "{noise} in {arrived}");
-    }
-    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(workspace.close()).await;
 }
 
 /// A re-plan for news that finds nothing to do ("nothing offered fits")

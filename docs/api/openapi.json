@@ -8158,46 +8158,8 @@
       },
       "chat.workspace.begin-chat.Arguments": {
         "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "initials": {
-            "type": "string"
-          },
-          "color": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "initials",
-          "color"
-        ],
-        "description": ""
-      },
-      "chat.workspace.introduce.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "initials": {
-            "type": "string"
-          },
-          "color": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "initials",
-          "color"
-        ],
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "chat.workspace.create-category.Arguments": {
@@ -8586,7 +8548,44 @@
         "type": "object",
         "properties": {
           "person": {
-            "type": "string"
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "reason": {
             "minLength": 1,
@@ -30642,12 +30641,6 @@
       "resource": "chat.workspace",
       "action": "begin-chat",
       "arguments": "#/components/schemas/chat.workspace.begin-chat.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.workspace",
-      "action": "introduce",
-      "arguments": "#/components/schemas/chat.workspace.introduce.Arguments"
     },
     {
       "app": "so.tilo.chat",

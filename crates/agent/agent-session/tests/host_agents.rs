@@ -1141,9 +1141,9 @@ fn chat_step(resource: &str, action: &str, arguments: &serde_json::Value) -> ser
 
 /// Two agents talk in the workspace's Chat. Its messages are kept in parts
 /// beside the chat record: what one agent posts goes out on its part's own
-/// route, the other, holding the chat record, has it there, and the chat
-/// names it by the label the poster's person gave it, which the poster
-/// introduced itself with on opening the chat.
+/// route, the other, holding the chat record, has it there, and reads its
+/// author by the name the workspace's member list gives the poster's person,
+/// never by their key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -1162,7 +1162,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let begin = serde_json::json!([chat_step(
         "chat.workspace",
         "begin-chat",
-        &serde_json::json!({"name": "Reader", "initials": "RE", "color": 1}),
+        &serde_json::json!({}),
     )]);
     let spawn = |grant: &str, task: &serde_json::Value| {
         InvokeArgument::Json(
@@ -1245,7 +1245,16 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
             .find(|message| message["text"] == "Hello from the poster")
             .cloned();
         if let Some(posted) = posted {
-            assert_eq!(posted["authorName"], "Poster", "{posted}");
+            let name = posted["authorName"].as_str().unwrap_or_default();
+            let key = posted["author"]["person"].as_str().unwrap_or_default();
+            // Named, and neither by their key nor by a placeholder that spells part of it.
+            assert!(
+                key.len() > 8
+                    && !name.trim().is_empty()
+                    && !name.contains(&key[..8])
+                    && !name.contains(&key[key.len() - 4..]),
+                "{posted}"
+            );
             break;
         }
         assert!(

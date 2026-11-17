@@ -230,7 +230,7 @@ fn fixture(
                             store.create_resource(&checkout).unwrap();
                             store.with(&checkout.id, |doc| match which {
                                 0 => word_processor::initialize_empty_document(doc).unwrap(),
-                                1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
+                                1 => chat::demo::start(doc, "author").unwrap(),
                                 _ => notes::read::initialize(doc),
                             });
                         }

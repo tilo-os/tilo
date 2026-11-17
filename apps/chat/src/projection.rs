@@ -120,11 +120,11 @@ impl Chat {
             }
         }
         let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
-        for person in &self.people {
-            if person.is_agent() || person.id == *me {
+        for person in people.keys() {
+            if !person.is_person() || person == me {
                 continue;
             }
-            let pair = vec![me.clone(), person.id.clone()];
+            let pair = vec![me.clone(), person.clone()];
             let id = Chat::direct_id(pair.clone());
             if !self.channels.contains(&id) && listed.insert(id.clone()) {
                 push(&id, pair, None);
@@ -194,12 +194,7 @@ impl Chat {
                 listed
                     .map(|name| name.trim().to_owned())
                     .filter(|name| !name.is_empty())
-                    .or_else(|| {
-                        self.people
-                            .find(&crate::chat::member_slot(member))
-                            .map(|person| person.name.trim().to_owned())
-                            .filter(|name| !name.is_empty())
-                    })
+                    .or_else(|| ui::tilo_resource::members::name_of(member))
                     .unwrap_or_else(|| crate::identity::unnamed_label(member))
             })
             .collect();
@@ -211,22 +206,6 @@ impl Chat {
             .collect();
         let shown = if others.is_empty() { named } else { others };
         shown.join(", ")
-    }
-
-    /// The people and agents in the workspace.
-    #[must_use]
-    pub fn user_rows(&self) -> Vec<User> {
-        self.people
-            .iter()
-            .map(|person| User {
-                id: person.id.clone(),
-                name: person.name.clone(),
-                initials: person.initials.clone(),
-                color_idx: usize::try_from(person.color).unwrap_or_default(),
-                status: person.status,
-                is_agent: person.is_agent(),
-            })
-            .collect()
     }
 
     /// The rows of `channel`, read from the parts' rows already read (`parts`,
@@ -527,4 +506,20 @@ pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
 #[must_use]
 pub fn has_draft(doc: &AutoCommit, key: &str) -> bool {
     draft(doc, key).is_some()
+}
+
+/// The people and agents of the workspace, as its member list names them
+/// ([`ui::tilo_resource::members`]).
+#[must_use]
+pub fn member_rows() -> Vec<User> {
+    ui::tilo_resource::members::named()
+        .into_iter()
+        .map(|(id, name)| User {
+            initials: crate::identity::initials_for(&name),
+            is_agent: !id.is_person(),
+            status: crate::model::Presence::Online,
+            id,
+            name,
+        })
+        .collect()
 }

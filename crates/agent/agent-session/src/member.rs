@@ -51,7 +51,6 @@ mod context;
 mod decompose;
 mod document_api;
 mod facts;
-mod introduce;
 mod logs;
 mod obligations;
 mod parts;
@@ -2018,7 +2017,8 @@ impl AgentMember {
             None => (Seed::New, None),
         };
         // Lent the workspace's content store, so an export keeps its content in
-        // the workspace and content an operation names reaches the worker.
+        // the workspace and content an operation names reaches the worker, and its members, so a
+        // message names whom it mentions and an export its authors.
         let app = ConfinedReplica::open(
             &self.catalogue,
             app_id,
@@ -2028,7 +2028,8 @@ impl AgentMember {
             seed,
         )
         .map_err(|error| error.to_string())?
-        .lending(self.content.clone());
+        .lending(self.content.clone())
+        .knowing(Arc::clone(self.peer.engine()));
         if let Some(seeded) = &seeded {
             self.unopened.forget(seeded);
         }
@@ -2040,7 +2041,6 @@ impl AgentMember {
         self.apps.insert(route.clone(), app);
         self.ask_workspace_through(&route);
         self.hold_waiting_parts(&route);
-        self.introduce_in_chat(&route);
         self.generation = self.generation.wrapping_add(1);
         // A record it made opens in front of the people; one it only opened
         // to read does not.

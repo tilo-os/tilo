@@ -945,9 +945,10 @@ impl BotRunner {
         Ok(Fired::Ran(Box::new(report)))
     }
 
-    /// Who is in the workspace and in what role, as of now: `{"members":
-    /// [{"member", "role"}]}`, removed people left out. A program reads it
-    /// to judge an outside request by the requester's access here.
+    /// Who is in the workspace, by name and in what role, as of now: `{"members":
+    /// [{"member", "name", "role"}]}`. A person the workspace removed keeps their name and has
+    /// no role. A program reads it to judge an outside request by the requester's access here
+    /// and to name who wrote what it carries.
     pub(crate) async fn workspace_input(&self) -> Result<Value, String> {
         let summary = self
             .workspaces
@@ -957,21 +958,29 @@ impl BotRunner {
         // The workspace's root owns it whether or not governance lists the
         // person as a member.
         let root = tilo_actions::MemberId::person(hex::encode(self.host.user_public_key));
-        let mut members = vec![serde_json::json!({ "member": root, "role": "owner" })];
+        let root_name = summary
+            .members
+            .iter()
+            .find(|member| member.id == root)
+            .map(|member| member.name.clone());
+        let mut members =
+            vec![serde_json::json!({ "member": root, "name": root_name, "role": "owner" })];
         members.extend(
             summary
                 .members
                 .iter()
                 .filter(|member| member.root() != Some(self.host.user_public_key))
-                .filter(|member| !member.removed)
                 .map(|member| {
-                    let role = if member.administrator {
+                    let role = if member.removed {
+                        None
+                    } else if member.administrator {
                         Some("owner")
                     } else {
                         member.role.map(tilo_peer_state::join::Role::key)
                     };
                     serde_json::json!({
                         "member": member.id,
+                        "name": member.name,
                         "role": role,
                     })
                 }),

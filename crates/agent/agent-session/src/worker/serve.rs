@@ -357,26 +357,14 @@ impl Worker {
                 invoker,
                 context,
                 appearance,
+                members,
             } => {
-                let invoker = invoker.as_deref().map(decode).transpose();
-                let context = context.as_deref().map(decode).transpose();
-                let appearance = appearance.as_deref().map(decode).transpose();
-                let scope = invoker.and_then(|invoker| {
-                    context.and_then(|context| {
-                        appearance.map(|appearance| (invoker, context, appearance))
-                    })
-                });
-                match (decode(&address), decode(&arguments), scope) {
-                    (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
-                        replica.invoke_within(
-                            invoker, context, appearance, &address, &arguments, confirm,
-                        ),
-                        &address,
-                    ),
-                    (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => {
-                        Reply::Failed(reason)
-                    }
-                }
+                ui::tilo_resource::members::know(members);
+                invoked(
+                    replica,
+                    (&address, &arguments, confirm),
+                    (invoker, context, appearance),
+                )
             }
             Request::TakeMutation => taken_mutation(replica),
             Request::Apply { snapshot, bytes } => {
@@ -815,6 +803,28 @@ impl ReadSession {
 /// collected: a failure, never "nothing changed", so a write that made them
 /// is not answered as done.
 /// [`crate::Replica::renew`] as the worker answers it.
+/// `replica`'s answer to an invocation of `address` with `arguments`, as the caller pinned who
+/// invoked it, in what context and appearing how (each JSON, when given).
+fn invoked(
+    replica: &mut crate::Replica,
+    (address, arguments, confirm): (&str, &str, bool),
+    (invoker, context, appearance): (Option<String>, Option<String>, Option<String>),
+) -> Reply {
+    let invoker = invoker.as_deref().map(decode).transpose();
+    let context = context.as_deref().map(decode).transpose();
+    let appearance = appearance.as_deref().map(decode).transpose();
+    let scope = invoker.and_then(|invoker| {
+        context.and_then(|context| appearance.map(|appearance| (invoker, context, appearance)))
+    });
+    match (decode(address), decode(arguments), scope) {
+        (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
+            replica.invoke_within(invoker, context, appearance, &address, &arguments, confirm),
+            &address,
+        ),
+        (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => Reply::Failed(reason),
+    }
+}
+
 fn renewed(replica: &mut crate::Replica, actor: &str) -> Reply {
     match decode(actor).map(|actor| replica.renew(actor)) {
         Ok(Ok(())) => Reply::Done,

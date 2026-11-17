@@ -190,7 +190,7 @@ mod tests {
     /// `#voice`.
     fn prepared_chat() -> automerge::AutoCommit {
         let mut doc = record::<chat::Chat>();
-        chat::demo::start(&mut doc, "host", "Host", "H").unwrap();
+        chat::demo::start(&mut doc, "host").unwrap();
         doc
     }
 

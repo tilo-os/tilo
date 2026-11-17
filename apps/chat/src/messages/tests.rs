@@ -157,7 +157,7 @@ fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
 
 #[test]
 fn the_window_chain_rolls_over_and_reads_across_its_parts() {
-    let chat = Rc::new(crate::demo::demo(crate::model::ME));
+    let chat = Rc::new(crate::demo::demo());
     let chain: Chain<ChatPart> = Chain::detached(
         "so.tilo.chat",
         &ui::tilo_resource::MemberId::person(crate::model::ME),
@@ -194,7 +194,7 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let held = Messages::new(chain.parts());
     assert_eq!(held.parts().len(), 2);
     assert_eq!(held.part_of(&Id::from_raw("m_welcome")), Some(0));
-    let rows = crate::demo::demo(crate::model::ME).message_rows(&held, "c_general");
+    let rows = crate::demo::demo().message_rows(&held, "c_general");
     assert_eq!(rows.last().unwrap().text, "the first of part 1");
     assert!(
         rows.iter()
@@ -283,7 +283,7 @@ impl TwoDevices {
 
     fn opened(asks_workspace: bool) -> Self {
         let workspace = uuid::Uuid::new_v4().to_string();
-        let chat = Rc::new(crate::demo::demo(crate::model::ME));
+        let chat = Rc::new(crate::demo::demo());
         let device = |backend: &Rc<durable_store::MemoryStore>| {
             ui::resource::ResourceOwners::with_store(
                 Rc::clone(backend) as Rc<dyn durable_store::DurableStore>
@@ -367,7 +367,7 @@ impl TwoDevices {
 
     /// What the guest's window shows of `#general`.
     fn guest_reads(&self) -> Vec<String> {
-        crate::demo::demo(crate::model::ME)
+        crate::demo::demo()
             .message_rows(&Messages::new(self.guest.parts()), "c_general")
             .into_iter()
             .map(|row| row.text)
@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
     // ([`Messages::iter`]), which every replica computes from the same resources,
     // so it stays the same whether a change arrives before or after another.
     {
-        let chat = crate::demo::demo(crate::model::ME);
+        let chat = crate::demo::demo();
         // A part holding one message written with a time after every post that
         // follows: a read that ordered by a clock would show it last.
         let mut seeded = ChatPart::default();

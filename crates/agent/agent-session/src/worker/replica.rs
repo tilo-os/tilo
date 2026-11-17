@@ -51,6 +51,9 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 /// operation names, and before an effect what the record refers to, goes
 /// in before it runs; what the app stored comes out after, hashed again
 /// here before the workspace keeps it.
+/// Who a workspace's members are, by what it calls each, as its host reads them now.
+type Members = std::sync::Arc<dyn Fn() -> Vec<(tilo_actions::MemberId, String)> + Send + Sync>;
+
 pub struct ConfinedReplica {
     app_id: String,
     workspace: String,
@@ -59,6 +62,8 @@ pub struct ConfinedReplica {
     actor: String,
     record: DocumentId,
     content: Option<ContentStore>,
+    /// Who the workspace's members are, read again for each operation.
+    members: Option<Members>,
     inner: Mutex<Inner>,
 }
 
@@ -187,6 +192,7 @@ impl ConfinedReplica {
             actor,
             record,
             content: None,
+            members: None,
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -220,6 +226,20 @@ impl ConfinedReplica {
     #[must_use]
     pub fn lending(mut self, content: ContentStore) -> Self {
         self.content = Some(content);
+        self
+    }
+
+    /// Lend the record the workspace's members, as `engine` holds the workspace's governance: what
+    /// an operation binds a typed `@Name` to and names an author by.
+    #[must_use]
+    pub fn knowing(mut self, engine: std::sync::Arc<tilo_session_client::engine::Engine>) -> Self {
+        let workspace = self.workspace.clone();
+        self.members = Some(std::sync::Arc::new(move || {
+            engine
+                .people(&workspace)
+                .map(|people| people.into_iter().map(|row| (row.id, row.name)).collect())
+                .unwrap_or_default()
+        }));
         self
     }
 
@@ -702,6 +722,11 @@ impl ConfinedReplica {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| unavailable(e.to_string()))?,
+            members: self
+                .members
+                .as_ref()
+                .map(|members| members())
+                .unwrap_or_default(),
         };
         let mut inner = self.lock();
         inner.dirty = true;

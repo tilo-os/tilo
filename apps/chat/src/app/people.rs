@@ -61,8 +61,8 @@ impl ChatApp {
         id.id().to_owned()
     }
 
-    /// What the workspace calls the agent `agent` (its bare id): the name its own document keeps for
-    /// it, else the name its device announced while here, else the name it introduced itself by.
+    /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
+    /// it, else the name its device announced while here, else the name the member list gives it.
     /// `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
         let id = MemberId::agent(agent);
@@ -237,34 +237,30 @@ impl ChatApp {
         people
     }
 
-    /// Everyone a message's `@name`s bind to when it is sent: the
-    /// document's own users, plus anyone the workspace is talking about who has
-    /// not yet written themselves into it, and the agents the workspace's document says it
-    /// has.
-    pub fn members(&self) -> Vec<crate::chat::Person> {
-        let mut out: Vec<crate::chat::Person> = self
+    /// Everyone who can be mentioned, by name: the people of the conversations
+    /// shown, and every member the workspace lists.
+    pub fn members(&self) -> Vec<(MemberId, String)> {
+        let mut out: Vec<(MemberId, String)> = self
             .member_ids()
             .into_iter()
-            .map(|id| crate::chat::Person {
-                name: self.display_name(&id),
-                ..crate::chat::Person::unnamed(id)
+            .map(|id| {
+                let name = self.display_name(&id);
+                (id, name)
             })
             .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out.sort_by(|a, b| a.1.cmp(&b.1));
         out
     }
 
     /// The workspace's agents as the `@` list offers them and a message binds their names by:
     /// the ones its agents resource keeps, under the names that resource gives them.
-    pub(crate) fn agent_members(&self) -> Vec<crate::chat::Person> {
+    pub(crate) fn agent_members(&self) -> Vec<(MemberId, String)> {
         self.workspace_agent_names
             .keys()
             .map(|id| {
                 let id = MemberId::agent(id.clone());
-                crate::chat::Person {
-                    name: self.display_name(&id),
-                    ..crate::chat::Person::unnamed(id)
-                }
+                let name = self.display_name(&id);
+                (id, name)
             })
             .collect()
     }
@@ -351,10 +347,8 @@ impl ChatApp {
         rows
     }
 
-    /// Whether `person` is here now. The resource keeps the status someone
-    /// introduced themselves with, and nobody writes "Offline" when a tab
-    /// closes, so a departed visitor would read "Online" forever. While
-    /// presence answers who is present, that answer decides: present people
+    /// Whether `person` is here now. While presence answers who is present,
+    /// that answer decides: present people
     /// keep the away or busy they set, everyone else is offline — including
     /// when the answer names nobody but this window's own person, which is
     /// how a workspace that everybody has left reads. A window whose host has no

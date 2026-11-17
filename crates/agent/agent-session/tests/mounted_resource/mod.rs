@@ -389,8 +389,8 @@ pub async fn run() {
         "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
-        "sourcePeople": source.read(|doc| chat::projection::read(doc).user_rows().into_iter().map(|person|
-            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>()).unwrap(),
+        "sourcePeople": chat::projection::member_rows().into_iter().map(|person|
+            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>(),
         "voiceChannel": voice_channel.id, "callRow": format!("{}/call", chat::projection::item_id("channels", &voice_channel.id)),
         "secondDevice": {"seed": second_device.key.to_bytes(),
             "root": hex::encode(second_device.cert.user_public_key),

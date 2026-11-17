@@ -116,6 +116,9 @@ pub struct ChatRead {
     /// The channels holding a message in a part not read, as the parts read
     /// count them ([`ChatRead::of`]).
     earlier: std::collections::BTreeSet<String>,
+    /// The workspace's members as its host binds them ([`ChatRead::knowing`]): who wrote what
+    /// the chat holds.
+    members: Vec<Value>,
 }
 
 impl ChatRead {
@@ -175,7 +178,20 @@ impl ChatRead {
             record,
             messages,
             earlier: std::collections::BTreeSet::new(),
+            members: Vec::new(),
         }
+    }
+
+    /// The same records, read with the workspace's members as its host binds them
+    /// (`{"members": [{"member", "name"}]}`), those it removed among them.
+    #[must_use]
+    pub fn knowing(mut self, workspace: &Value) -> Self {
+        self.members = workspace
+            .get("members")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        self
     }
 }
 
@@ -451,17 +467,16 @@ fn read_message(id: &str, v: &Value) -> Option<Message> {
     })
 }
 
-/// The person or agent `id` of the workspace's chat.
+/// The person or agent `id` of the workspace, as its member list names them.
 #[must_use]
 pub fn person(chat: &ChatRead, id: &MemberId) -> Option<Person> {
-    let people = chat.record.get("people")?.as_object()?;
-    people.values().find_map(|p| {
-        let p = p.get("v").unwrap_or(p);
-        (member(p, "id").as_ref() == Some(id)).then(|| Person {
+    chat.members.iter().find_map(|row| {
+        let member: MemberId = serde_json::from_value(row.get("member")?.clone()).ok()?;
+        (member == *id).then(|| Person {
             id: id.clone(),
-            name: text(p, "name"),
-            agent: flag(p, "agent"),
-            avatar: opt_text(p, "avatar"),
+            name: text(row, "name"),
+            agent: !id.is_person(),
+            avatar: opt_text(row, "avatar"),
         })
     })
 }
@@ -494,8 +509,7 @@ mod tests {
                     "c_goal": {"k": "a", "v": {"category": null, "name": "goal", "topic": "", "kind": "text", "archived": false}},
                     "c_general": {"k": "b", "v": {"category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
                     "c_voice": {"k": "c", "v": {"category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
-                },
-                "people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false, "avatar": "aa"}}
+                }
             }),
             vec![(
                 "m1".into(),
@@ -506,6 +520,7 @@ mod tests {
                   "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}),
             )],
         )
+        .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada", "avatar": "aa"}]}))
     }
 
     tilo_test_env::scenario! {

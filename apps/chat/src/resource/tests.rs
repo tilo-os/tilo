@@ -240,7 +240,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_api() {
 }
 
 #[test]
-fn search_hits_open_the_channel_message_and_person_they_name() {
+fn search_hits_open_the_channel_message_and_category_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
     // The resource's entries, and the messages the parts it holds offer.
     let mut entries = Chat::search(&app.state());
@@ -269,14 +269,6 @@ fn search_hits_open_the_channel_message_and_person_they_name() {
         .unwrap();
     app.settle();
     assert_eq!(app.chat().active_channel, "c_ideas");
-    let milo = anchor("Milo Park", "people");
-    app.call("open", serde_json::json!({ "anchor": milo }))
-        .unwrap();
-    app.settle();
-    assert_eq!(
-        app.chat().revealed_person,
-        Some(ui::tilo_resource::MemberId::person("u_milo"))
-    );
 }
 
 #[test]
@@ -484,7 +476,6 @@ tilo_test_env::scenario! {
     {
         let app = TestApp::<ChatShell>::new().unwrap();
         let state = app.state();
-        assert_eq!(state.people.len(), 1, "only its creator");
         assert_eq!(
             state
                 .channel_rows()
@@ -1186,7 +1177,7 @@ fn a_narrow_window_opens_on_the_conversation() {
 #[test]
 fn search_finds_an_agents_conversation_by_the_name_its_resource_keeps() {
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = crate::ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
     app.workspace_agent_names

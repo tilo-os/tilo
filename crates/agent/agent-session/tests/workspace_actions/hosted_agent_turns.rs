@@ -683,18 +683,11 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
-    // The workspace's chat, and the person in it, as their own Chat window introduces them the
-    // first time it opens: a conversation takes messages from the people the chat knows.
+    // The workspace's chat.
     let catalogue = crate::common::catalogue();
     let governor = workspaces.governor().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    workspaces
-        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
-            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
-        })
         .await
         .unwrap();
 
@@ -824,12 +817,6 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
     let governor = workspaces.governor().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    workspaces
-        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
-            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
-        })
         .await
         .unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -994,12 +981,6 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     let governor = workspaces.governor().clone();
     workspaces
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    workspaces
-        .author_application(&workspace, &governor, &catalogue, CHAT, "", |doc| {
-            chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
-        })
         .await
         .unwrap();
 

@@ -395,7 +395,6 @@ impl Channel {
         for row in rows {
             Self::named(
                 &mut people,
-                chat,
                 names,
                 me,
                 &row.author,
@@ -488,13 +487,12 @@ impl Channel {
     }
 
     /// Add the person `author` to `people` when not already there, as they are named here: the
-    /// resource's roster first, then what the reading's [`Names`] say — the reader's own name, or
+    /// workspace's member list first, then what the reading's [`Names`] say — the reader's own name, or
     /// the workspace's name for an agent — and otherwise Chat's honest placeholder for someone
     /// it cannot name. Never their routing id. Software that wrote for a person (`acting`) is
     /// named with them, as Chat's window names its authors: "Helper for Ada", after it left too.
     fn named(
         people: &mut Vec<Person>,
-        chat: &crate::chat::Chat,
         names: &Names,
         me: &MemberId,
         author: &MemberId,
@@ -503,11 +501,8 @@ impl Channel {
         if people.iter().any(|held| held.id == *author) {
             return;
         }
-        let roster = chat.people.find(&crate::chat::member_slot(author));
         let agent = !author.is_person();
-        let shown = roster
-            .map(|person| person.name.trim().to_owned())
-            .filter(|name| !name.is_empty())
+        let shown = sdk::tilo_resource::members::name_of(author)
             .or_else(|| agent_name(names, author))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
@@ -518,12 +513,8 @@ impl Channel {
                 crate::identity::acted_for(acting),
                 crate::identity::RoleWord::InName,
                 |person| {
-                    chat.people
-                        .find(&crate::chat::member_slot(person))
-                        .map_or_else(
-                            || crate::identity::unnamed_label(person),
-                            |held| held.name.trim().to_owned(),
-                        )
+                    sdk::tilo_resource::members::name_of(person)
+                        .unwrap_or_else(|| crate::identity::unnamed_label(person))
                 },
                 |person| person == me,
             ),
@@ -1676,11 +1667,8 @@ mod tests {
             // window names it.
             const ADA: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
             const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
-            let mut chat = crate::chat::Chat::default();
-            chat.people.push(crate::chat::Person {
-                name: "Ada".to_owned(),
-                ..crate::chat::Person::unnamed(MemberId::person(ADA))
-            });
+            let chat = crate::chat::Chat::default();
+            sdk::tilo_resource::members::know([(MemberId::person(ADA), "Ada".to_owned())]);
             let mut said = row("c_ask", "m_reply", MemberId::agent("helper"), 1_782_470_460, "Hi");
             said.acting =
                 Some(sdk::tilo_resource::Acting::agent("helper").acting_for(

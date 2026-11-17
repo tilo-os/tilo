@@ -16,12 +16,6 @@ fields = [
   { path = "channels.*.kind", type = { named = "ChannelKind" }, readonly = true },
   { path = "channels.*.archived", type = "bool", readonly = true },
   { path = "channels.*.members", type = { list = "actor" }, readonly = true },
-  { path = "people", type = { collection = { named = "Person" } }, stored = "keyed" },
-  { path = "people.*.id", type = "actor", readonly = true },
-  { path = "people.*.name", type = "text", label = true },
-  { path = "people.*.initials", type = "text" },
-  { path = "people.*.color", type = "int" },
-  { path = "people.*.status", type = { named = "Presence" } },
   { path = "read", type = { map = { map = { named = "ReadMark" } } } },
   { path = "feedback", type = { collection = { named = "FeedbackReport" } }, stored = "collection" },
   { path = "feedback.*.submission", type = { option = { named = "Submission" } }, readonly = true, stored = "record" },
@@ -92,20 +86,6 @@ fields = [
 [[resources.verbs]]
 id = "begin-chat"
 kind = "undoable"
-params = [
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
-  { name = "initials", type = "text", required = true, schema = { type = "string" } },
-  { name = "color", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "introduce"
-kind = "undoable"
-params = [
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
-  { name = "initials", type = "text", required = true, schema = { type = "string" } },
-  { name = "color", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
-]
 
 [[resources.verbs]]
 id = "create-category"
@@ -242,7 +222,7 @@ params = [
 id = "report-person"
 kind = "undoable"
 params = [
-  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
   { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
@@ -463,25 +443,6 @@ name = "Part"
 fields = [
   { name = "text", type = "text" },
   { name = "hidden", type = { option = { named = "Hidden" } } },
-]
-
-[[resources.types]]
-name = "Person"
-fields = [
-  { name = "id", type = "actor" },
-  { name = "name", type = "text" },
-  { name = "initials", type = "text" },
-  { name = "color", type = "int" },
-  { name = "status", type = { named = "Presence" } },
-]
-
-[[resources.types]]
-name = "Presence"
-cases = [
-  { name = "online" },
-  { name = "idle" },
-  { name = "dnd" },
-  { name = "offline" },
 ]
 
 [[resources.types]]

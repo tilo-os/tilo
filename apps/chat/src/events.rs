@@ -1440,7 +1440,7 @@ impl ChatApp {
                         self.apply_now(
                             doc,
                             Chat::REPORT_PERSON.with(chat::ReportPerson {
-                                person: crate::chat::member_slot(&author),
+                                person: author,
                                 reason,
                             }),
                         );

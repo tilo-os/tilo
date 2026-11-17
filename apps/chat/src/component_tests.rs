@@ -41,12 +41,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -120,12 +115,7 @@ fn a_call_that_cannot_start_says_why_and_never_does_nothing() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -185,15 +175,9 @@ fn component_projection_never_seeds_or_marks_read() {
         id: MemberId::person("author"),
         name: "Author".into(),
         initials: "A".into(),
-        color_idx: 1,
     };
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let before = (doc.base_heads(), doc.pending_ops());
     let mut app = projection(&doc, identity);
@@ -207,12 +191,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     use winit::event::{ElementState, MouseButton, WindowEvent};
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let mut app = projection(&doc, identity);
     app.sync(&doc, &ROOT);
@@ -268,12 +247,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     use ui::application_view::ApplicationViewState;
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
@@ -295,12 +269,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
 fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(
-        &mut doc,
-        identity.id.id(),
-        &identity.name,
-        &identity.initials,
-    );
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name);
     doc.commit();
     let app = projection(&doc, identity);
     let first = app
@@ -316,7 +285,7 @@ fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
 fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let mut app = projection(&doc, me);
     app.sync(&doc, &ROOT);
@@ -343,7 +312,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
     // peer's pointer) re-solves nothing in Chat.
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let mut app = projection(&doc, me);
     let _ = app.update(&doc, &ROOT);
@@ -383,7 +352,7 @@ fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
 fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name);
     doc.commit();
     let app = projection(&doc, me);
     assert!(app.is_focusable());
@@ -939,7 +908,8 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"channel": "c_chat", "text": "Where does Odysseus wake up?"}),
     );
 
-    // The agent introduces itself, and the chat's own document names it by the row it writes.
+    // The workspace's member list names the agent.
+    ui::tilo_resource::members::know([(MemberId::agent("reading"), "Reading agent".to_owned())]);
     let (mut agent, _, _) = component_mount_as(
         &cache,
         MemberId::agent("reading"),
@@ -950,20 +920,6 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         ),
         2,
         "workspace",
-    );
-    let workspace = agent
-        .bound_resources(None)
-        .unwrap()
-        .iter()
-        .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
-        .find(|resource| resource.kind == "chat.workspace")
-        .map(|resource| resource.id.as_str().to_owned())
-        .expect("the chat's workspace is published");
-    invoke(
-        &mut agent,
-        &workspace,
-        "introduce",
-        serde_json::json!({"name": "Reading agent", "initials": "RA", "color": 3}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
     let messages = |frame: &ui::headless::FrameHarness| {
@@ -1677,7 +1633,7 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
         .reserve_resource(&primary)
         .unwrap()
         .initialize(|doc| {
-            crate::testing::starter(doc, identity.id.id(), &identity.name, &identity.initials);
+            crate::testing::starter(doc, identity.id.id(), &identity.name);
             Ok(())
         })
         .unwrap();

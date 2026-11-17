@@ -201,7 +201,6 @@ impl Served {
             .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
             .await
             .unwrap();
-        self.introduce(&workspace, &person, "Ada").await;
         let said = write_to_agent(
             &self.actions,
             &self.workspaces,
@@ -236,27 +235,6 @@ impl Served {
         self.finds_soon(&workspace, &her_agent, ("heron", said.as_str()))
             .await;
         (workspace, page, said)
-    }
-
-    /// Put `person` into the chat of `workspace` as `name`: a conversation takes messages from
-    /// the people the chat knows.
-    async fn introduce(&self, workspace: &str, person: &str, name: &str) {
-        let governor = self.workspaces.governor().clone();
-        let initial = name.chars().take(1).collect::<String>();
-        self.workspaces
-            .author_application(
-                workspace,
-                &governor,
-                &crate::common::catalogue(),
-                CHAT,
-                "",
-                |doc| {
-                    chat::demo::introduce(doc, person, name, &initial)
-                        .map_err(|error| error.to_string())
-                },
-            )
-            .await
-            .unwrap();
     }
 
     /// Admit the person of `device` to `workspace` as an editor: the server issues them an
@@ -567,7 +545,6 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let bo_device = enrol(&bo, "bo-browser", DeviceCapabilities::member());
     served.admit(&workspace, &bo_device).await;
-    served.introduce(&workspace, &person_of(&bo), "Bo").await;
     let his = write_to_agent(
         &served.actions,
         &served.workspaces,

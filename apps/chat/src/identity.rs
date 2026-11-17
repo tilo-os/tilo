@@ -22,7 +22,6 @@ pub struct LocalIdentity {
     pub id: MemberId,
     pub name: String,
     pub initials: String,
-    pub color_idx: usize,
 }
 
 impl LocalIdentity {
@@ -32,7 +31,6 @@ impl LocalIdentity {
             id: MemberId::person(model::ME),
             name: DEMO_NAME.to_string(),
             initials: "QD".to_string(),
-            color_idx: 0,
         }
     }
 
@@ -42,24 +40,10 @@ impl LocalIdentity {
         let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
-            color_idx: color_from_bytes(id.id().as_bytes()),
             id: id.clone(),
             name,
         }
     }
-}
-
-/// A stable palette index (0..8) from arbitrary bytes.
-fn color_from_bytes(b: &[u8]) -> usize {
-    (fnv1a(b) % 8) as usize
-}
-
-/// 64-bit FNV-1a — a stable hash (never used for
-/// security; only to spread ids across the colour palette / host fallback).
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hasher = fnv::FnvHasher::default();
-    std::hash::Hasher::write(&mut hasher, bytes);
-    std::hash::Hasher::finish(&hasher)
 }
 
 /// Distinguish unnamed members without exposing their complete routing id.
@@ -166,7 +150,6 @@ mod tests {
         let a = LocalIdentity::for_member(&alice);
         assert_eq!(a.id, alice);
         assert_eq!(a, LocalIdentity::for_member(&alice), "stable");
-        assert_eq!(a.color_idx, color_from_bytes(b"alice"));
 
         assert_eq!(
             initials_of("Ada Lovelace"),
@@ -174,6 +157,5 @@ mod tests {
             "case initials: two words"
         );
         assert_eq!(initials_of("mononym"), "M", "case initials: mononym");
-        assert_eq!(color_from_bytes(&[0xABu8; 32]), 5, "case color_from_bytes");
     }
 }

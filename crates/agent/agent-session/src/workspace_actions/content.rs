@@ -428,10 +428,15 @@ impl Worker {
             .ok_or_else(unavailable)
     }
 
-    /// `replica`, a record of the workspace `workspace` names, lent the
-    /// workspace's content store when this host keeps one.
+    /// `replica`, a record of the workspace `workspace` names, lent the workspace's members when
+    /// this host joined it and its content store when this host keeps one.
     pub(super) fn lend(&self, replica: ConfinedReplica, workspace: &str) -> ConfinedReplica {
-        match WorkspaceId::parse(workspace).and_then(|id| self.workspace_content(id)) {
+        let id = WorkspaceId::parse(workspace);
+        let replica = match id.and_then(|id| self.workspaces.get(&id)) {
+            Some(held) => replica.knowing(std::sync::Arc::clone(held.peer.engine())),
+            None => replica,
+        };
+        match id.and_then(|id| self.workspace_content(id)) {
             Some(store) => replica.lending(store),
             None => replica,
         }

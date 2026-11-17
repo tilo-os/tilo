@@ -1387,13 +1387,16 @@ impl Chained for ChatPart {
                 takes_posts(chat, &message.channel)?;
                 let body = message.body.clone().unwrap_or_default();
                 message.mentions = Some(resolved_mentions(
-                    chat.mentions(&message.text, &body),
+                    Chat::mentions(&message.text, &body),
                     message.mentions.take(),
                 ));
             }
             ChatPartAction::PostFile(post) => {
                 takes_posts(chat, &post.channel)?;
-                post.mentions = Some(chat.mentions(post.text.as_deref().unwrap_or_default(), &[]));
+                post.mentions = Some(Chat::mentions(
+                    post.text.as_deref().unwrap_or_default(),
+                    &[],
+                ));
             }
             ChatPartAction::ShareResource(share) => {
                 takes_posts(chat, &share.channel)?;
@@ -1402,12 +1405,14 @@ impl Chained for ChatPart {
                     .clone()
                     .filter(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| share.attached.reference.label.clone());
-                share.mentions = Some(chat.mentions(&text, &[]));
+                share.mentions = Some(Chat::mentions(&text, &[]));
             }
             ChatPartAction::ShareWindow(share) => {
                 takes_posts(chat, &share.channel)?;
-                share.mentions =
-                    Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
+                share.mentions = Some(Chat::mentions(
+                    share.text.as_deref().unwrap_or_default(),
+                    &[],
+                ));
             }
             ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
             ChatPartAction::PostView(post) => takes_posts(chat, &post.channel)?,
@@ -1419,10 +1424,7 @@ impl Chained for ChatPart {
             }
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
-                edit.mentions = Some(resolved_mentions(
-                    chat.mentions(&edit.text, &body),
-                    edit.mentions.take(),
-                ));
+                edit.mentions = Some(Chat::mentions(&edit.text, &body));
             }
             ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
             ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,

@@ -39,16 +39,13 @@ fn msg(id: &str, author: &str, text: &str, extra: &Value) -> (String, Value) {
 }
 
 fn chat(messages: &[(String, Value)]) -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(
-        json!({
-            "people": {
-                "u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false, "avatar": "av1"},
-                "u_bo": {"id": r#"{"person":"u_bo"}"#, "name": "Bo", "agent": false},
-                "agent:x": {"id": r#"{"agent":"x"}"#, "name": "Discord Scribe", "agent": true}
-            }
-        }),
-        messages.to_vec(),
-    )
+    crate::tilo::ChatRead::new(json!({}), messages.to_vec()).knowing(&json!({
+        "members": [
+            {"member": {"person": "u_ada"}, "name": "Ada", "avatar": "av1"},
+            {"member": {"person": "u_bo"}, "name": "Bo"},
+            {"member": {"agent": "x"}, "name": "Discord Scribe"}
+        ]
+    }))
 }
 
 fn context() -> Context {

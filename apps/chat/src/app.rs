@@ -538,9 +538,6 @@ pub struct ChatApp {
     /// True while either flap is mid-slide — drives `needs_animation_frame`
     /// so the loop keeps ticking only during the transition, then idles.
     flap_animating: bool,
-    /// This window's person still has to be announced into the shared
-    /// roster under the name this device knows them by.
-    announce: Option<crate::identity::LocalIdentity>,
     /// The person's own drafts resource, so the sidebar can say where the
     /// unsent words are.
     pub(crate) drafts_resource: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
@@ -620,13 +617,6 @@ impl ChatApp {
         app.media_error =
             (!app.external_services).then(|| crate::i18n::t("chat-voice-unavailable"));
         app
-    }
-
-    /// Announce this window's person into the shared roster on the next
-    /// sync, under the name this device knows them by.
-    pub(crate) fn announcing(mut self) -> Self {
-        self.announce = Some(self.me.clone());
-        self
     }
 
     /// A demo-reading instance for tests: the demo's own person and its
@@ -837,7 +827,6 @@ impl ChatApp {
             call_hovered: None,
             relayout: false,
             flap_animating: false,
-            announce: None,
             drafts_resource: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -1802,7 +1791,6 @@ impl Widget for ChatApp {
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.apply_realtime_stop();
         self.establish_realtime_target();
-        self.announce_me(doc);
         // A fold made on another of this person's devices.
         if let Some(preferences) = &self.preferences {
             let collapsed = preferences.get().collapsed_categories;

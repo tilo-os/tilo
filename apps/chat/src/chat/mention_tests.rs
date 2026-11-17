@@ -93,3 +93,39 @@ fn a_direct_message_is_news_for_the_person_it_is_addressed_to() {
     assert_eq!(found[0].by.as_deref(), Some(ADA));
     assert_eq!(found[0].excerpt, "Have a look at this plan");
 }
+
+/// A typed `@Name` binds to the member the workspace's member list calls that, though they never
+/// opened Chat: the record keeps no list of people of its own.
+#[test]
+fn a_typed_name_mentions_the_member_the_workspace_calls_that() {
+    let mut ada = Talk::new();
+    let carla = ui::tilo_resource::MemberId::person("u_carla");
+    let mut members = ui::tilo_resource::members::named();
+    members.push((carla.clone(), "Carla".to_owned()));
+    ui::tilo_resource::members::know(members);
+    let message_text = "@Carla can you look";
+    ada.apply(ChatPart::POST.with(chat_part::Post {
+        message: NewMessage {
+            channel: id("c_chat"),
+            text: message_text.into(),
+            parent: None,
+            quoted: None,
+            body: None,
+            attachments: Vec::new(),
+            mentions: None,
+            written: None,
+            origin: None,
+        },
+    }))
+    .unwrap();
+    let message = ada.said(message_text);
+    let state = ada.part.state().unwrap();
+    let held = state.messages.get(&message).unwrap();
+    assert_eq!(
+        held.mentions
+            .iter()
+            .map(|mention| (mention.user.clone(), mention.slice(message_text)))
+            .collect::<Vec<_>>(),
+        [(carla, "@Carla")]
+    );
+}

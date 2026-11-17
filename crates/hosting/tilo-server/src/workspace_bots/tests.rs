@@ -250,13 +250,8 @@ async fn post_with(
     id
 }
 
-/// Ada and Mallory in `#general`, Mallory's three identical posts and
-/// Ada's report of one.
-fn flood(
-    doc: &mut AutoCommit,
-    ada: &str,
-    mallory: &str,
-) -> Result<String, tilo_actions::api::ApiError> {
+/// The workspace's `#general`, where Mallory floods it.
+fn flood(doc: &mut AutoCommit) -> Result<String, tilo_actions::api::ApiError> {
     chat::demo::apply_as(
         doc,
         &hex::encode(governor().1.user_public_key),
@@ -267,8 +262,6 @@ fn flood(
             topic: None,
         }),
     )?;
-    chat::demo::introduce(doc, ada, "Ada", "AD")?;
-    chat::demo::introduce(doc, mallory, "Mallory", "MA")?;
     let general = chat::projection::read(doc)
         .channel_rows()
         .into_iter()
@@ -328,10 +321,9 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let (ada, mallory) = (hex::encode(ADA), hex::encode(MALLORY));
     let general = workspaces
         .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
-            flood(doc, &ada, &mallory).map_err(|error| error.to_string())
+            flood(doc).map_err(|error| error.to_string())
         })
         .await
         .unwrap();
@@ -359,7 +351,7 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
             .unwrap(),
     );
     let decision = after.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, MemberId::person(mallory.as_str()));
+    assert_eq!(decision.person, MemberId::person(hex::encode(MALLORY)));
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(
         after.moderation.open_reports().count(),
@@ -527,7 +519,6 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
                 }),
             )
             .map_err(|error| error.to_string())?;
-            chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
             Ok(chat::projection::read(doc)
                 .channel_rows()
                 .into_iter()
@@ -547,9 +538,18 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     .await;
     // Installed now: what happened before is not answered.
     assert!(runner.step().await.unwrap().is_empty());
+    let members = runner.workspace_input().await.unwrap()["members"].clone();
     assert_eq!(
-        runner.workspace_input().await.unwrap()["members"],
-        serde_json::json!([{"member": {"person": hex::encode(cert.user_public_key)}, "role": "owner"}]),
+        members
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|member| (member["member"].clone(), member["role"].clone()))
+            .collect::<Vec<_>>(),
+        [(
+            serde_json::json!({"person": hex::encode(cert.user_public_key)}),
+            serde_json::json!("owner")
+        )],
         "a program declaring `workspace` is told who is in it"
     );
     post_in(&workspaces, &workspace, &cert, (&ada, &general, "hello")).await;
@@ -585,7 +585,6 @@ async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, 
         .prepare_application(&workspace, cert, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let ada = hex::encode(ADA);
     let general = workspaces
         .author_application(&workspace, cert, &catalogue, CHAT, "", |doc| {
             chat::demo::apply_as(
@@ -599,7 +598,6 @@ async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, 
                 }),
             )
             .map_err(|error| error.to_string())?;
-            chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
             Ok(chat::projection::read(doc)
                 .channel_rows()
                 .into_iter()

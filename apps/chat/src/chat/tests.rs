@@ -13,31 +13,23 @@ pub(super) fn id(raw: &str) -> Id {
     Id::from_raw(raw)
 }
 
-fn begin(name: &str, initials: &str) -> Invoke<Chat> {
-    Chat::BEGIN_CHAT.with(chat::BeginChat {
-        name: name.into(),
-        initials: initials.into(),
-        color: 0,
-    })
+fn begin() -> Invoke<Chat> {
+    Chat::BEGIN_CHAT.with(chat::BeginChat {})
 }
 
-/// A starter chat Ada made, with Bo introduced.
+/// A starter chat Ada made, in a workspace whose member list names Ada and Bo.
 pub(super) fn workspace() -> Replica<Chat> {
+    ui::tilo_resource::members::know([
+        (MemberId::person(ADA), "Ada".to_owned()),
+        (MemberId::person(BO), "Bo".to_owned()),
+    ]);
     let mut ada = Replica::<Chat>::new().as_author(ADA);
     ada.set_now_ms(1_000_000);
-    ada.apply(begin("Ada", "AD")).unwrap();
-    let mut bo = ada.fork().as_author(BO);
-    bo.apply(Chat::INTRODUCE.with(chat::Introduce {
-        name: "Bo".into(),
-        initials: "BO".into(),
-        color: 2,
-    }))
-    .unwrap();
-    ada.sync_with(&mut bo).unwrap();
+    ada.apply(begin()).unwrap();
     ada
 }
 
-/// Ada's starter chat with Bo introduced, and the part of its messages,
+/// Ada's starter chat in a workspace naming Ada and Bo, and the part of its messages,
 /// one replica of each: verbs on the messages are read against the chat
 /// record where they are invoked, as the window's chain reads them.
 pub(super) struct Talk {
@@ -288,14 +280,14 @@ tilo_test_env::scenario! {
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
             bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-                person: crate::chat::member_slot(&MemberId::person(BO)),
+                person: MemberId::person(BO),
                 reason: "me".parse().unwrap(),
             }))
             .is_err(),
             "nobody reports themselves"
         );
         bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-            person: crate::chat::member_slot(&MemberId::person(ADA)),
+            person: MemberId::person(ADA),
             reason: "spamming the channel".parse().unwrap(),
         }))
         .unwrap();
@@ -439,12 +431,6 @@ tilo_test_env::scenario! {
             topic: "Say hi".into(),
         }))
         .unwrap();
-        let status = Chat::paths()
-            .people
-            .item(&crate::chat::member_slot(&MemberId::person(ADA)))
-            .status
-            .set(crate::model::Presence::Dnd);
-        ada.apply(Invoke::edit(&status).unwrap()).unwrap();
         let chat = ada.state().unwrap();
         let general = chat.channels.get(&id("c_chat")).unwrap();
         assert_eq!(
@@ -452,7 +438,6 @@ tilo_test_env::scenario! {
             ("lobby", "Say hi")
         );
         assert!(chat.channels.get(&id("c_voice")).unwrap().archived);
-        assert_eq!(chat.user_rows()[0].status, crate::model::Presence::Dnd);
         let messages = ChatPart::paths().messages.item(&message);
         for edit in [
             messages.text.set("rewritten".into()),
@@ -577,8 +562,6 @@ tilo_test_env::scenario! {
 
         let general = item("channels", &id("c_chat"));
         assert!(actions(&general).iter().any(|id| id == "open-channel"));
-        let person = item("people", &crate::chat::member_slot(&MemberId::person(BO)));
-        assert!(actions(&person).iter().any(|id| id == "open-person"));
     }
 
     phase a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it;
@@ -611,11 +594,9 @@ tilo_test_env::scenario! {
         assert_eq!(held[0].id.as_str(), VOICE_CHANNEL);
         assert!(held[0].reason.contains("kind"), "{}", held[0].reason);
 
-        // Posting and reading go on around it.
-        ada.apply(Chat::INTRODUCE.with(chat::Introduce {
-            name: "Ada L".into(),
-            initials: "AL".into(),
-            color: 3,
+        // Changing the chat goes on around it.
+        ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
+            name: "Later".parse().unwrap(),
         }))
         .unwrap();
         assert_eq!(
@@ -661,14 +642,6 @@ tilo_test_env::scenario! {
         assert!(
             chat.categories.is_empty(),
             "no categories until someone makes one"
-        );
-        let people = chat.user_rows();
-        assert_eq!(
-            people
-                .iter()
-                .map(|person| (person.id.id(), person.name.as_str()))
-                .collect::<Vec<_>>(),
-            [(ADA, "Ada"), (BO, "Bo")]
         );
     }
 
@@ -989,14 +962,14 @@ tilo_test_env::scenario! {
         let mut laptop = genesis.fork().as_invoker(ADA);
         let mut phone = genesis.fork().as_invoker(ADA);
         let mut bo = genesis.fork().as_invoker(BO);
-        laptop.apply(begin("Ada", "AD")).unwrap();
-        phone.apply(begin("Ada", "AD")).unwrap();
-        bo.apply(begin("Bo", "BO")).unwrap();
+        laptop.apply(begin()).unwrap();
+        phone.apply(begin()).unwrap();
+        bo.apply(begin()).unwrap();
         // A device opening the workspace after it synced makes nothing more.
         let mut first = genesis.fork().as_invoker(ADA);
-        first.apply(begin("Ada", "AD")).unwrap();
+        first.apply(begin()).unwrap();
         let mut second = first.fork().as_invoker(BO);
-        second.apply(begin("Bo", "BO")).unwrap();
+        second.apply(begin()).unwrap();
         laptop.sync_with(&mut phone).unwrap();
         laptop.sync_with(&mut bo).unwrap();
         first.sync_with(&mut second).unwrap();
@@ -1130,22 +1103,18 @@ tilo_test_env::scenario! {
 
     phase a_person_the_workspace_has_no_name_for_goes_by_their_tag;
     {
-        let mut ada = workspace();
-        let mut bo = ada.fork().as_author(BO);
-        bo.apply(Chat::INTRODUCE.with(chat::Introduce {
-            name: String::new(),
-            initials: "BO".into(),
-            color: 2,
-        }))
-        .unwrap();
-        ada.sync_with(&mut bo).unwrap();
+        let ada = workspace();
+        ui::tilo_resource::members::know([(MemberId::person(ADA), "Ada".to_owned())]);
+        let listed: crate::projection::PeopleNames =
+            [(MemberId::person(ADA), "Ada".to_owned()), (MemberId::person(BO), String::new())]
+                .into();
         let chat = ada.state().unwrap();
         let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
         let row = chat
             .conversation_rows(
                 &MemberId::person(ADA),
                 &crate::messages::Messages::default(),
-                (&crate::projection::AgentNames::new(), &crate::projection::PeopleNames::new()),
+                (&crate::projection::AgentNames::new(), &listed),
             )
             .into_iter()
             .find(|row| row.id == with_bo.to_string())
@@ -1156,7 +1125,7 @@ tilo_test_env::scenario! {
             .conversation_rows(
                 &MemberId::person(BO),
                 &crate::messages::Messages::default(),
-                (&crate::projection::AgentNames::new(), &crate::projection::PeopleNames::new()),
+                (&crate::projection::AgentNames::new(), &listed),
             )
             .into_iter()
             .find(|row| row.id == with_bo.to_string())

@@ -142,7 +142,8 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
-                chat: &crate::tilo::ChatRead::of(chat),
+                chat: &crate::tilo::ChatRead::of(chat)
+                    .knowing(workspace.as_ref().unwrap_or(&Value::Null)),
                 context: &context.clone().unwrap_or_default(),
                 workspace: workspace.as_ref().unwrap_or(&Value::Null),
                 emoji: emoji.as_ref(),

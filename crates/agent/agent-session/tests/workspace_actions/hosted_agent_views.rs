@@ -33,12 +33,6 @@ macro_rules! team {
             .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
             .await
             .unwrap();
-        $workspaces
-            .author_application(&$workspace, &governor, &catalogue, CHAT, "", |doc| {
-                chat::demo::introduce(doc, &person, "Ada", "A").map_err(|error| error.to_string())
-            })
-            .await
-            .unwrap();
     };
 }
 

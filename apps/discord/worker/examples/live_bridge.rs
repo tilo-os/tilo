@@ -470,14 +470,6 @@ async fn live(token: String, guild_id: String) -> usize {
     discord::connect(&workspace.workspaces, &workspace.id, &cert, &bridged)
         .await
         .unwrap();
-    workspace
-        .chat_as({
-            let ada = workspace.ada.clone();
-            move |doc| {
-                chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())
-            }
-        })
-        .await;
 
     let secrets = ui::secrets::SecretStore::memory(APP);
     secrets

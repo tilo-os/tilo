@@ -27,7 +27,7 @@ use ui::tilo_resource::{
 
 use tilo_actions::policy::MemberId;
 
-use crate::model::{ChannelKind, Presence};
+use crate::model::ChannelKind;
 
 /// Longest message body, in bytes: a conversation turn, not a document.
 pub const MAX_MESSAGE_TEXT_BYTES: usize = 64 * 1024;
@@ -153,8 +153,6 @@ pub struct Chat {
     /// ([`Chat::direct_id`]).
     #[model(readonly)]
     pub channels: Collection<Conversation>,
-    /// The people and agents in the workspace, under [`member_slot`].
-    pub people: Keyed<Person>,
     /// Each person's read mark per channel, under [`member_slot`]: how far
     /// into the chain of message parts they have read it.
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
@@ -497,49 +495,7 @@ pub struct Revision {
     pub text: String,
 }
 
-/// A person or agent in the workspace.
-#[derive(Model, Debug, Clone, PartialEq)]
-pub struct Person {
-    #[model(readonly)]
-    pub id: MemberId,
-    /// The name they show.
-    #[model(label)]
-    pub name: String,
-    /// Their monogram.
-    pub initials: String,
-    /// Their colour.
-    pub color: u32,
-    /// Whether they are around.
-    pub status: Presence,
-}
-
-impl Person {
-    /// `id`, not named yet.
-    #[must_use]
-    pub fn unnamed(id: MemberId) -> Self {
-        Self {
-            id,
-            name: String::new(),
-            initials: String::new(),
-            color: 0,
-            status: Presence::default(),
-        }
-    }
-
-    /// Whether this is software acting in the workspace rather than a person.
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        !self.id.is_person()
-    }
-}
-
-impl Identified for Person {
-    fn id(&self) -> Id {
-        member_slot(&self.id)
-    }
-}
-
-/// The key the resource keeps `member`'s person and read marks under.
+/// The key the record keeps `member`'s read marks under.
 #[must_use]
 pub fn member_slot(member: &MemberId) -> Id {
     Id::from_raw(ui::tilo_resource::text::author_mark(member))
@@ -1006,20 +962,16 @@ impl Chat {
         }
     }
 
-    /// Everyone who can be mentioned: the workspace's people and agents.
-    #[must_use]
-    pub fn members(&self) -> Vec<Person> {
-        self.people.iter().cloned().collect()
-    }
-
     /// Who a message refers to: the mentions marked in its paragraphs as
-    /// written, or for plain text each `@Name` of a member.
-    pub(crate) fn mentions(&self, text: &str, body: &[ClipBlock]) -> Vec<crate::mention::Mention> {
+    /// written, or for plain text each `@Name` of a member the workspace names
+    /// ([`ui::tilo_resource::members`]).
+    pub(crate) fn mentions(text: &str, body: &[ClipBlock]) -> Vec<crate::mention::Mention> {
+        let members = ui::tilo_resource::members::named();
         if body.is_empty() {
-            return crate::mention::resolve(text, &self.members());
+            return crate::mention::resolve(text, &members);
         }
         let blocks: Vec<_> = body.iter().map(tilo_rich_text::content_of_clip).collect();
-        crate::body::mentions(&blocks, &self.members())
+        crate::body::mentions(&blocks, &members)
     }
 
     /// Add `channel` as `id`.
@@ -1061,31 +1013,10 @@ impl Chat {
         Ok(())
     }
 
-    /// The person `id`, added when the workspace does not know them yet.
-    fn person(&mut self, id: &MemberId) -> Result<&mut Person, Refusal> {
-        let key = member_slot(id);
-        if self.people.find(&key).is_none() {
-            self.people.push(Person::unnamed(id.clone()));
-        }
-        self.people
-            .find_mut(&key)
-            .ok_or_else(|| Refusal::new("there is no such person"))
-    }
-
-    /// Start a fresh record: its creator, and the workspace's first channels
-    /// when it has none yet ([`open_workspace`]).
-    pub(crate) fn begin(
-        &mut self,
-        creator: &MemberId,
-        (name, initials, color): (&str, &str, u32),
-    ) -> Result<(), Refusal> {
-        let person = self.person(creator)?;
-        name.clone_into(&mut person.name);
-        initials.clone_into(&mut person.initials);
-        person.color = color;
-        person.status = Presence::Online;
+    /// Start a fresh record: the workspace's first channels when it has none
+    /// yet ([`open_workspace`]).
+    pub(crate) fn begin(&mut self) {
         open_workspace(&mut self.channels);
-        Ok(())
     }
 }
 
@@ -1100,43 +1031,11 @@ impl Chat {
 impl Chat {
     /// Start the chat.
     ///
-    /// Its creator, and the workspace's first channels when it has none yet.
+    /// The workspace's first channels, when it has none yet.
     #[action(housekeeping, audience = "agents")]
-    pub fn begin_chat(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Your name")] name: String,
-        #[param("Your initials")] initials: String,
-        #[param("Your colour")] color: u32,
-    ) -> Result<(), Refusal> {
-        let creator = author(cx)?;
-        if name.len() > 128 || initials.len() > 8 {
-            return Err(Refusal::new("the creator's name is too long"));
-        }
-        self.begin(&creator, (&name, &initials, color))
-    }
-
-    /// Introduce yourself.
-    ///
-    /// How you show in the workspace: your name, initials and colour, and that
-    /// you are here.
-    #[action(housekeeping, audience = "agents")]
-    pub fn introduce(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Your name")] name: String,
-        #[param("Your initials")] initials: String,
-        #[param("Your colour")] color: u32,
-    ) -> Result<(), Refusal> {
-        let me = author(cx)?;
-        if name.len() > 128 || initials.len() > 8 {
-            return Err(Refusal::new("the name is too long"));
-        }
-        let person = self.person(&me)?;
-        person.name = name;
-        person.initials = initials;
-        person.color = color;
-        person.status = Presence::Online;
+    pub fn begin_chat(&mut self, cx: &mut ActionCx) -> Result<(), Refusal> {
+        author(cx)?;
+        self.begin();
         Ok(())
     }
 
@@ -1467,17 +1366,16 @@ impl Chat {
     /// Report person.
     ///
     /// Tells the workspace's moderators that this person is misbehaving.
-    #[action(item = people)]
+    #[action]
     pub fn report_person(
         &mut self,
         cx: &mut ActionCx,
-        person: &Id,
+        #[param("The person")] person: MemberId,
         #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
-        let Some(person) = self.people.find(person) else {
+        if !person.is_person() {
             return Err(Refusal::new("there is no such person"));
-        };
-        let person = person.id.clone();
+        }
         self.moderation.report(cx, person, None, None, None, reason)
     }
 

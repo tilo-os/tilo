@@ -187,7 +187,6 @@ chat-person-relative-name = { $name } ({ $tag })
 
 ## History: what each change did, by verb and by field
 chat-begin-chat = Started the chat
-chat-introduce = Introduced themselves as { $name }
 chat-create-category = Created the category { $name }
 chat-create-channel = Created the channel #{ $name }
 chat-create-channel-with-id = Created the channel #{ $name }
@@ -231,11 +230,6 @@ chat-chat-channels = { $op ->
     [insert] Added a channel
     [remove] Removed a channel
    *[other] Reordered the channels
-}
-chat-chat-people = { $op ->
-    [insert] Added a person
-    [remove] Removed a person
-   *[other] Changed the people
 }
 chat-chat-feedback = { $op ->
     [insert] Added a feedback report
@@ -424,7 +418,6 @@ chat-effects-open-category = Open category
 chat-effects-toggle-category = Fold category
 chat-effects-reveal-message = Reveal message
 chat-effects-reveal-message-range = Reveal messages
-chat-effects-open-person = Open person
 chat-effects-open-agent = Open agent conversation
 chat-effects-open-direct-conversation = Open direct conversation
 chat-effects-send-direct-message = Send direct message
@@ -514,7 +507,6 @@ chat-question-withdrawn-why = No longer asked: { $why }
 chat-messages-record-work = Record agent work
 chat-messages-carry-counts = Carry the counts of the parts before
 chat-messages-stream-output = Record an answer as it arrives
-chat-workspace-introduce = Introduce yourself
 chat-workspace-create-category = New category
 chat-workspace-create-channel = New channel
 chat-workspace-create-channel-with-id = New channel with an id

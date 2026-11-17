@@ -85,8 +85,6 @@ fn flooded_workspace() -> Replica {
         }),
     )
     .unwrap();
-    chat::demo::introduce(&mut doc, ADA, "Ada", "AD").unwrap();
-    chat::demo::introduce(&mut doc, MALLORY, "Mallory", "MA").unwrap();
     let general = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()
@@ -236,8 +234,8 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
         ModerationAgent::<FakeJudge>::look(&mut api, &moderation, &MemberId::person(MALLORY));
     assert_eq!(
         look.case.activity.len(),
-        4,
-        "Mallory joining and her three posts, not Ada's"
+        3,
+        "Mallory's three posts, not Ada's"
     );
     let (verdict, model) = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -265,13 +263,6 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     assert_eq!(
         decision.reverted[0].changes, 3,
         "her posts, not her joining"
-    );
-    assert!(
-        state
-            .people
-            .find(&chat::chat::member_slot(&MemberId::person(MALLORY)))
-            .is_some(),
-        "she keeps her place in the roster"
     );
     assert_eq!(
         state.moderation.open_reports().count(),

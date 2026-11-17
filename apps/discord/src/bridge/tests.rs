@@ -22,12 +22,13 @@ fn guild() -> Guild {
 
 fn chat() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false}}}),
+        json!({}),
         vec![(
             "m1".into(),
             json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "hello", "parent": null}),
         )],
     )
+    .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
 }
 
 fn verb(name: &str) -> Value {
@@ -427,12 +428,13 @@ fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
 /// text read out of the report, its picture as an image, a reaction on it.
 fn with_report() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false}}}),
+        json!({}),
         vec![(
             "m_feedback_r1".into(),
             json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "Saving does nothing\n1. Files: Save (button)", "attachments": [{"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200}], "reactions": [{"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 1}]}),
         )],
     )
+    .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
 }
 
 fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {

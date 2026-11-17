@@ -137,6 +137,7 @@ pub mod keyed;
 pub mod kind;
 pub mod label;
 mod map;
+pub mod members;
 pub mod model;
 mod non_blank;
 pub mod order;

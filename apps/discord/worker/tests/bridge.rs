@@ -459,11 +459,9 @@ impl Bridge {
             .unwrap();
         workspace
             .chat_as({
-                let (owner, ada) = (owner.clone(), ada.clone());
+                let owner = owner.clone();
                 move |doc| {
                     lay_out_with_general_and_lounge(doc, &owner)?;
-                    chat::demo::introduce(doc, &ada, "Ada", "AD")
-                        .map_err(|error| error.to_string())?;
                     if setup.existing {
                         seed_channels(doc, &owner)?;
                     }

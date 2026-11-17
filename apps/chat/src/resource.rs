@@ -75,38 +75,22 @@ impl Chat {
             let message = crate::feedback::message::message(report)?;
             Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
-        let people = self.people.iter().map(|person| {
-            let person_anchor = anchor("people", &crate::chat::member_slot(&person.id));
-            SearchEntry::new(&person.name, "")
-                .anchored(person_anchor.clone())
-                .of_kind(IndexKind::Person)
-                .showing(vec![IndexPerson {
-                    name: person.name.trim().to_owned(),
-                    anchor: person_anchor,
-                    identity: person.id.id().to_owned(),
-                    agent: person.is_agent(),
-                }])
-        });
         channels
             .chain(conversations)
             .chain(categories)
             .chain(feedback)
-            .chain(people)
             .collect()
     }
 
     /// The people in the conversation `id`, as a row shows them: named by the
-    /// record when it knows them, else by what their own entry is called.
+    /// workspace's member list ([`ui::tilo_resource::members`]), else by what their own entry is
+    /// called.
     fn member_rows(&self, id: &Id) -> Vec<IndexPerson> {
         self.conversation_members(id)
             .into_iter()
             .map(|member| IndexPerson {
-                name: self
-                    .people
-                    .find(&crate::chat::member_slot(&member))
-                    .map(|person| person.name.trim().to_owned())
-                    .unwrap_or_default(),
-                anchor: item_resource_id::<Self>("people", &crate::chat::member_slot(&member)),
+                name: ui::tilo_resource::members::name_of(&member).unwrap_or_default(),
+                anchor: String::new(),
                 identity: member.id().to_owned(),
                 agent: !member.is_person(),
             })
@@ -298,12 +282,7 @@ impl ResourceApp for ChatShell {
             .with_id("chat-shell")
             .content_kind(ui::widget::ContentKind::Reading)
             .with_window_toolbar();
-        let app = app.in_shell(&places, shell.window_bar_link());
-        let mut app = if live && ui::local_identity::bound().is_some() {
-            app.announcing()
-        } else {
-            app
-        };
+        let mut app = app.in_shell(&places, shell.window_bar_link());
         // Where an answer to a question says it was pressed.
         app.device = cx.device().map(str::to_owned);
         app.attach_framework(cx.dispatcher());
@@ -400,22 +379,17 @@ impl ResourceApp for ChatShell {
     }
 
     /// Every scenario but `starter` starts from the demo workspace, read by
-    /// the capture's own person: its people and its channels under the
-    /// fixed ids the scenarios name, which only the moderators' actions
-    /// make, minting their own. `agent-work` adds the agent introducing
-    /// itself, written by the agent.
+    /// the capture's own person: its channels under the fixed ids the
+    /// scenarios name, which only the moderators' actions make, minting their
+    /// own, and its members named as its member list would name them.
     /// Their messages are staged in the chat's parts (`part_scenario`).
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
         if fixture.scenario() == Some("starter") {
             return;
         }
-        fixture.start(crate::demo::demo(crate::model::ME));
-        if fixture.scenario() == Some("agent-work") {
-            for (_, invoke) in agent_work_steps() {
-                fixture.version(demo_agent(), crate::demo::NOW * 1000, invoke);
-            }
-        }
+        ui::tilo_resource::members::know(crate::demo::demo_members(crate::model::ME));
+        fixture.start(crate::demo::demo());
     }
 
     /// The first-run workspace for `starter`, read by the capture's own
@@ -425,12 +399,7 @@ impl ResourceApp for ChatShell {
         if name != Some("starter") {
             return Vec::new();
         }
-        let you = LocalIdentity::demo();
-        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-            name: you.name,
-            initials: you.initials,
-            color: u32::try_from(you.color_idx).unwrap_or_default(),
-        })]
+        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {})]
     }
 
     /// A new resource's creator, and the workspace's first channels, `#chat` and
@@ -442,12 +411,7 @@ impl ResourceApp for ChatShell {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
-        let creator = LocalIdentity::for_member(cx.me());
-        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-            name: creator.name,
-            initials: creator.initials,
-            color: u32::try_from(creator.color_idx).unwrap_or_default(),
-        })]
+        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {})]
     }
 }
 
@@ -657,19 +621,6 @@ pub(crate) fn demo_agent() -> ui::tilo_resource::MemberId {
 /// The message summoning it.
 #[cfg(feature = "samples")]
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
-
-/// On the demo workspace: the agent introducing itself.
-#[cfg(feature = "samples")]
-pub(crate) fn agent_work_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<Chat>)> {
-    vec![(
-        demo_agent(),
-        Chat::INTRODUCE.with(chat::Introduce {
-            name: "Tide".into(),
-            initials: "TI".into(),
-            color: 6,
-        }),
-    )]
-}
 
 /// In the demo conversation: the reader summoning the agent, under the id
 /// [`DEMO_SUMMONS`] the agent's resource of its work names.
