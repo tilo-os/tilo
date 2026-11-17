@@ -19588,6 +19588,7 @@ dependencies = [
  "test-server",
  "thiserror 2.0.21",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-automerge",
  "tilo-automerge-fork",

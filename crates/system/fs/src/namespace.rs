@@ -131,12 +131,6 @@ impl NodeKind {
             NodeKind::Dir => FileType::Directory,
         }
     }
-    fn as_str(self) -> &'static str {
-        match self {
-            NodeKind::File => "file",
-            NodeKind::Dir => "dir",
-        }
-    }
     fn from_str(s: &str) -> Self {
         if s == "dir" {
             NodeKind::Dir
@@ -426,6 +420,32 @@ pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
 }
 
+thread_local! {
+    /// Who the file actions this thread writes are done by ([`acting_as`]).
+    static ACTING: std::cell::RefCell<Option<tilo_actions::ActionInvoker>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Write this thread's file actions as `invoker` until the guard is dropped: an agent writing
+/// through the mount, an agent's call carried out where the tree is kept. `None` is the
+/// person at this device. Each change of the tree then names who made it, which History
+/// shows, grants decide and Undo takes back as theirs. A thread, not the namespace, carries
+/// it: requests of several writers share one namespace at once.
+#[must_use]
+pub fn acting_as(invoker: Option<tilo_actions::ActionInvoker>) -> ActingAs {
+    ActingAs(ACTING.with(|acting| acting.replace(invoker)))
+}
+
+/// Puts back whoever the thread acted for before [`acting_as`].
+pub struct ActingAs(Option<tilo_actions::ActionInvoker>);
+
+impl Drop for ActingAs {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        ACTING.with(|acting| *acting.borrow_mut() = before);
+    }
+}
+
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
 }
@@ -579,6 +599,16 @@ impl Namespace {
 
     pub fn author(&self) -> &str {
         &self.author
+    }
+
+    /// Write `action` into the tree as whoever this thread acts for ([`acting_as`]).
+    fn write_action(&mut self, action: &fs_protocol::FileAction) -> bool {
+        let invoker = ACTING.with(|acting| acting.borrow().clone());
+        let written = self.doc.write_action(action, invoker.as_ref());
+        if let Err(error) = &written {
+            tracing::warn!(?error, ?action, "a file action did not apply to the tree");
+        }
+        written.is_ok()
     }
 
     /// Changes whenever changes another replica made were merged in, and only then: equal
@@ -1983,21 +2013,23 @@ impl Namespace {
         } else {
             derived
         };
-        let obj = self.doc.put_node(document_id.chunk(), &id).ok()?;
-        let _ = self.doc.put(&obj, "parent", parent_id);
-        let _ = self.doc.put(&obj, "prev_parent", parent_id);
-        let _ = self.doc.put(&obj, "name", name.to_vec());
-        let _ = self.doc.put(&obj, PLACEMENT_NAME_KEY, name.to_vec());
-        let _ = self.doc.put(&obj, "kind", kind.as_str());
-        if let Some(h) = hash {
-            let _ = self.doc.put(&obj, "hash", hash_to_hex(h));
+        let created = fs_protocol::FileAction::Create {
+            node: id.clone(),
+            document_id,
+            parent: parent_id.to_owned(),
+            name: FileNameV1(name.to_vec()),
+            kind: match kind {
+                NodeKind::Dir => fs_protocol::FileNodeKind::Directory,
+                NodeKind::File => fs_protocol::FileNodeKind::File,
+            },
+            hash: hash.map(hash_to_hex),
+            size,
+            mtime,
+            author: self.author.clone(),
+        };
+        if !self.write_action(&created) {
+            return None;
         }
-        let _ = self.doc.put(&obj, "size", size);
-        let _ = self.doc.put(&obj, "mtime", mtime);
-        let _ = self.doc.put(&obj, "author", self.author.clone());
-        let _ = self
-            .doc
-            .put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
         self.tree.bind_document(&id, document_id);
@@ -2248,27 +2280,15 @@ impl Namespace {
         if self.node(&id).is_none() {
             return false;
         }
-        // A legacy mutation explicitly supersedes any atomic revision, so remaining old call sites
-        // cannot change mirror fields that revision-aware readers ignore.
-        if let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, CONTENT_REVISION_KEY);
-        }
-        match hash {
-            Some(h) => self.set_field(&id, "hash", hash_to_hex(h)),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "hash");
-                }
-            }
-        }
-        if let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, "thumb");
-        }
-        self.set_field(&id, "size", size);
-        self.set_field(&id, "mtime", mtime);
-        let author = self.author.clone();
-        self.set_field(&id, "author", author);
-        true
+        self.write_action(&fs_protocol::FileAction::Write {
+            node: id,
+            hash: hash.map(hash_to_hex),
+            size,
+            mtime,
+            author: self.author.clone(),
+            revision: None,
+            keep_preview: false,
+        })
     }
 
     /// Atomically advertise one immutable signed history version as the current file content. Loose
@@ -2325,23 +2345,17 @@ impl Namespace {
         let Some(encoded) = revision_to_bytes(revision) else {
             return false;
         };
-        self.set_field(&id, CONTENT_REVISION_KEY, ScalarValue::Bytes(encoded));
-        match revision.content_hash {
-            Some(hash) => self.set_field(&id, "hash", hash_to_hex(&Hash::from(hash.0))),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "hash");
-                }
-            }
-        }
-        if invalidate_preview && let Some(obj) = self.node(&id) {
-            let _ = self.doc.delete(&obj, "thumb");
-        }
-        self.set_field(&id, "size", revision.byte_len);
-        self.set_field(&id, "mtime", mtime);
-        let author = self.author.clone();
-        self.set_field(&id, "author", author);
-        true
+        self.write_action(&fs_protocol::FileAction::Write {
+            node: id,
+            hash: revision
+                .content_hash
+                .map(|hash| hash_to_hex(&Hash::from(hash.0))),
+            size: revision.byte_len,
+            mtime,
+            author: self.author.clone(),
+            revision: Some(encoded),
+            keep_preview: !invalidate_preview,
+        })
     }
 
     /// Attach the content hash of a generated thumbnail blob to `ino`, so the pointer rides the
@@ -2402,19 +2416,13 @@ impl Namespace {
         if self.node(&id).is_none() || !self.reaches_root(&id) {
             return false;
         }
-        // Record the content hash at deletion time, so a concurrent edit can be detected and
+        // The trash keeps the content hash it had, so a concurrent edit can be detected and
         // resurrected.
-        match self.node_hash(&id) {
-            Some(h) => self.set_field(&id, "deleted_hash", hash_to_hex(&h)),
-            None => {
-                if let Some(obj) = self.node(&id) {
-                    let _ = self.doc.delete(&obj, "deleted_hash");
-                }
-            }
-        }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
-        self.set_field(&id, "prev_parent", cur.clone());
-        self.set_field(&id, "parent", TRASH_ID);
+        if !self.write_action(&fs_protocol::FileAction::Trash { node: id.clone() }) {
+            return false;
+        }
+        self.reindex_node(&id);
         self.index_refresh_subtree(&id);
         // A delete may release a name another signed record was waiting for.
         let _ = self.settle_structural_conflicts(&cur);
@@ -2481,22 +2489,24 @@ impl Namespace {
         if let Some(existing) = self.child_named(&new_parent_id, new_name)
             && existing != id
         {
-            if let Some(h) = self.node_hash(&existing) {
-                self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
+            if !self.write_action(&fs_protocol::FileAction::Trash {
+                node: existing.clone(),
+            }) {
+                return false;
             }
-            let ep = self
-                .parent_of(&existing)
-                .unwrap_or_else(|| ROOT_ID.to_string());
-            self.set_field(&existing, "prev_parent", ep);
-            self.set_field(&existing, "parent", TRASH_ID);
+            self.reindex_node(&existing);
             replaced = Some(existing);
         }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
-        self.set_field(&id, "prev_parent", cur.clone());
-        self.set_field(&id, "parent", &*new_parent_id);
-        self.set_field(&id, PLACEMENT_NAME_KEY, new_name.to_vec());
-        self.set_field(&id, "name", new_name.to_vec());
-        self.set_field(&id, "mtime", mtime);
+        if !self.write_action(&fs_protocol::FileAction::Move {
+            node: id.clone(),
+            parent: new_parent_id.clone(),
+            name: FileNameV1(new_name.to_vec()),
+            mtime,
+        }) {
+            return false;
+        }
+        self.reindex_node(&id);
         self.index_refresh_subtree(&id);
         if let Some(replaced) = replaced {
             self.index_refresh_subtree(&replaced);

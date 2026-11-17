@@ -596,6 +596,8 @@ impl Resource for FilesTree {
                         size: args.whole("size").unwrap_or_default(),
                         mtime: u64::try_from(now_ms).unwrap_or_default(),
                         author: String::new(),
+                        revision: None,
+                        keep_preview: false,
                     })
                 },
             )

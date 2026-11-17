@@ -83,6 +83,24 @@ pub enum Writer {
 }
 
 impl Writer {
+    /// Who the file actions it writes are done by: an agent session acting for the person,
+    /// named as its session is. `None` for anything that writes as the person.
+    #[must_use]
+    pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
+        let Self::Agent {
+            harness,
+            session,
+            title,
+        } = self
+        else {
+            return None;
+        };
+        let acting = tilo_actions::Acting::agent(harness.agent()).in_session(bounded(session));
+        Some(tilo_actions::ActionInvoker::admitted(&acting).named(Some(
+            title.clone().unwrap_or_else(|| harness.name().to_owned()),
+        )))
+    }
+
     /// The label this device records beside its version; `None` for the
     /// person, whom the version's signature names already.
     #[must_use]

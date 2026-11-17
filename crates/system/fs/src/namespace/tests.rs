@@ -1405,3 +1405,75 @@ fn a_record_changed_past_one_write_goes_out_over_several() {
         "the writes carry every change"
     );
 }
+
+/// The entries of a document's changes, oldest first: each change's file action verbs and who
+/// they name.
+fn entries_of(document: &[u8]) -> Vec<(Vec<String>, Option<String>)> {
+    let mut doc = AutoCommit::load(document).unwrap();
+    doc.get_changes(&[])
+        .into_iter()
+        .filter_map(|change| tilo_actions::ActionContext::from_change_message(change.message()?))
+        .filter(|context| {
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.kind.as_str())
+                == Some(fs_protocol::tree::TREE_KIND)
+        })
+        .map(|context| {
+            let verbs = match &context.what {
+                Some(tilo_actions::Did::Verb(verb)) => vec![verb.action.action.clone()],
+                Some(tilo_actions::Did::Group(group)) => group
+                    .distinct
+                    .iter()
+                    .filter_map(|did| match did {
+                        tilo_actions::Did::Verb(verb) => Some(verb.action.action.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let who = context
+                .invoker
+                .as_ref()
+                .and_then(|invoker| invoker.name.clone());
+            (verbs, who)
+        })
+        .collect()
+}
+
+/// What an agent writes through the mount is a change of the tree naming the file actions
+/// it did and the agent: History shows it under the agent, grants decide its verbs, and what
+/// the person writes next is a change of their own.
+#[test]
+fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
+    let mut ns = Namespace::new("ada").unwrap();
+    let agent = tilo_actions::ActionInvoker::admitted(
+        &tilo_actions::Acting::agent("claude").in_session("s1"),
+    )
+    .named(Some("Tidy the notes".into()));
+    let (ino, chunk) = {
+        let _acting = acting_as(Some(agent));
+        let ino = ns
+            .create_file(ROOT_INO, "plan.md", Some(&h(1)), 4, 1)
+            .unwrap();
+        assert!(ns.set_content(ino, Some(&h(2)), 5, 2));
+        (ino, ns.document_id_for(ino).unwrap().chunk())
+    };
+    // The person renames it afterwards, on the same thread.
+    assert!(ns.rename(ROOT_INO, "plan.md", ROOT_INO, "final.md", 3));
+    let document = ns.doc.doc_mut(chunk).unwrap().save();
+    let entries = entries_of(&document);
+    assert_eq!(
+        entries,
+        vec![
+            (
+                vec!["new-file".to_owned(), "write".to_owned()],
+                Some("Tidy the notes".to_owned())
+            ),
+            (vec!["move".to_owned()], None),
+        ],
+        "one change by the agent, one by the person"
+    );
+    assert_eq!(ns.hash_for(ino), Some(h(2)));
+}

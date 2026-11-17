@@ -60,6 +60,14 @@ pub enum FileAction {
         size: u64,
         mtime: u64,
         author: String,
+        /// The signed content revision the bytes are, encoded, when the device that wrote
+        /// them signed one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<Vec<u8>>,
+        /// Keep the preview: the bytes did not change, only what the revision says of
+        /// them (a rename's new version).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_preview: bool,
     },
     /// Put `node` into the folder `parent` under `name`: a rename, a move, or both.
     Move {
@@ -152,14 +160,25 @@ impl FileAction {
                 size,
                 mtime,
                 author,
+                revision,
+                keep_preview,
             } => {
                 let obj = node_obj(doc, &nodes, node)?;
-                clear(doc, &obj, CONTENT_REVISION_KEY)?;
+                match revision {
+                    Some(revision) => doc.put(
+                        &obj,
+                        CONTENT_REVISION_KEY,
+                        automerge::ScalarValue::Bytes(revision.clone()),
+                    )?,
+                    None => clear(doc, &obj, CONTENT_REVISION_KEY)?,
+                }
                 match hash {
                     Some(hash) => doc.put(&obj, HASH_KEY, hash.as_str())?,
                     None => clear(doc, &obj, HASH_KEY)?,
                 }
-                clear(doc, &obj, THUMB_KEY)?;
+                if !keep_preview {
+                    clear(doc, &obj, THUMB_KEY)?;
+                }
                 doc.put(&obj, SIZE_KEY, *size)?;
                 doc.put(&obj, MTIME_KEY, *mtime)?;
                 doc.put(&obj, AUTHOR_KEY, author.as_str())?;
@@ -241,6 +260,26 @@ impl FileAction {
             [],
         ))
         .on(self.node(), self.node())
+    }
+}
+
+/// The entry a change of the tree's document `document` is written with: what its file
+/// actions did (one, or a group of them), and who did them (`None`: the person at the device
+/// that wrote it). Every writer of the tree names its changes with this, the mount as an
+/// agent's call, so History reads one kind of entry and Undo takes back one kind of step.
+#[must_use]
+pub fn change_context(
+    document: &str,
+    did: tilo_actions::Described,
+    invoker: Option<tilo_actions::ActionInvoker>,
+) -> tilo_actions::ActionContext {
+    let context =
+        tilo_actions::ActionContext::for_resource(document, crate::tree::TREE_KIND, "Files")
+            .with_app(crate::tree::FILES_APP, "Files")
+            .with_described(did);
+    match invoker {
+        Some(invoker) => context.with_invoker(invoker),
+        None => context,
     }
 }
 

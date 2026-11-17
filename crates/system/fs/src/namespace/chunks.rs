@@ -212,13 +212,47 @@ impl Chunks {
         map_object(&held.doc, &held.nodes, id).map(|id| Obj { chunk, id })
     }
 
-    /// Make the node `id` in chunk `chunk`, an empty map.
+    /// Make the node `id` in chunk `chunk`, an empty map: what a test that builds a tree by
+    /// hand writes.
+    #[cfg(test)]
     pub(super) fn put_node(&mut self, chunk: TreeChunk, id: &str) -> Result<Obj, AutomergeError> {
         let held = self.chunk_or_new(chunk, true)?;
         let nodes = held.nodes.clone();
         let made = held.doc.put_object(&nodes, id, ObjType::Map)?;
         self.located.insert(id.to_owned(), chunk);
         Ok(Obj { chunk, id: made })
+    }
+
+    /// Write the file action `action` done by `invoker` into the document of the chunk its
+    /// node lives in: for a node it makes, the chunk its document id names, made and listed
+    /// when this namespace holds none of it yet.
+    pub(super) fn write_action(
+        &mut self,
+        action: &fs_protocol::FileAction,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+    ) -> Result<(), tilo_actions::ActionError> {
+        let node = action.node();
+        let chunk = match action {
+            fs_protocol::FileAction::Create { document_id, .. } => {
+                let chunk = document_id.chunk();
+                self.chunk_or_new(chunk, true)?;
+                chunk
+            }
+            _ => *self.located.get(node).ok_or_else(|| {
+                tilo_actions::ActionError::Refused(format!("the tree holds no node {node}"))
+            })?,
+        };
+        let document = if chunk == 0 {
+            fs_protocol::tree::document_id()
+        } else {
+            fs_protocol::tree::chunk_document_id(chunk)
+        };
+        let doc = self
+            .doc_mut(chunk)
+            .ok_or_else(|| tilo_actions::ActionError::Refused(format!("no chunk {chunk}")))?;
+        doc.write_action(&document, action, invoker)?;
+        self.located.insert(node.to_owned(), chunk);
+        Ok(())
     }
 
     /// Every node id, in order.

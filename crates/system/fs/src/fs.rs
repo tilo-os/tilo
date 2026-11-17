@@ -475,14 +475,16 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Clears this thread's writer when the request it was noted for returns.
-struct WriterNote(bool);
+/// Clears this thread's writer when the request it was noted for returns, and with it whom
+/// the request's file actions are done by.
+struct WriterNote(bool, Option<crate::namespace::ActingAs>);
 
 impl Drop for WriterNote {
     fn drop(&mut self) {
         if self.0 {
             CURRENT_WRITER.with(|current| *current.borrow_mut() = None);
         }
+        self.1.take();
     }
 }
 
@@ -2377,9 +2379,11 @@ impl QuickFS {
     /// and, with `ino`, for the versions of that file committed later.
     fn note_writer(&self, pid: u32, ino: Option<u64>) -> WriterNote {
         let Some(writers) = &self.writers else {
-            return WriterNote(false);
+            return WriterNote(false, None);
         };
-        let attribution = writers.resolve(pid).attribution();
+        let writer = writers.resolve(pid);
+        let acting = crate::namespace::acting_as(writer.invoker());
+        let attribution = writer.attribution();
         if let Some(ino) = ino {
             let mut last = self.last_writers.lock_recover();
             if last.len() >= LAST_WRITERS {
@@ -2392,7 +2396,7 @@ impl QuickFS {
         }
         let noted = attribution.map_or(NotedWriter::Person, NotedWriter::Attributed);
         CURRENT_WRITER.with(|current| *current.borrow_mut() = Some(noted));
-        WriterNote(true)
+        WriterNote(true, Some(acting))
     }
 
     /// Who wrote `record`'s version: the request being answered on this thread, else

@@ -29,15 +29,55 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use automerge::transaction::CommitOptions;
+use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::FrameworkChange;
+use fs_protocol::FileAction;
+use tilo_actions::{ActionContext, ActionInvoker, Described, Did, GroupOf};
 use tokio::sync::watch;
+
+/// What the pending edits of one document of the tree did, and for whom: the change they become
+/// names it ([`ChangeTrackedDoc::commit_named`]).
+#[derive(Clone, Debug, Default)]
+struct Naming {
+    /// The document's id, as the change's entry names its resource.
+    document: String,
+    /// The first actions, up to what an entry holds.
+    first: Vec<(Did, String)>,
+    /// How many actions the edits are.
+    count: u32,
+    /// Every distinct verb among them.
+    distinct: Vec<Did>,
+    /// Who they were done by: `None` for the person at this device.
+    invoker: Option<ActionInvoker>,
+}
+
+impl Naming {
+    fn context(&self) -> Option<ActionContext> {
+        let ((first, item), rest) = self.first.split_first()?;
+        let described = if rest.is_empty() && self.count == 1 {
+            Described::new(first.clone()).on(item.clone(), item.clone())
+        } else {
+            Described::new(Did::Group(GroupOf {
+                members: self.first.iter().map(|(did, _)| did.clone()).collect(),
+                count: self.count,
+                distinct: self.distinct.clone(),
+            }))
+        };
+        Some(fs_protocol::file_action::change_context(
+            &self.document,
+            described,
+            self.invoker.clone(),
+        ))
+    }
+}
 
 /// An [`AutoCommit`] whose every mutable access is announced to
 /// [`ChangeTrackedDoc::subscribe`]rs.
 pub(super) struct ChangeTrackedDoc {
     doc: AutoCommit,
+    /// What the edits not yet committed did, once one of them was a file action.
+    naming: Option<Naming>,
     /// Moves on with every possible change. The value carries nothing: a
     /// subscriber learns "something may have changed since you last looked"
     /// and looks. Shared with every clone.
@@ -48,6 +88,7 @@ impl ChangeTrackedDoc {
     pub(super) fn new(doc: AutoCommit) -> Self {
         Self {
             doc,
+            naming: None,
             changes: Arc::new(watch::Sender::new(())),
         }
     }
@@ -56,8 +97,44 @@ impl ChangeTrackedDoc {
     pub(super) fn sharing(doc: AutoCommit, with: &Self) -> Self {
         Self {
             doc,
+            naming: None,
             changes: Arc::clone(&with.changes),
         }
+    }
+
+    /// Write `action` into this document, the document `document` of the tree, done by `invoker`
+    /// (`None`: the person at this device). Edits of one writer gather into one change, as
+    /// a folder copied in is one change per document; a different writer's edit closes the
+    /// change first, so each change names only who made it.
+    pub(super) fn write_action(
+        &mut self,
+        document: &str,
+        action: &FileAction,
+        invoker: Option<&ActionInvoker>,
+    ) -> Result<(), tilo_actions::ActionError> {
+        if self
+            .naming
+            .as_ref()
+            .is_some_and(|naming| naming.invoker.as_ref() != invoker)
+            || (self.naming.is_none() && self.doc.pending_ops() > 0)
+        {
+            self.commit_named();
+        }
+        action.write(self)?;
+        let naming = self.naming.get_or_insert_with(|| Naming {
+            document: document.to_owned(),
+            invoker: invoker.cloned(),
+            ..Naming::default()
+        });
+        let verb = action.described().what;
+        if naming.first.len() < tilo_actions::entry::MAX_GROUP_MEMBERS {
+            naming.first.push((verb.clone(), action.node().to_owned()));
+        }
+        naming.count = naming.count.saturating_add(1);
+        if !naming.distinct.contains(&verb) {
+            naming.distinct.push(verb);
+        }
+        Ok(())
     }
 
     /// Tell subscribers the namespace may have changed: for state beside
@@ -92,9 +169,16 @@ impl ChangeTrackedDoc {
     /// action produced, as every change a device signs must
     /// ([`collab_types::check_claimed`]).
     pub(super) fn commit_named(&mut self) {
-        self.doc.commit_with(
-            CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
-        );
+        let naming = self.naming.take();
+        if self.doc.pending_ops() == 0 {
+            return;
+        }
+        let message = naming
+            .and_then(|naming| naming.context())
+            .and_then(|context| context.change_message())
+            .unwrap_or_else(|| FrameworkChange::Native.change_message());
+        self.doc
+            .commit_with(CommitOptions::default().with_message(message));
     }
 
     pub(super) fn get_heads(&mut self) -> Vec<ChangeHash> {
@@ -167,6 +251,7 @@ impl Clone for ChangeTrackedDoc {
     fn clone(&self) -> Self {
         Self {
             doc: self.doc.clone(),
+            naming: self.naming.clone(),
             changes: Arc::clone(&self.changes),
         }
     }
