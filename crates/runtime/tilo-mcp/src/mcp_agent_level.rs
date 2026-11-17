@@ -5,8 +5,9 @@
 use std::collections::HashSet;
 
 use super::{
-    ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS, LEVEL_PAGES,
-    Level, Levels, McpServer, Node, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
+    ActionDescriptor, ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow,
+    DEFAULT_WAIT_MS, LEVEL_PAGES, Level, Levels, McpServer, Node, PAGE_ROWS, ROOT_PEEK,
+    cannot_be_read_now, level_of, restart_pause,
 };
 
 /// The rows a [`Level`] was read from, where each of its pages after the
@@ -352,5 +353,76 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         read.revision = read_at;
         read.pages = std::sync::Arc::new(LevelPages { rows, marks, rest });
         Ok(Ok(read))
+    }
+
+    /// The resources an app's path starts from: its top-level resources and
+    /// the resources inside its containers (a notebook's pages are the app's
+    /// own), with the containers' own actions (`notes#new-page`). A chain
+    /// among them holds the app's items: it is listed first, with the items
+    /// it holds, and its actions are the app's before any other's
+    /// (`notes#new-note`).
+    pub(super) async fn app_children(
+        &self,
+        provider: &str,
+        levels: &mut Levels,
+    ) -> Result<Level, String> {
+        let mut root = self.level(provider, "", levels).await?;
+        let containers: Vec<Node> = root
+            .children
+            .iter()
+            .filter(|node| node.container)
+            .take(ROOT_PEEK)
+            .cloned()
+            .collect();
+        for node in containers {
+            let inside = self.level(provider, &node.id, levels).await?;
+            for child in inside.whole_children() {
+                if !root.children.iter().any(|seen| seen.id == child.id) {
+                    root.children.push(child.clone());
+                }
+            }
+            root.own.extend(inside.own);
+        }
+        let chains: Vec<Node> = root
+            .children
+            .iter()
+            .filter(|node| collab_types::document::chain_of_resource_id(&node.id).is_some())
+            .take(ROOT_PEEK)
+            .cloned()
+            .collect();
+        let mut own: Vec<ActionDescriptor> = Vec::new();
+        for chain in chains.iter().rev() {
+            root.children.retain(|node| node.id != chain.id);
+            root.children.insert(0, chain.clone());
+        }
+        for chain in &chains {
+            for action in &chain.actions {
+                if !own
+                    .iter()
+                    .any(|seen| seen.address.action == action.address.action)
+                {
+                    own.push(action.clone());
+                }
+            }
+            if chain.container {
+                let inside = self.level(provider, &chain.id, levels).await?;
+                for child in inside.whole_children() {
+                    if !root.children.iter().any(|seen| seen.id == child.id) {
+                        root.children.push(child.clone());
+                    }
+                }
+            }
+        }
+        // An action of the same id elsewhere is reached through its resource.
+        root.own.retain(|action| {
+            !own.iter()
+                .any(|chain| chain.address.action == action.address.action)
+        });
+        own.append(&mut root.own);
+        root.own = own;
+        let all = root.children.clone();
+        root.children
+            .retain(|node| !all.iter().any(|owner| owner.beside(node)));
+        Ok(root)
     }
 }

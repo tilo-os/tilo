@@ -447,6 +447,20 @@ fn valid_document_id(s: &str, depth: usize) -> bool {
             .is_some_and(|next| valid_document_id(target, next))
 }
 
+/// The address the chain `chain` (whose parts are [`DocumentId::part`]) is
+/// published under, as one resource beside its app's own.
+#[must_use]
+pub fn chain_resource_id(chain: &DocumentId) -> String {
+    format!("chain:{}", chain.as_str())
+}
+
+/// The chain a resource published under `id` is ([`chain_resource_id`]),
+/// or `None` when `id` names no chain.
+#[must_use]
+pub fn chain_of_resource_id(id: &str) -> Option<DocumentId> {
+    DocumentId::parse(id.strip_prefix("chain:")?)
+}
+
 /// Whether `value` is a label that can travel in a workspace index or document
 /// stamp: at most `max` bytes of ASCII letters, digits, `.`, `_` and `-`,
 /// beginning with a letter.

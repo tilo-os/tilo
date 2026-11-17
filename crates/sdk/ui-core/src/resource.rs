@@ -9,7 +9,7 @@ pub mod bootstrap;
 pub use ::collaboration::document::ResourceSaveStatus;
 pub use collab_types::document::{
     DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, DocumentRef, MAX_DOCUMENT_RELATION_BYTES,
-    MAX_FORMER_IDS, ResourceType, valid_label,
+    MAX_FORMER_IDS, ResourceType, chain_of_resource_id, chain_resource_id, valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2040,25 +2040,11 @@ impl ResourceAdmission {
     }
 }
 
-/// The address the chain `chain` (whose parts are [`DocumentId::part`]) is
-/// published under, as one resource beside its app's own.
-#[must_use]
-pub fn chain_resource_id(chain: &DocumentId) -> String {
-    format!("chain:{}", chain.as_str())
-}
-
 /// The address the child records of `kind` that `parent` lists are
 /// published under, as one container resource beside the app's own.
 #[must_use]
 pub fn children_resource_id(parent: &DocumentId, kind: &str) -> String {
     format!("children:{kind}@{}", parent.as_str())
-}
-
-/// The chain a resource published under `id` is ([`chain_resource_id`]),
-/// or `None` when `id` names no chain.
-#[must_use]
-pub fn chain_of_resource_id(id: &str) -> Option<DocumentId> {
-    DocumentId::parse(id.strip_prefix("chain:")?)
 }
 
 /// The actor [`genesis`] makes record `id` of `workspace` under.

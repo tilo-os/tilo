@@ -939,33 +939,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(apps)
     }
 
-    /// The resources an app's path starts from: its top-level resources and
-    /// the resources inside its containers (a notebook's pages are the app's
-    /// own), with the containers' own actions (`notes#new-page`).
-    async fn app_children(&self, provider: &str, levels: &mut Levels) -> Result<Level, String> {
-        let mut root = self.level(provider, "", levels).await?;
-        let containers: Vec<Node> = root
-            .children
-            .iter()
-            .filter(|node| node.container)
-            .take(ROOT_PEEK)
-            .cloned()
-            .collect();
-        for node in containers {
-            let inside = self.level(provider, &node.id, levels).await?;
-            for child in inside.whole_children() {
-                if !root.children.iter().any(|seen| seen.id == child.id) {
-                    root.children.push(child.clone());
-                }
-            }
-            root.own.extend(inside.own);
-        }
-        let all = root.children.clone();
-        root.children
-            .retain(|node| !all.iter().any(|owner| owner.beside(node)));
-        Ok(root)
-    }
-
     /// The resources under `parent` that `name` names (by label or kind),
     /// asked of the app whole: one note among a notebook's thousands costs
     /// the rows naming it, not a page of every note. `None` when the app
