@@ -94,12 +94,6 @@ impl App {
                         // Not open yet: try again on the next pump.
                         Err(_) => return Ok(None),
                     }
-                    // The same record published as the primary document.
-                    let mut bound = self
-                        .actions
-                        .bound_document_sync
-                        .as_mut()
-                        .filter(|sync| sync.publishes(store, checkout));
                     let applied = owner
                         .merge_remote(mutation, &mut self.state.doc)
                         .map_err(|e| e.to_string())?;
@@ -107,12 +101,7 @@ impl App {
                     // served it, so it is counted as held here too: never
                     // echoed back as this replica's Incremental, and never
                     // covering this replica's own unsent changes.
-                    entry.sent.observe(applied.observed.iter().copied());
-                    if applied.changed == Some(true)
-                        && let Some(sync) = bound.as_mut()
-                    {
-                        sync.observe_published(applied.observed);
-                    }
+                    entry.sent.observe(applied.observed);
                     return Ok(applied.changed);
                 }
                 if self

@@ -249,7 +249,6 @@ impl App {
 
     fn restore_primary_publication_obligations(&mut self) {
         self.state.advance_outbound(Vec::new());
-        self.actions.bound_document_sync = None;
         self.document_routes.primary_whole = false;
         for owner in &mut self.document_routes.owners {
             owner.sent = crate::state::DocumentFrontier::default();
@@ -394,7 +393,6 @@ impl App {
 
     /// Ordinary background/history publication remains best effort. Only a
     /// directed terminal requires the explicit complete-queue result below.
-    #[cfg(any(test, feature = "native"))]
     pub(super) fn publish_owned_documents(&mut self) {
         let _ = self.queue_owned_documents();
     }

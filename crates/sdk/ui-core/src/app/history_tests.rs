@@ -5666,22 +5666,6 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
             .is_empty(),
         "index frontier must replay"
     );
-
-    let mut bound = RoutedPrimary::new(PrimaryMetadataShape::None);
-    let (delta, heads, _) = bound
-        .app
-        .pending_primary_document()
-        .unwrap()
-        .expect("the record whole at first");
-    assert!(!delta.data().is_empty());
-    bound.app.advance_primary_document(heads);
-    assert!(bound.app.pending_primary_document().unwrap().is_none());
-    bound.app.collaboration.manager.fail_publication_for_test();
-    bound.app.refresh_document_routes();
-    assert!(
-        bound.app.pending_primary_document().unwrap().is_some(),
-        "canonical primary owner must replay its accepted history too"
-    );
 }
 
 #[test]

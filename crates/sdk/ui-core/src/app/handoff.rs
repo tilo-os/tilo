@@ -132,6 +132,7 @@ impl App {
         self.continuation.retired = true;
         self.stop_editing_retired_document();
         self.broadcast_doc_delta();
+        self.publish_owned_documents();
         match self.checkpoint_primary_document() {
             Ok(()) => HandoffReport::done(token, &before),
             Err(reason) => HandoffReport::Failed { token, reason },
