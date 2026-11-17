@@ -127,6 +127,10 @@ pub struct NumberStepperFace<'a> {
     control_size: crate::widget::ControlSize,
     framed: bool,
     hovered: Option<StepperPart>,
+    pressed: Option<StepperPart>,
+    /// The buttons that cannot move the value further: the `−` at the range's start, the `+`
+    /// at its end.
+    spent: (bool, bool),
     disabled: bool,
 }
 
@@ -142,6 +146,8 @@ impl<'a> NumberStepperFace<'a> {
             control_size: crate::widget::ControlSize::Regular,
             framed: false,
             hovered: None,
+            pressed: None,
+            spent: (false, false),
             disabled: false,
         }
     }
@@ -172,6 +178,21 @@ impl<'a> NumberStepperFace<'a> {
     #[must_use]
     pub fn hovered(mut self, part: Option<StepperPart>) -> Self {
         self.hovered = part;
+        self
+    }
+
+    /// The button held down, which shows pressed until it is let go.
+    #[must_use]
+    pub fn pressed(mut self, part: Option<StepperPart>) -> Self {
+        self.pressed = part;
+        self
+    }
+
+    /// Which buttons have nowhere left to go (the value stands at that end of its range): they
+    /// show unavailable, so the end is seen before it is pressed against.
+    #[must_use]
+    pub fn spent(mut self, decrease: bool, increase: bool) -> Self {
+        self.spent = (decrease, increase);
         self
     }
 
@@ -253,10 +274,17 @@ impl<'a> NumberStepperFace<'a> {
         } else {
             crate::widget::ButtonRole::Plain
         };
+        let spent = match part {
+            StepperPart::Decrease => self.spent.0,
+            StepperPart::Increase => self.spent.1,
+        };
+        let live = !self.disabled && !spent;
         crate::widget::ButtonFace::icon_only(rect, icon, name)
             .role(role)
             .control_size(self.control_size)
-            .hovered(self.hovered == Some(part) && !self.disabled)
+            .hovered(self.hovered == Some(part) && live)
+            .pressed(self.pressed == Some(part) && live)
+            .disabled(spent && !self.disabled)
     }
 
     pub fn paint_steppers(&self, ctx: &mut PaintCtx<'_>) {
@@ -342,6 +370,8 @@ pub struct NumberInput {
     /// field isn't in the parent's `node_map`, so when it asks for focus it sets *our* node id.
     field_focus_pending: bool,
     minus_hover: bool,
+    /// The stepper the pointer holds down, shown pressed until it is let go.
+    held: Option<StepperPart>,
     plus_hover: bool,
     /// One-shot record of the last *committed user change*, drained by
     /// [`take_changed`](NumberInput::take_changed).
@@ -393,6 +423,7 @@ impl NumberInput {
             is_focused: false,
             field_focus_pending: false,
             minus_hover: false,
+            held: None,
             plus_hover: false,
             changed: None,
             binding: None,
@@ -869,6 +900,8 @@ impl Widget for NumberInput {
         let face = NumberStepperFace::new(self.rect, &shown)
             .control_size(self.control_size)
             .hovered(hovered)
+            .pressed(self.held)
+            .spent(self.value <= self.min, self.value >= self.max)
             .disabled(disabled);
         let face = if self.compact { face } else { face.framed() };
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
@@ -914,20 +947,20 @@ impl Widget for NumberInput {
                 button: MouseButton::Left,
                 ..
             } if *el == ElementState::Pressed => {
-                if self.minus_hover {
-                    if self.field.is_focused() {
-                        self.commit_local();
-                        self.field.set_focus(false);
-                    }
-                    self.step_by(-self.step);
-                    *ctx.focus_target = Some(ctx.node_id);
-                    *ctx.handled = true;
+                let part = if self.minus_hover {
+                    Some((StepperPart::Decrease, -self.step))
                 } else if self.plus_hover {
+                    Some((StepperPart::Increase, self.step))
+                } else {
+                    None
+                };
+                if let Some((part, delta)) = part {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
                     }
-                    self.step_by(self.step);
+                    self.held = Some(part);
+                    self.step_by(delta);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
@@ -935,12 +968,37 @@ impl Widget for NumberInput {
                     self.field.set_focus(false);
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.held.take().is_some() => {
+                *ctx.handled = true;
+            }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed && self.field.is_focused() => {
+                // Page Up and Page Down move ten steps, as a spin button's do.
+                let page = self.step * 10.0;
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.commit_local();
+                        *ctx.handled = true;
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        self.commit_local();
+                        self.step_by(page);
+                        *ctx.handled = true;
+                    }
+                    Key::Named(NamedKey::PageDown) => {
+                        self.commit_local();
+                        self.step_by(-page);
+                        *ctx.handled = true;
+                    }
+                    // Escape takes back what was typed and not yet kept; with nothing typed it
+                    // is the window's (a sheet closes).
+                    Key::Named(NamedKey::Escape) if self.field.value() != self.format_value() => {
+                        self.sync_field();
                         *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
@@ -1520,6 +1578,38 @@ mod tests {
             }
         }
 
+        phase the_ends_of_the_range_and_a_held_stepper_show_and_pages_step_ten;
+        {
+            let mut n = NumberInput::new(8.0).with_range(0.0, 64.0).with_step(4.0);
+            layout_at(&mut n, 0.0, 0.0);
+            n.field.set_focus(true);
+            dispatch(&mut n, &named_key(NamedKey::PageUp));
+            assert_eq!(n.value(), 48.0, "Page Up moves ten steps");
+            dispatch(&mut n, &named_key(NamedKey::PageUp));
+            assert_eq!(n.value(), 64.0, "and stops at the end");
+            dispatch(&mut n, &named_key(NamedKey::PageDown));
+            assert_eq!(n.value(), 24.0, "Page Down moves ten steps back");
+            n.field.set_text("3");
+            dispatch(&mut n, &named_key(NamedKey::Escape));
+            assert_eq!(n.field.value(), n.format_value(), "Escape takes back the typing");
+            assert_eq!(n.value(), 24.0);
+            let face = |n: &NumberInput| {
+                NumberStepperFace::new(n.rect, "")
+                    .pressed(n.held)
+                    .spent(n.value <= n.min, n.value >= n.max)
+            };
+            n.field.set_focus(false);
+            let plus = n.plus_rect.center();
+            dispatch(&mut n, &cursor_moved(plus.x, plus.y));
+            dispatch(&mut n, &mouse_press());
+            assert_eq!(n.held, Some(StepperPart::Increase), "held while down");
+            assert_eq!(face(&n).pressed, Some(StepperPart::Increase));
+            dispatch(&mut n, &mouse_release());
+            assert_eq!(n.held, None, "let go on release");
+            n.set_value(64.0);
+            assert_eq!(face(&n).spent, (false, true), "only + is spent at the end");
+        }
+
         phase value_bindings_sync_silently_from_models;
         {
             // Case `set_value_is_silent`.
@@ -1691,5 +1781,6 @@ mod tests {
 
     use crate::synthetic_input::cursor_moved;
     use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::mouse_release;
     use crate::synthetic_input::named_key;
 }

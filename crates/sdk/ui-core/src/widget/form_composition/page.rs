@@ -4,9 +4,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::{
-    Actions, Affine, Effective, Element, Form, HashMap, LayoutInfo, LayoutOrigin, NodeId,
-    PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text, TextRenderer,
-    TextRole, Theme, Widget, column_style, fr, length, minmax, percent, retained_parts, spacing,
+    Actions, Affine, Effective, Element, Form, FormSection, HashMap, LayoutInfo, LayoutOrigin,
+    NodeId, PageLayout, Parts, Point, PresenceCtx, Rect, Scene, Scrollable, TaffyTree, Text,
+    TextRenderer, TextRole, Theme, Widget, column_style, fr, length, minmax, percent,
+    retained_parts, spacing,
 };
 use crate::tokens::Rhythm;
 
@@ -113,6 +114,21 @@ impl Widget for PageBody {
         }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+    /// The forms of the page's sections line their labels up in one column.
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        _node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let mut parts: Vec<&mut (dyn Widget + '_)> = self
+            .parts
+            .children
+            .iter_mut()
+            .map(|child| &mut **child as &mut dyn Widget)
+            .collect();
+        FormSection::share_label_column(&mut parts, tree, text)
     }
     fn draw(
         &mut self,

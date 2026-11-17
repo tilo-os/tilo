@@ -147,6 +147,9 @@ pub struct FormSection {
     inherited_field_spacing: Option<f32>,
     effective: Option<SectionLayout>,
     form_needs: Option<(f32, f32)>,
+    /// The widest label and control of every plain form on this section's page, so the forms of
+    /// a page's sections share one label column.
+    page_needs: Option<(f32, f32)>,
     beside: bool,
     stacked_gap: f32,
     choosers: super::dropdown::ChooserColumn,
@@ -199,6 +202,7 @@ impl FormSection {
             inherited_field_spacing: None,
             effective: None,
             form_needs: None,
+            page_needs: None,
             beside: true,
             stacked_gap: 0.0,
             choosers: super::dropdown::ChooserColumn::default(),
@@ -255,6 +259,57 @@ impl FormSection {
             .children
             .iter_mut()
             .filter_map(|child| child.as_any_mut()?.downcast_mut::<Field>())
+    }
+
+    /// Share one label column among the plain (not grouped) forms `widget` holds within a few
+    /// levels (a page's sections and the forms in them): each is told the widest label and
+    /// control of them all. Whether any was told something new.
+    pub(super) fn share_label_column(
+        widgets: &mut [&mut (dyn Widget + '_)],
+        tree: &TaffyTree<()>,
+        text: &mut TextRenderer,
+    ) -> bool {
+        /// How deep forms are looked for: a page's part, a section, its pane, the form.
+        const DEPTH: usize = 6;
+        fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
+            if let Some(section) = widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FormSection>())
+            {
+                if !section.grouped {
+                    f(section);
+                }
+                return;
+            }
+            if depth == 0
+                || widget
+                    .layout_info()
+                    .is_some_and(|info| matches!(info, LayoutInfo::Page(_)))
+            {
+                return;
+            }
+            for child in widget.children_mut() {
+                each(child, depth - 1, f);
+            }
+        }
+        let mut needs = (0.0_f32, 0.0_f32);
+        let mut count = 0_usize;
+        for widget in widgets.iter_mut() {
+            each(&mut **widget, DEPTH, &mut |section| {
+                let own = section.own_needs(tree, text);
+                needs = (needs.0.max(own.0), needs.1.max(own.1));
+                count += 1;
+            });
+        }
+        let shared = (count > 1).then_some(needs);
+        let mut changed = false;
+        for widget in widgets.iter_mut() {
+            each(&mut **widget, DEPTH, &mut |section| {
+                changed |= section.page_needs != shared;
+                section.page_needs = shared;
+            });
+        }
+        changed
     }
 
     fn own_needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
@@ -323,15 +378,26 @@ impl Field {
     /// and follows the same placement rules; the label is announced as a
     /// label, since the element cannot carry it as its name.
     pub fn custom(label: impl Into<String>, content: Element) -> Self {
-        Self::with_parts(
+        let label = label.into();
+        let mut field = Self::with_parts(
             FieldKind::Custom,
             Box::new(
-                Text::new(&label.into())
+                Text::new(&label)
                     .with_role(TextRole::Label)
                     .announced_as_label(),
             ),
             content,
-        )
+        );
+        if let Some(body) = field
+            .parts
+            .children
+            .get_mut(1)
+            .and_then(|body| body.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FieldBody>())
+        {
+            body.names_content = (!label.is_empty()).then_some(label);
+        }
+        field
     }
     /// A read-only setting that fills the space beside its label. Reserve
     /// a readable phrase width, bounded by the theme's chooser measure.
@@ -348,6 +414,16 @@ impl Field {
         )
         .with_filling_control();
         field.kind = FieldKind::Value;
+        // The value is read as itself, after its label.
+        if let Some(body) = field
+            .parts
+            .children
+            .get_mut(1)
+            .and_then(|body| body.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FieldBody>())
+        {
+            body.names_content = None;
+        }
         field
     }
     fn row(content: Element) -> Self {
@@ -370,6 +446,7 @@ impl Field {
                     parts: Parts::new(vec![content]),
                     error: false,
                     gap: 0.0,
+                    names_content: None,
                 }),
             ]),
             kind,
@@ -563,6 +640,10 @@ struct FieldBody {
     parts: Parts,
     error: bool,
     gap: f32,
+    /// A custom field's label, which names the control its content is (a chooser, a completing
+    /// entry) when that has no name of its own, as a label written for a control does; a row
+    /// of several controls keeps their own names.
+    names_content: Option<String>,
 }
 impl FieldBody {
     fn set_error(&mut self, text: &str, politeness: crate::a11y::Politeness) {
@@ -824,9 +905,12 @@ impl Widget for FormSection {
         text: &mut TextRenderer,
     ) -> bool {
         let own = self.own_needs(tree, text);
-        let needs = self
-            .form_needs
-            .map_or(own, |form| (form.0.max(own.0), form.1.max(own.1)));
+        let needs = [self.form_needs, self.page_needs]
+            .into_iter()
+            .flatten()
+            .fold(own, |needs, shared| {
+                (needs.0.max(shared.0), needs.1.max(shared.1))
+            });
         let mut changed = false;
         for field in self.fields_mut() {
             changed |= field.group_needs != Some(needs);
@@ -1115,6 +1199,11 @@ impl Widget for FieldBody {
         cx.children();
     }
 
+    fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
+        (child_index == 0)
+            .then(|| self.names_content.clone())
+            .flatten()
+    }
     fn focus_reveal_context(&self) -> Option<Rect> {
         self.error.then(|| self.get_rect())
     }

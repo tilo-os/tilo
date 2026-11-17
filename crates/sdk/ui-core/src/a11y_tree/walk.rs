@@ -103,8 +103,16 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
         Visit::Skip => {}
         Visit::Collapse => {
             let children = w.children();
-            let slot = (children.len() == 1).then_some(slot).flatten();
-            for child in children {
+            let through = (children.len() == 1).then_some(slot).flatten();
+            for (index, child) in children.into_iter().enumerate() {
+                // A widget with no node of its own still names the child it holds the words
+                // for (a field's body, named by its label); otherwise its one child takes the
+                // words its own parent has for it.
+                let slot = if w.accessibility_child_name(index).is_some() {
+                    Some((w, index))
+                } else {
+                    through
+                };
                 walk::<BOUND, V>(v, child, slot, parent);
             }
         }

@@ -1076,3 +1076,62 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
         "{names:?}"
     );
 }
+
+#[test]
+fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls() {
+    use crate::widget::{ColorSwatch, ColorSwatchPicker, Row, Section, Toggle};
+    let form = |label: &str, id: &str| -> Element {
+        Box::new(FormSection::untitled().field(Field::custom(
+            label,
+            Box::new(TextInput::local().with_id(id)),
+        )))
+    };
+    let page = Page::new()
+        .section(Box::new(Section::titled(
+            "Numbers",
+            vec![form("Share of the time", "share")],
+        )))
+        .section(Box::new(Section::titled(
+            "Choices",
+            vec![form("Room", "room")],
+        )))
+        .section(Box::new(Section::titled(
+            "Layers",
+            vec![
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new("Background")))
+                        .push(Box::new(Toggle::new("background", "layers.background"))),
+                ),
+                Box::new(
+                    ColorSwatchPicker::new([ColorSwatch::new(vello::peniko::Color::BLACK)], 1)
+                        .with_accessible_name("Accent"),
+                ),
+            ],
+        )));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(page),
+        (1280, 800),
+        Theme::light(),
+    );
+    let root = harness.inspection().root;
+    let (share, room) = (named(&root, "share").rect, named(&root, "room").rect);
+    assert!(
+        (share[0] - room[0]).abs() < 0.5,
+        "one label column across the page's forms: {share:?} {room:?}"
+    );
+    let mut names = Vec::new();
+    semantic_names(&root, &mut names);
+    for (role, name) in [
+        (crate::a11y::Role::TextInput, "Share of the time"),
+        (crate::a11y::Role::TextInput, "Room"),
+        (crate::a11y::Role::Switch, "Background"),
+        (crate::a11y::Role::List, "Accent"),
+    ] {
+        assert!(
+            names.iter().any(|(r, n)| *r == role && n == name),
+            "{role:?} {name:?} in {names:?}"
+        );
+    }
+}

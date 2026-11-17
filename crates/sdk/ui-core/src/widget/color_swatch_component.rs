@@ -45,7 +45,9 @@ impl Described for ColorSwatchPicker {
         if let Some(index) = selected.and_then(|index| usize::try_from(index).ok()) {
             picker.set_selected(Some(index));
         }
-        let _ = label;
+        if let Some(label) = label {
+            picker = picker.with_accessible_name(label);
+        }
         if !change.is_none() {
             picker = picker.on_change(move |index| {
                 change.fire(Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))));
@@ -58,6 +60,7 @@ impl Described for ColorSwatchPicker {
         if props.swatches.len() != self.count() {
             return false;
         }
+        self.set_accessible_name(props.label);
         self.set_selected(
             props
                 .selected

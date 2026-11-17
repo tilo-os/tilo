@@ -149,6 +149,34 @@ impl Widget for Row {
 
     flow_widget_methods!();
 
+    /// A row of one caption and controls ("Background ··· switch") names each control that has
+    /// no name of its own by its caption, as a label written beside a control does.
+    fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
+        /// What `widget` shows when it is a caption, through the holders (panes) that wrap it.
+        fn caption(mut widget: &dyn Widget) -> Option<&dyn Widget> {
+            loop {
+                if widget.name() == "Text" {
+                    return Some(widget);
+                }
+                let children = widget.children();
+                let [only] = children.as_slice() else {
+                    return None;
+                };
+                widget = *only;
+            }
+        }
+        let children = self.children();
+        if caption(*children.get(child_index)?).is_some() {
+            return None;
+        }
+        let mut captions = children.iter().filter_map(|child| caption(*child));
+        let first = captions.next()?;
+        if captions.next().is_some() {
+            return None;
+        }
+        first.accessibility()?.name
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

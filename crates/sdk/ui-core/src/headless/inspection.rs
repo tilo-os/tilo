@@ -295,10 +295,12 @@ pub(super) fn collect_inspection(
     let mut child_counts = HashMap::new();
     let mut children = Vec::new();
     for (index, child) in widget.children().into_iter().enumerate() {
-        let slot = if semantics.is_none() {
-            inherited
-        } else {
+        // As the accessibility walk: a widget with no node still names the child it holds
+        // the words for.
+        let slot = if semantics.is_some() || widget.accessibility_child_name(index).is_some() {
             Some((widget, index))
+        } else {
+            inherited
         };
         children.push(collect_inspection(child, &path, &mut child_counts, slot));
     }

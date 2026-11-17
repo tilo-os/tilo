@@ -305,6 +305,12 @@ pub struct ColorSwatchPicker {
     cell_height: Option<f64>,
     /// Paints each swatch in place of its flat colour.
     painter: Option<Box<SwatchPainter>>,
+    /// What the palette is called ("Accent"), said before the swatch a reader is on.
+    name: Option<String>,
+    /// The chosen ring's place: it slides from the swatch chosen before to the one chosen now.
+    ring: crate::motion::MotionValue<Rect>,
+    /// The swatch `ring` was last placed on.
+    ring_for: Option<usize>,
 
     dirty: bool,
 }
@@ -333,7 +339,52 @@ impl ColorSwatchPicker {
             cell_width: None,
             cell_height: None,
             painter: None,
+            name: None,
+            ring: crate::motion::MotionValue::new(Rect::ZERO),
+            ring_for: None,
         }
+    }
+
+    /// Call the palette `name` for assistive technology ("Accent").
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.set_accessible_name(Some(name.into()));
+        self
+    }
+
+    /// Where the chosen ring stands this frame, while it slides to the chosen swatch: `None`
+    /// once it rests there (the chosen swatch draws its own ring) or when none is chosen.
+    fn follow_ring(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
+        use crate::motion::{Direction, ListChange};
+        let now = crate::time::now();
+        let Some(target) = self
+            .selected
+            .and_then(|i| self.swatch_rects.get(i).copied())
+        else {
+            self.ring_for = None;
+            return None;
+        };
+        let moved_from_another = self
+            .ring_for
+            .is_some_and(|before| Some(before) != self.selected)
+            && self.ring.target().area() > 0.0;
+        if moved_from_another {
+            let timing =
+                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            self.ring.set(target, timing, now);
+            if let Some(until) = self.ring.settles_at() {
+                crate::motion::want_frames_until(until);
+            }
+        } else if self.ring.target() != target {
+            self.ring.snap(target);
+        }
+        self.ring_for = self.selected;
+        self.ring.is_moving(now).then(|| self.ring.get(now))
+    }
+
+    /// What the palette is called now; `None` or empty leaves it unnamed.
+    pub fn set_accessible_name(&mut self, name: Option<String>) {
+        self.name = name.filter(|name| !name.is_empty());
     }
 
     /// Run `f` with each index the person chooses.
@@ -647,9 +698,10 @@ impl Widget for ColorSwatchPicker {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        let sliding = self.follow_ring(theme.motion());
         for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
             let face = ColorSwatchFace::of(*rect, swatch)
-                .selected(self.selected == Some(i))
+                .selected(self.selected == Some(i) && sliding.is_none())
                 .focused(self.focused && self.focus_index == i)
                 .hovered(self.hovered == Some(i));
             match self.painter.as_mut() {
@@ -660,6 +712,17 @@ impl Widget for ColorSwatchPicker {
                 None => face.paint(scene, transform, text_renderer, theme),
             }
         }
+        if let (Some(at), Some(swatch)) =
+            (sliding, self.selected.and_then(|i| self.swatches.get(i)))
+        {
+            ColorSwatchFace::of(at, swatch)
+                .selected(true)
+                .paint_mark(scene, transform, theme);
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.ring.is_moving(crate::motion::frame_now())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -725,7 +788,8 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        let sliding = self.ring.is_moving(crate::motion::frame_now());
+        crate::widget::redraw_or_children(self.dirty || sliding, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -798,6 +862,7 @@ impl Widget for ColorSwatchPicker {
             .collect();
         Some(
             AccessNode::new(Role::List)
+                .with_optional_name(self.name.clone())
                 .with_optional_value(value)
                 .with_state(
                     AccessState::new()
@@ -964,7 +1029,39 @@ mod tests {
             );
         }
 
-        phase one_face_drives_hit_help_and_checked_semantics;
+        phase the_chosen_ring_slides_to_the_swatch_chosen_next;
+        {
+            let motion =
+                crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false);
+            let mut picker = ColorSwatchPicker::new(
+                [rgb(0x11, 0x22, 0x33), rgb(0x33, 0x22, 0x11)].map(ColorSwatch::new),
+                2,
+            )
+            .with_selected(0);
+            let (first, second) = (
+                Rect::new(0.0, 0.0, 32.0, 32.0),
+                Rect::new(40.0, 0.0, 72.0, 32.0),
+            );
+            picker.swatch_rects = vec![first, second];
+            use crate::time::testing::with_monotonic_time;
+            let t0 = crate::time::now();
+            let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+            with_monotonic_time(t0, || {
+                assert_eq!(picker.follow_ring(motion), None, "the first ring is placed, not slid");
+                crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+                picker.choose(1);
+                let _ = picker.follow_ring(motion);
+            });
+            with_monotonic_time(at(60), || {
+                let at = picker.follow_ring(motion).expect("the ring slides to the next choice");
+                assert!(at.x0 > first.x0 && at.x0 < second.x0, "on its way: {at:?}");
+            });
+            with_monotonic_time(at(800), || {
+                assert_eq!(picker.follow_ring(motion), None, "it lands on the chosen swatch");
+            });
+        }
+
+                phase one_face_drives_hit_help_and_checked_semantics;
         {
             let visual = Rect::new(10.0, 10.0, 30.0, 30.0);
             let target = Rect::new(6.0, 4.0, 34.0, 36.0);
