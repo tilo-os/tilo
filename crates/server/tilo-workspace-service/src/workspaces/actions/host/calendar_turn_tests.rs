@@ -371,3 +371,76 @@ async fn a_narrowed_agent_reads_her_calendars_only_where_a_rule_names_the_read()
     assert!(hers.offered(&turn).await.is_empty());
     hers.asked_only_to_read("a narrowed agent");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_reads_an_entrys_notes_whole_when_short_and_by_their_beginning_when_long() {
+    let hers = Hers::new().await;
+    // Each entry has notes, and a reminder that has words of its own.
+    let noted = |uid: &str, title: &str, start: &str, notes: &str| {
+        inviting(uid, title, start, "bo@elsewhere.test", &[ADDRESS]).replace(
+            "END:VEVENT",
+            &format!(
+                "DESCRIPTION:{notes}\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\n\
+                 DESCRIPTION:It is soon\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT"
+            ),
+        )
+    };
+    hers.server.put(
+        "work",
+        "review.ics",
+        &noted(
+            "review-1@example.test",
+            "Review",
+            "20261118T140000",
+            "Bring the numbers\\, all of them.",
+        ),
+    );
+    // A text somebody pasted into an entry: longer than a read answers.
+    let pasted = "word ".repeat(600);
+    hers.server.put(
+        "work",
+        "paper.ics",
+        &noted(
+            "paper-1@example.test",
+            "Paper",
+            "20261119T140000",
+            pasted.trim_end(),
+        ),
+    );
+    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
+    let turn = hers.turn(&scout, &keeper, None);
+    let account = hers.adds().await;
+    hers.names(&account, SCOUT, true).await;
+
+    let read = hers
+        .asks(&turn, held::ENTRIES, week())
+        .await
+        .expect("its turn reads what her calendars hold");
+    let notes_of = |title: &str| {
+        read["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|entry| entry["title"] == title)
+            .and_then(|entry| entry["notes"].as_str())
+            .unwrap_or_else(|| panic!("no notes of {title}: {read}"))
+            .to_owned()
+    };
+    assert_eq!(
+        notes_of("Review"),
+        "Bring the numbers, all of them.",
+        "the entry's own notes as text, and not its reminder's words"
+    );
+    let cut = notes_of("Paper");
+    assert_eq!(
+        cut.chars().count(),
+        2_001,
+        "the beginning of a long text, and a mark that more follows"
+    );
+    assert!(cut.starts_with("word word ") && cut.ends_with('\u{2026}'));
+    assert_eq!(
+        hers.server.mailed(),
+        Vec::<String>::new(),
+        "her calendar server wrote to nobody"
+    );
+}

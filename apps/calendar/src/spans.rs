@@ -74,6 +74,11 @@ pub struct Occurrence {
     pub categories: Vec<String>,
     #[serde(default)]
     pub attendees: Vec<Guest>,
+    /// What the entry's notes say, where whoever answers reads them from
+    /// the entry's own text ([`crate::ics::notes`]); empty otherwise. Other
+    /// people's words, as the title and the place are.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
     /// Whether it is one of a series.
     pub repeats: bool,
     /// Whether this occurrence was moved from its place in the series.
@@ -588,6 +593,7 @@ fn occurrence_of(event: &Event, date: Date, zone: &str) -> Option<Occurrence> {
                 status: attendee.status.as_ical().to_ascii_lowercase(),
             })
             .collect(),
+        notes: String::new(),
         repeats: event.recurrence != Recurrence::None,
         moved: edit.is_some_and(|edit| edit.start.is_some_and(|start| start != in_series(edit))),
     })

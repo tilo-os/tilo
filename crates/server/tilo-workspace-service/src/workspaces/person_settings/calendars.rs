@@ -124,6 +124,9 @@ const ASK_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// How much of an entry's title a question shows before it says that more
 /// follows.
 const TITLE_CHARS: usize = 200;
+/// The most a read answers of an entry's notes, in characters: what an
+/// entry is about fits, and a long text pasted into one does not come along.
+const NOTES_CHARS: usize = 2_000;
 /// What an agent is told of an entry that is its person's own.
 const THEIRS: &str = "The calendar holds an entry under this invitation's identity that did not \
                       come from its sender. An entry its person entered themselves, or invites \
@@ -710,6 +713,17 @@ fn freshen(root: &Path, accounts: &[Account], fresh_ms: i64) {
     }
 }
 
+/// An entry's `notes` as a read answers them: whole where they are short,
+/// and else their beginning with a mark that says more follows.
+fn bounded_notes(notes: &str) -> String {
+    let notes = notes.trim();
+    let mut bounded: String = notes.chars().take(NOTES_CHARS).collect();
+    if notes.chars().nth(NOTES_CHARS).is_some() {
+        bounded.push('\u{2026}');
+    }
+    bounded
+}
+
 fn entries(
     root: &Path,
     accounts: &[Account],
@@ -726,6 +740,14 @@ fn entries(
             .find(|held| held.calendar == occurrence.calendar)
         {
             occurrence.account.clone_from(&of.account);
+        }
+        // What the entry says in its notes, from the text its server holds:
+        // other people's words, as its title and its place are.
+        if let Some(of) = held
+            .iter()
+            .find(|held| held.event.id.to_string() == occurrence.entry)
+        {
+            occurrence.notes = bounded_notes(&calendar::ics::notes(&of.ics));
         }
     }
     let mut value = serde_json::to_value(&answered).map_err(|error| error.to_string())?;

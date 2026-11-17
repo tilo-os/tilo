@@ -800,6 +800,45 @@ pub fn named(text: &str) -> Named {
     named
 }
 
+/// What the entry in the iCalendar `text` says in its notes: its
+/// `DESCRIPTION`, as text. Of an entry that repeats, the notes of the
+/// series where it has any, and else those of the first occurrence that
+/// was changed. A reminder's own words are not the entry's. Empty for an
+/// entry without notes. Whoever made the entry wrote them: they are other
+/// people's words, as its title and its place are.
+#[must_use]
+pub fn notes(text: &str) -> String {
+    let (mut in_event, mut in_alarm, mut changed) = (false, false, false);
+    let mut found: Option<String> = None;
+    let mut of_a_changed_one: Option<String> = None;
+    for line in pim_lines::unfold(text) {
+        let Some(line) = ContentLine::parse(&line) else {
+            continue;
+        };
+        if line.begins("VEVENT") {
+            (in_event, in_alarm, changed, found) = (true, false, false, None);
+        } else if line.ends("VEVENT") {
+            in_event = false;
+            match found.take() {
+                Some(notes) if !changed => return notes,
+                Some(notes) if of_a_changed_one.is_none() => of_a_changed_one = Some(notes),
+                _ => {}
+            }
+        } else if line.begins("VALARM") {
+            in_alarm = true;
+        } else if line.ends("VALARM") {
+            in_alarm = false;
+        } else if in_event && !in_alarm {
+            match line.name.as_str() {
+                "RECURRENCE-ID" => changed = true,
+                "DESCRIPTION" => found = Some(unescape(&line.value)),
+                _ => {}
+            }
+        }
+    }
+    of_a_changed_one.unwrap_or_default()
+}
+
 /// `text` with its event filed under `categories`, in the property a
 /// server keeps them in, and every other line as it was: what the entry
 /// holds that this calendar does not model stays. `None` when the text
@@ -2112,6 +2151,48 @@ mod tests {
                 ics.contains("DESCRIPTION:Bring the Q3 numbers\r\n"),
                 "{ics}"
             );
+        }
+
+        phase an_entrys_notes_are_read_from_its_text;
+        {
+            let entry = |more: &str| {
+                format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:review-1@example.test\r\n\
+                     SUMMARY:Review\r\nDTSTART:20261118T140000Z\r\nDTEND:20261118T143000Z\r\n\
+                     {more}END:VEVENT\r\nEND:VCALENDAR\r\n"
+                )
+            };
+            // Its own words, with what the standard writes for a comma and for a line's end.
+            assert_eq!(
+                notes(&entry(
+                    "DESCRIPTION:Bring the numbers\\, all of them.\\nFourth floor\r\n"
+                )),
+                "Bring the numbers, all of them.\nFourth floor"
+            );
+            // A long line, folded as a server folds one.
+            assert_eq!(
+                notes(&entry("DESCRIPTION:Bring the num\r\n bers\r\n")),
+                "Bring the numbers"
+            );
+            // A reminder's words are not the entry's, with notes beside them and without.
+            let reminder = "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:The review is soon\r\n\
+                            TRIGGER:-PT15M\r\nEND:VALARM\r\n";
+            assert_eq!(
+                notes(&entry(&format!(
+                    "DESCRIPTION:Bring the numbers\r\n{reminder}"
+                ))),
+                "Bring the numbers"
+            );
+            assert_eq!(notes(&entry(reminder)), "");
+            assert_eq!(notes(&entry("")), "", "an entry without notes");
+            // Of an entry that repeats: the notes of the series, wherever a changed
+            // occurrence stands in the text.
+            let series = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly-1@example.test\r\n\
+                          RECURRENCE-ID:20261125T140000Z\r\nSUMMARY:Review\r\nDTSTART:20261125T150000Z\r\n\
+                          DESCRIPTION:Moved this once\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\n\
+                          UID:weekly-1@example.test\r\nSUMMARY:Review\r\nDTSTART:20261118T140000Z\r\n\
+                          RRULE:FREQ=WEEKLY\r\nDESCRIPTION:Every week\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert_eq!(notes(series), "Every week");
         }
 
         phase export_envelope_and_event_task_all_day_round_trips;
