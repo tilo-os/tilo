@@ -304,7 +304,7 @@ impl PeerWorkspace<'_> {
         let governance = self.peer.governance();
         let servers = governance.keeping_devices();
         let chosen = governance.chosen_copy_policy();
-        let policy = chosen.unwrap_or(CopyPolicy::default_for(!servers.is_empty()));
+        let policy = chosen.unwrap_or_else(|| CopyPolicy::default_for(!servers.is_empty()));
         let members = governance.governed_policy().ok();
         let is_member = |person: [u8; 32]| {
             let person = hex::encode(person);

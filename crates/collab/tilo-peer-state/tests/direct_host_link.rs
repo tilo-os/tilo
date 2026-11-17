@@ -253,10 +253,12 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     .expect("the host retains the member's sealed edit");
     assert_eq!(retained().frames, vec![kept.clone()]);
     // What the host wrote is ciphertext: neither the edit's plaintext nor a
-    // readable copy of it is on disk, one file per frame.
+    // readable copy of it is on disk, one file per frame beside what the
+    // member said it holds.
     let mut kept_files = Vec::new();
-    files(scratch.path(), &mut kept_files);
+    files(&scratch.path().join("workspaces"), &mut kept_files);
     assert_eq!(kept_files.len(), 1, "a file per frame");
+    files(&scratch.path().join("holders"), &mut kept_files);
     for file in &kept_files {
         let bytes = std::fs::read(file).unwrap();
         assert!(

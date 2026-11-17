@@ -193,12 +193,13 @@ impl Store {
                 workspaces: BTreeMap::new(),
             }),
         };
+        let (frames, holders) = (store.stored()?, store.stored_holders()?);
         {
             let mut held = store.held.lock_recover();
-            for (workspace, frame, bytes) in store.stored()? {
+            for (workspace, frame, bytes) in frames {
                 add(&mut held, workspace, &frame, bytes, false);
             }
-            for (workspace, device, cursors) in store.stored_holders()? {
+            for (workspace, device, cursors) in holders {
                 held.workspaces
                     .entry(workspace)
                     .or_default()
@@ -206,6 +207,7 @@ impl Store {
                     .insert(device, holding(&cursors));
             }
             retire_to_appetite(&store.root, appetite, &mut held);
+            drop(held);
         }
         Ok(store)
     }
@@ -551,7 +553,7 @@ impl Store {
 
     /// What every device said it holds, as [`Store::open`] reads it. A file
     /// that is not one is skipped, as a stray frame file is.
-    fn stored_holders(&self) -> Result<Vec<(WorkspaceId, [u8; 32], Vec<Cursor>)>, StoreError> {
+    fn stored_holders(&self) -> Result<Vec<HeldBy>, StoreError> {
         let mut found = Vec::new();
         for workspace in directories(&self.root.join(HOLDERS))? {
             let Some(id) = workspace
@@ -567,9 +569,10 @@ impl Store {
                     .and_then(|name| name.to_str())
                     .map(<[u8; 32] as hex::FromHex>::from_hex);
                 let cursors = postcard::from_bytes::<Vec<Cursor>>(&fs::read(&file)?);
-                match (device, cursors) {
-                    (Some(Ok(device)), Ok(cursors)) => found.push((id, device, cursors)),
-                    _ => tracing::warn!(path = %file.display(), "not what a device holds; skipped"),
+                if let (Some(Ok(device)), Ok(cursors)) = (device, cursors) {
+                    found.push((id, device, cursors));
+                } else {
+                    tracing::warn!(path = %file.display(), "not what a device holds; skipped");
                 }
             }
         }
@@ -703,6 +706,9 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 const WORKSPACES: &str = "workspaces";
 /// Where the store keeps what each device said it holds, per workspace.
 const HOLDERS: &str = "holders";
+
+/// A workspace, a device of it, and where that device said it stands.
+type HeldBy = (WorkspaceId, [u8; 32], Vec<Cursor>);
 
 fn workspace_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(WORKSPACES).join(workspace.to_string())

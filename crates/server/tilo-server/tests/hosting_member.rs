@@ -7,7 +7,7 @@ use tilo_server::{Envelope, ServerClient};
 use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, host_on, next_delta, session_to};
+use crate::common::{TestUser, host_on, receives, session_to};
 use tilo_server::WorkspaceId;
 
 /// How long the holders are watched doing nothing: longer than the holder's
@@ -118,10 +118,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
             signature: [0; 64],
         })
         .unwrap();
-    assert_eq!(
-        next_delta(&local).await,
-        b"from the phone, through the host"
-    );
+    receives(&local, b"from the phone, through the host").await;
 
     // With nothing changing, neither holder does anything: no session is
     // opened again, nothing is subscribed, sent or received. The watch
@@ -423,7 +420,7 @@ async fn carried(
         signature: [0; 64],
     })
     .unwrap();
-    assert_eq!(next_delta(to).await, body);
+    receives(to, body).await;
 }
 
 /// The devices a held workspace's governance names besides its owner's own:

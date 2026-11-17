@@ -4,18 +4,18 @@
 //! until it has.
 
 use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall};
-use tilo_server::{Envelope, ServerClient, WorkspaceId};
+use tilo_server::Envelope;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, host_in, host_on, session_to};
+use crate::common::{Hosted, TestUser, host_in, host_on, receives, session_to};
 
 /// Where `holder` says `workspace`'s copies stand, once `done` holds of it.
 async fn copies_once(
     holder: &Hosted,
     workspace: &str,
     what: &str,
-    done: impl Fn(&CopyStatus) -> bool,
+    done: impl Fn(&CopyStatus) -> bool + Sync,
 ) -> CopyStatus {
     tilo_test_env::within(what, async {
         loop {
@@ -30,22 +30,6 @@ async fn copies_once(
     .await
 }
 
-/// Subscribe `client` to `workspace_id` and wait for the change `body`.
-async fn receives(client: &ServerClient, workspace_id: WorkspaceId, body: &[u8]) {
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("the change written meanwhile arrives", async {
-        loop {
-            if let Envelope::Delta { delta, .. } =
-                client.recv().await.expect("the session stays open")
-                && delta == body
-            {
-                break;
-            }
-        }
-    })
-    .await;
-}
-
 /// Three holders keep a workspace that wants three key holders. One goes
 /// away while a member writes through another: the others say it lacks what
 /// was written since it went, and that the workspace keeps one key holder
@@ -53,6 +37,10 @@ async fn receives(client: &ServerClient, workspace_id: WorkspaceId, body: &[u8])
 /// holders by itself: a member that reaches only it gets what was written
 /// meanwhile, and every holder says nothing falls short any more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: the holders, the outage and the return stay together"
+)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each holder after the assertions"
@@ -167,12 +155,12 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
 
     holders[2] = Some(host_in(&alice, &server, settings[2].clone(), state).await);
     let on_server = session_to(&alice, &tablet, holders[2].as_ref().unwrap()).await;
-    receives(
-        &on_server,
-        workspace.workspace_id,
-        b"while the server was away",
-    )
-    .await;
+    on_server
+        .send(Envelope::Subscribe {
+            workspace_id: workspace.workspace_id,
+        })
+        .unwrap();
+    receives(&on_server, b"while the server was away").await;
     for holder in holders.iter().flatten() {
         copies_once(
             holder,

@@ -18,7 +18,7 @@ use tilo_server::workspaces::{
 use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
+use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, receives};
 use tilo_server::WorkspaceId;
 
 /// A workspace the person's devices hold on the host before any other.
@@ -280,9 +280,9 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
         signature: [0; 64],
     };
     local.send(delta(&laptop, 1, b"from the laptop")).unwrap();
-    assert_eq!(next_delta(&remote).await, b"from the laptop");
+    receives(&remote, b"from the laptop").await;
     remote.send(delta(&phone, 2, b"from the phone")).unwrap();
-    assert_eq!(next_delta(&local).await, b"from the phone");
+    receives(&local, b"from the phone").await;
     assert!(
         hosted
             .host

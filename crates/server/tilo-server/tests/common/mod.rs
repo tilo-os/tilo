@@ -347,18 +347,21 @@ pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> 
     .unwrap()
 }
 
-/// The next delta `client` receives.
-pub async fn next_delta(client: &ServerClient) -> Vec<u8> {
-    tilo_test_env::within("the delta arrives", async {
+/// Wait until `client` receives the change `body`. The workspace's own
+/// changes before it (what its holders say of their copies, among others)
+/// are passed over.
+pub async fn receives(client: &ServerClient, body: &[u8]) {
+    tilo_test_env::within("the change arrives", async {
         loop {
             if let Envelope::Delta { delta, .. } =
                 client.recv().await.expect("the session stays open")
+                && delta == body
             {
-                break delta;
+                break;
             }
         }
     })
-    .await
+    .await;
 }
 
 /// The publisher a shell is: a coedit session of `author` to `relay`, dialing

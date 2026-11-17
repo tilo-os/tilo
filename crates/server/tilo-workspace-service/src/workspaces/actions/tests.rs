@@ -1573,9 +1573,10 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 /// What a service on this device's own network says to whoever asks it.
 const SAID_INSIDE: &str = "what a service inside says";
 
-/// Which holders keep a workspace is its owners' decision: another person's
-/// device asking to list, add or remove them is answered as a workspace
-/// that offers no such action, and nothing is asked of the site it names.
+/// Which holders keep a workspace, and how many copies it keeps, is its
+/// owners' decision: to another person's device listing, adding or removing
+/// them or choosing the copies is no action it has, and nothing is asked of
+/// the site it names.
 #[tokio::test]
 async fn only_an_owner_chooses_a_workspaces_holders() {
     use test_http::{Reply, Responder};
@@ -1591,6 +1592,7 @@ async fn only_an_owner_chooses_a_workspaces_holders() {
         (super::HOSTS, json!({})),
         (super::ADD_HOST, json!({ "origin": site.url() })),
         (super::REMOVE_HOST, json!({ "host": site.url() })),
+        (super::SET_COPIES, json!({ "key_holders": 1 })),
     ] {
         let asked = request(&workspace, verb, argument);
         assert_eq!(
