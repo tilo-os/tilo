@@ -89,5 +89,12 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Git and delivery
 
+- Land on `main` with `python3 tools/land.py`, not `git push origin HEAD:main`: it queues
+  HEAD's commits, a lander shared by this clone's worktrees lints them on main's newest
+  head together with what else is queued and pushes them, and the command answers
+  `landed` (the branch moves onto it), `conflict` with the files (rebase, fix, land again),
+  or `lint` with the diagnostics. No rebase-and-push loop. A wait that ends unanswered (exit 75)
+  leaves the commits queued: call the same command again. `python3 tools/land.py status`
+  shows the queue. A plain push still works and is linted by the pre-push hook.
 - After your change lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.
