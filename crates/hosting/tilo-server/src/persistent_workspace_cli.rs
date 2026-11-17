@@ -1307,6 +1307,16 @@ pub(crate) async fn run(
         &format!("{name} workspace host"),
         tilo_user_identity::DeviceCapabilities::member(),
     )?;
+    // A state an earlier build kept under the folder's earlier name is not used:
+    // the server says where it lies instead of coming up empty beside it without a word.
+    if let Some(earlier) = tilo_server_protocol::metrics::earlier_server_root_beside(&state) {
+        let own = tilo_server_protocol::metrics::workspace_server_root(&state);
+        tracing::warn!(
+            own = %own.display(),
+            earlier = %earlier.display(),
+            "an earlier build's state lies beside this server's empty folder; none of it is used"
+        );
+    }
     let config = tilo_server::ServerConfig {
         state_root: tilo_server_protocol::metrics::workspace_server_root(&state),
         identity_root: state.join("identity"),
