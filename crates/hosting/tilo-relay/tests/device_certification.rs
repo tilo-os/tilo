@@ -526,3 +526,69 @@ async fn a_request_dated_far_ahead_is_refused_for_its_clock_and_leaves_its_link_
     );
     approver.close();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_dates_its_request_a_minute_back_and_waits_as_long_as_before() {
+    // A host from before hosts allowed the clocks of a pairing to differ
+    // checks a request's date exactly, and refused one dated now whenever its
+    // own clock ran a little behind the device's. Such hosts stay in use
+    // while their pages move on, so the device does its part too.
+    let user = TestUser::fresh("Ada");
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
+    let host = relay.node_addr();
+    let device = SigningKey::generate(&mut UnwrapErr(SysRng));
+
+    let before = tilo_clock::unix_now_ns();
+    let asking = tokio::spawn({
+        let host = tilo_relay_client::Host::at(host.clone());
+        let device = device.clone();
+        let person = user.user_pk;
+        async move { tilo_relay_client::certify(&host, person, "Phone", [0; 16], &device, |_| {}).await }
+    });
+    let approver_endpoint = client_endpoint().await;
+    let mut approver = Approver::connect(
+        &approver_endpoint,
+        host,
+        laptop.cert.clone(),
+        &laptop.sk,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let pending = one_pending(&mut approver).await;
+    let after = tilo_clock::unix_now_ns();
+    let request = &pending.request;
+    assert_eq!(request.device_public_key, device.verifying_key().to_bytes());
+
+    let allowance = tilo_user_identity::CERTIFICATION_CLOCK_ALLOWANCE_NS;
+    assert!(
+        request.issued_at_ns <= after.saturating_sub(allowance),
+        "the request is dated {} ns before the host read it, less than the allowance",
+        after.saturating_sub(request.issued_at_ns)
+    );
+    assert!(
+        request.issued_at_ns >= before.saturating_sub(allowance),
+        "and no further back than the allowance"
+    );
+    // The wait for an approver is counted from the device's clock, as before.
+    let wait = tilo_relay_client::CERTIFICATION_WAIT_NS;
+    assert!(
+        request.expires_at_ns >= before.saturating_add(wait)
+            && request.expires_at_ns <= after.saturating_add(wait),
+        "the request waits five minutes from when it was signed"
+    );
+
+    assert_eq!(
+        approver
+            .decide(pending.request_digest, ApproverDecision::Deny)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    assert!(matches!(
+        asking.await.unwrap(),
+        Err(CertifyError::Denied(_))
+    ));
+    approver.close();
+}
