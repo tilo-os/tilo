@@ -238,7 +238,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       // One line of words in a slot taller than the line (a count on its ground, a table's
       // cell, a part a widget lays out itself) stands in the slot's middle, as painted.
       const line = node.own.size * node.own.line_height;
-      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && Math.floor((h + 0.5) / line) <= 1) css += `line-height:${h}px;`;
+      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && (node.own.max_lines === 1 || Math.floor((h + 0.5) / line) <= 1)) css += `line-height:${h}px;`;
     }
     else if (node.own?.kind === 'face') {
       css += faceCss(node.own);
@@ -984,7 +984,7 @@ export const VIEW_CSS = `
 .tilo-view li{list-style:none;box-sizing:border-box;}
 .tilo-view li:has(>.tilo-words){display:flex;align-items:center;border-radius:var(--tilo-radius,8px);}
 .tilo-view li[aria-selected=true]{background:var(--tilo-raised);}
-.tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
+.tilo-view li:hover:not(:has(li:hover)){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view h5,.tilo-view h6,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
 .tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}
