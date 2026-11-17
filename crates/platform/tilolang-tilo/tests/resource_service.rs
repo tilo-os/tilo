@@ -1,8 +1,8 @@
-//! A workspace's tilolang records as session resources: a note made through the notes app's own
+//! A workspace's tilolang documents as session resources: a note made through the notes app's own
 //! action is published, its reading is what a runtime loading notes as another app's package
 //! reads back, and a change to the note moves the reading. A change too large to record whole
-//! keeps its large parts in the record's content store, which the session lends
-//! ([`RecordService::provide_content`]), so an agent's paste is recorded and reads back here and
+//! keeps its large parts in the document's content store, which the session lends
+//! ([`ResourceService::provide_content`]), so an agent's paste is recorded and reads back here and
 //! on a peer.
 
 use automerge::AutoCommit;
@@ -14,7 +14,7 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::Notices;
 use tilolang_tilo::publish::resource_id;
-use tilolang_tilo::records_service::{RecordService, reading_type};
+use tilolang_tilo::resource_service::{ResourceService, reading_type};
 
 use crate::fixtures::{Replica, field_id};
 
@@ -44,13 +44,13 @@ view note_card(n: notes.Note) {
 "#;
 
 /// Ada's workspace with its notebook, published.
-fn service() -> (RecordService, tilolang_runtime::Meta) {
+fn service() -> (ResourceService, tilolang_runtime::Meta) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
     let Replica { host, .. } = ada;
     (
-        RecordService::new(host, "ada"),
+        ResourceService::new(host, "ada"),
         packages.last().unwrap().meta.clone(),
     )
 }
@@ -60,7 +60,7 @@ fn args(value: Json) -> Map<String, Json> {
 }
 
 /// A new note, made through the notes app's `new_note` on the notebook the session publishes.
-fn new_note(service: &mut RecordService) -> String {
+fn new_note(service: &mut ResourceService) -> String {
     let notebook = service
         .resources()
         .into_iter()
@@ -90,10 +90,10 @@ fn an_action_through_the_service_is_written_once_as_its_change() {
     );
     assert_eq!(
         after.merges, before.merges,
-        "no copy of the record is merged in"
+        "no copy of the document is merged in"
     );
 
-    // A peer replaying the action the change records gets the same change, to the byte.
+    // A peer replaying the action the change documents gets the same change, to the byte.
     let mut peer = service.record();
     let arrived: Vec<_> = peer
         .get_changes(&heads)
@@ -132,13 +132,13 @@ fn texts(node: &UiNode) -> Vec<String> {
 }
 
 tilo_test_env::scenario! {
-    fn the_record_service_answers_for_a_packages_resources;
+    fn the_resource_service_answers_for_a_packages_resources;
 
-    phase a_resources_own_open_is_answered_and_changes_no_record;
+    phase a_resources_own_open_is_answered_and_changes_no_document;
     // A published resource's own `open` is answered, never refused: opening is the system's
     // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
-    // opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
-    // and invoking it changes nothing of the record — the place it asks for waits for the session to
+    // opens nothing"). The document publishes the `open` so an agent reading the catalogue finds it,
+    // and invoking it changes nothing of the document — the place it asks for waits for the session to
     // stand through its layout, beside the place the asking step was in.
     {
         let (mut service, _) = service();
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
 
         let before = service.record().get_heads();
         // Invoked as an agent answering in a conversation, the open is answered with nothing done to
-        // the record: the session places the note beside that conversation.
+        // the document: the session places the note beside that conversation.
         let agent =
             tilo_actions::ActionInvoker::agent("tide");
         service.note_beside("chat.workspace/channels/c_tide");
@@ -169,12 +169,12 @@ tilo_test_env::scenario! {
         assert_eq!(
             started,
             Started::Done(tilo_actions::ActionOutput::default()),
-            "it changed nothing of the record"
+            "it changed nothing of the document"
         );
         assert_eq!(
             service.record().get_heads(),
             before,
-            "the record did not change"
+            "the document did not change"
         );
         // What it asked stands for the session to place: the note, beside the conversation that asked,
         // and the actor that asked is the agent's.
@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let reading = service.read(&note).unwrap();
 
-        // The shell's side: notes is another app's package here, its records read from the session.
+        // The shell's side: notes is another app's package here, its documents read from the session.
         let shell = Host::new(&AutoCommit::new(), Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         let discussion =
             tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
             .find(|child| child.id.as_str() == note)
             .map(|child| child.kind.clone())
             .expect("the note is published");
-        let ty = reading_type(&kind).expect("a tilolang record's kind");
+        let ty = reading_type(&kind).expect("a tilolang document's kind");
         assert_eq!(ty, format!("{APP}#Note"));
         let target = ResourceRef::parse_id(&note, ty).expect("a resource id");
         shell
@@ -293,9 +293,9 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Ada's workspace with its tasks, as the session runs them: a `RecordService` over the record,
+/// Ada's workspace with its tasks, as the session runs them: a `ResourceService` over the document,
 /// with no window of the app open, and the clock its app and its triggers read.
-fn tasks() -> (RecordService, std::rc::Rc<std::cell::RefCell<String>>) {
+fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
@@ -305,7 +305,7 @@ fn tasks() -> (RecordService, std::rc::Rc<std::cell::RefCell<String>>) {
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
     let Replica { host, .. } = ada;
-    let mut service = RecordService::new(host, "ada");
+    let mut service = ResourceService::new(host, "ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -314,7 +314,7 @@ fn tasks() -> (RecordService, std::rc::Rc<std::cell::RefCell<String>>) {
 }
 
 /// The id of the app's published root: the tasks.
-fn tasks_root(service: &RecordService) -> tilo_actions::ResourceId {
+fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
     service
         .resources()
         .into_iter()
@@ -337,7 +337,7 @@ impl tilo_session_core::notice::Notices for Told {
 }
 
 /// A task added by `new_task` under `title`.
-fn task(service: &mut RecordService, title: &str) -> String {
+fn task(service: &mut ResourceService, title: &str) -> String {
     let root = tasks_root(service);
     let started = service
         .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
@@ -420,7 +420,7 @@ fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
     );
 }
 
-/// The notices the record holds: each one's person, what it says, and the resource it opens.
+/// The notices the document holds: each one's person, what it says, and the resource it opens.
 fn notices(host: &Host) -> Vec<(String, String, String, String)> {
     host.store()
         .resources_of(tilolang::HOST_APP, tilolang::NOTICE_TYPE)
@@ -483,10 +483,10 @@ fn address(reference: &str) -> &str {
         .map_or(reference, |(hash, _)| hash)
 }
 
-/// A note whose body is past a mebibyte, written by an agent through the records service, is kept
-/// as content in the record's store: the paste is recorded rather than refused, the note reads it
-/// back, and the change decodes from the store alone — after the record opens again, and on a
-/// peer that asks the record's route for its parts.
+/// A note whose body is past a mebibyte, written by an agent through the documents service, is kept
+/// as content in the document's store: the paste is recorded rather than refused, the note reads it
+/// back, and the change decodes from the store alone — after the document opens again, and on a
+/// peer that asks the document's route for its parts.
 #[test]
 fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     let (mut service, _) = service();
@@ -512,33 +512,33 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
         "the note reads the paste back: {reading:.200}"
     );
 
-    // Its change keeps the body as content, sealed, in the record's store.
+    // Its change keeps the body as content, sealed, in the document's store.
     let (paste, parts) = kept_as_content(&mut service.record());
     assert!(
         parts.iter().all(|part| tilo_content::is_sealed(part)),
-        "a record's parts are sealed: {parts:?}"
+        "a document's parts are sealed: {parts:?}"
     );
     assert!(
         parts.iter().all(|part| store.has(part)),
-        "the record's store keeps every part: {parts:?}"
+        "the document's store keeps every part: {parts:?}"
     );
 
-    // The record opens again over what the device holds: the change decodes from the store alone,
-    // and the note the reopened record publishes reads the paste back.
+    // The document opens again over what the device holds: the change decodes from the store alone,
+    // and the note the reopened document publishes reads the paste back.
     let reopened = reopened_service(&service.record(), &store);
     assert_eq!(
         crate::window::decoded(reopened.record(), paste, store.clone()).unwrap(),
         tilo_actions::Verified::Reproduced,
-        "after the record opens again, the paste reads back as it ran"
+        "after the document opens again, the paste reads back as it ran"
     );
     let reading = serde_json::to_string(&reopened.read(&note).expect("the note is published"))
         .expect("the reading reads");
     assert!(
         reading.contains("Pasted paragraph 16:"),
-        "the reopened record reads the paste back: {reading:.200}"
+        "the reopened document reads the paste back: {reading:.200}"
     );
 
-    // A peer holds the change and not its parts: decoding asks the record's route, and once what
+    // A peer holds the change and not its parts: decoding asks the document's route, and once what
     // was offered there arrives, the action reproduces its change there too.
     let lane = std::sync::Arc::new(collaboration::document_content::ContentLane::default());
     let theirs = collaboration::document_content::DocumentContent::store(
@@ -557,13 +557,13 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
         parts
             .iter()
             .any(|part| wanted.iter().any(|hash| hash == address(part))),
-        "the peer asks the record's route for the paste: wanted {wanted:?}"
+        "the peer asks the document's route for the paste: wanted {wanted:?}"
     );
     for part in &parts {
         let hash = address(part);
         let bytes = store
             .read(hash)
-            .expect("the record's store keeps the ciphertext");
+            .expect("the document's store keeps the ciphertext");
         lane.arrive(hash.to_owned(), bytes);
     }
     assert_eq!(
@@ -573,18 +573,21 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     );
 }
 
-/// The record `doc` opened again, its content kept in `store`: a fresh service over the document
+/// The document `doc` opened again, its content kept in `store`: a fresh service over the document
 /// the device holds, as the session opens it on the next start.
-fn reopened_service(doc: &tilo_resource::Doc, store: &tilo_content::ContentStore) -> RecordService {
+fn reopened_service(
+    doc: &tilo_resource::Doc,
+    store: &tilo_content::ContentStore,
+) -> ResourceService {
     let (replica, _) = Replica::new("ada", doc.clone(), &[DISCUSSION, NOTES]);
     let Replica { host, .. } = replica;
-    let mut service = RecordService::new(host, "ada");
+    let mut service = ResourceService::new(host, "ada");
     service.provide_content(APP, store.clone());
     service.settle();
     service
 }
 
-/// An action that sets what its record holds already changes nothing and is done, as any caller
+/// An action that sets what its document holds already changes nothing and is done, as any caller
 /// reads it: a program that moved a task to Friday and then set its reminder to the moment the
 /// move gave it failed on the second ("the document holds no writes of this actor to commit").
 #[test]

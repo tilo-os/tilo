@@ -3,7 +3,7 @@
 //!
 //! The MCP server starts it on the task's first `tilo` call and it lives as long as the task:
 //! until the API closes the task's program connection. It holds the task's session (the `let`s
-//! its programs bound) and no records, opens no windows and no broker connection of its own.
+//! its programs bound) and no documents, opens no windows and no broker connection of its own.
 //! Every program comes in on the program connection, and everything a program reads or changes
 //! goes out on it to the API, which reads and invokes as the task: the API's connection is the
 //! task's custody, so nothing here is trusted to say who it is.
@@ -12,19 +12,19 @@
 //! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
 //! [`TaskSession::catalogue`], and each app whose package did not load with what a program
 //! naming it is told, `can't be reached: <why>`);
-//! while the program runs, the host asks `{"record": {app, record}}` for a record it reads
-//! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the record's
+//! while the program runs, the host asks `{"document": {app, document}}` for a document it reads
+//! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the document's
 //! committed content, read-only, which the host reads itself with the app's package,
-//! [`RecordReads`]), `{"children": {app, resource}}` for the resources a native app lists under
+//! [`DocumentReads`]), `{"children": {app, resource}}` for the resources a native app lists under
 //! one of its own (answered `{"ok": {"rows": [{id, kind, key, name}]}}` or `{"err": why}`: the
-//! app's directory, the record at its top and what it holds under it: a row's `id` names it
+//! app's directory, the document at its top and what it holds under it: a row's `id` names it
 //! under its parent, which is what an invocation addresses, and its `key` is what the app's
 //! `read` takes as its item), `{"reads": {app, resource}}` for whether a resource the app
 //! publishes answers a read of itself (answered `{"ok": {"reads": bool}}` or `{"err": why}`: a
-//! resource that does not is read by the record, which takes it as its `item`) and
+//! resource that does not is read by the document, which takes it as its `item`) and
 //! `{"invoke": {app, resource, action, arguments}}` (answered `{"ok": output}`, `{"failed": why}`,
 //! `{"refused": why}` or `{"asks": why}`), and it ends with `{"answer": …}`
-//! ([`tilolang_tilo::task::TaskSession::run`]). A native app's record is read by the app itself
+//! ([`tilolang_tilo::task::TaskSession::run`]). A native app's document is read by the app itself
 //! ([`tilolang_tilo::native`]), so the host's read of one is its `read` action, invoked like any
 //! other.
 
@@ -42,7 +42,7 @@ use tilolang_tilo::catalogue::NativeSurface;
 use tilolang_tilo::native::{Calls, Native, NativeReads};
 use tilolang_tilo::runtime::meta::PackageMeta;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
-use tilolang_tilo::task_records::{RecordReads, RecordSource};
+use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
 
 /// The program connection, one line at a time.
 struct Line {
@@ -84,7 +84,7 @@ impl Line {
     }
 }
 
-impl RecordSource for Line {
+impl DocumentSource for Line {
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         let reply = self.ask(&json!({"record": {"app": app, "record": record}}))?;
         if reply.get("absent").and_then(Json::as_bool) == Some(true) {
@@ -94,29 +94,29 @@ impl RecordSource for Line {
             return base64::engine::general_purpose::STANDARD
                 .decode(document)
                 .map(Some)
-                .map_err(|error| format!("the API sent a record that is not base64: {error}"));
+                .map_err(|error| format!("the API sent a document that is not base64: {error}"));
         }
         Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the API answered a record read with neither ok, absent nor err: {reply}"),
+            || format!("the API answered a document read with neither ok, absent nor err: {reply}"),
             str::to_owned,
         ))
     }
 }
 
-/// What the task's programs reach the workspace through: the records, read here from what the
-/// api hands over ([`RecordReads`]), a native app's record, read by the app itself
+/// What the task's programs reach the workspace through: the documents, read here from what the
+/// api hands over ([`DocumentReads`]), a native app's document, read by the app itself
 /// ([`NativeReads`]), and invocations, which go to the API.
 struct Api {
     line: Rc<Line>,
-    reads: RecordReads,
-    /// The native apps the task reaches, and the record each publishes.
+    reads: DocumentReads,
+    /// The native apps the task reaches, and the document each publishes.
     native: Rc<Native>,
     /// The author of the program running now, as the actions it plans for a preview see their
     /// caller; `None` until the first program names one.
     caller: RefCell<Option<tilolang_tilo::publish::Caller>>,
-    /// The apps whose records the session changes itself; any other app's change is its own
+    /// The apps whose documents the session changes itself; any other app's change is its own
     /// action, invoked where the app runs.
-    changed_at_record: std::collections::BTreeSet<String>,
+    changed_at_document: std::collections::BTreeSet<String>,
 }
 
 impl TaskApi for Api {
@@ -135,17 +135,17 @@ impl TaskApi for Api {
     }
 
     fn begin_program(&self) {
-        // Each program reads the records anew, as the API decides them now.
+        // Each program reads the documents anew, as the API decides them now.
         self.reads.forget();
     }
 
     fn invoke(&self, call: &Json) -> Answered {
-        // A change of a record the session changes itself goes there with the record it changes,
+        // A change of a document the session changes itself goes there with the document it changes,
         // and what the task's read of it would write, which the session compares its run with.
         // Any other app's change is its action, invoked at the app.
         let mut call = call.clone();
         if let Some(app) = call.get("app").and_then(Json::as_str).map(str::to_owned)
-            && self.changed_at_record.contains(&app)
+            && self.changed_at_document.contains(&app)
             && let Some((under, record)) = self.reads.address(&app)
         {
             let preview = self
@@ -163,7 +163,7 @@ impl TaskApi for Api {
             Err(why) => return Answered::Failed(why),
         };
         // What the program reads of the app next holds what its change made: the origin says
-        // what it wrote, which goes into the record this program read.
+        // what it wrote, which goes into the document this program read.
         if let Some(app) = call
             .get("app")
             .and_then(Json::as_str)
@@ -176,7 +176,7 @@ impl TaskApi for Api {
                 None => Err("no change said".to_owned()),
             };
             if let Err(why) = taken {
-                tracing::debug!(app, why, "the program reads the record again");
+                tracing::debug!(app, why, "the program reads the document again");
                 self.reads.forget_app(app);
             }
         }
@@ -217,8 +217,8 @@ impl Calls for Api {
 }
 
 impl Line {
-    /// The bytes an API's `change` field holds: the record's whole document, as base64 text or,
-    /// for the record a package the session runs itself keeps, as its bytes in JSON.
+    /// The bytes an API's `change` field holds: the document's whole document, as base64 text or,
+    /// for the document a package the session runs itself keeps, as its bytes in JSON.
     fn change_bytes(change: &Json) -> Option<Result<Vec<u8>, String>> {
         match change {
             Json::String(text) => Some(
@@ -310,11 +310,11 @@ impl Task {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
         });
-        let reads = RecordReads::new(
+        let reads = DocumentReads::new(
             &apps.bundles,
             request.documents_under.clone(),
             request.person.as_deref(),
-            Rc::clone(&line) as Rc<dyn RecordSource>,
+            Rc::clone(&line) as Rc<dyn DocumentSource>,
         );
         let native = Rc::new(Native::of(&apps.bundles, &apps.native));
         let api = Rc::new(Api {
@@ -323,7 +323,7 @@ impl Task {
             native: Rc::clone(&native),
             // Each program names its author; this is no one's until the first does.
             caller: RefCell::new(None),
-            changed_at_record: request.changed_at_record.clone(),
+            changed_at_document: request.changed_at_document.clone(),
         });
         let session = TaskSession::new(
             request.person.as_deref(),
@@ -370,15 +370,15 @@ impl Task {
         });
         let api = Rc::new(Api {
             line: Rc::clone(&line),
-            reads: RecordReads::new(
+            reads: DocumentReads::new(
                 &[],
                 std::collections::BTreeMap::new(),
                 None,
-                Rc::clone(&line) as Rc<dyn RecordSource>,
+                Rc::clone(&line) as Rc<dyn DocumentSource>,
             ),
             native: Rc::new(Native::of(&[], &[])),
             caller: RefCell::new(None),
-            changed_at_record: self.api.changed_at_record.clone(),
+            changed_at_document: self.api.changed_at_document.clone(),
         });
         self.guests.borrow_mut().push(Guest { line, api, watched });
         Ok(())
@@ -716,15 +716,15 @@ mod tests {
         let apps = Rc::new(Native::of(bundles, native));
         let reached = Rc::new(Api {
             line: Rc::clone(&line),
-            reads: RecordReads::new(
+            reads: DocumentReads::new(
                 bundles,
                 std::collections::BTreeMap::new(),
                 None,
-                Rc::clone(&line) as Rc<dyn RecordSource>,
+                Rc::clone(&line) as Rc<dyn DocumentSource>,
             ),
             native: Rc::clone(&apps),
             caller: RefCell::new(None),
-            changed_at_record: std::collections::BTreeSet::new(),
+            changed_at_document: std::collections::BTreeSet::new(),
         });
         let session = TaskSession::new(
             None,
@@ -871,22 +871,22 @@ mod tests {
         json!({"id": bound, "kind": "item", "key": key, "name": name})
     }
 
-    /// The row an app's directory lists its record by: the key its `read` takes, under an id the
+    /// The row an app's directory lists its document by: the key its `read` takes, under an id the
     /// publishing window binds, which is no name the app itself knows.
-    fn record_row(record: &str, name: &str) -> Json {
+    fn document_row(record: &str, name: &str) -> Json {
         json!({"id": format!("bound:{record}"), "kind": record, "key": record, "name": name})
     }
 
-    /// An app's own answers: the resources its directory lists under its record, which of them
+    /// An app's own answers: the resources its directory lists under its document, which of them
     /// answer a read of themselves, and what its `read` answers of each item, its model's JSON.
     struct Reads {
         app: &'static str,
         record: &'static str,
         /// The resources that answer a read of themselves, by the id the directory lists them
-        /// as; every other resource is read by the record, which takes it as its `item`.
+        /// as; every other resource is read by the document, which takes it as its `item`.
         reading: &'static [&'static str],
-        /// The resource of the kind `.1` the rows are listed under, beside the record (a
-        /// tracker's issues, in the parts of a chain); `None` for rows under the record itself.
+        /// The resource of the kind `.1` the rows are listed under, beside the document (a
+        /// tracker's issues, in the parts of a chain); `None` for rows under the document itself.
         beside: Option<(&'static str, &'static str)>,
         rows: Vec<Json>,
         items: Vec<(&'static str, Json)>,
@@ -903,9 +903,9 @@ mod tests {
         fn answer(&self, message: &Json) -> Json {
             if let Some(listing) = message.get("children") {
                 assert_eq!(listing["app"], self.app, "{message:#}");
-                // The record sits at the top of the app's directory, the resources under it.
+                // The document sits at the top of the app's directory, the resources under it.
                 let rows = match listing["resource"].as_str() {
-                    Some("") => vec![record_row(self.record, self.record)],
+                    Some("") => vec![document_row(self.record, self.record)],
                     Some(resource) if resource == format!("bound:{}", self.record) => {
                         match self.beside {
                             Some((id, kind)) => {
@@ -929,7 +929,7 @@ mod tests {
             let call = &message["invoke"];
             assert_eq!(call["app"], self.app, "{message:#}");
             assert_eq!(call["action"], "read", "{message:#}");
-            // A resource that reads itself is read by its own id; every other by the record the
+            // A resource that reads itself is read by its own id; every other by the document the
             // app publishes it as, which takes the resource's key as its `item`.
             let key = if let Some(key) = call["arguments"]["item"].as_str() {
                 let under = self
@@ -988,7 +988,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_program_reads_native_apps_through_what_they_publish;
 
-        phase a_program_reads_a_native_apps_record_fields_through_the_app;
+        phase a_program_reads_a_native_apps_document_fields_through_the_app;
         {
             let (task, _reader, api) = task_with(&[tasks()]);
             let calls = scripted(
@@ -1027,7 +1027,7 @@ mod tests {
             );
             closed(&api);
             let calls = calls.join().expect("the API");
-            // The app listed its directory, what its record published holds and the issues kept
+            // The app listed its directory, what its document published holds and the issues kept
             // beside it; reading the resource the program asked about, it listed them again to
             // address that resource, asked whether it reads itself, and read through its own
             // `read`, once.
@@ -1098,7 +1098,7 @@ mod tests {
             assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
             closed(&api);
             let calls = calls.join().expect("the API");
-            // Its directory, its record's resources and the issues beside it; the two the
+            // Its directory, its document's resources and the issues beside it; the two the
             // predicate reads, each by its own `read`; and the one the program prints, addressed
             // again.
             assert_eq!(calls.len(), 13, "{calls:#?}");
@@ -1107,7 +1107,7 @@ mod tests {
         phase a_program_reads_a_native_apps_channels;
         {
             let (task, _reader, api) = task_with(&[chat()]);
-            // Chat's record reads itself and takes an item: its channels are read through it.
+            // Chat's document reads itself and takes an item: its channels are read through it.
             let calls = scripted(
                 &api,
                 Reads {
@@ -1144,8 +1144,8 @@ mod tests {
             );
             closed(&api);
             let calls = calls.join().expect("the API");
-            // The app listed its directory, its record's resources, and for each channel the
-            // program read, the directory once more and the question of what reads it: its record
+            // The app listed its directory, its document's resources, and for each channel the
+            // program read, the directory once more and the question of what reads it: its document
             // does, taking the channel as its `item`. The listing read no channel's fields.
             assert_eq!(calls.len(), 10, "{calls:#?}");
         }
@@ -1156,7 +1156,7 @@ mod tests {
             let calls = scripted(&api, |message| {
                 if let Some(listing) = message.get("children") {
                     let rows = match listing["resource"].as_str() {
-                        Some("") => vec![record_row("tasks.tracker", "Tasks")],
+                        Some("") => vec![document_row("tasks.tracker", "Tasks")],
                         Some("bound:tasks.tracker") => vec![json!({
                             "id": "chain:issues", "kind": "tasks.issues",
                             "key": "chain:issues", "name": "Issues",
@@ -1193,7 +1193,7 @@ mod tests {
             assert_eq!(wrong["state"], "rejected", "{wrong:#}");
         }
 
-        phase a_native_apps_record_is_a_root_a_program_names;
+        phase a_native_apps_document_is_a_root_a_program_names;
         {
             let (task, _reader, _api) = task_with(&[chat(), tasks()]);
             let catalogue = task.session.catalogue();
@@ -1211,7 +1211,7 @@ mod tests {
                     })
                     .collect()
             };
-            // The app the program invokes the record of, and how it writes it.
+            // The app the program invokes the document of, and how it writes it.
             assert_eq!(
                 roots("chat"),
                 [("workspace".to_owned(), "chat.workspace".to_owned())],
@@ -1256,7 +1256,7 @@ mod tests {
                 ]
             );
             assert_eq!(answer["changed"], 2, "{answer:#}");
-            // Both steps reach the task's history on the records the apps publish, so `undo task`
+            // Both steps reach the task's history on the documents the apps publish, so `undo task`
             // takes them back like any tl app's.
             assert_eq!(
                 answer["history"],

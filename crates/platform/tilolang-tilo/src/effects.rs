@@ -26,7 +26,7 @@ pub enum HostEffect {
     /// value block is shown as data, and an action block runs or, when it needs a person's
     /// approval, is recorded as a suggested invocation.
     ///
-    /// The block itself changes only the workspace's record: each action it applies is decided as
+    /// The block itself changes only the workspace's document: each action it applies is decided as
     /// the caller's code, and what it commits carries that action's own need (an outside effect
     /// needs what reaching outside needs), so running it is an undoable change, not an outside
     /// one.
@@ -41,7 +41,7 @@ pub enum HostEffect {
     /// programs read what this app holds (agents.md, "How a program runs").
     #[effect(kind = "read", returns)]
     ReadValues {
-        #[param("The resource's id in its record, as `tl:<app>:<id>` ends")]
+        #[param("The resource's id in its document, as `tl:<app>:<id>` ends")]
         item: String,
     },
     /// Read for a program.
@@ -105,7 +105,7 @@ pub enum OpenEffect {
 }
 
 /// The operation type every [`OpenEffect`] travels under: what a host that answers openings
-/// recognises an invocation by (`crate::records_service::RecordService`).
+/// recognises an invocation by (`crate::resource_service::ResourceService`).
 pub const OPEN_OPERATION: &str = "tilolang.open";
 
 impl OpenEffect {
@@ -301,7 +301,7 @@ impl Host {
                 view: Some(view.to_owned()),
             });
         }
-        // The items from the record down to the anchor, as they are held now.
+        // The items from the document down to the anchor, as they are held now.
         let mut chain = Vec::new();
         let mut at = Some(probe);
         while let Some(item) = at.filter(|at| at.item.is_some()) {
@@ -330,8 +330,8 @@ impl Host {
     }
 
     /// What the workspace's resources hold, as an agent or a script reads it through the API's
-    /// `read`: with no `item`, every record of the workspace with its id, kind and title; with an
-    /// `item` (a published id, `tl:<app>:<id>`, an item of a record by its path), that resource
+    /// `read`: with no `item`, every document of the workspace with its id, kind and title; with an
+    /// `item` (a published id, `tl:<app>:<id>`, an item of a document by its path), that resource
     /// with its fields, each of the items it holds named by its published id.
     ///
     /// # Errors
@@ -354,11 +354,11 @@ impl Host {
             let kind = self
                 .packages()
                 .first()
-                .map(|package| package.meta.record_kind())
+                .map(|package| package.meta.resource_type())
                 .unwrap_or_default();
             return Ok(json!({ "kind": kind, "records": records }));
         };
-        let unknown = || format!("no resource `{item}`; read the app for the records it holds");
+        let unknown = || format!("no resource `{item}`; read the app for the documents it holds");
         let (app, path) = item
             .strip_prefix("tl:")
             .and_then(|rest| rest.split_once(':'))

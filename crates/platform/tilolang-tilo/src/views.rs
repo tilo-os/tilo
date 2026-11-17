@@ -147,8 +147,8 @@ fn convert_binding(binding: tilo_view::Binding) -> tilolang_runtime::rust_views:
 /// One of a view's values as the runtime's.
 fn value_into_runtime(value: ViewValue) -> Value {
     match value {
-        // A link a Rust view builds names a record, which a value of the runtime's does not
-        // carry: what the runtime's own views send, and this one, is the record itself.
+        // A link a Rust view builds names a document, which a value of the runtime's does not
+        // carry: what the runtime's own views send, and this one, is the document itself.
         ViewValue::Unit | ViewValue::Case { .. } | ViewValue::Link { .. } => Value::Unit,
         ViewValue::Int(number) => Value::Int(number),
         ViewValue::Float(number) => Value::Float(number),

@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 use tilo_service::{Questions, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 use crate::common::{
     CANVAS, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen, place_the_inbox,
@@ -33,7 +33,7 @@ use crate::common::{
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and one note in it titled [`NOTE_TITLE`], made through the app's own actions.
-fn notebook() -> (RecordService, String) {
+fn notebook() -> (ResourceService, String) {
     let (service, notes) = crate::common::notebook(&[NOTE_TITLE]);
     (service, notes.into_iter().next().expect("a note"))
 }
@@ -542,7 +542,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         |session| {
             crate::common::places(session)
                 .iter()
-                .any(|place| place.record.contains(NOTES))
+                .any(|place| place.resource.contains(NOTES))
         },
     );
     let placed_by_german = noted(&session);
@@ -575,7 +575,7 @@ fn noted(session: &Session) -> usize {
         .reading()
         .places
         .iter()
-        .filter(|place| place.record.contains(NOTES))
+        .filter(|place| place.resource.contains(NOTES))
         .count()
 }
 
@@ -714,7 +714,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
             .filter_map(|place| {
                 tilo_actions::api::locate(
                     &resources,
-                    &tilo_actions::ActionAddress::new(&place.record, "open"),
+                    &tilo_actions::ActionAddress::new(&place.resource, "open"),
                 )
                 .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
             })
@@ -775,7 +775,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             .filter_map(|place| {
                 tilo_actions::api::locate(
                     &resources,
-                    &tilo_actions::ActionAddress::new(&place.record, "open"),
+                    &tilo_actions::ActionAddress::new(&place.resource, "open"),
                 )
                 .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
             })

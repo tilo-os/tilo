@@ -39,12 +39,12 @@ pub struct AppHeader {
     pub title: String,
     pub icon: Option<String>,
     pub category: Option<String>,
-    /// `(previously: so.tilo.old)`: the ids the app was published under before; its records,
+    /// `(previously: so.tilo.old)`: the ids the app was published under before; its resources,
     /// grants and windows under them are the app's, when the same publisher signed both.
     pub previously: Vec<String>,
-    /// `(records: .own)`: each member keeps the app's records in their own record there, which only
+    /// `(resources: .own)`: each member keeps the app's resources in their own document there, which only
     /// that person's devices read; the default `.shared` keeps them where every member reads.
-    pub own_records: bool,
+    pub own_resources: bool,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,

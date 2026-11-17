@@ -233,16 +233,16 @@ fn a_tube_channel_placed_on_the_canvas_draws_its_own_page_and_a_videos_row_place
     crate::common::until(&mut session, "the video is placed", |session| {
         crate::common::places(session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:"))
+            .any(|place| place.resource.starts_with("tube.video:"))
     });
     assert!(
         crate::common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:")),
+            .any(|place| place.resource.starts_with("tube.video:")),
         "a video's row places the video: {:?}",
         crate::common::places(&session)
             .iter()
-            .map(|place| place.record.clone())
+            .map(|place| place.resource.clone())
             .collect::<Vec<_>>()
     );
 }

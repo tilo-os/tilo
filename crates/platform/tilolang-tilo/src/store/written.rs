@@ -1,7 +1,7 @@
 //! What a change wrote to the fields of a resource, before and after (`host.Version.changes`):
 //! which fields from the change itself, and what each held on either side, read in place
 //! through the platform's history ([`tilo_resource::history::wrote`] and
-//! [`tilo_resource::history::held_at`]), at the cost of the values and never of the record. A
+//! [`tilo_resource::history::held_at`]), at the cost of the values and never of the document. A
 //! change never changes, so each is read once.
 //!
 //! A rich text field's two sides are the paragraphs the change typed into, read in place at
@@ -44,7 +44,7 @@ impl TiloStore {
         if let Some(held) = self.inner.borrow().written.borrow().get(&key) {
             return Ok(select_written(held, fields));
         }
-        self.load_record()?;
+        self.load_document()?;
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.held_doc(&at.doc)?;

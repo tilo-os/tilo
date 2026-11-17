@@ -18,7 +18,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
             .expect("the channel it made"),
         other => panic!("the channel was made: {other:?}"),
     };
-    // Sending is the app's own: an action of no one record, given the conversation it writes in.
+    // Sending is the app's own: an action of no one document, given the conversation it writes in.
     let send = session.published_doing(&format!("tl.{CHAT}"), "send");
     let to = serde_json::json!({
         "app": CHAT,

@@ -1,6 +1,6 @@
-//! A body pasted past a mebibyte is more than a change records whole: its action keeps the
-//! body as content in the record's own store, sealed, and offers it on the record's route. The
-//! writing device reads the action back as it ran, after the record opens again too, and undo
+//! A body pasted past a mebibyte is more than a change documents whole: its action keeps the
+//! body as content in the document's own store, sealed, and offers it on the document's route. The
+//! writing device reads the action back as it ran, after the document opens again too, and undo
 //! takes the paste back exactly; a peer that holds only the change asks the route for the body
 //! and decodes the action once it arrives.
 
@@ -39,8 +39,8 @@ fn body_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
     }
 }
 
-/// The heads of the record's own document, as the instance holds it.
-fn record_heads(host: &TilolangHost) -> Vec<automerge::ChangeHash> {
+/// The heads of the document's own document, as the instance holds it.
+fn document_heads(host: &TilolangHost) -> Vec<automerge::ChangeHash> {
     let record = host.instances().next().unwrap().record();
     record.doc().get_heads()
 }
@@ -98,7 +98,7 @@ fn decoded(
     .unwrap()
 }
 
-/// What the instance's connection offered the record's route as content, by address.
+/// What the instance's connection offered the document's route as content, by address.
 fn offered(sent: &Sent) -> BTreeMap<String, Vec<u8>> {
     sent.borrow()
         .iter()
@@ -117,7 +117,7 @@ fn address(reference: &str) -> &str {
 }
 
 #[test]
-fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_a_peer() {
+fn a_paste_past_a_mebibyte_is_kept_in_the_documents_store_and_decodes_here_and_on_a_peer() {
     pastes_past_a_mebibyte(17);
 }
 
@@ -129,8 +129,8 @@ fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
 /// A paragraph longer than one text may hold is refused: Ada hears what happened and what to do,
 /// in the words every window says, and the note keeps what she typed. A text is held to its
 /// bytes, so two bytes a character runs out at half the characters, and one byte more than the
-/// limit is already too many. A refused paste leaves nothing behind: the record holds what it
-/// held, and nothing of it goes to the workspace or is offered on the record's route. Each paste
+/// limit is already too many. A refused paste leaves nothing behind: the document holds what it
+/// held, and nothing of it goes to the workspace or is offered on the document's route. Each paste
 /// is made in a notebook of its own.
 #[test]
 fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
@@ -164,8 +164,8 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
         };
         window.send(&[edit("draft")]);
         settle(&mut host, &mut window);
-        // What the record and its workspace hold once she typed, before the paste.
-        let typed = (record_heads(&host), documents_sent(&sent));
+        // What the document and its workspace hold once she typed, before the paste.
+        let typed = (document_heads(&host), documents_sent(&sent));
         assert!(typed.1 > 0, "{row}: what was typed went to the workspace");
         window.send(&[edit(&pasted)]);
         settle(&mut host, &mut window);
@@ -183,13 +183,13 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
             "{row}: Ada hears why the paste was not kept, and what to do"
         );
         assert_eq!(
-            (record_heads(&host), documents_sent(&sent)),
+            (document_heads(&host), documents_sent(&sent)),
             typed,
-            "{row}: neither the record nor its workspace holds anything of the refused paste"
+            "{row}: neither the document nor its workspace holds anything of the refused paste"
         );
         assert!(
             offered(&sent).is_empty(),
-            "{row}: nothing of the refused paste is offered on the record's route"
+            "{row}: nothing of the refused paste is offered on the document's route"
         );
     }
 }
@@ -289,12 +289,12 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         parts
             .iter()
             .all(|part| tilo_content::is_sealed(part) && record.content().has(part)),
-        "the record's store keeps every part, sealed: {parts:?}"
+        "the document's store keeps every part, sealed: {parts:?}"
     );
     let offers = offered(&sent);
     assert!(
         parts.iter().all(|part| offers.contains_key(address(part))),
-        "every part is offered on the record's route: {parts:?}, offered {:?}",
+        "every part is offered on the document's route: {parts:?}, offered {:?}",
         offers.keys().collect::<Vec<_>>()
     );
     assert_eq!(
@@ -303,8 +303,8 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         "the writing device reads the paste back as it ran"
     );
 
-    // What the workspace holds of the record now. Ada's host runs no frame until her undo, so
-    // her connection sends nothing more meanwhile: the record that opens again and the peer
+    // What the workspace holds of the document now. Ada's host runs no frame until her undo, so
+    // her connection sends nothing more meanwhile: the document that opens again and the peer
     // each read a copy of this.
     let workspace = workspace_copy(&sent);
     let went_out = sent.borrow().len();
@@ -313,7 +313,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
     assert_eq!(
         sent.borrow().len(),
         went_out,
-        "Ada's connection sent nothing while the others read her record"
+        "Ada's connection sent nothing while the others read her document"
     );
 
     // Ada's undo takes the paste back exactly, as a change of its own sent on her connection,
@@ -339,7 +339,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
     );
 }
 
-/// The record opens again on the same device, in an instance of `notes` over what its
+/// The document opens again on the same device, in an instance of `notes` over what its
 /// `workspace` holds: the device's store still holds the parts of the paste `paste`, and the
 /// action reads back as it ran.
 fn reopened_reads_it_back(
@@ -349,7 +349,7 @@ fn reopened_reads_it_back(
     device: ContentStore,
     paste: automerge::ChangeHash,
 ) {
-    // The record opens again on the same device, over what its workspace holds: the device's
+    // The document opens again on the same device, over what its workspace holds: the device's
     // store still holds the parts, and the action reads back as it ran.
     let mut again = TilolangHost::new(None, wake());
     let (mut reopened, _, _) = instance_keeping(
@@ -367,12 +367,12 @@ fn reopened_reads_it_back(
     assert_eq!(
         decoded(workspace, paste, record.content().clone()),
         Verified::Reproduced,
-        "after the record opens again, the paste reads back as it ran"
+        "after the document opens again, the paste reads back as it ran"
     );
 }
 
 /// A peer runs `notes` over what the `workspace` holds: the change `paste` and not the `parts` it
-/// kept. Decoding it asks the record's route, and once what Ada `offers` arrives the action
+/// kept. Decoding it asks the document's route, and once what Ada `offers` arrives the action
 /// reproduces its change there too.
 fn a_peer_fetches_it(
     route: &RouteSpec,
@@ -382,7 +382,7 @@ fn a_peer_fetches_it(
     parts: &[String],
     offers: &BTreeMap<String, Vec<u8>>,
 ) {
-    // A peer holds the change and not its body: decoding it asks the record's route, and once
+    // A peer holds the change and not its body: decoding it asks the document's route, and once
     // the body arrives the action reproduces its change there too.
     let peer_route = route.clone();
     let mut theirs = TilolangHost::new(None, wake());
@@ -423,7 +423,7 @@ fn a_peer_fetches_it(
         parts
             .iter()
             .any(|part| wanted.iter().any(|hash| hash == address(part))),
-        "the peer asks the record's route for the body: wanted {wanted:?}"
+        "the peer asks the document's route for the body: wanted {wanted:?}"
     );
     for part in parts {
         let hash = address(part);

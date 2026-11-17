@@ -591,7 +591,7 @@ fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::t
         .expect("the clock reaches it")
 }
 
-/// The wall clock at `hour:minute:second` on `day` of 2026, in UTC: what a record names, such as
+/// The wall clock at `hour:minute:second` on `day` of 2026, in UTC: what a document names, such as
 /// the moment a conversation is snoozed until.
 fn utc(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
     use chrono::TimeZone as _;
@@ -1623,7 +1623,7 @@ fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
         (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
         "the clock time a person reads: {when}, read in {clock:?}"
     );
-    // The step waits for the next sync — and the store answers none of the account's records
+    // The step waits for the next sync — and the store answers none of the account's documents
     // while it takes it in again, as an index that has not caught up with the workspace does.
     store.fail_reads_of(&root.id_string());
     for _ in 0..3 {

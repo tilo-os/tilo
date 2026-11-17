@@ -989,7 +989,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let edit = action_id(&mut app, &task, "Edit a text field");
     let (agent, ambient) = crate::change_marks::run();
     let mut args = serde_json::Map::new();
-    // A caller names the field as the type declares it; the record keeps it under its id.
+    // A caller names the field as the type declares it; the document keeps it under its id.
     args.insert("field".to_owned(), "title".into());
     args.insert("value".to_owned(), "Buy oat milk and bread".into());
     let event = agent_acting(&mut app, &task, &edit);

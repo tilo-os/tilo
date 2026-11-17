@@ -7,7 +7,7 @@ use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::{Actor, NameHost, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
             "only the note holding what was typed"
         );
 
-        // A note renamed later is offered by its new title: the view names the record, and how it
+        // A note renamed later is offered by its new title: the view names the document, and how it
         // reads is read now.
         let package = ada.host.package(APP).unwrap();
         call(
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
 }
 
 /// The window's view of the note `note`, and the tree the window receives of it: what
-/// converting it read of the records its cards show is kept by the view, which runs again when
+/// converting it read of the documents its cards show is kept by the view, which runs again when
 /// one changes.
 fn live(
     replica: &Replica,
@@ -432,7 +432,7 @@ fn live(
     (view, tree)
 }
 
-/// What the editor of the note `note` shows of the record `reference`: its title and the start
+/// What the editor of the note `note` shows of the document `reference`: its title and the start
 /// of its content, as the window received them.
 fn embed_of(
     replica: &Replica,
@@ -450,7 +450,7 @@ fn embed_of(
         .find(|embed| embed.reference == reference)?;
     let title = match &embed.view {
         tilo_render_protocol::patch::rich::InlineView::Resource { title, .. } => title.clone(),
-        other => panic!("a record, not {other:?}"),
+        other => panic!("a document, not {other:?}"),
     };
     let start = embed
         .preview
@@ -489,7 +489,7 @@ fn an_embedded_note_shows_its_start_links_back_and_follows_the_note() {
         .expect("the body is the editor")
         .key
         .clone();
-    // The records a view offers are the ones its picker is open to show: the note chosen here
+    // The documents a view offers are the ones its picker is open to show: the note chosen here
     // is the one its text then projects.
     let (_, picked) = picking(&ada, &plan, "Groceries");
     let (reference, _) = offered(find(&picked, "ui.BlockEditor").unwrap())

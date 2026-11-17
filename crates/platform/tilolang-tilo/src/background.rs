@@ -1,4 +1,4 @@
-//! Work that reads a whole workspace off the frame: a package's index built from the record, and
+//! Work that reads a whole workspace off the frame: a package's index built from the document, and
 //! publication's first trees read from a [`crate::store::Snapshot`], on the worker threads the
 //! process keeps; a frame after their end takes the result in.
 
@@ -154,8 +154,8 @@ impl<T: Send + 'static> Pending<T> {
             }),
             work: Arc::new(Mutex::new(Box::new(work))),
             wake,
-            // The work reads what the window's record keeps as content (an action too large to
-            // record whole) through the store the window registered, as the window's code does.
+            // The work reads what the window's document keeps as content (an action too large to
+            // document whole) through the store the window registered, as the window's code does.
             content: tilo_actions::content::current(),
             resumes: 0,
         };

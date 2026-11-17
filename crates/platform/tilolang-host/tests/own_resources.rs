@@ -1,6 +1,6 @@
 //! Mail is each member's own. Two members of one workspace each run Mail in a tilolang host:
-//! each instance keeps its records in that person's own record of the workspace, on a route of
-//! its own, so what one member's mail holds never reaches the other's record, views, search or
+//! each instance keeps its documents in that person's own document of the workspace, on a route of
+//! its own, so what one member's mail holds never reaches the other's document, views, search or
 //! published actions, and the first member's instance refuses what the second asks of it
 //! through the API.
 
@@ -24,7 +24,7 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_host::testing::{Broker, Bus, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::instance::document::InstanceDocument;
 
 const MAIL: &str = "so.tilo.lang.mail";
 
@@ -125,12 +125,13 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
+    let record =
+        InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(MAIL).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         Spec::new(MAIL, workspace.to_string(), 1, person),
         record,
         Arc::clone(bundle),
@@ -213,11 +214,11 @@ impl Member {
     }
 }
 
-/// None of `ada`'s mail reaches `bo`: not his record, his window, his search or his api.
+/// None of `ada`'s mail reaches `bo`: not his document, his window, his search or his api.
 fn nothing_of_reaches(ada: &Member, bo: &Member) {
     assert!(
         bo.inbox.borrow().is_empty(),
-        "nothing of Ada's record was delivered to Bo"
+        "nothing of Ada's document was delivered to Bo"
     );
     let theirs: std::collections::HashSet<_> = ada
         .hosted()
@@ -234,7 +235,7 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
             .get_changes(&[])
             .iter()
             .all(|change| !theirs.contains(&change.hash())),
-        "Bo's record holds none of Ada's changes"
+        "Bo's document holds none of Ada's changes"
     );
     for what in ADAS {
         assert!(
@@ -255,24 +256,24 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
 }
 
 #[test]
-fn mail_is_each_members_own_record_of_the_workspace() {
+fn mail_is_each_members_own_document_of_the_workspace() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let bundle = Arc::new(mail());
-    assert!(bundle.meta.own_records, "Mail declares `records: .own`");
+    assert!(bundle.meta.own_resources, "Mail declares `documents: .own`");
     let workspace = uuid::Uuid::new_v4();
     let bus = Rc::new(Bus::default());
     let mut ada = member(&bus, workspace, ADA, &bundle);
     let mut bo = member(&bus, workspace, BO, &bundle);
 
-    // Each member's Mail is on their own record of the workspace, which only their devices are
-    // admitted to; an app that shares its records stays on the workspace's record of the app.
+    // Each member's Mail is on their own document of the workspace, which only their devices are
+    // admitted to; an app that shares its documents stays on the workspace's document of the app.
     assert_eq!(
         ada.route.document.as_deref(),
-        tilolang_tilo::member_record_of("so.tilo.lang.mail", ADA).as_deref()
+        tilolang_tilo::member_document_of("so.tilo.lang.mail", ADA).as_deref()
     );
     assert_eq!(
         bo.route.document.as_deref(),
-        tilolang_tilo::member_record_of("so.tilo.lang.mail", BO).as_deref()
+        tilolang_tilo::member_document_of("so.tilo.lang.mail", BO).as_deref()
     );
     let counter = compiled(
         "counter",
@@ -282,7 +283,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     assert_eq!(
         tilolang_host::route_of(&counter.meta, workspace, ADA),
         RouteSpec::app("so.tilo.lang.counter", workspace),
-        "a shared app's record is the workspace's"
+        "a shared app's document is the workspace's"
     );
     assert_eq!(
         tilolang_host::route_of(&bundle.meta, workspace, "ada"),
@@ -312,7 +313,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         );
     }
 
-    // None of it reaches Bo: not his record, his window, his search or his api.
+    // None of it reaches Bo: not his document, his window, his search or his api.
     nothing_of_reaches(&ada, &bo);
 
     // Through the API, Bo asks Ada's instance to archive her conversation: refused, and her

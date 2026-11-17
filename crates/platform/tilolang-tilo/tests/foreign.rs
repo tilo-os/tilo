@@ -199,7 +199,7 @@ fn the_same_reading_twice_changes_nothing() {
 }
 
 /// A scenario stands a reading in for the app that publishes it: a view over that app's resource
-/// reads what the scenario staged, records inside it included.
+/// reads what the scenario staged, documents inside it included.
 #[test]
 fn a_scenario_stages_another_apps_reading() {
     const STAGED: &str = r#"app test.staged "Staged"

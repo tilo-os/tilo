@@ -1,10 +1,10 @@
-//! One app instance in a tilolang host: the app's runtime over its workspace record, on the broker
+//! One app instance in a tilolang host: the app's runtime over its workspace document, on the broker
 //! connection the session opened for that app's launch, driving its window with component
 //! patches.
 //!
 //! What the window's own process did before (the framework's root) is the instance's here:
 //!
-//! - **The record:** a [`InstanceRecord`] holds it with its undo log and save state, on the instance's
+//! - **The document:** a [`InstanceDocument`] holds it with its undo log and save state, on the instance's
 //!   connection. Each change the runtime plans is committed to it as a step of the person at the
 //!   window and sent on the route; changes from the workspace come back into it.
 //! - **Actions:** the instance publishes the app's resources and actions on its connection, as
@@ -16,7 +16,7 @@
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`), `read`
 //!   (`tilo_resource::read`) and "Show this window" (`tilo_actions::remote::activate_spec`), and
-//!   answers them as a framework app does: history on its record, `read` through the runtime,
+//!   answers them as a framework app does: history on its document, `read` through the runtime,
 //!   and "Show this window" by asking its window to come forward. The person's Undo on a notice
 //!   in the window is the same `undo`, as theirs: there is one undo.
 //! - **The window:** the instance sends it patches and hears what the person did over the patch
@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::personal::PersonalRecord;
+use crate::personal::PersonalDocument;
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{
@@ -42,7 +42,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::record::{InstanceRecord, ReadRecord, RecordError};
+use tilolang_tilo::instance::document::{DocumentError, InstanceDocument, ReadDocument};
 use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
@@ -78,8 +78,8 @@ pub struct Spec {
     pub instance: u64,
     /// The member at the window.
     pub person: String,
-    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
-    /// package the app uses that is one of them is another app, read from its own record.
+    /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
+    /// package the app uses that is one of them is another app, read from its own document.
     pub installed: BTreeMap<String, String>,
     /// The person's language (`de-DE`), the one their windows read in, as the session resolved it
     /// (`InstanceRequest::language`): the window speaks it where the package ships it, and the
@@ -143,7 +143,7 @@ fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
     base.for_window(language, &shipped)
 }
 
-/// What a [`Surface`]'s resources are built from: the published records' revision, the
+/// What a [`Surface`]'s resources are built from: the published documents' revision, the
 /// loaded packages, the updates that saw a change, and the resources the window shows (its
 /// rows, as published ids) — a change in what a person can reach publishes too.
 type SurfaceInputs = (
@@ -153,13 +153,13 @@ type SurfaceInputs = (
     Vec<String>,
 );
 
-/// The part of [`SurfaceInputs`] the directory depends on: the record's revision, the loaded
+/// The part of [`SurfaceInputs`] the directory depends on: the document's revision, the loaded
 /// packages and the updates that saw a change. What the window shows is not in it — the
 /// directory answers questions about the whole workspace, so a change that only brings other
 /// rows on screen leaves it as it was.
 type DirectoryInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 
-/// What the instance publishes on its connection: the workspace's records with their actions, kept up
+/// What the instance publishes on its connection: the workspace's documents with their actions, kept up
 /// to date change by change.
 struct Surface {
     /// The instance's app: its resource carries what every app publishes.
@@ -182,7 +182,7 @@ impl Surface {
         );
         let mut publications = Publications::new(host);
         publications.set_waker(wake.clone());
-        // This surface is a window's: it publishes the records the window draws and the
+        // This surface is a window's: it publishes the documents the window draws and the
         // resources its invocations name, not the whole workspace. What a caller that asks the
         // directory reads is read from the workspace on demand (`everything`).
         publications.window();
@@ -207,7 +207,7 @@ impl Surface {
     }
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
-    /// published records' revision, the loaded packages, the updates that saw a change, and the
+    /// published documents' revision, the loaded packages, the updates that saw a change, and the
     /// ids of the resources the window shows.
     fn inputs(&self, shown: &[String]) -> SurfaceInputs {
         (
@@ -218,15 +218,15 @@ impl Surface {
         )
     }
 
-    /// The resources the instance publishes: the host's own resource, the workspace's records
-    /// with their actions, and each package's actions that take no record (the instance's own
+    /// The resources the instance publishes: the host's own resource, the workspace's documents
+    /// with their actions, and each package's actions that take no document (the instance's own
     /// app's with what every app publishes).
     ///
-    /// `shown` bounds what a record publishes to what the window reaches: its lane's target and
+    /// `shown` bounds what a document publishes to what the window reaches: its lane's target and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
     /// reads.
     ///
-    /// A record is published before the package catalogue: what the window holds and the actions
+    /// A document is published before the package catalogue: what the window holds and the actions
     /// its own resources offer are what a person came to do, so the palette lists them first, and
     /// the verbs the platform adds for every app (`with_app_actions`) follow the app's own.
     fn resources(&self, shown: Option<&[String]>) -> Vec<ResourceSpec> {
@@ -259,7 +259,7 @@ impl Surface {
         self.with_addressed(self.resources(Some(shown)), address)
     }
 
-    /// `resources` with what the address names, added as the record publishes it when the window
+    /// `resources` with what the address names, added as the document publishes it when the window
     /// does not show it: an invocation resolves against the resource it names, whatever the
     /// window shows.
     fn with_addressed(&self, mut resources: Vec<ResourceSpec>, address: &str) -> Vec<ResourceSpec> {
@@ -278,7 +278,7 @@ impl Surface {
     }
 
     /// The resources an invocation of `address` resolves against: `resources` when one of them
-    /// publishes it, or else every resource the workspace holds, since a caller names the record
+    /// publishes it, or else every resource the workspace holds, since a caller names the document
     /// an action acts on whatever a window shows. An address no resource publishes is refused by
     /// the API as it is.
     fn naming(&self, resources: Vec<ResourceSpec>, address: &ActionAddress) -> Vec<ResourceSpec> {
@@ -336,8 +336,8 @@ impl Publication for Held {
         self.0.publications.borrow().is_building()
     }
 
-    /// `Publications::settle` waits for each record being read off the frame, and reads again
-    /// what it took in: what a window of a host without frames reads once it covers the record.
+    /// `Publications::settle` waits for each document being read off the frame, and reads again
+    /// what it took in: what a window of a host without frames reads once it covers the document.
     fn settle(&self) -> bool {
         let mut publications = self.0.publications.borrow_mut();
         !publications
@@ -355,7 +355,7 @@ impl Publication for Held {
 }
 
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
-/// of its record, `read` and "Show this window".
+/// of its document, `read` and "Show this window".
 fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec) -> ResourceSpec {
     let mut resource = tilolang_tilo::history::with_verbs(resource);
     for spec in [tilo_resource::read::spec(None), activate.clone()] {
@@ -547,22 +547,22 @@ impl Platform for HostPlatform {
     }
 }
 
-/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes,
+/// Where an instance keeps what it keeps: its workspace document's on-disk copy and its indexes,
 /// under its package's directory in the host's storage.
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
 }
 
-/// The directory of the indexes of `record` of `workspace` under `indexes`: one per record, read by
+/// The directory of the indexes of `document` of `workspace` under `indexes`: one per document, read by
 /// every window of it ([`tilolang_tilo::index::Held`]). A window opened again reads what the last
 /// one kept. Copies an earlier build kept per window beside it are derived and go.
-fn record_indexes(
+fn document_indexes(
     indexes: &std::path::Path,
     workspace: &str,
     record: Option<&str>,
 ) -> std::path::PathBuf {
-    let dir = tilolang_tilo::index::record_dir(indexes, workspace, record);
+    let dir = tilolang_tilo::index::document_dir(indexes, workspace, record);
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             if entry.file_name().to_string_lossy().starts_with("instance-")
@@ -715,7 +715,7 @@ pub struct Hosted {
     /// The words of the window, which the instance's platform reads: the person's language
     /// chosen again ([`Self::speak`]) relabels the window where it stands.
     phrases: Rc<Phrases>,
-    record: InstanceRecord,
+    record: InstanceDocument,
     surface: SurfaceSlot,
     builds: BuildsSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
@@ -761,9 +761,9 @@ pub struct Hosted {
     wake: Waker,
     /// The invocation the person's last step ran in, when they asked to undo it: the host takes
     /// the action back in every unit that holds a change of it, all under one commit, whether
-    /// this endpoint's logs still remember the action or only the records do.
+    /// this endpoint's logs still remember the action or only the documents do.
     undo_ask: Option<InvocationId>,
-    /// The other apps the app uses, each read from its own record ([`Used`]).
+    /// The other apps the app uses, each read from its own document ([`Used`]).
     used: Vec<Used>,
     /// What the app's views and actions asked of the other apps' apis, waiting to be sent.
     asks: Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>,
@@ -776,52 +776,52 @@ pub struct Hosted {
         reason = "held open, never read: the connection signs through it"
     )]
     identity: Option<std::os::fd::OwnedFd>,
-    /// The scope the instance's code runs in, its record's content store registered for it.
-    scope: RecordScope,
+    /// The scope the instance's code runs in, its document's content store registered for it.
+    scope: DocumentScope,
     /// What the person may do in the app now: the launch's, until the session says it changed
     /// ([`Self::set_standing`]). The runtime reads it at each decision.
     standing: Rc<RefCell<Option<tilo_action_policy::Standing>>>,
-    /// The workspace's record of each person's own state: what the person picked in the views
+    /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
-    personal: PersonalRecord,
-    /// Who else is where in the record, as the connection hears it, and what the instance last
+    personal: PersonalDocument,
+    /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
 }
 
-/// The wake scope a record's code runs in, the record's content store registered for it: an
-/// action committed to the record that is too large to record whole keeps its large parts there,
+/// The wake scope a document's code runs in, the document's content store registered for it: an
+/// action committed to the document that is too large to record whole keeps its large parts there,
 /// sealed, and every read of a recorded action reads them back from there, as a native window's
 /// actions do ([`tilo_actions::content::register`]). Work the code starts off its thread takes
 /// the store along.
-struct RecordScope(tilo_wake::WakeScope);
+struct DocumentScope(tilo_wake::WakeScope);
 
-impl RecordScope {
-    /// The scope of `record`'s code, whose wakes wake the host through `wake`.
-    fn of(record: &InstanceRecord, wake: &Waker) -> Self {
+impl DocumentScope {
+    /// The scope of `document`'s code, whose wakes wake the host through `wake`.
+    fn of(record: &InstanceDocument, wake: &Waker) -> Self {
         let mut scope = tilo_wake::WakeScope::new();
         let sink = Arc::clone(wake);
         if let Err(error) = scope.bind(move |_| sink()) {
-            tracing::warn!(?error, "the record's wake scope did not bind");
+            tracing::warn!(?error, "the document's wake scope did not bind");
         }
         tilo_actions::content::register(&scope.handle(), record.content().clone());
         Self(scope)
     }
 
-    /// Run the record's code from here until the guard drops.
+    /// Run the document's code from here until the guard drops.
     fn enter(&self) -> tilo_wake::WakeScopeGuard {
         self.0.enter()
     }
 }
 
 impl Hosted {
-    /// The instance `spec` of `bundle` over `record`, which it holds from now on.
+    /// The instance `spec` of `bundle` over `document`, which it holds from now on.
     #[must_use]
-    pub fn with_record(
+    pub fn with_document(
         spec: Spec,
-        record: InstanceRecord,
+        record: InstanceDocument,
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
@@ -843,10 +843,10 @@ impl Hosted {
         // window speaks, whatever language the workspace's people are named in.
         collaboration::history_source::authors::set_names_language(&phrases.locale());
         let mut record = record.speaking(phrases.locale());
-        let scope = RecordScope::of(&record, &wake);
+        let scope = DocumentScope::of(&record, &wake);
         let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
-        let personal = PersonalRecord::open(
+        let personal = PersonalDocument::open(
             record.route().cluster_id,
             &spec.app,
             &kept.documents,
@@ -868,9 +868,9 @@ impl Hosted {
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {
-                    record_indexes(indexes, &spec.workspace, record.route().document.as_deref())
+                    document_indexes(indexes, &spec.workspace, record.route().document.as_deref())
                 }),
-                record_loader: None,
+                document_loader: None,
                 root: tilolang_tilo::host::RootView::default(),
                 sink: None,
             },
@@ -879,7 +879,7 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
-        // The device that governs the workspace is its records' origin: the package's migrations
+        // The device that governs the workspace is its documents' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
         // What its runtime offers and invokes is decided by the person's standing as the session
@@ -1009,7 +1009,7 @@ impl Hosted {
 
     /// The workspace record the instance holds.
     #[must_use]
-    pub fn record(&self) -> &InstanceRecord {
+    pub fn record(&self) -> &InstanceDocument {
         &self.record
     }
 
@@ -1064,13 +1064,13 @@ impl Hosted {
     }
 
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
-    /// stages one: its changes are the person's steps on the instance's record.
+    /// stages one: its changes are the person's steps on the instance's document.
     pub fn stage(&mut self, scenario: &str) {
         let _code = self.scope.enter();
         self.instance.stage(Some(scenario));
     }
 
-    /// One frame: what the workspace sent taken in, the runtime brought up to date with the record,
+    /// One frame: what the workspace sent taken in, the runtime brought up to date with the document,
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
     pub fn turn(&mut self) -> bool {
@@ -1079,10 +1079,10 @@ impl Hosted {
         let mut changed = self
             .record
             .receive_and(&mut self.instance, |event| events.push(event));
-        // The chunks the replica holds with the record's own frame: the store reads them as what
+        // The chunks the replica holds with the document's own frame: the store reads them as what
         // the window shows reaches into them, and the indexes are built over them.
         self.record.sync_instance(&mut self.instance);
-        // What the person picked and saw, as their own record keeps it, before the views run.
+        // What the person picked and saw, as their own document keeps it, before the views run.
         if self.personal.take_moved()
             && !self
                 .instance
@@ -1125,7 +1125,7 @@ impl Hosted {
                 tracing::debug!("the connection did not take the person's presence");
             }
         });
-        // What the person changed of their own state is kept in its record, as theirs.
+        // What the person changed of their own state is kept in its document, as theirs.
         let keeps = self
             .instance
             .take_personal(self.personal.state(), self.spec.instance);
@@ -1153,7 +1153,7 @@ impl Hosted {
         }
     }
 
-    /// One history ask run through the record: the person's step taken back, brought back, or
+    /// One history ask run through the document: the person's step taken back, brought back, or
     /// answered with why it cannot be. Whether what the instance holds changed.
     fn take_step(&mut self, asked: &tilolang_tilo::instance::HistoryAsk) -> bool {
         let (resource, kind) = &self.resource;
@@ -1181,7 +1181,7 @@ impl Hosted {
     }
 
     /// The changes of this instance's unit the invocation `invocation` made: the unit's part of
-    /// the action, read from its record.
+    /// the action, read from its document.
     #[must_use]
     pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
         self.record.changes_of(invocation)
@@ -1205,7 +1205,7 @@ impl Hosted {
         &mut self,
         change: &[u8; 32],
         ambient: &ActionContext,
-    ) -> Result<(), RecordError> {
+    ) -> Result<(), DocumentError> {
         let _code = self.scope.enter();
         let (resource, kind) = &self.resource;
         let invoker = ActionInvoker::person(self.spec.person.clone());
@@ -1214,7 +1214,7 @@ impl Hosted {
     }
 
     /// What this instance holds that the workspace was not handed yet, as its parts
-    /// ([`Self::share_under`]): one per chunk an action wrote, each named by the record it travels
+    /// ([`Self::share_under`]): one per chunk an action wrote, each named by the document it travels
     /// on. Empty when the workspace holds all of it.
     pub fn unsent_parts(&self) -> Vec<(String, DocumentMutation)> {
         self.record
@@ -1284,7 +1284,7 @@ impl Hosted {
             return;
         };
         // What the workspace moved since the index last took it, read from the publication the
-        // window reads rather than from the record: a change becomes a publication at the frame
+        // window reads rather than from the document: a change becomes a publication at the frame
         // that reads it from the store, and the index publishes that frame's changes, not the
         // ones before.
         surface.update();
@@ -1607,7 +1607,7 @@ impl Hosted {
         // The invoker is who the broker admitted, with the member and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
-        // A member's own record is that person's alone: anyone else is refused before anything
+        // A member's own document is that person's alone: anyone else is refused before anything
         // of it is read.
         let person = invoker
             .acting
@@ -1619,7 +1619,7 @@ impl Hosted {
         if !tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person) {
             let update = failed(
                 invocation,
-                Refused::new("permission_denied", "this is another member's own record"),
+                Refused::new("permission_denied", "this is another member's own document"),
             );
             self.answer_invocation(id, update);
             return true;
@@ -1636,7 +1636,7 @@ impl Hosted {
         true
     }
 
-    /// Bring the other apps' readings up to date: what their records took in is read again, and
+    /// Bring the other apps' readings up to date: what their documents took in is read again, and
     /// the readings the views asked for since are answered. A reading that moved runs the views
     /// that read it again on the next frame. Whether any did.
     fn read_used(&mut self) -> bool {
@@ -1654,8 +1654,8 @@ impl Hosted {
         let mut moved = false;
         for used in &mut self.used {
             if std::mem::take(&mut used.moved) {
-                // What the record took in is in the app's store: the lists it reads must hold
-                // every row the record's manifest places.
+                // What the document took in is in the app's store: the lists it reads must hold
+                // every row the document's manifest places.
                 let _ = used.app.host().store().load_short();
                 moved |= used.app.refresh(runtime);
             }
@@ -1727,9 +1727,9 @@ impl Hosted {
         }
     }
 
-    /// Answer the shell's handoff step `request`: a checkpoint writes the record's on-disk copy
+    /// Answer the shell's handoff step `request`: a checkpoint writes the document's on-disk copy
     /// and is done; a retirement is refused with why, as the tilolang host does not move a
-    /// record to another workspace; an owner view is presentation the instance has no window
+    /// document to another workspace; an owner view is presentation the instance has no window
     /// of its own for, and wants no answer.
     fn handoff(&mut self, request: &collaboration::handoff::HandoffRequest) {
         use collaboration::handoff::{HandoffReport, HandoffRequest};
@@ -1745,11 +1745,11 @@ impl Hosted {
                 tracing::warn!(
                     app = self.spec.app,
                     instance = self.spec.instance,
-                    "the shell asked a tilolang instance to retire its record, which it cannot"
+                    "the shell asked a tilolang instance to retire its document, which it cannot"
                 );
                 HandoffReport::Failed {
                     token: *token,
-                    reason: "a tilolang app's instance does not move its record to another \
+                    reason: "a tilolang app's instance does not move its document to another \
                              workspace"
                         .to_owned(),
                 }
@@ -1772,9 +1772,9 @@ impl Hosted {
         }
     }
 
-    /// What a press of a control that names a flag field asks the record's own edit of it, found
+    /// What a press of a control that names a flag field asks the document's own edit of it, found
     /// as `edit` (a box a view binds to a field and gives no action of its own): to mark the field
-    /// the other way. `None` where `edit` names no record, or `field` is not a flag of it.
+    /// the other way. `None` where `edit` names no document, or `field` is not a flag of it.
     fn toggled(&self, edit: &ActionAddress, field: &str) -> Option<String> {
         let host = self.instance.host()?;
         let read = host.read_content(Some(&edit.resource)).ok()?;
@@ -1794,9 +1794,9 @@ impl Hosted {
     }
 
     /// The action `address` runs, built through the specs the window publishes: the one it names,
-    /// or — where it names a field of a record instead (a box the view binds to the field and gives
-    /// no action of its own) — the record's own edit of that field, found as any action on the
-    /// record is, with the value a press of it gives.
+    /// or — where it names a field of a document instead (a box the view binds to the field and gives
+    /// no action of its own) — the document's own edit of that field, found as any action on the
+    /// document is, with the value a press of it gives.
     fn encode_named(
         &self,
         surface: &Surface,
@@ -1828,7 +1828,7 @@ impl Hosted {
     }
 
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
-    /// now, and run it: a record action is applied as the invoker's step; the host's own
+    /// now, and run it: a document action is applied as the invoker's step; the host's own
     /// vocabulary is answered by the runtime, and what it commits is the invoker's.
     fn invoke(
         &mut self,
@@ -1850,7 +1850,7 @@ impl Hosted {
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         // The action is applied as soon as it is built: the run that builds it is the one whose
-        // writes the record commits.
+        // writes the document commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
         let (address, encoded) = host.carrying_out(&invoker.acting.by, || {
             self.encode_named(&surface, &shown, address, argument)
@@ -1864,7 +1864,7 @@ impl Hosted {
             ));
         }
         if encoded.type_id == EDIT_TYPE {
-            // A history verb, on the record as the invoker's own step.
+            // A history verb, on the document as the invoker's own step.
             let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             let value = self
@@ -1940,7 +1940,7 @@ impl Hosted {
         ))
     }
 
-    /// Answer `read` (`tilo_resource::read`): what the record holds, through the runtime, now or
+    /// Answer `read` (`tilo_resource::read`): what the document holds, through the runtime, now or
     /// at a past version.
     fn read(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
         let args: serde_json::Value = if payload.is_empty() {
@@ -1956,7 +1956,7 @@ impl Hosted {
                 .clone()
                 .fork_at(&heads)
                 .map_err(|error| error.to_string())?;
-            // A runtime of its own over the frozen record, as a framework app reads a past
+            // A runtime of its own over the frozen document, as a framework app reads a past
             // version; a read runs no action.
             let past = Host::new(
                 &frozen,
@@ -1996,7 +1996,7 @@ impl Hosted {
 
     /// The resources the window shows, as published ids, with the resources that hold them: a
     /// row's actions are published on its own resource, and a resource publishes with what
-    /// holds it (the record's tree). What the surface a window reads is bounded by.
+    /// holds it (the document's tree). What the surface a window reads is bounded by.
     fn shown(&self) -> Vec<String> {
         let mut out = std::collections::BTreeSet::new();
         for id in self.instance.shown_resources() {
@@ -2020,7 +2020,7 @@ impl Hosted {
         };
         // Nothing the surface is built from changed since the broker took it: a keystroke into
         // a field nothing published reads, and every turn that changed nothing, cost no more
-        // with ten thousand records or items than with one.
+        // with ten thousand documents or items than with one.
         let shown = self.shown();
         let inputs = surface.inputs(&shown);
         let whole = (inputs.0, inputs.1.clone(), inputs.2);
@@ -2040,7 +2040,7 @@ impl Hosted {
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
         let resources = surface.resources(Some(&shown));
-        // The record's history names an action by the label the window offers it under.
+        // The document's history names an action by the label the window offers it under.
         self.record.learn_labels(&resources);
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -2164,7 +2164,7 @@ impl Hosted {
             }
             Err(refused) => self.instance.failed(refused.message),
         }
-        // The press ran: once it is in the record this frame sends what it opened, then tells
+        // The press ran: once it is in the document this frame sends what it opened, then tells
         // the window it ran, so what the person typed after it goes there.
         self.instance.press_ran(press);
         true
@@ -2258,7 +2258,7 @@ impl Hosted {
         true
     }
 
-    /// Hand the broker `delta` of the instance's surface. Whether it took it: a record on this
+    /// Hand the broker `delta` of the instance's surface. Whether it took it: a document on this
     /// device alone has no broker, and its window's catalogue is all there is to publish to.
     fn send_surface(&mut self, delta: SurfaceDelta) -> bool {
         self.record.is_local()
@@ -2268,31 +2268,31 @@ impl Hosted {
                 .send(CollabRequest::PublishActionSurface { delta })
     }
 
-    /// Write what the record holds to its on-disk copy, as the instance ends.
+    /// Write what the document holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
         let _code = self.scope.enter();
         self.record.flush();
         self.personal.flush();
     }
 
-    /// What the workspace's record of each person's own state holds, as this instance holds it.
+    /// What the workspace's document of each person's own state holds, as this instance holds it.
     #[must_use]
     pub fn personal(&self) -> &tilolang_tilo::personal::PersonalState {
         self.personal.state()
     }
 }
 
-/// Another app the app uses, read from its own record.
+/// Another app the app uses, read from its own document.
 struct Used {
-    record: ReadRecord,
+    record: ReadDocument,
     app: UsedApp,
-    /// Whether the record took in a change its readings have not been read again for.
+    /// Whether the document took in a change its readings have not been read again for.
     moved: bool,
 }
 
-/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `record`'s connection
+/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `document`'s connection
 /// and read through its own package.
-fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<Used> {
+fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceDocument) -> Vec<Used> {
     let workspace = record.route().cluster_id;
     bundle
         .imports
@@ -2306,7 +2306,7 @@ fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<U
                 })
                 .ok()?;
             let route = crate::route_under(&import.meta, records, workspace, &spec.person);
-            let mut read = ReadRecord::join(route, record.manager_mut(), &import.meta.record_kind());
+            let mut read = ReadDocument::join(route, record.manager_mut(), &import.meta.resource_type());
             read.hold_in(app.host());
             Some(Used {
                 record: read,
@@ -2515,7 +2515,7 @@ fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_action
 enum Applying {
     /// The change has not arrived on its connection yet.
     Awaiting(Vec<u8>),
-    /// It arrived; it runs once what the record publishes is built.
+    /// It arrived; it runs once what the document publishes is built.
     Arrived(Box<runtime_portal::tilolang_host::Change>),
     /// It ran: its answer, sent once the workspace was handed what it wrote.
     Ran(serde_json::Value),
@@ -2523,43 +2523,43 @@ enum Applying {
     Answered,
 }
 
-/// The origin of one record applying one change: an agent task's invocation the broker
-/// admitted (`docs/designs/app-language/agents.md`, "Reading records outside their app"). No
-/// window and no instance: the record on its connection, which holds the app's custody as an
+/// The origin of one document applying one change: an agent task's invocation the broker
+/// admitted (`docs/designs/app-language/agents.md`, "Reading documents outside their app"). No
+/// window and no instance: the document on its connection, which holds the app's custody as an
 /// instance's does, and the app's package in a runtime of its own. The action's code runs
-/// against the record as it is when the change is applied, so its requirements are decided on
+/// against the document as it is when the change is applied, so its requirements are decided on
 /// what others wrote since the task read it; what it wrote is applied as the invoker's step
 /// and handed to the workspace, and the answer says how it differed from the task's preview.
 pub struct Applier {
     spec: Spec,
-    record: InstanceRecord,
+    record: InstanceDocument,
     host: Host,
     surface: Rc<Surface>,
     /// The app's resource, by its id and kind: where its history verbs are published.
     resource: (String, String),
     connection: std::os::unix::net::UnixStream,
     applying: Applying,
-    /// Whether the answer carries the whole record: the root this change needed was made for
+    /// Whether the answer carries the whole document: the root this change needed was made for
     /// it.
     whole: bool,
-    /// The scope the change's code runs in, the record's content store registered for it.
-    scope: RecordScope,
+    /// The scope the change's code runs in, the document's content store registered for it.
+    scope: DocumentScope,
 }
 
 impl Applier {
-    /// The origin of `record` for `bundle`'s app, taking its change on `connection`.
+    /// The origin of `document` for `bundle`'s app, taking its change on `connection`.
     pub fn open(
         spec: Spec,
-        record: InstanceRecord,
+        record: InstanceDocument,
         bundle: &Bundle,
         phrases: &Phrases,
         wake: Waker,
         connection: std::os::fd::OwnedFd,
     ) -> Result<Self, String> {
         let mut record = record;
-        let scope = RecordScope::of(&record, &wake);
+        let scope = DocumentScope::of(&record, &wake);
         let _code = scope.enter();
-        // The host opens without the record, which its store holds from here on: what the
+        // The host opens without the document, which its store holds from here on: what the
         // origin applies is written there, and read there at once.
         let host = Host::open(
             tilolang_tilo::host::Opening {
@@ -2573,7 +2573,7 @@ impl Applier {
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
-        // A change made to the app's record at its origin reads in the language the app's window
+        // A change made to the app's document at its origin reads in the language the app's window
         // would read in: the person's, not this host process's.
         let phrases = window_phrases(phrases, &spec, bundle);
         let activate = tilo_actions::remote::activate_spec(
@@ -2607,9 +2607,9 @@ impl Applier {
         &self.spec
     }
 
-    /// The record it changes, as it holds it.
+    /// The document it changes, as it holds it.
     #[must_use]
-    pub fn record(&self) -> &InstanceRecord {
+    pub fn record(&self) -> &InstanceDocument {
         &self.record
     }
 
@@ -2636,7 +2636,7 @@ impl Applier {
     /// once it can, and answer once the workspace was handed what it wrote. Whether anything changed.
     pub fn turn(&mut self) -> bool {
         let _code = self.scope.enter();
-        let mut changed = self.record.take_in_record();
+        let mut changed = self.record.take_in_document();
         self.surface.update();
         let state = std::mem::replace(&mut self.applying, Applying::Answered);
         self.applying = match state {
@@ -2704,7 +2704,7 @@ impl Applier {
             .map_err(|error| format!("the session said a change that does not decode: {error}"))
     }
 
-    /// Make the app's root when `change` addresses it and the record does not hold it yet: the
+    /// Make the app's root when `change` addresses it and the document does not hold it yet: the
     /// one per-workspace resource of each of the package's root types is made the first time it
     /// is wanted, here as in a window that opens it, and a task reads it from the package
     /// whether or not any window ever made it. A package may declare several roots
@@ -2715,7 +2715,7 @@ impl Applier {
         change: &runtime_portal::tilolang_host::Change,
     ) -> Result<bool, String> {
         let prefix = tilolang_tilo::publish::resource_id(&self.spec.app, "");
-        // The resource's record: an item's path starts with it.
+        // The resource's document: an item's path starts with it.
         let Some(doc) = change
             .resource
             .strip_prefix(&prefix)
@@ -2745,7 +2745,7 @@ impl Applier {
         self.host
             .store()
             .writing_as(&invoker.acting.by, || {
-                self.host.root_record(&self.spec.app, ty)
+                self.host.root_resource(&self.spec.app, ty)
             })
             .map_err(|error| error.to_string())?;
         let ambient: Option<ActionContext> = change
@@ -2755,8 +2755,8 @@ impl Applier {
             .transpose()
             .map_err(|error| format!("the change's context does not decode: {error}"))?;
         let ambient = ambient.map(|context| context.with_invoker(invoker.clone()));
-        // A record without its root is one the task read as none, or as what an app's window
-        // never shared: the answer carries the whole record, which is small then.
+        // A document without its root is one the task read as none, or as what an app's window
+        // never shared: the answer carries the whole document, which is small then.
         self.whole = true;
         for committed in self.host.take_committed() {
             self.record
@@ -2767,7 +2767,7 @@ impl Applier {
         Ok(true)
     }
 
-    /// Run `change` against the record as it is now and apply what it wrote: its answer.
+    /// Run `change` against the document as it is now and apply what it wrote: its answer.
     fn apply(&mut self, change: &runtime_portal::tilolang_host::Change) -> serde_json::Value {
         let invoker: ActionInvoker = match serde_json::from_value(change.invoker.clone()) {
             Ok(invoker) => invoker,
@@ -2793,7 +2793,7 @@ impl Applier {
         let resources = self.surface.naming(resources, &address);
         let caller = Caller::from(&invoker);
         // The action is applied as soon as it is built: the run that builds it is the one whose
-        // writes the record commits, as the invoker's.
+        // writes the document commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = self.host.carrying_out(&invoker.acting.by, || {
             tilo_actions::api::encode_json(&resources, &address, &change.arguments)
@@ -2811,7 +2811,7 @@ impl Applier {
                     action = address.action,
                     offered = resources.len(),
                     %error,
-                    "the record's origin does not offer the change it was handed"
+                    "the document's origin does not offer the change it was handed"
                 );
                 return serde_json::json!({"failed": error.to_string()});
             }
@@ -2840,7 +2840,7 @@ impl Applier {
         }
         if encoded.type_id != ACTION_TYPE {
             return serde_json::json!({"failed": format!(
-                "{} is no change of the record",
+                "{} is no change of the document",
                 address.action
             )});
         }
@@ -2873,7 +2873,7 @@ impl Applier {
         })
     }
 
-    /// What the record wrote since it held `before`, as the change a caller reads back.
+    /// What the document wrote since it held `before`, as the change a caller reads back.
     fn wrote_since(&self, before: &tilolang_tilo::chunk::Stamps) -> String {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(before))

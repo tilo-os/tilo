@@ -404,7 +404,7 @@ fn query_shown(session: &Session) -> Option<tilo_session_core::layout::LayoutQue
     reading
         .places
         .iter()
-        .find(|place| place.record.starts_with("shell:query:"))
+        .find(|place| place.resource.starts_with("shell:query:"))
         .and_then(|place| layout.query_of(place.key.parse().ok()?))
 }
 

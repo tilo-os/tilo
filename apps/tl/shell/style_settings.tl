@@ -2,9 +2,9 @@
 /// shell.md` §6): without an agent, in the one place a person's settings live, and with an agent,
 /// by the same actions the person's controls run.
 ///
-/// Every setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` record), so
+/// Every setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` document), so
 /// a person who never touches it gets the style as it ships, and the values live in the
-/// layout's own record, synced with the person's devices, with history and undo.
+/// layout's own document, synced with the person's devices, with history and undo.
 ///
 /// Each setting is one action, so an agent — the canvas conversation or the REPL — changes it
 /// with the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell,
@@ -113,9 +113,9 @@ view style_settings_body() {
     } else if chosen == "so.tilo.shell:frameless" {
         frameless_style_settings(s)
     } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
-        // A style another package declares: its own settings are its own record's, which the
+        // A style another package declares: its own settings are its own document's, which the
         // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
-        // way: by declaring actions on its own record"). Its description stands here, and
+        // way: by declaring actions on its own document"). Its description stands here, and
         // Settings opens it.
         ui.Text(
             "{style_label(declared)} comes from {declared.package}, and its settings are its package's own.",

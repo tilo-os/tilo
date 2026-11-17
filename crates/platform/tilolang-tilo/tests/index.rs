@@ -1,5 +1,5 @@
 //! The index the store reads lists, filters and search from: kept change by change, it holds
-//! what deriving it from the record anew holds, whatever replicas wrote and in which order; an
+//! what deriving it from the document anew holds, whatever replicas wrote and in which order; an
 //! index stamped with older heads catches up; a corrupt one is built anew and never read.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,14 +18,14 @@ use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::index::{Contents, Index, Opened};
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{APP as APP_COUNTER, COUNTER, Replica, TODO, field_id, type_id};
 
 const APP: &str = "so.tilo.todo";
 const KIND: &str = "tl.so.tilo.todo.TodoList";
 
-/// What the list's item says, and the chunk above the record it starts: the record's own run is
+/// What the list's item says, and the chunk above the document it starts: the document's own run is
 /// full, so the item of [`run_chunk`] goes there.
 const ITEM: &str = "in a run";
 const FIRST_ABOVE: ChunkNo = 1;
@@ -64,7 +64,7 @@ fn plan(replica: &Replica, name: &str, args: Json, root: &str) -> DynAction {
         .unwrap()
 }
 
-fn edit(replica: &mut Replica, root: &str, edit: Edit<tilolang_tilo::record::DynRecord>) {
+fn edit(replica: &mut Replica, root: &str, edit: Edit<tilolang_tilo::resource::DynResource>) {
     replica.apply(&DynAction {
         app: APP.to_owned(),
         kind: KIND.to_owned(),
@@ -198,7 +198,7 @@ fn random_change(rng: &mut Rng, replica: &mut Replica, root: &str, step: usize) 
     }
 }
 
-/// What deriving the index from `replica`'s record anew holds.
+/// What deriving the index from `replica`'s document anew holds.
 fn anew(replica: &Replica, lock: &str) -> tilolang_tilo::index::Contents {
     let mut doc = replica.doc.clone();
     let fresh = Replica::new("fresh", doc.fork(), &[(TODO, lock)]).0;
@@ -210,7 +210,7 @@ fn kept(replica: &Replica) -> tilolang_tilo::index::Contents {
 }
 
 /// The rows two indexes hold differently, as `which key => value`: what a person reads when
-/// the index one replica keeps is not what deriving its record anew holds.
+/// the index one replica keeps is not what deriving its document anew holds.
 fn differing(kept: &Contents, anew: &Contents) -> Vec<String> {
     fn rows<K: std::fmt::Debug + Ord, V: std::fmt::Debug>(
         held: &BTreeMap<K, V>,
@@ -238,7 +238,7 @@ fn differing(kept: &Contents, anew: &Contents) -> Vec<String> {
     out
 }
 
-/// The index `replica` keeps holds what deriving its record anew holds, as `what` names them.
+/// The index `replica` keeps holds what deriving its document anew holds, as `what` names them.
 fn assert_same(replica: &Replica, lock: &str, what: &str) {
     let (held, fresh) = (kept(replica), anew(replica, lock));
     assert!(held == fresh, "{what}: {:#?}", differing(&held, &fresh));
@@ -253,7 +253,7 @@ fn workspace() -> (Replica, String, String) {
     (ada, root.doc, lock)
 }
 
-/// What a person sees of the list: the rows of its `items`, and the items the record holds.
+/// What a person sees of the list: the rows of its `items`, and the items the document holds.
 fn listed(host: &Host, root: &str) -> Vec<String> {
     let meta = &host.packages()[0].meta;
     let list = ResourceRef::root(root, type_id(meta, "TodoList"));
@@ -266,13 +266,13 @@ fn listed(host: &Host, root: &str) -> Vec<String> {
         .ids()
 }
 
-/// The maps the record `root` of `replica` keeps its items in.
+/// The maps the document `root` of `replica` keeps its items in.
 fn item_maps(replica: &Replica, root: &str) -> Vec<automerge::ObjId> {
     let held = tilolang_tilo::reads::resource_obj(&replica.doc, APP, root).unwrap();
     tilolang_tilo::containers::maps(&replica.doc, &held, tilolang_runtime::place::ITEMS_KEY)
 }
 
-/// How many maps the record `root` of `replica` keeps items in: one once the record has folded
+/// How many maps the document `root` of `replica` keeps items in: one once the document has folded
 /// the copies a replica made into the one it keeps.
 fn maps_holding_items(replica: &Replica, root: &str) -> usize {
     use automerge::ReadDoc as _;
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
     fn what_two_replicas_made_before_they_met_is_one;
 
     phase an_item_each_replica_added_before_they_met_is_the_lists_on_both;
-    // Each replica adds the list's first item before the two meet: the record is made with the map
+    // Each replica adds the list's first item before the two meet: the document is made with the map
     // its items go in, so both items go into it and both are the list's.
     {
         let (mut ada, root, lock) = workspace();
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             item_maps(&ada, &root).len(),
             1,
-            "the record is made with the map its items go in"
+            "the document is made with the map its items go in"
         );
         let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
         ada.apply(&ada_first);
@@ -321,14 +321,14 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one;
-    // A record written before the platform made its map of items with it, two replicas that each
+    phase a_document_that_holds_two_maps_of_items_reads_both_and_keeps_one;
+    // A document written before the platform made its map of items with it, two replicas that each
     // added an item to it before they met, and a write on either side: both items read on both, and
-    // the record folds the two maps into one, wherever the write was made.
+    // the document folds the two maps into one, wherever the write was made.
     {
         for write_by in ["ada", "grace"] {
             let (mut ada, root, lock) = workspace();
-            // The record as an earlier version of the platform left it: no map of items at all.
+            // The document as an earlier version of the platform left it: no map of items at all.
             let held = tilolang_tilo::reads::resource_obj(&ada.doc, APP, &root).unwrap();
             let items_key = tilolang_runtime::place::ITEMS_KEY;
             {
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
                 );
             }
 
-            // A write on one side folds the two maps into the one the record keeps, and both items
+            // A write on one side folds the two maps into the one the document keeps, and both items
             // stay the list's on both.
             let writer = if write_by == "ada" {
                 &mut ada
@@ -376,7 +376,7 @@ tilo_test_env::scenario! {
                 assert_eq!(
                     maps_holding_items(replica, &root),
                     1,
-                    "{write_by}: {name}: the record keeps one map of items"
+                    "{write_by}: {name}: the document keeps one map of items"
                 );
                 assert_eq!(
                     items(replica, &root).len(),
@@ -397,16 +397,16 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_first_record_each_replica_made_of_a_new_workspace_is_the_apps_on_both;
-    // Each replica founds the workspace with the first record of the app it makes, before the two
-    // meet: each made the workspace's `tl` map and the app's map of its own. Both records are the
+    phase the_first_document_each_replica_made_of_a_new_workspace_is_the_apps_on_both;
+    // Each replica founds the workspace with the first document of the app it makes, before the two
+    // meet: each made the workspace's `tl` map and the app's map of its own. Both documents are the
     // app's on both, and the index holds what deriving it anew holds; the next write keeps one map
     // of each, on both.
     {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
         let lock = packages[0].ids.clone();
         let mut grace = Replica::new("grace", AutoCommit::new(), &[(TODO, &lock)]).0;
-        // Each device opens the app and makes its first record on it, offline.
+        // Each device opens the app and makes its first document on it, offline.
         ada.host.root_of(APP).unwrap();
         ada.commit();
         create(&mut ada, "ada-list");
@@ -431,7 +431,7 @@ tilo_test_env::scenario! {
             for id in ["ada-list", "grace-list"] {
                 assert!(
                     tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
-                    "{name}: {id} is one of the app's records"
+                    "{name}: {id} is one of the app's documents"
                 );
                 assert!(
                     replica.host.store().record(id).is_ok(),
@@ -446,7 +446,7 @@ tilo_test_env::scenario! {
             assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
         }
 
-        // A write on one side keeps one map of each, with both records in it, on both.
+        // A write on one side keeps one map of each, with both documents in it, on both.
         create(&mut grace, "later");
         ada.sync_with(&mut grace);
         for (name, replica) in [("ada", &ada), ("grace", &grace)] {
@@ -465,14 +465,14 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_first_record_each_replica_made_of_a_new_app_is_the_apps_on_both;
+    phase the_first_document_each_replica_made_of_a_new_app_is_the_apps_on_both;
     // The same for the app's map alone: the workspace's `tl` map is one, and each replica makes
-    // the app's first record of its own, so the two app maps met.
+    // the app's first document of its own, so the two app maps met.
     {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
         let counter = packages[0].ids.clone();
         let lock = packages[1].ids.clone();
-        // The workspace holds the counter's records; the todo app's map is made by the first record
+        // The workspace holds the counter's documents; the todo app's map is made by the first document
         // of it, which each device makes on its own.
         ada.host.root_of(APP_COUNTER).unwrap();
         ada.commit();
@@ -496,7 +496,7 @@ tilo_test_env::scenario! {
             for id in ["ada-list", "grace-list"] {
                 assert!(
                     tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
-                    "{name}: {id} is one of the app's records"
+                    "{name}: {id} is one of the app's documents"
                 );
                 assert!(
                     replica.host.store().record(id).is_ok(),
@@ -552,7 +552,7 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
 }
 
 /// Remove the item `id` of the list `root` from its items, as the list's Delete does.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn remove(replica: &mut Replica, root: &str, id: &str) {
     replica.apply(&DynAction {
         app: APP.to_owned(),
@@ -572,7 +572,7 @@ fn remove(replica: &mut Replica, root: &str, id: &str) {
 }
 
 /// Put the item `id` back into the items of the list `root`, at the order key `key`.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn place_back(replica: &mut Replica, root: &str, id: &str, key: &str) {
     let meta = replica.host.packages()[0].meta.clone();
     replica.apply(&DynAction {
@@ -602,7 +602,7 @@ fn place_back(replica: &mut Replica, root: &str, id: &str, key: &str) {
 
 /// The person of `replica` takes their last step back, or makes it again, as their window's
 /// Undo and Redo do.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn step(replica: &mut Replica, again: bool) {
     use collaboration::history_source::verbs::HistoryEdit;
     replica.history(&if again {
@@ -620,8 +620,8 @@ fn step(replica: &mut Replica, again: bool) {
 
 /// An item added, one removed, the removal undone and made again, one put back where it left
 /// from, and a peer's change meanwhile: the index kept change by change holds what deriving the
-/// record anew holds after every one of them, on both replicas.
-#[cfg(feature = "record")]
+/// document anew holds after every one of them, on both replicas.
+#[cfg(feature = "document")]
 #[test]
 fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds_through_undos() {
     for seed in [7_u64, 1234, 98_765, 654_321] {
@@ -642,8 +642,8 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds_through_undo
                     known.push(id.clone());
                 }
             }
-            // The items the record holds out of the list: ones removed, never ones whose making
-            // a step took back, which the record has no map of.
+            // The items the document holds out of the list: ones removed, never ones whose making
+            // a step took back, which the document has no map of.
             let gone: Vec<&String> = known
                 .iter()
                 .filter(|id| !held.contains(id) && ada.host.store().record(id).is_ok())
@@ -713,8 +713,8 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds_through_undo
 
 /// Undoing a removal puts the item back into the index change by change, and making the
 /// removal again (a redo) takes it out again, its row of what left kept: the index is built
-/// anew neither way, and it holds what deriving the record anew holds.
-#[cfg(feature = "record")]
+/// anew neither way, and it holds what deriving the document anew holds.
+#[cfg(feature = "document")]
 #[test]
 fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
     let (mut ada, root, lock) = workspace();
@@ -739,7 +739,7 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
     assert_eq!(
         items(&ada, &root).len(),
         3,
-        "the undo puts the item back into the record"
+        "the undo puts the item back into the document"
     );
     assert_eq!(after.builds, before.builds, "the index is not built anew");
     assert_eq!(
@@ -774,9 +774,9 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
 }
 
 tilo_test_env::scenario! {
-    fn a_kept_index_catches_up_with_its_record;
+    fn a_kept_index_catches_up_with_its_document;
 
-    phase what_the_store_writes_reads_back_before_the_record_holds_it;
+    phase what_the_store_writes_reads_back_before_the_document_holds_it;
     {
         let (mut ada, root, lock) = workspace();
         for step in 0..4 {
@@ -880,7 +880,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_index_stamped_with_older_heads_catches_up_with_the_record;
+    phase an_index_stamped_with_older_heads_catches_up_with_the_document;
     {
         let (mut ada, root, lock) = workspace();
         for step in 0..5 {
@@ -918,7 +918,7 @@ tilo_test_env::scenario! {
         );
         drop(again);
 
-        // Opened again over the same record: nothing to catch up, nothing read of the record.
+        // Opened again over the same document: nothing to catch up, nothing read of the document.
         let third = kept_in(dir.path(), &ada.doc, &lock);
         let stats = third.store().stats();
         assert_eq!((stats.builds, stats.catch_ups), (0, 0));
@@ -928,7 +928,7 @@ tilo_test_env::scenario! {
     phase what_the_store_writes_while_its_index_catches_up_reads_back_at_once;
     // A write made while the index catches up off the frame reads back at once: the window reads
     // the rows the index held while the rest is derived, and the store's own writes over them, so a
-    // record just made is never missing from what the window reads.
+    // document just made is never missing from what the window reads.
     {
         let (mut ada, root, lock) = workspace();
         let dir = TempDir::new("catching-up");
@@ -948,7 +948,7 @@ tilo_test_env::scenario! {
                 record: Some(&ada.doc),
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
-                // A window with frames: what the record gained is derived off the frame.
+                // A window with frames: what the document gained is derived off the frame.
                 wake: Some(Arc::new(|| {})),
             },
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
@@ -992,11 +992,11 @@ tilo_test_env::scenario! {
         assert!(host.index_ready());
         let after = listed();
         assert!(after.contains(&written[0]), "and once the index caught up");
-        assert_eq!(after.len(), 4, "beside the three the record gained");
+        assert_eq!(after.len(), 4, "beside the three the document gained");
     }
 
-    phase a_write_the_record_takes_while_its_index_catches_up_never_goes_missing;
-    // A write the record takes while the index still catches up off the frame reads back all along:
+    phase a_write_the_document_takes_while_its_index_catches_up_never_goes_missing;
+    // A write the document takes while the index still catches up off the frame reads back all along:
     // the index does not hold it until its next step is taken in, and the overlay keeps it until
     // then — once, never beside the row the index brings, and never after.
     {
@@ -1039,7 +1039,7 @@ tilo_test_env::scenario! {
         };
         let before = listed();
         let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-        // Write after write, each taken by the record while the index's step is still being
+        // Write after write, each taken by the document while the index's step is still being
         // derived: no frame has taken that step in, so the index holds none of them.
         let mut written: Vec<String> = Vec::new();
         for step in 0..WRITES {
@@ -1071,7 +1071,7 @@ tilo_test_env::scenario! {
                 assert_eq!(
                     now.iter().filter(|listed| *listed == id).count(),
                     1,
-                    "each write the record took is listed once while the index catches up"
+                    "each write the document took is listed once while the index catches up"
                 );
             }
         }
@@ -1092,7 +1092,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             after.len(),
             3 + WRITES,
-            "beside the three the record gained"
+            "beside the three the document gained"
         );
         assert!(
             host.store().overlay_empty(),
@@ -1144,7 +1144,7 @@ tilo_test_env::scenario! {
 
         let host = kept_in(dir.path(), &ada.doc, &lock);
         let read = || host.runtime().read(&at, &text_field).unwrap();
-        // Never what the damaged bytes say: the record answers while the index is not trusted.
+        // Never what the damaged bytes say: the document answers while the index is not trusted.
         assert_eq!(read(), Value::text("oat milk"));
         host.wait_index();
         assert!(host.index_ready());
@@ -1217,7 +1217,7 @@ fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
 tilo_test_env::scenario! {
     fn a_window_opens_over_its_index;
 
-    phase a_store_without_the_record_opens_over_the_index_and_takes_the_record_later;
+    phase a_store_without_the_document_opens_over_the_index_and_takes_the_document_later;
     {
         let (mut ada, root, lock) = workspace();
         for step in 0..5 {
@@ -1246,10 +1246,10 @@ tilo_test_env::scenario! {
         .unwrap();
         host.load_builtin(TODO, &lock).unwrap();
         assert!(host.index_ready());
-        assert!(!host.store().has_record());
+        assert!(!host.store().has_document());
         let mut view = host.open_main(APP).unwrap();
         assert_eq!(host.store().read_stats().doc.entries, 0);
-        // The rows the index holds, before the record is had.
+        // The rows the index holds, before the document is had.
         let shown = |view: &tilolang_runtime::ViewInstance| {
             let mut texts = Vec::new();
             texts_of(view.tree(), &mut texts);
@@ -1261,7 +1261,7 @@ tilo_test_env::scenario! {
             shown(&view)
         );
         assert!(!shown(&view).contains(&"late".to_owned()));
-        // The record arrives: the index catches up and the view shows what it holds.
+        // The document arrives: the index catches up and the view shows what it holds.
         host.sync_from(&ada.doc);
         view.poll_patches().unwrap();
         assert!(
@@ -1275,7 +1275,7 @@ tilo_test_env::scenario! {
     phase a_window_opens_over_the_index_an_earlier_window_kept;
     {
         // The window that closed wrote its index to the disk as it ended: the next window of the
-        // workspace opens over it, which is read, and nothing is derived from the record again.
+        // workspace opens over it, which is read, and nothing is derived from the document again.
         let (ada, root, lock) = workspace();
         let dir = TempDir::new("kept-open");
         let first = kept_in(dir.path(), &ada.doc, &lock);
@@ -1303,9 +1303,9 @@ tilo_test_env::scenario! {
         let _ = root;
     }
 
-    phase a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads;
+    phase a_window_over_the_document_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads;
     {
-        // A window of another app in the workspace: the run chunk above the record holds the list's
+        // A window of another app in the workspace: the run chunk above the document holds the list's
         // items, and nothing of what this window reads. Its index holds every row of its own, so it
         // counts them whole rather than waiting for a chunk it never needs.
         let (chunks, _root, _item, _lock) = run_chunk();
@@ -1336,7 +1336,7 @@ tilo_test_env::scenario! {
                 .map(|(number, _, _)| number)
                 .collect::<Vec<ChunkNo>>(),
             [chunk::FIRST],
-            "the window reads the record's own chunk"
+            "the window reads the document's own chunk"
         );
         assert!(
             host.store().index_whole(),
@@ -1345,7 +1345,7 @@ tilo_test_env::scenario! {
         host.persist_index();
         drop(host);
 
-        // Opened again over the record and the index it kept: the index is read, and covers what its
+        // Opened again over the document and the index it kept: the index is read, and covers what its
         // window reads without a stamp of another app's chunk.
         let again = open();
         again.load_builtin(COUNTER, &counter).unwrap();
@@ -1360,9 +1360,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows;
+    phase a_window_over_the_document_alone_reads_the_run_chunk_that_holds_its_rows;
     {
-        // The same record, the app whose rows the run chunk holds: the index does not cover it until
+        // The same document, the app whose rows the run chunk holds: the index does not cover it until
         // the chunk is read, and says so. A store that can read the chunk reads it, and the item it
         // holds is in the list.
         let (chunks, root, item, lock) = run_chunk();
@@ -1384,7 +1384,7 @@ tilo_test_env::scenario! {
         );
         drop(behind);
 
-        // A host holding the record's chunks, the one copy of each.
+        // A host holding the document's chunks, the one copy of each.
         let host = Host::open(Opening::default(), Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         host.adopt(chunks);
         host.load_builtin(TODO, &lock).unwrap();
@@ -1464,7 +1464,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             host.store().read_stats().doc.entries,
             0,
-            "the record not walked"
+            "the document not walked"
         );
 
         // A change committed to the workspace is published as soon as the window has it.
@@ -1565,8 +1565,8 @@ fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
         .expect("the action applies");
 }
 
-/// What a replica that was sent the record alone has of Ada's workspace: the record, and the run
-/// chunk the record's manifest names as a document of its own. The record's own run is full, so
+/// What a replica that was sent the document alone has of Ada's workspace: the document, and the run
+/// chunk the document's manifest names as a document of its own. The document's own run is full, so
 /// the list's item starts the chunk above it, as the items of a long list do. Its list, the item
 /// the chunk holds, and the lock the package's ids are read with.
 fn run_chunk() -> (Chunks, String, String, String) {
@@ -1593,7 +1593,7 @@ fn run_chunk() -> (Chunks, String, String, String) {
             _ => None,
         })
         .expect("the action inserts the item");
-    // The manifest the action writes is the record's, and the item is the chunk's: each change
+    // The manifest the action writes is the document's, and the item is the chunk's: each change
     // is written where the action addressed it.
     let mut record = ada.doc.clone();
     let mut run = AutoCommit::new();
@@ -1603,12 +1603,12 @@ fn run_chunk() -> (Chunks, String, String, String) {
             ..action.clone()
         };
         match edit.chunk() {
-            // The run's manifest is the record's, wherever the action addressed it.
+            // The run's manifest is the document's, wherever the action addressed it.
             Some(chunk::FIRST) | None => apply_recorded(&mut record, &one),
             Some(number) => {
                 assert_eq!(
                     number, FIRST_ABOVE,
-                    "the item starts the chunk above the record"
+                    "the item starts the chunk above the document"
                 );
                 apply_recorded(&mut run, &one);
             }
@@ -1645,12 +1645,12 @@ fn maps_holding(replica: &Replica, path: &[&str]) -> usize {
         .count()
 }
 
-/// The ids of the records of the app the workspace holds.
+/// The ids of the documents of the app the workspace holds.
 fn ids(replica: &Replica) -> Vec<String> {
     tilolang_tilo::action::resource_ids(&replica.doc, APP)
 }
 
-/// A record of the todo list `id`, made by the store as a window's creation makes one.
+/// A document of the todo list `id`, made by the store as a window's creation makes one.
 fn create(replica: &mut Replica, id: &str) {
     let list = type_id(
         &replica
@@ -1666,7 +1666,7 @@ fn create(replica: &mut Replica, id: &str) {
         .host
         .store()
         .create_with_id(
-            &tilolang_runtime::store::NewRecord {
+            &tilolang_runtime::store::NewResource {
                 ty: list,
                 app: tilolang_runtime::ids::AppId::from(APP),
                 fields: Vec::new(),

@@ -1,9 +1,9 @@
-//! The index: what the workspace record holds of one package's resources, kept on disk, paged, and
-//! stamped with the record heads it reflects (docs/designs/app-language/search.md, "Who indexes").
+//! The index: what the workspace document holds of one package's resources, kept on disk, paged, and
+//! stamped with the document heads it reflects (docs/designs/app-language/search.md, "Who indexes").
 //!
 //! The store reads lists, filters and the fields rows show from the index, not from the
-//! record, so opening a window costs what it shows; search and publication read the same
-//! index. It holds, per resource (a package's record, or an item of one, by its id `doc/item`):
+//! document, so opening a window costs what it shows; search and publication read the same
+//! index. It holds, per resource (a package's document, or an item of one, by its id `doc/item`):
 //!
 //! * every field a view reads but a collection's: registers, counters, texts, sets and maps,
 //!   with the resource's type and, for an item, the collection it is in and its order key;
@@ -12,8 +12,8 @@
 //!   counter), a list per value of the items holding it, in the collection's order: a filter
 //!   or a count is answered from the lists of the values it holds of;
 //!
-//! The record stays the source of truth. The index is derived from it ([`derive`]) and kept
-//! up to date change by change, field by field; one that reflects heads the record does not
+//! The document stays the source of truth. The index is derived from it ([`derive`]) and kept
+//! up to date change by change, field by field; one that reflects heads the document does not
 //! hold, or that fails a checksum, is built anew and never read.
 //!
 //! The format is [redb](https://docs.rs/redb): an embedded store of B-trees in one file that
@@ -29,10 +29,10 @@
 //! per workspace ([`workspace_dir`]), and only the app reads it. The storage service holds the
 //! committed documents only of workspaces a host governs: the workspaces this device minted, joined with
 //! a direct invite, or keeps as a person's own still go through the shell's own engine, and
-//! their records live in the app's profile. Moved now, the index would have no record to be
+//! their documents live in the app's profile. Moved now, the index would have no document to be
 //! derived from in those workspaces, or would need a second path for them. Once every workspace's
 //! committed documents live in one storage service (the shell's two engines made one), the
-//! index moves there: derived beside the record as each change commits, read by apps and the
+//! index moves there: derived beside the document as each change commits, read by apps and the
 //! search host through the committed-document reads they already make.
 
 pub mod clock;
@@ -112,7 +112,7 @@ impl redb::Key for Text {
 }
 
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
-/// Each record of the package: its type.
+/// Each document of the package: its type.
 const DOCS: TableDefinition<Text, &[u8]> = TableDefinition::new("docs");
 /// `(resource, field)`: the field's value; `$type` and `$key` hold the resource's type and,
 /// for an item, its order key.
@@ -134,7 +134,7 @@ const NEWEST: TableDefinition<Text, &[u8]> = TableDefinition::new("newest");
 pub const TYPE: &str = "$type";
 /// The pseudo-field holding an item's order key.
 pub const KEY: &str = "$key";
-/// The pseudo-field holding the chunk of the record an item's map is stored in: where a read or
+/// The pseudo-field holding the chunk of the document an item's map is stored in: where a read or
 /// a write of the item goes, without a scan of the chunks.
 pub const CHUNK: &str = "$chunk";
 /// The pseudo-field holding the collection an item is in: its holder and field
@@ -142,12 +142,12 @@ pub const CHUNK: &str = "$chunk";
 pub const IN: &str = "$in";
 /// The pseudo-field of an item holding the collection it left from ([`derive::in_of`]), kept
 /// while it is out of every collection: a later removal of it names the collection without
-/// reading the record's log.
+/// reading the document's log.
 pub const LEFT: &str = "$left";
 
-/// The pseudo-field of a record holding that some move of an item of it did not take effect,
+/// The pseudo-field of a document holding that some move of an item of it did not take effect,
 /// as it closed a cycle ([`tilolang_runtime::place`]): a move in it is derived with the whole
-/// record.
+/// document.
 pub const CYCLES: &str = "$cycles";
 
 /// Whether the index keeps `field` as a short text rather than as a field value: the
@@ -173,7 +173,7 @@ pub fn removed_field(field: &str) -> String {
 
 const META_FORMAT: &str = "format";
 const META_SCHEMA: &str = "schema";
-/// The heads the index reflects of chunk `n`, as `heads.<n>`: the record's own log in chunk
+/// The heads the index reflects of chunk `n`, as `heads.<n>`: the document's own log in chunk
 /// [`chunk::FIRST`], and each chunk above it it was built from.
 const META_HEADS: &str = "heads.";
 /// The instant the columns of a type that read the clock were written at, as
@@ -205,7 +205,7 @@ impl Clock {
 /// What went wrong reading or writing the index.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum IndexError {
-    /// The index holds what it did not write: it is built anew from the record.
+    /// The index holds what it did not write: it is built anew from the document.
     #[error("the index is corrupt")]
     Corrupt,
     #[error("the index cannot be read or written: {0}")]
@@ -366,12 +366,12 @@ pub enum Opened {
 }
 
 /// The indexes kept on disk that this process has open, by file. A file is open once in a
-/// process (redb holds it), so every store reading one record's index (every window of an app on
-/// one workspace record) holds the one open index, and a window opened again reads the index the
+/// process (redb holds it), so every store reading one document's index (every window of an app on
+/// one workspace document) holds the one open index, and a window opened again reads the index the
 /// last one kept.
 static OPEN: LazyLock<Mutex<HashMap<PathBuf, Weak<Index>>>> = LazyLock::new(Mutex::default);
 
-/// One store's hold on an index. Stores that share an index each derive what their record holds
+/// One store's hold on an index. Stores that share an index each derive what their document holds
 /// into it, as each change is a resource's fields written whole over what the index holds, so
 /// they agree; emptying it for a build is the only write that is not, and a store does that only
 /// to an index it holds alone ([`Self::shared`]).
@@ -424,8 +424,8 @@ pub fn file_of(dir: &Path, app: &str) -> PathBuf {
 }
 
 /// The directory of the indexes of the workspace `workspace` (the workspace a window's launch names),
-/// under `base`: known before the workspace's record is, so a window opens over them first. The
-/// indexes are derived from the records, so they are rebuilt wherever this names.
+/// under `base`: known before the workspace's document is, so a window opens over them first. The
+/// indexes are derived from the documents, so they are rebuilt wherever this names.
 #[must_use]
 pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
     let name: String = workspace
@@ -441,11 +441,11 @@ pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
     base.join("workspaces").join(name)
 }
 
-/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`: the
-/// workspace's ([`workspace_dir`]) for the workspace's record of an app, and one of its own for another
-/// record (a member's own), so what one record holds is never shown as another's.
+/// The directory of the indexes of the document `document` of the workspace `workspace` under `base`: the
+/// workspace's ([`workspace_dir`]) for the workspace's document of an app, and one of its own for another
+/// document (a member's own), so what one document holds is never shown as another's.
 #[must_use]
-pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf {
+pub fn document_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf {
     match record {
         None => workspace_dir(base, workspace),
         Some(record) => workspace_dir(base, &format!("{workspace}~{record}")),
@@ -487,7 +487,7 @@ fn heads_of(chunk: ChunkNo) -> String {
     format!("{META_HEADS}{chunk}")
 }
 
-/// A record's row: its type, and the chunk that holds it.
+/// A document's row: its type, and the chunk that holds it.
 fn encode_doc(ty: &str, chunk: ChunkNo) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(ty.len().saturating_add(8));
     bytes.extend_from_slice(&chunk.to_le_bytes());
@@ -682,7 +682,7 @@ impl Index {
         Ok(())
     }
 
-    /// Empty the index for a build from the record: until the build commits it reflects no
+    /// Empty the index for a build from the document: until the build commits it reflects no
     /// heads, so a process that ends in the middle of it finds nothing to trust.
     pub fn clear_for_build(&self) -> Result<(), IndexError> {
         self.clear(&self.schema)
@@ -821,7 +821,7 @@ impl Snapshot {
         self.checked(read)
     }
 
-    /// Every resource the index holds (records and items, in path order), with its type and
+    /// Every resource the index holds (documents and items, in path order), with its type and
     /// the text values of its fields by field id: one pass over the fields, what lists every
     /// resource search finds.
     pub fn texted(&self) -> Result<Vec<Texted>, IndexError> {
@@ -853,7 +853,7 @@ impl Snapshot {
         self.checked(read)
     }
 
-    /// The package's records, their types, and the chunk that holds each.
+    /// The package's documents, their types, and the chunk that holds each.
     pub fn docs(&self) -> Result<Vec<(String, String, ChunkNo)>, IndexError> {
         let read = (|| {
             let mut out = Vec::new();
@@ -1002,7 +1002,7 @@ impl Snapshot {
 }
 
 /// Everything an index holds, as it stands for what it holds: lists by their entries, not by
-/// how they are cut into pages. Two indexes of the same record hold the same.
+/// how they are cut into pages. Two indexes of the same document hold the same.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Contents {
     /// Each record's type, and the chunk that holds it.
@@ -1016,7 +1016,7 @@ pub struct Contents {
 
 impl Snapshot {
     /// Everything it holds: what tests compare an index kept change by change with one built
-    /// from the record whole.
+    /// from the document whole.
     pub fn contents(&self) -> Result<Contents, IndexError> {
         let mut out = Contents::default();
         for (doc, ty, chunk) in self.docs()? {

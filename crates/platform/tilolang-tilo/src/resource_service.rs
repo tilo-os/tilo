@@ -1,4 +1,4 @@
-//! A workspace's tilolang records as a session service: every record and item a loaded package
+//! A workspace's tilolang documents as a session service: every document and item a loaded package
 //! holds is a session resource, read through [`Service::read`] and changed through its actions.
 //!
 //! Nothing here is per app. The catalogue is the workspace's published trees, kept by the
@@ -10,15 +10,15 @@
 //! runtime that loads the package as another app's
 //! ([`tilolang_runtime::Runtime::load_foreign_package`]) reads back
 //! ([`tilolang_runtime::Runtime::set_reading`]): the shell composes a note's own view over the
-//! note's reading, and the reading is the record the notes app shows.
+//! note's reading, and the reading is the document the notes app shows.
 //!
 //! An invocation is the published action's own: the API builds it through the action's spec,
-//! which plans it in the runtime, and it is committed to the record as a step of the person
+//! which plans it in the runtime, and it is committed to the document as a step of the person
 //! seated here, or of the agent acting for them, in the run it is a step of.
 //!
-//! Each record's root carries the history verbs every app's record answers ([`crate::history`]):
+//! Each document's root carries the history verbs every app's document answers ([`crate::history`]):
 //! its steps are listed, and taken back by step or by run, here as in an app's instance, so a
-//! record no app's process holds still offers its History and its undo.
+//! document no app's process holds still offers its History and its undo.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,9 +35,9 @@ use crate::history::{HostHistoryEdit, HostWords};
 use crate::host::Host;
 use crate::publish::{Planner, Publications, edit_action, publish_package, resource_id};
 
-/// The workspace record's tilolang records, published to the session.
-pub struct RecordService {
-    /// The runtime the records are read through, whose store holds the workspace record: the
+/// The workspace document's tilolang documents, published to the session.
+pub struct ResourceService {
+    /// The runtime the documents are read through, whose store holds the workspace document: the
     /// one copy of it, which every change made here is written into once.
     host: Host,
     planner: Arc<dyn Planner>,
@@ -47,25 +47,25 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
-    /// The words the record's history verbs speak in.
+    /// The words the document's history verbs speak in.
     words: HostWords,
     /// What `now` reads: the system time, or what a test fixes.
     clock: Box<dyn Fn() -> String>,
     /// The resources whose readings moved since [`Service::moved`] was last asked, by their
-    /// published ids, and whether something moved that names no one resource (the record was
+    /// published ids, and whether something moved that names no one resource (the document was
     /// taken in anew, a document changed as a whole).
     moved: std::collections::BTreeSet<String>,
     moved_unsaid: bool,
-    /// The packages the session runs itself (the shell), whose records it keeps in the
-    /// workspace record beside the apps': each its compiled module, its description embedded,
-    /// so a connection reads the package's records by its app as it reads any app's.
+    /// The packages the session runs itself (the shell), whose documents it keeps in the
+    /// workspace document beside the apps': each its compiled module, its description embedded,
+    /// so a connection reads the package's documents by its app as it reads any app's.
     shared: std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
     /// The document each of [`Self::shared`]'s packages' parts commit into, by the app: what
     /// this service takes in to publish what they wrote.
-    shared_records:
+    shared_documents:
         std::collections::BTreeMap<String, std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>>,
     /// The outside services its packages' types with an origin are kept in step with, by
-    /// origin (`imap`, `youtube`): each native code this service runs beside the records,
+    /// origin (`imap`, `youtube`): each native code this service runs beside the documents,
     /// reached through the connection the session hands it ([`Service::connect`]).
     origins: crate::origin::Origins,
     /// What wakes the session's loop when an origin has an answer and work waits.
@@ -77,52 +77,52 @@ pub struct RecordService {
     tell: Option<Box<dyn tilo_session_core::notice::Notices>>,
     /// The places a resource's `open` asked the session for since [`Service::take_open`] last
     /// took them, each with the actor that asked: opening is the session's arranging step
-    /// (`docs/designs/app-language/one-app-model.md` §3), never the record's change.
+    /// (`docs/designs/app-language/one-app-model.md` §3), never the document's change.
     opens: Vec<(tilo_actions::ActionInvoker, tilo_service::Open)>,
     /// The place the invocation now running is asked in, by the resource that place shows — the
     /// conversation of the turn an agent asks in — or empty for the place in front: what a
     /// resource it opens stands beside ([`Service::note_beside`]).
     beside: String,
-    /// Where the large parts of each record's actions are kept, by the app whose record it is:
-    /// the stores the session lent them ([`Self::provide_content`]), offered on each record's
+    /// Where the large parts of each document's actions are kept, by the app whose document it is:
+    /// the stores the session lent them ([`Self::provide_content`]), offered on each document's
     /// route.
     content: Arc<crate::content::Records>,
-    /// [`Self::content`] as the store this service's code reaches as its records' own: a part
-    /// kept now goes to the record being committed, and a part read comes from the record that
+    /// [`Self::content`] as the store this service's code reaches as its documents' own: a part
+    /// kept now goes to the document being committed, and a part read comes from the document that
     /// names it.
     kept: tilo_content::ContentStore,
     /// The wake scope this service's code runs in, its store registered for it: an action too
     /// large to record whole keeps its parts there, and reads them back
     /// ([`tilo_actions::content`]).
     window: tilo_wake::WakeScope,
-    /// The record of the one app this service keeps ([`Self::of_app`]), as the session keeps it in
-    /// the workspace: the record the app's windows open there. The store is the record here; this
+    /// The document of the one app this service keeps ([`Self::of_app`]), as the session keeps it in
+    /// the workspace: the document the app's windows open there. The store is the document here; this
     /// is its replica in the workspace, which takes in what the app's windows and the person's
     /// other devices write and is handed what this service commits. `None` for a service that
-    /// keeps the records of every package it loads and of each one the session runs itself
+    /// keeps the documents of every package it loads and of each one the session runs itself
     /// ([`Self::share`]).
-    kept_in_workspace: Option<KeptRecord>,
+    kept_in_workspace: Option<KeptDocument>,
     /// Whether this service is the session's own document ([`Self::session_document`]): the one a
-    /// package the session runs itself (the shell) keeps its record in, started whether or not the
+    /// package the session runs itself (the shell) keeps its document in, started whether or not the
     /// session seeds any app, so a program names the shell the session shows.
     session_document: bool,
 }
 
-/// The record of the one app a service keeps ([`RecordService::of_app`]), as the workspace holds
+/// The document of the one app a service keeps ([`ResourceService::of_app`]), as the workspace holds
 /// it.
-struct KeptRecord {
-    /// The app whose record it is: the service answers for that app's record alone, and the
+struct KeptDocument {
+    /// The app whose document it is: the service answers for that app's document alone, and the
     /// packages the app is made with ride in it.
     app: String,
-    /// The workspace's copy of the record, which the session keeps in the workspace.
+    /// The workspace's copy of the document, which the session keeps in the workspace.
     document: Rc<RefCell<tilo_resource::Doc>>,
-    /// The heads of [`Self::document`] the store last took in: the workspace moved the record
+    /// The heads of [`Self::document`] the store last took in: the workspace moved the document
     /// when they differ (an app's window wrote).
     read_at: RefCell<Vec<automerge::ChangeHash>>,
 }
 
-impl RecordService {
-    /// The records `host` holds, its packages loaded, published for `person`. What its packages
+impl ResourceService {
+    /// The documents `host` holds, its packages loaded, published for `person`. What its packages
     /// made on their own before (their roots, a scenario's data) is committed first, each as the
     /// step its authorship names.
     #[must_use]
@@ -146,7 +146,7 @@ impl RecordService {
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
             shared: std::collections::BTreeMap::new(),
-            shared_records: std::collections::BTreeMap::new(),
+            shared_documents: std::collections::BTreeMap::new(),
             origins: crate::origin::Origins::default(),
             origin_waker: None,
             opens: Vec::new(),
@@ -163,11 +163,11 @@ impl RecordService {
         service
     }
 
-    /// The session's own document, which keeps the records of the packages the session runs
+    /// The session's own document, which keeps the documents of the packages the session runs
     /// itself (the shell, [`Service::share`]): started whether or not the session seeds any app,
     /// so the package the shell actually shows — the store's installed `so.tilo.shell`, else the
     /// build's stand-in (`docs/designs/app-language/shell.md` §6) — is one a REPL's or an agent's
-    /// program names, and its record is read by its app as Notes' is.
+    /// program names, and its document is read by its app as Notes' is.
     #[must_use]
     pub fn session_document(host: Host, person: impl Into<String>) -> Self {
         Self {
@@ -176,9 +176,9 @@ impl RecordService {
         }
     }
 
-    /// The record of the app `app` that `host` holds, its package loaded (with the packages it is
+    /// The document of the app `app` that `host` holds, its package loaded (with the packages it is
     /// made with), published for `person`: once the session holds the workspace the person is
-    /// in, it keeps the record there ([`Service::workspace_record`]), the record the app's windows
+    /// in, it keeps the document there ([`Service::workspace_document`]), the document the app's windows
     /// open, so what the service publishes is what the workspace holds, and what it changes is
     /// the workspace's change. What the workspace takes in from elsewhere is read on the next
     /// [`Service::poll`].
@@ -187,7 +187,7 @@ impl RecordService {
         let mut service = Self::new(host, person);
         let mut document = service.record();
         let read_at = document.get_heads();
-        service.kept_in_workspace = Some(KeptRecord {
+        service.kept_in_workspace = Some(KeptDocument {
             app: app.into(),
             document: Rc::new(RefCell::new(document)),
             read_at: RefCell::new(read_at),
@@ -195,12 +195,12 @@ impl RecordService {
         service
     }
 
-    /// Take in what the workspace's copy of the record took in from elsewhere since the store
+    /// Take in what the workspace's copy of the document took in from elsewhere since the store
     /// last read it — what an app's window wrote, which the workspace handed the session — and
     /// say it moved. Whether anything had. A copy that no longer holds what the store does was
-    /// replaced by the record the workspace already held, which takes the place of what the
+    /// replaced by the document the workspace already held, which takes the place of what the
     /// service was started with (a development session's scenario data): the store holds that
-    /// record from then on.
+    /// document from then on.
     fn took_in(&mut self) -> bool {
         let Some(kept) = &self.kept_in_workspace else {
             return false;
@@ -231,26 +231,26 @@ impl RecordService {
         true
     }
 
-    /// The app whose record this is, and the record's id in the workspace — the person's own
-    /// record of it for an app that keeps each member's apart, else the workspace's record of the
-    /// app (empty) — for a service that keeps one app's record ([`Self::of_app`]). `None` too for
-    /// an app that keeps each member's record apart while the person here has no identity a
-    /// workspace knows them by: they have no record of their own in any workspace.
+    /// The app whose document this is, and the document's id in the workspace — the person's own
+    /// document of it for an app that keeps each member's apart, else the workspace's document of the
+    /// app (empty) — for a service that keeps one app's document ([`Self::of_app`]). `None` too for
+    /// an app that keeps each member's document apart while the person here has no identity a
+    /// workspace knows them by: they have no document of their own in any workspace.
     #[must_use]
-    pub fn kept_record(&self) -> Option<(String, String)> {
+    pub fn kept_document(&self) -> Option<(String, String)> {
         let app = &self.kept_in_workspace.as_ref()?.app;
         let package = self.host.package(app)?;
-        let id = if package.meta.own_records {
-            crate::own_record(&package.meta, &self.person)?
+        let id = if package.meta.own_resources {
+            crate::own_document(&package.meta, &self.person)?
         } else {
             String::new()
         };
         Some((app.clone(), id))
     }
 
-    /// Whether this service publishes the records and actions of `app`: every package's, but
-    /// for a service that keeps one app's record ([`Self::of_app`]), whose packages the app is
-    /// made with are its own parts, which another app's record offers again where it is made
+    /// Whether this service publishes the documents and actions of `app`: every package's, but
+    /// for a service that keeps one app's document ([`Self::of_app`]), whose packages the app is
+    /// made with are its own parts, which another app's document offers again where it is made
     /// with them too.
     fn offers(&self, app: &str) -> bool {
         self.kept_in_workspace
@@ -258,16 +258,16 @@ impl RecordService {
             .is_none_or(|kept| kept.app == app)
     }
 
-    /// Keep the large parts of the record of `app`'s actions in `store`: the content store the
-    /// host lends that record, which offers what it keeps on the record's route — so the
-    /// record's other readers fetch a part from there — and asks the route for a part this
-    /// device lacks. A record this service keeps that is lent no store keeps no content: an
+    /// Keep the large parts of the document of `app`'s actions in `store`: the content store the
+    /// host lends that document, which offers what it keeps on the document's route — so the
+    /// document's other readers fetch a part from there — and asks the route for a part this
+    /// device lacks. A document this service keeps that is lent no store keeps no content: an
     /// action whose parts nothing would keep is refused rather than losing them.
     pub fn provide_content(&mut self, app: &str, store: tilo_content::ContentStore) {
         self.content.keep_in(app, store);
     }
 
-    /// The apps whose records this service keeps: each an app whose package it runs, or one whose
+    /// The apps whose documents this service keeps: each an app whose package it runs, or one whose
     /// parts it holds ([`Service::share`]).
     #[must_use]
     pub fn kept_apps(&self) -> Vec<String> {
@@ -283,53 +283,53 @@ impl RecordService {
         apps
     }
 
-    /// The scope this service's code runs in, with its records' store registered for it: what it
-    /// commits or reads is the record's own content ([`tilo_actions::content`]).
-    fn in_records(&self) -> tilo_wake::WakeScopeGuard {
+    /// The scope this service's code runs in, with its documents' store registered for it: what it
+    /// commits or reads is the document's own content ([`tilo_actions::content`]).
+    fn in_documents(&self) -> tilo_wake::WakeScopeGuard {
         tilo_actions::content::register(&self.window.handle(), self.kept.clone());
         self.window.enter()
     }
 
-    /// Publish the package `meta`'s records, which the session runs the package itself for,
-    /// with the apps' this service keeps: its roots are made in the record, and whatever its
-    /// parts commit into `records` — the document they share, the one they draw from — is taken
+    /// Publish the package `meta`'s documents, which the session runs the package itself for,
+    /// with the apps' this service keeps: its roots are made in the document, and whatever its
+    /// parts commit into `documents` — the document they share, the one they draw from — is taken
     /// in and published from then on. A REPL or an agent's task reads and changes them by the
     /// package's app, as it does Notes'.
     ///
-    /// The package's own record is where its views' roots read: the shell keeps the person's
+    /// The package's own document is where its views' roots read: the shell keeps the person's
     /// layout and the shell's settings, and both are the person's, synced with their
-    /// devices, as an app's record is.
+    /// devices, as an app's document is.
     ///
-    /// An app's record ([`Self::of_app`]) is that app's alone, and takes no other package's, and
-    /// so does a notebook's or any other session's record: only the session's own document
+    /// An app's document ([`Self::of_app`]) is that app's alone, and takes no other package's, and
+    /// so does a notebook's or any other session's document: only the session's own document
     /// ([`Self::session_document`]) keeps the packages the session runs itself.
     pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
         if !self.session_document || self.kept_in_workspace.is_some() {
             return Ok(());
         }
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
             return Err(format!("{} carries no description", share.app));
         };
-        self.host.sync_from(&share.records.borrow());
-        // The package's own code runs here, over its record as any app's does: its roots are
-        // resources of the record, so a program reads and changes them by the app.
+        self.host.sync_from(&share.documents.borrow());
+        // The package's own code runs here, over its document as any app's does: its roots are
+        // resources of the document, so a program reads and changes them by the app.
         self.host
             .load_module(share.wasm, meta.clone(), String::new())
             .map_err(|error| format!("{}: {error}", meta.app))?;
         for root in &meta.named_roots {
             self.host
-                .root_record(&meta.app, &root.ty)
+                .root_resource(&meta.app, &root.ty)
                 .map_err(|error| format!("{}'s root {}: {error}", meta.app, root.name))?;
         }
         // The roots are made: what that wrote goes where the package's parts read it, so the
-        // record they draw exists for them too, each as the step its authorship names.
+        // document they draw exists for them too, each as the step its authorship names.
         self.flush()?;
-        *share.records.borrow_mut() = self.record();
+        *share.documents.borrow_mut() = self.record();
         self.shared
             .insert(meta.app.clone(), std::sync::Arc::from(share.wasm));
-        self.shared_records
-            .insert(meta.app, std::rc::Rc::clone(share.records));
+        self.shared_documents
+            .insert(meta.app, std::rc::Rc::clone(share.documents));
         self.publications.settle(&self.host, &self.planner);
         let _ = self.watch.take();
         Ok(())
@@ -337,22 +337,22 @@ impl RecordService {
 
     /// Take in what the parts of the packages `share`d wrote into the documents they share
     /// since the last call, and publish it: the shell's own parts commit a setting or a place
-    /// into the record, and the API offers what it changed. Whether anything was taken in.
+    /// into the document, and the API offers what it changed. Whether anything was taken in.
     pub fn follow(&mut self) -> Result<bool, String> {
         use tilo_automerge::ApplyIncoming as _;
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         let mut took = false;
-        for (app, records) in &self.shared_records {
+        for (app, records) in &self.shared_documents {
             if self.heads() == records.borrow().committed_heads() {
                 continue;
             }
             took |= self.host.sync_from(&records.borrow());
-            // What the parts hold is the same record: the change this service makes (by a
+            // What the parts hold is the same document: the change this service makes (by a
             // connection's action) reaches them too.
             records
                 .borrow_mut()
                 .merge_incoming(&mut self.record())
-                .map_err(|error| format!("{app}'s record: {error}"))?;
+                .map_err(|error| format!("{app}'s document: {error}"))?;
         }
         if !took {
             return Ok(false);
@@ -361,16 +361,16 @@ impl RecordService {
         Ok(true)
     }
 
-    /// The record of the app `app` this service keeps: its app's committed document and the
+    /// The document of the app `app` this service keeps: its app's committed document and the
     /// packages a reader of it loads (the package's and each it uses), as a task's host reads
     /// it. `None` for an app whose package this service does not run.
     ///
-    /// Every tilolang app this session runs is one: an app it hosts keeps its record in this
+    /// Every tilolang app this session runs is one: an app it hosts keeps its document in this
     /// service's one document (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4),
     /// and so does a package it `share`s itself (the shell). A task reads them all alike, by
-    /// the app, and starts no app to read a record this session holds.
+    /// the app, and starts no app to read a document this session holds.
     #[must_use]
-    pub fn service_record(&self, app: &str) -> Option<tilo_service::Record> {
+    pub fn service_document(&self, app: &str) -> Option<tilo_service::Document> {
         if !self.offers(app) {
             return None;
         }
@@ -381,46 +381,46 @@ impl RecordService {
                 packages.push(std::sync::Arc::clone(&package.wasm));
             }
         }
-        Some(tilo_service::Record {
+        Some(tilo_service::Document {
             app: app.to_owned(),
-            id: crate::own_record(&package.meta, &self.person).unwrap_or_default(),
+            id: crate::own_document(&package.meta, &self.person).unwrap_or_default(),
             document: self.record().save(),
             packages,
         })
     }
 
-    /// A copy of the workspace record as it is here: its committed changes only.
+    /// A copy of the workspace document as it is here: its committed changes only.
     #[must_use]
     pub fn record(&self) -> tilo_resource::Doc {
         self.host
             .store()
-            .with_record(|chunks| chunks.committed(crate::chunk::FIRST))
+            .with_document(|chunks| chunks.committed(crate::chunk::FIRST))
             .unwrap_or_default()
     }
 
-    /// The heads of the workspace record's committed changes.
+    /// The heads of the workspace document's committed changes.
     fn heads(&self) -> Vec<automerge::ChangeHash> {
         self.host
             .store()
-            .with_record(|chunks| chunks.first().map(tilo_resource::Doc::committed_heads))
+            .with_document(|chunks| chunks.first().map(tilo_resource::Doc::committed_heads))
             .unwrap_or_default()
     }
 
-    /// The runtime the records are read through.
+    /// The runtime the documents are read through.
     #[must_use]
     pub fn host(&self) -> &Host {
         &self.host
     }
 
-    /// Take in what another replica of the workspace record holds.
+    /// Take in what another replica of the workspace document holds.
     pub fn take_in(&mut self, other: &tilo_resource::Doc) {
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         self.host.sync_from(other);
         // What reached it of the person's notices, told as it arrives.
         self.told();
     }
 
-    /// Have `wake` called (from another thread) when records built off the frame are ready for
+    /// Have `wake` called (from another thread) when documents built off the frame are ready for
     /// the next [`Service::poll`] to publish.
     pub fn set_waker(&mut self, wake: crate::background::Waker) {
         self.publications.set_waker(wake);
@@ -428,7 +428,7 @@ impl RecordService {
 
     /// Reach the connector of `origin` at the far end of `connection`: the origin that keeps
     /// the packages' types of its kinds in step with the service, native code this service runs
-    /// beside the records, asks the connector over the socket.
+    /// beside the documents, asks the connector over the socket.
     ///
     /// The connector is the process the session started for the app in the sandbox its
     /// manifest declares for the origin: this service asks through it, never holding the
@@ -459,8 +459,8 @@ impl RecordService {
         self.origin_waker = Some(wake);
     }
 
-    /// Poll each origin, and carry out the outside effects the record queued that wait for it:
-    /// what it wrote is committed to the record as the origin's change and published. Whether
+    /// Poll each origin, and carry out the outside effects the document queued that wait for it:
+    /// what it wrote is committed to the document as the origin's change and published. Whether
     /// anything was written.
     fn poll_origins(&mut self) -> bool {
         if self.origins.borrow().is_empty() {
@@ -473,7 +473,7 @@ impl RecordService {
         // The outside effects a package's action queued, handed to the origin that carries
         // them out: an effect queued since the last pass goes now, whether or not any origin is
         // already due (an origin is due once something is handed to it). What cannot be carried
-        // out yet waits in the record, as a window's does.
+        // out yet waits in the document, as a window's does.
         match self.host.settle_outbox() {
             Ok(settled) if settled.written > 0 => wrote = true,
             Ok(_) => {}
@@ -484,7 +484,7 @@ impl RecordService {
                 continue;
             }
             // The app whose types hold this origin's kinds: the package that declares them, so
-            // an origin writes into the records of the app that holds its resources.
+            // an origin writes into the documents of the app that holds its resources.
             let name = origin.borrow().name().to_owned();
             let prefix = format!("{name}.");
             let app = self
@@ -513,7 +513,7 @@ impl RecordService {
             }
         }
         if wrote {
-            // What the origins wrote is committed to the record this service publishes, as the
+            // What the origins wrote is committed to the document this service publishes, as the
             // origins' own changes.
             let _ = self.flush();
             self.publications.settle(&self.host, &self.planner);
@@ -521,7 +521,7 @@ impl RecordService {
         wrote
     }
 
-    /// Whether a field of any record changed since the last call. What changed is kept
+    /// Whether a field of any document changed since the last call. What changed is kept
     /// for [`Service::moved`]: each resource a changed field is of, by its published id.
     fn watched(&mut self) -> bool {
         use tilolang_runtime::store::Store as _;
@@ -543,11 +543,11 @@ impl RecordService {
         any
     }
 
-    /// The direct edit (a bound control's) of the field `arguments` name in the record or item
+    /// The direct edit (a bound control's) of the field `arguments` name in the document or item
     /// `resource`: what a view composed over its reading elsewhere sends when the person types
-    /// into it. Both publish these edits, and the same ones: an item is edited in its record by
+    /// into it. Both publish these edits, and the same ones: an item is edited in its document by
     /// its id there ([`edit_action`]).
-    /// `None` for a resource that is not one of these records'.
+    /// `None` for a resource that is not one of these documents'.
     /// A flag (`flag`) may come as its text, as an API that knows no parameter type for it
     /// hands it on.
     fn direct_edit(
@@ -581,7 +581,7 @@ impl RecordService {
         )
     }
 
-    /// Commit `action` to the record as a step of `invoker`: the person at this device, or an
+    /// Commit `action` to the document as a step of `invoker`: the person at this device, or an
     /// agent acting for them.
     fn commit(
         &self,
@@ -614,8 +614,8 @@ impl RecordService {
         )
     }
 
-    /// Commit `action` (`encoded`) to the record as the step `context` describes, and hand the
-    /// change to the parts that share the record. `part`, when `action` is a tilolang action the
+    /// Commit `action` (`encoded`) to the document as the step `context` describes, and hand the
+    /// change to the parts that share the document. `part`, when `action` is a tilolang action the
     /// store wrote as it planned it, is committed as written: the action is written once
     /// ([`crate::store::TiloStore::commit_action`]).
     fn apply(
@@ -624,7 +624,7 @@ impl RecordService {
         encoded: tilo_actions::EncodedAction,
         context: ActionContext,
     ) -> Result<(), String> {
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         let author = context.invoker.as_ref().map_or_else(
             || {
                 crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
@@ -648,16 +648,16 @@ impl RecordService {
                     .0
             })
             .map_err(|error| error.to_string())?;
-        // The change belongs to every replica of a shared record once it is committed: the
+        // The change belongs to every replica of a shared document once it is committed: the
         // parts of a package the session runs itself (the shell) draw it on their next turn.
-        if !self.shared_records.is_empty() {
+        if !self.shared_documents.is_empty() {
             use tilo_automerge::ApplyIncoming as _;
             let mut record = self.record();
-            for records in self.shared_records.values() {
+            for records in self.shared_documents.values() {
                 let _ = records.borrow_mut().merge_incoming(&mut record);
             }
         }
-        // An app's record is the workspace's: the change is handed to the copy the session keeps
+        // An app's document is the workspace's: the change is handed to the copy the session keeps
         // there, which writes it into the workspace and hands it to the app's windows.
         if let Some(kept) = &self.kept_in_workspace {
             use tilo_automerge::ApplyIncoming as _;
@@ -668,11 +668,11 @@ impl RecordService {
         Ok(())
     }
 
-    /// Run the published `action` of `resource` with `arguments`, planned on the record as it
+    /// Run the published `action` of `resource` with `arguments`, planned on the document as it
     /// is and committed as `invoker`'s step, of the run `run` when it is one of a run's: the one
     /// path [`Service::invoke`], [`Service::invoke_as`] and [`Service::invoke_in_run`] share.
     ///
-    /// A resource's `open` is not a change of the record: the record publishes it so a caller —
+    /// A resource's `open` is not a change of the document: the document publishes it so a caller —
     /// an agent reading the catalogue, a view offering it — finds it at the resource, and the
     /// session carries it out as its own arranging step, placing the resource with its view
     /// beside the place the asking turn is in (`docs/designs/app-language/one-app-model.md`
@@ -687,9 +687,9 @@ impl RecordService {
         invoker: &tilo_actions::ActionInvoker,
         run: Option<&tilo_actions::WorkGroup>,
     ) -> Result<Started, ApiError> {
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         let address = ActionAddress::new(resource, action);
-        // Planned on the record as it is: what the workspace took in since the last pass
+        // Planned on the document as it is: what the workspace took in since the last pass
         // included.
         self.took_in();
         // The place this invocation is asked in, taken as this one's: a note from the step that
@@ -730,8 +730,8 @@ impl RecordService {
                 return self
                     .host
                     .store()
-                    .with_record(|chunks| {
-                        let doc = chunks.first().ok_or("the record is not held here")?;
+                    .with_document(|chunks| {
+                        let doc = chunks.first().ok_or("the document is not held here")?;
                         verbs::answer(doc, &encoded.payload, &self.words)
                     })
                     .map(Started::Done)
@@ -746,7 +746,7 @@ impl RecordService {
         self.commit_in(&planned, invoker, run)
             .map_err(ApiError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
-        // reaches it: a record changed as a whole is built now, not off the frame.
+        // reaches it: a document changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
         self.told();
         let made = self
@@ -761,8 +761,8 @@ impl RecordService {
 }
 
 /// The place the `open` effect `payload` names: the resource the invocation addresses — the
-/// published id of the record or item whose `open` ran — and the view it shows, empty for the
-/// type's primary one. The effect's own anchor is the record's internal id, which the published
+/// published id of the document or item whose `open` ran — and the view it shows, empty for the
+/// type's primary one. The effect's own anchor is the document's internal id, which the published
 /// address already carries as `tl:<app>:<id>`.
 fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, String> {
     use tilo_resource::Effect as _;
@@ -775,9 +775,9 @@ fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, Stri
     })
 }
 
-impl RecordService {
-    /// Apply the history verb `edit`, invoked on the record root `resource` by `invoker` (in the
-    /// run `run`), to the record as one step of its own, as an app's instance applies it
+impl ResourceService {
+    /// Apply the history verb `edit`, invoked on the document root `resource` by `invoker` (in the
+    /// run `run`), to the document as one step of its own, as an app's instance applies it
     /// ([`HostHistoryEdit`]): what the verb did, as its caller is answered ([`verbs::result`]).
     fn history(
         &mut self,
@@ -793,12 +793,12 @@ impl RecordService {
             .find(|tree| tree.id.as_str() == resource)
             .map(|tree| tree.kind.clone())
             .ok_or_else(|| format!("{resource} keeps no history here"))?;
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
         let encoded = action.encoded()?;
         let before = self.heads();
-        // The step the verb takes back is a change of the record the resource is of: a part it
-        // keeps, when the step is too large to record whole, is that record's.
+        // The step the verb takes back is a change of the document the resource is of: a part it
+        // keeps, when the step is too large to record whole, is that document's.
         if let Some(app) = app_of_resource(resource) {
             self.content.writing(app);
         }
@@ -806,7 +806,7 @@ impl RecordService {
         self.apply((&action, None), encoded, in_run(context, invoker, run))?;
         self.publications.settle(&self.host, &self.planner);
         self.told();
-        Ok(self.host.store().with_record(|chunks| {
+        Ok(self.host.store().with_document(|chunks| {
             let doc = chunks.first()?;
             let patches = doc.committed_diff(&before, &doc.committed_heads());
             verbs::result(edit.verb(), doc, &patches, &self.words)
@@ -814,7 +814,7 @@ impl RecordService {
     }
 }
 
-/// The app whose record `resource` (a published id, `tl:<app>:<id>`) is one of.
+/// The app whose document `resource` (a published id, `tl:<app>:<id>`) is one of.
 fn app_of_resource(resource: &str) -> Option<&str> {
     resource
         .strip_prefix("tl:")?
@@ -835,7 +835,7 @@ fn in_run(
     }
 }
 
-/// The reading of the record or item `resource` (its published id, `tl:<app>:<id>`) that `host`
+/// The reading of the document or item `resource` (its published id, `tl:<app>:<id>`) that `host`
 /// holds: its fields as the runtime reads them, each by its field id, and what links to it. What a
 /// runtime that loads its package as another app's reads back
 /// ([`tilolang_runtime::Runtime::set_reading`]). `None` for a resource `host` holds none of.
@@ -933,11 +933,11 @@ fn invoker_of(action: &DynAction) -> tilo_actions::ActionInvoker {
     tilo_actions::ActionInvoker::admitted(&action.invoker().into())
 }
 
-impl RecordService {
+impl ResourceService {
     /// Run what the packages have due at this device's clock: a trigger runs here whether a
     /// window of its app is open or not, as it does on the device that governs the workspace,
     /// once per instant across the workspace's devices (the change records what the trigger last
-    /// did for the record). Whether anything ran.
+    /// did for the document). Whether anything ran.
     fn trigger(&mut self) -> bool {
         let Some(now) = self.now() else {
             return false;
@@ -953,7 +953,7 @@ impl RecordService {
     }
 
     /// Commit what the packages committed on their own — a trigger's change, a notice marked
-    /// seen — each as the step its authorship names: the first change the record did not take,
+    /// seen — each as the step its authorship names: the first change the document did not take,
     /// when one was not.
     fn flush(&self) -> Result<(), String> {
         let mut out = Ok(());
@@ -1050,7 +1050,7 @@ impl RecordService {
     }
 }
 
-impl Service for RecordService {
+impl Service for ResourceService {
     fn own_person(&mut self, person: &str, _earlier: &[String]) {
         person.clone_into(&mut self.person);
     }
@@ -1060,7 +1060,7 @@ impl Service for RecordService {
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
-        // Each record is its package's, as an app's connection says of what it publishes: what
+        // Each document is its package's, as an app's connection says of what it publishes: what
         // places it on the canvas shows it through that app.
         let mut out: Vec<ResourceSpec> = self
             .publications
@@ -1069,7 +1069,7 @@ impl Service for RecordService {
             .map(|tree| {
                 let mut tree = (**tree).clone();
                 kept_by_its_app(&mut tree);
-                // The record's root offers the record's history, as an app's own resource does
+                // The document's root offers the document's history, as an app's own resource does
                 // in its instance.
                 crate::history::with_verbs(tree)
             })
@@ -1102,7 +1102,7 @@ impl Service for RecordService {
     }
 
     /// [`Service::invoke`] as `invoker` (an agent acting for its person): the change is
-    /// attributed to them, as an agent's is at its app's record origin, and the record is the
+    /// attributed to them, as an agent's is at its app's document origin, and the document is the
     /// same one.
     fn invoke_as(
         &mut self,
@@ -1142,24 +1142,24 @@ impl Service for RecordService {
     }
 
     fn poll(&mut self) -> bool {
-        let _in_records = self.in_records();
-        // What the record took in from the workspace since the last pass: an app's window wrote.
+        let _in_documents = self.in_documents();
+        // What the document took in from the workspace since the last pass: an app's window wrote.
         let took = self.took_in();
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
         // What the person dismissed here is their answer to a notice, as their change.
         self.dismissed();
-        // What the workspace holds for this device's person, as the record reached it since the
+        // What the workspace holds for this device's person, as the document reached it since the
         // last look.
         self.told();
-        // The origins keep their records in step with their services, and hand the outside
-        // effects the record queued to them: what they wrote is committed and published.
+        // The origins keep their documents in step with their services, and hand the outside
+        // effects the document queued to them: what they wrote is committed and published.
         let wrote = self.poll_origins();
         self.watched() || took || !touched.is_empty() || ran || wrote
     }
 
     fn wakes_in(&self) -> Option<std::time::Duration> {
-        RecordService::wakes_in(self)
+        ResourceService::wakes_in(self)
     }
 
     fn moved(&mut self) -> Option<Vec<String>> {
@@ -1171,15 +1171,15 @@ impl Service for RecordService {
         Some(moved.into_iter().collect())
     }
 
-    fn record(&self, app: &str) -> Option<tilo_service::Record> {
-        self.service_record(app)
+    fn document(&self, app: &str) -> Option<tilo_service::Document> {
+        self.service_document(app)
     }
 
-    /// An app's record ([`Self::of_app`]) is the one its windows open in the workspace: the
+    /// An app's document ([`Self::of_app`]) is the one its windows open in the workspace: the
     /// session keeps this service's copy of it there.
-    fn workspace_record(&self) -> Option<tilo_service::WorkspaceRecord> {
-        let (app, id) = self.kept_record()?;
-        Some(tilo_service::WorkspaceRecord {
+    fn workspace_document(&self) -> Option<tilo_service::WorkspaceDocument> {
+        let (app, id) = self.kept_document()?;
+        Some(tilo_service::WorkspaceDocument {
             app,
             id,
             document: Rc::clone(&self.kept_in_workspace.as_ref()?.document),
@@ -1193,18 +1193,18 @@ impl Service for RecordService {
             .or_else(|| self.host.package(app).map(|package| package.wasm))
     }
 
-    fn records(&self) -> Vec<tilo_service::Record> {
+    fn documents(&self) -> Vec<tilo_service::Document> {
         self.kept_apps()
             .iter()
-            .filter_map(|app| self.service_record(app))
+            .filter_map(|app| self.service_document(app))
             .collect()
     }
 
-    /// Every app's record this service publishes, each with the document all of them live in: the
-    /// workspace record, whose roots are the records. One document holds every app's, so each
-    /// entry names the kind of that app's records and the activity keeps its own steps out of it.
-    fn history_records(&self) -> Vec<tilo_service::HistoryRecord> {
-        // The first root of each app names the kind its records are of; a later one of the same
+    /// Every app's document this service publishes, each with the document all of them live in: the
+    /// workspace document, whose roots are the documents. One document holds every app's, so each
+    /// entry names the kind of that app's documents and the activity keeps its own steps out of it.
+    fn history_documents(&self) -> Vec<tilo_service::HistoryDocument> {
+        // The first root of each app names the kind its documents are of; a later one of the same
         // app would list the same steps again.
         let mut apps: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for tree in self.publications.trees().values() {
@@ -1219,7 +1219,7 @@ impl Service for RecordService {
             apps.entry(app).or_insert(tree.kind.as_str());
         }
         apps.into_iter()
-            .map(|(app, kind)| tilo_service::HistoryRecord {
+            .map(|(app, kind)| tilo_service::HistoryDocument {
                 app: app.to_owned(),
                 kind: kind.to_owned(),
                 document: self.record(),
@@ -1272,8 +1272,8 @@ impl Service for RecordService {
         self.set_origin_waker(wake);
     }
 
-    /// Keep each record's large parts in the store the session lends it: where an action too
-    /// large to record whole keeps what it cannot record, offered on that record's route.
+    /// Keep each document's large parts in the store the session lends it: where an action too
+    /// large to record whole keeps what it cannot document, offered on that document's route.
     fn lend_content(&mut self, store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {
         for app in self.kept_apps() {
             self.content.keep_in(&app, store(&app));
@@ -1281,7 +1281,7 @@ impl Service for RecordService {
     }
 
     fn settle(&mut self) {
-        let _in_records = self.in_records();
+        let _in_documents = self.in_documents();
         self.publications.settle(&self.host, &self.planner);
     }
 }
@@ -1303,9 +1303,9 @@ fn kept_by_its_app(resource: &mut ResourceSpec) {
     }
 }
 
-/// The type a resource of the kind `kind` (`tl.<app>.<Type>`, as [`RecordService`] publishes
+/// The type a resource of the kind `kind` (`tl.<app>.<Type>`, as [`ResourceService`] publishes
 /// it) is, as a runtime that loads its package as another app's names it: `<app>#<Type>`.
-/// `None` for a kind no tilolang record has.
+/// `None` for a kind no tilolang document has.
 #[must_use]
 pub fn reading_type(kind: &str) -> Option<String> {
     let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
@@ -1318,11 +1318,11 @@ pub fn app_of(ty: &str) -> Option<&str> {
     ty.split_once('#').map(|(app, _)| app)
 }
 
-/// Each resource `records` (the ids a shell's places name) that `resources`, the session's
-/// catalogue, holds as a tilolang record: its id, and its type as the shell's runtime names
+/// Each resource `documents` (the ids a shell's places name) that `resources`, the session's
+/// catalogue, holds as a tilolang document: its id, and its type as the shell's runtime names
 /// another app's (`<app>#<Type>`). A place naming nothing the catalogue holds keeps its well.
 #[must_use]
-pub fn placed_records<'a>(
+pub fn placed_documents<'a>(
     records: impl IntoIterator<Item = &'a str>,
     resources: &[ResourceSpec],
 ) -> std::collections::BTreeMap<String, String> {
@@ -1338,7 +1338,7 @@ pub fn placed_records<'a>(
 }
 
 /// The type the shell's runtime names a resource of `spec` by (`<app>#<Type>`): a tilolang
-/// record's (`tl.<app>.<Type>`), or a Rust app's resource, whose kind is the app's own
+/// document's (`tl.<app>.<Type>`), or a Rust app's resource, whose kind is the app's own
 /// (`tube.Channel`) and whose app the catalogue names. `None` for a resource no app draws.
 #[must_use]
 pub fn reading_type_of(spec: &ResourceSpec) -> Option<String> {

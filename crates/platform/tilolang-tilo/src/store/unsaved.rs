@@ -1,4 +1,4 @@
-//! The store's **unsaved layer**: what an origin derives, which the workspace record never holds,
+//! The store's **unsaved layer**: what an origin derives, which the workspace document never holds,
 //! and the writes the store replays when it puts the mirror back (rollback, rewind).
 //!
 //! A type whose origin kind is derived (`type Layout (origin: session.layout)`,
@@ -6,13 +6,13 @@
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.
 //!
-//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's writes the record
-//! now holds and leaves every other one — the derived ones, which the record never holds, and
+//! The document moving on ([`crate::store::TiloStore::sync`]) drops the store's writes the document
+//! now holds and leaves every other one — the derived ones, which the document never holds, and
 //! the saved ones whose change has not come back yet: [`Inner::drop_committed_local`] takes the
 //! committed ones out of [`super::Inner::local`] — the overlay keeps them until the index their
 //! app reads from reflects the change that carried them — [`Inner::rescan`] keeps the derived docs
-//! known, and [`Inner::reapply_kept`] writes everything still pending onto the record's new copy
-//! again. An origin's update thus never round-trips through the record: no action is committed,
+//! known, and [`Inner::reapply_kept`] writes everything still pending onto the document's new copy
+//! again. An origin's update thus never round-trips through the document: no action is committed,
 //! no peer replays it, and no index is rebuilt for it; and a change that arrives from elsewhere
 //! leaves the edits a person has here where they are.
 //!
@@ -67,7 +67,7 @@ pub(super) fn writes_derived(
 
 /// Commit a transaction that wrote only what an origin derives: tell each reader what changed,
 /// and queue, send and version nothing. Whether it did (a transaction with any saved write is
-/// the record's, and the caller commits it as ever).
+/// the document's, and the caller commits it as ever).
 pub(super) fn commit_derived(
     inner: &mut Inner,
     state: &mut TxnState,
@@ -80,9 +80,9 @@ pub(super) fn commit_derived(
     true
 }
 
-/// Note and tell what the transaction `state` committed to the record, the store's writes up to
+/// Note and tell what the transaction `state` committed to the document, the store's writes up to
 /// `writes` its own: it is told now, as the mirror's open transaction and the overlay show it,
-/// and the record's change that brings it back tells only what the record says differently
+/// and the document's change that brings it back tells only what the document says differently
 /// ([`super::TiloStore::sync`]). A `marked` transaction (a migration's or a trigger's mark) wrote
 /// what it names no field of, and its change tells all it wrote.
 pub(super) fn tell_saved(
@@ -143,11 +143,11 @@ pub(super) fn tell(
     told
 }
 
-/// The store's writes a sync found the record holds ([`Inner::drop_committed_local`]).
+/// The store's writes a sync found the document holds ([`Inner::drop_committed_local`]).
 pub(super) struct Taken {
     /// The collection items they added, removed or moved.
     pub(super) items: ItemTouches,
-    /// Whether they are every edit the record's new changes carry, and those who read the
+    /// Whether they are every edit the document's new changes carry, and those who read the
     /// mirror were told each when its action committed.
     pub(super) told: bool,
     /// The versions they told, provisional: per resource, what its action made of it.
@@ -198,7 +198,7 @@ impl Inner {
     /// Derive one write into the overlay, naming what it derived to whoever reads: a field may
     /// move on a resource the write did not name.
     pub(super) fn derive_write(&mut self, write: &mut LocalWrite) {
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return;
         }
         let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
@@ -228,14 +228,14 @@ impl Inner {
         }
     }
 
-    /// The store's writes the record now holds — the ones in the chunk `chunk` whose edit is one
-    /// of `committed`, the edits the record's new changes carry, each with the change carrying
+    /// The store's writes the document now holds — the ones in the chunk `chunk` whose edit is one
+    /// of `committed`, the edits the document's new changes carry, each with the change carrying
     /// it — taking them out of the store's pending writes. Each stays in the overlay, as
     /// accepted by its change, until the index its app reads from reflects that change
     /// ([`Self::rebuild_overlay`]): an index still being derived off the frame does not hold it
-    /// yet, and the write reads back from the overlay meanwhile. Every write the record has not
+    /// yet, and the write reads back from the overlay meanwhile. Every write the document has not
     /// taken stays pending: a change that arrives from elsewhere leaves the edits a person has
-    /// here, and the reads that answer from the store keep showing them, until the record's
+    /// here, and the reads that answer from the store keep showing them, until the document's
     /// change for them comes back.
     ///
     /// Also says whether those who read the mirror were told every one of `committed` already:
@@ -261,7 +261,7 @@ impl Inner {
                 let bare = write.edit.bare();
                 held.iter().position(|(_, edit)| edit == bare)
             };
-            // A write an origin derives is never the record's, whatever edit the record's
+            // A write an origin derives is never the document's, whatever edit the document's
             // changes carry: it stays in the mirror and the overlay.
             let Some(at) = at else {
                 kept.push(write);
@@ -278,8 +278,8 @@ impl Inner {
             self.accepted.push(Accepted { write, change });
         }
         self.local = kept;
-        // An edit the record holds in this chunk's document that the store routed to another
-        // chunk — a record kept as one document, whose manifest places items in chunks above it —
+        // An edit the document holds in this chunk's document that the store routed to another
+        // chunk — a document kept as one document, whose manifest places items in chunks above it —
         // stays pending there ([`super::TiloStore::sync`]); it was told all the same.
         for (_, edit) in &held {
             let Some(write) = self
@@ -303,9 +303,9 @@ impl Inner {
     }
 
     /// Write the store's pending writes of the chunk `chunk` onto the mirror again, as pending
-    /// ops: after the record's changes reached it, which rolled the whole open transaction back.
-    /// What the record has not taken is still what the store answers, so it is written back as
-    /// the store wrote it; the mirror's committed state (the record's) is untouched, so nothing
+    /// ops: after the document's changes reached it, which rolled the whole open transaction back.
+    /// What the document has not taken is still what the store answers, so it is written back as
+    /// the store wrote it; the mirror's committed state (the document's) is untouched, so nothing
     /// else rolls back.
     pub(super) fn reapply_kept(&mut self, chunk: ChunkNo) {
         let kept: Vec<LocalWrite> = self
@@ -328,7 +328,7 @@ impl Inner {
 
     /// Re-read which resources the documents the store holds have: those of each chunk, plus
     /// what an origin derives (those are in the mirrors still, as their open writes, but
-    /// [`super::scan_of`] reads only committed records).
+    /// [`super::scan_of`] reads only committed documents).
     pub(super) fn rescan(&mut self) {
         let derived: Vec<(DocId, (AppId, TypeId))> = self
             .index
@@ -344,9 +344,9 @@ impl Inner {
 
     /// Re-read which resources the chunk `chunk` has, and only those: what [`super::scan`] found
     /// in it now ([`Self::rescan`] reads every document the store holds). What the chunk held
-    /// before and does not any more leaves, unless the record's manifest places it in another
+    /// before and does not any more leaves, unless the document's manifest places it in another
     /// chunk, which the store reads when that chunk arrives. An origin's derived resources are
-    /// not the record's and stay where they are.
+    /// not the document's and stay where they are.
     pub(super) fn scan_chunk(
         &mut self,
         chunk: ChunkNo,
@@ -385,7 +385,7 @@ impl Inner {
 
     /// Drop the mirrors' open transactions and apply the store's committed writes again: each
     /// document as those writes left it, without whatever was written after them. Writes an
-    /// origin derives stay: nothing of the record takes them back.
+    /// origin derives stay: nothing of the document takes them back.
     pub(super) fn reapply(&mut self) {
         let chunks: Vec<ChunkNo> = self.chunks.docs().map(|(chunk, _)| chunk).collect();
         for chunk in chunks {
@@ -405,9 +405,9 @@ impl Inner {
 
 impl Inner {
     /// Derive the store's writes anew into an empty overlay: after a rollback, once an index
-    /// they were written over changed, or once the record took some. What an index reflects is
-    /// the index's, not derived here again: a write whose versions the record told
-    /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
+    /// they were written over changed, or once the document took some. What an index reflects is
+    /// the index's, not derived here again: a write whose versions the document told
+    /// ([`Self::settle_versions`]), and one the document accepted whose change the index its app
     /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
         // What each index has yet to take in of each chunk, read once per index and chunk
@@ -428,7 +428,7 @@ impl Inner {
             })
             .collect();
         let mut overlay = Overlay::default();
-        if self.chunks.has_record() {
+        if self.chunks.has_document() {
             let settled = &self.settled;
             let pending = self
                 .local
@@ -461,11 +461,11 @@ impl Inner {
     }
 
     /// Take in the versions an action this device committed made, provisional until the
-    /// record holds it: each resource it changed was last changed by its invoker at the time
+    /// document holds it: each resource it changed was last changed by its invoker at the time
     /// the invocation recorded, one it made was made then, and each of its fields it changed
     /// was changed then (`changed(r, .field)`). Reflection (`created(r)`, `updated(r)`,
-    /// `changed(r, .field)`) and the lists ordered by them read these until the record's own
-    /// replace them with the record's next change; the record's carry the same time, so
+    /// `changed(r, .field)`) and the lists ordered by them read these until the document's own
+    /// replace them with the document's next change; the document's carry the same time, so
     /// nothing moves then. Returns the fields that changed: each resource's versions.
     pub(super) fn provisional_versions(
         &mut self,
@@ -521,7 +521,7 @@ impl Inner {
             touched
         };
         if let (true, Some(held)) = (
-            self.chunks.has_record(),
+            self.chunks.has_document(),
             self.apps.get(app).filter(|held| held.answers()),
         ) {
             let snapshot = Arc::clone(&held.snapshot);
@@ -540,12 +540,12 @@ impl Inner {
         reached
     }
 
-    /// Drop the versions of the store's writes that `told` are the record's now: a change of the
+    /// Drop the versions of the store's writes that `told` are the document's now: a change of the
     /// record's that carries the very action a write here made tells each version it made
     /// ([`Self::provisional_versions`]), and the index holds it. The write keeps what it wrote of
     /// its resources alone, so a rebuild of the overlay reads no version off the index again for
     /// a change those who read the mirror are told already. A transaction whose every version
-    /// `told` holds is the record's, and stays only for the chunk record it goes to
+    /// `told` holds is the document's, and stays only for the chunk record it goes to
     /// ([`Self::rebuild_overlay`]).
     pub(super) fn settle_versions(&mut self, told: &super::Ends) {
         let mut settled = BTreeSet::new();
@@ -563,7 +563,7 @@ impl Inner {
                 settled.insert(write.seed.clone());
             }
         }
-        // A write of the record's leaves `local` once its chunk record holds it, and takes its
+        // A write of the document's leaves `local` once its chunk document holds it, and takes its
         // seed with it.
         self.settled
             .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
@@ -571,7 +571,7 @@ impl Inner {
     }
 }
 
-/// What an index has yet to take in of one chunk of the record.
+/// What an index has yet to take in of one chunk of the document.
 enum Behind {
     /// It derived the chunk up to the heads the store holds: every change of it.
     Nothing,

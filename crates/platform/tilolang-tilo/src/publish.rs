@@ -1,6 +1,6 @@
 //! Publishing tilolang resources on the action api.
 //!
-//! Every resource in the workspace record is published as a `tilo_actions::ResourceSpec` of kind
+//! Every resource in the workspace document is published as a `tilo_actions::ResourceSpec` of kind
 //! `tl.<app>.<Type>`, with one typed action per tilolang action whose target is its type. The
 //! desktop agent, the runtime api, shortcuts and grants therefore reach tilolang actions with
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
@@ -96,7 +96,7 @@ pub struct PlanRequest<'a> {
 
 /// Runs a tilolang action as a planner and records what it wrote.
 ///
-/// The implementation is the host's runtime: a transaction over a copy of the workspace record
+/// The implementation is the host's runtime: a transaction over a copy of the workspace document
 /// collects the module's mutations as edits, and nothing is committed here.
 pub trait Planner: Send + Sync {
     /// # Errors
@@ -134,7 +134,7 @@ pub fn resource_id(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")
 }
 
-/// The app whose published resource `resource` is: a record's or item's (`tl:<app>:<id>`,
+/// The app whose published resource `resource` is: a document's or item's (`tl:<app>:<id>`,
 /// [`resource_id`]) or its package's own (`tl:<app>`, [`package_resource_id`]).
 #[must_use]
 pub fn app_of(resource: &str) -> Option<&str> {
@@ -163,7 +163,7 @@ pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Wor
         )
 }
 
-/// What a record of `declared` is called while its title is empty: the words its type declares,
+/// What a document of `declared` is called while its title is empty: the words its type declares,
 /// translated; else an app's root by the app's name, translated; else its type's name.
 fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Words) -> String {
     if let Some(untitled) = &declared.untitled {
@@ -182,7 +182,7 @@ pub(crate) fn app_name(words: &dyn Words, meta: &Meta) -> String {
     label_of(words, &meta.app, &meta.title)
 }
 
-/// The id of a package's own resource, for its record-less actions.
+/// The id of a package's own resource, for its document-less actions.
 #[must_use]
 pub fn package_resource_id(app: &str) -> String {
     format!("tl:{app}")
@@ -302,7 +302,7 @@ fn spec_of(
     let no_params = params.is_empty();
     // Published by its name, as a native verb is: what an agent at the API lists and calls. The
     // build above plans it by the id the declaration keeps, which is also what a change of it
-    // says in the record (and its words are keyed by).
+    // says in the document (and its words are keyed by).
     let spec = if no_params {
         ActionSpec::deferred_on(
             action.name.clone(),
@@ -345,7 +345,7 @@ fn described(spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> Action
         spec = spec.with_icon(icon.clone());
     }
     // `did: "added a subtask"`: what it did, said after who did it, in the reader's language, as
-    // history says it; a record of an agent's steps reads the same words.
+    // history says it; a document of an agent's steps reads the same words.
     if let Some(did) = &action.did {
         spec = spec.with_did(said_of(words, &action.id, "did", None, did));
     }
@@ -391,7 +391,7 @@ pub struct ActionTypes {
 
 /// The action types of the resources of one tilolang type.
 struct TypeActions {
-    /// The two direct edits ([`edit_types`]), which every record of the type offers, root and
+    /// The two direct edits ([`edit_types`]), which every document of the type offers, root and
     /// item alike.
     edits: [Arc<ActionType>; 2],
     /// The actions whose target is the type.
@@ -407,14 +407,14 @@ struct TypeActions {
 }
 
 impl ActionTypes {
-    /// What a record of the type `schema` is called when no text in it names it: the words its
+    /// What a document of the type `schema` is called when no text in it names it: the words its
     /// type declares, else a package's root (one per workspace) by the package's title, another
     /// by its type. Never by its id.
     fn untitled(&self, schema: &crate::schema::TypeSchema) -> String {
         self.untitled_of(&schema.name)
     }
 
-    /// What a record of the type `type_name` is called while its title is empty.
+    /// What a document of the type `type_name` is called while its title is empty.
     fn untitled_of(&self, type_name: &str) -> String {
         self.on_type.get(type_name).map_or_else(
             || crate::schema::spoken(type_name),
@@ -486,13 +486,13 @@ impl ActionTypes {
             && self.words == words
     }
 
-    /// The record `id` of the type `type_name`, labelled `label`, carrying its `open`, its
+    /// The document `id` of the type `type_name`, labelled `label`, carrying its `open`, its
     /// `read`, the direct edits of its type ([`edit_types`]) and the actions on its type. A root
     /// and an item are published alike: an item's edits are the same typed field edits, spliced
-    /// into the record by the item's id there ([`edit_action`]).
+    /// into the document by the item's id there ([`edit_action`]).
     ///
-    /// A `root` record's `open` also takes the item under it to show, which a window that shows
-    /// none of the record's items does not publish: a search hit on such an item opens it there.
+    /// A `root` document's `open` also takes the item under it to show, which a window that shows
+    /// none of the document's items does not publish: a search hit on such an item opens it there.
     fn resource(&self, type_name: &str, id: &str, label: String, root: bool) -> ResourceSpec {
         let open = if root {
             root_open_spec(id)
@@ -630,7 +630,12 @@ fn open_with_spec(ty: &Arc<ActionType>, anchor: &str, view: &str) -> ActionSpec 
 /// The resource `id` of the type `type_name`, published with the actions and direct edits of
 /// that type.
 #[must_use]
-pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> ResourceSpec {
+pub fn publish_resource(
+    types: &ActionTypes,
+    type_name: &str,
+    id: &str,
+    label: &str,
+) -> ResourceSpec {
     types.resource(type_name, id, label.to_owned(), true)
 }
 
@@ -643,9 +648,9 @@ fn open_spec(anchor: &str) -> ActionSpec {
     .bound()
 }
 
-/// The `open` of the root record `anchor`: it opens the record, or the item under it a caller
+/// The `open` of the root document `anchor`: it opens the document, or the item under it a caller
 /// names (`anchor`, as a search hit on the item does). A person choosing it asks for nothing: left
-/// out, the item is the record itself.
+/// out, the item is the document itself.
 fn root_open_spec(anchor: &str) -> ActionSpec {
     use tilo_resource::Effect as _;
     let open = crate::effects::OpenEffect::Open {
@@ -666,7 +671,7 @@ fn root_open_spec(anchor: &str) -> ActionSpec {
     open.bound_asking_params(params).with_immediate_per_target()
 }
 
-/// The resource of a root record with the items of its collections as child resources, each
+/// The resource of a root document with the items of its collections as child resources, each
 /// carrying the actions whose target is its type (a draft's `send`, a note's `pin`).
 ///
 /// An item's resource id is the root's with the item's id (`doc/item`), the same form an
@@ -675,12 +680,12 @@ fn root_open_spec(anchor: &str) -> ActionSpec {
 #[must_use]
 pub fn publish_tree(
     types: &ActionTypes,
-    record: &crate::record::DynRecord,
+    record: &crate::resource::DynResource,
     type_name: &str,
     doc: &str,
     label: &str,
 ) -> ResourceSpec {
-    let mut resource = publish_record(types, type_name, doc, label);
+    let mut resource = publish_resource(types, type_name, doc, label);
     for child in item_resources(types, record, doc) {
         resource = resource.with_child(child);
     }
@@ -689,10 +694,10 @@ pub fn publish_tree(
 
 fn item_resources(
     types: &ActionTypes,
-    record: &crate::record::DynRecord,
+    record: &crate::resource::DynResource,
     parent: &str,
 ) -> Vec<ResourceSpec> {
-    use crate::record::DynValue;
+    use crate::resource::DynValue;
     let mut out = Vec::new();
     for field in &record.schema().fields {
         let Some(DynValue::Collection(items)) = record.get(&field.id) else {
@@ -708,7 +713,11 @@ fn item_resources(
 
 /// The item `item` at `path`, published with its type's direct edits and actions, and its own
 /// items.
-fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> ResourceSpec {
+fn item_resource(
+    types: &ActionTypes,
+    item: &crate::resource::DynResource,
+    path: &str,
+) -> ResourceSpec {
     let type_name = &item.schema().name;
     let label = item_label(item).unwrap_or_else(|| types.untitled_of(type_name));
     let mut resource = types.resource(type_name, path, label, false);
@@ -718,13 +727,13 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
     resource
 }
 
-/// What a workspace publishes of its records, kept up to date by republishing only what changed.
+/// What a workspace publishes of its resources, kept up to date by republishing only what changed.
 ///
-/// A record is republished in its cached tree where a change reached it, at that resource's
+/// A resource is republished in its cached tree where a change reached it, at that resource's
 /// depth: an item whose own field changed has its label read again (and so do the items holding
 /// it); items added to, removed from or moved in a collection are added, removed or moved among
 /// the children of the resource holding it; an item replaced as a whole is built anew.
-/// Only a record that appeared, or one that changed as a whole, is read and built in full, and
+/// Only a resource that appeared, or one that changed as a whole, is read and built in full, and
 /// that happens on a worker thread, from a snapshot of the store, as search's first index
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
 /// A field of a published resource: the resource's id, and the field the change named.
@@ -732,7 +741,7 @@ type Field = (String, String);
 
 /// What the updates since a revision changed, as a reader of an action's availability needs it.
 pub enum Moved {
-    /// These fields changed, by published resource id: a record's own, and every item's under
+    /// These fields changed, by published resource id: a resource's own, and every item's under
     /// it.
     These(std::collections::BTreeMap<String, std::collections::BTreeSet<String>>),
     /// Every resource: an update since read them all again, and what it changed is every one.
@@ -789,7 +798,7 @@ impl Moved {
     }
 }
 
-/// What the updates since a revision moved of the records' text, as a reader that keeps one
+/// What the updates since a revision moved of the documents' text, as a reader that keeps one
 /// entry per resource (the search index) reads it: a task checked replaces its entry, a task
 /// added or deleted adds or drops one, whatever else the workspace holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -836,7 +845,7 @@ fn text_moves(changes: &crate::store::Changes) -> TextMoves {
 
 pub struct Publications {
     watch: crate::store::Watch,
-    /// Each the very tree it was while the record publishes the same: a reader holding it
+    /// Each the very tree it was while the document publishes the same: a reader holding it
     /// knows by its pointer that nothing in it changed.
     trees: std::collections::BTreeMap<String, Rc<ResourceSpec>>,
     /// Moves whenever a tree is added, replaced or removed.
@@ -846,33 +855,33 @@ pub struct Publications {
     /// The labels each recent revision that changed only labels moved, oldest first: what a
     /// reader holding an earlier revision patches instead of reading every tree again.
     relabels: std::collections::VecDeque<(u64, Vec<(String, String)>)>,
-    /// Per record, the resource whose text names it now.
+    /// Per document, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
-    /// Records being built whole off the frame.
+    /// Documents being built whole off the frame.
     building: Option<Pending<Vec<Built>>>,
     wake: Option<Waker>,
-    /// Per app, the action types its records offer.
+    /// Per app, the action types its documents offer.
     types: std::collections::BTreeMap<String, Arc<ActionTypes>>,
     /// The words the trees above were published in ([`Words::revision`]): when they read in
-    /// another language, every record is published again in it.
+    /// another language, every document is published again in it.
     words: u64,
-    /// The packages loaded when the trees were published: a record whose type none of them
+    /// The packages loaded when the trees were published: a document whose type none of them
     /// declares any more, or one a package that loaded since declares, is found by publishing
-    /// every record again.
+    /// every document again.
     packages: Vec<tilolang_runtime::PackageId>,
-    /// Whether nothing is published yet: the first update publishes every record.
+    /// Whether nothing is published yet: the first update publishes every document.
     fresh: bool,
-    /// Whether records are published whole up front, without a window bounding them: what a
+    /// Whether documents are published whole up front, without a window bounding them: what a
     /// host without frames publishes ([`Self::settle`]), and what a caller that reads the whole
     /// workspace (the session's service, the directory) is served. A window's surface turns it
     /// off ([`Self::window`]) and publishes what it reaches instead ([`Self::reached`]).
     whole: bool,
-    /// How many records the updates have looked at, one per record per turn.
+    /// How many records the updates have looked at, one per document per turn.
     visited: u64,
-    /// How many times the updates read every record in full: only the first update, and a turn
-    /// that changed what every record is published as.
+    /// How many times the updates read every document in full: only the first update, and a turn
+    /// that changed what every document is published as.
     sweeps: u64,
-    /// How many updates saw a change in the workspace, whether or not it changed what a record
+    /// How many updates saw a change in the workspace, whether or not it changed what a document
     /// is published as: an action's availability follows what its app's requirements read, which
     /// a change may move without moving a label.
     moved: u64,
@@ -880,32 +889,32 @@ pub struct Publications {
     /// for an update that read everything again: what a reader holding an earlier count reads
     /// the requirements of again.
     motions: std::collections::VecDeque<(u64, Option<Vec<Field>>)>,
-    /// What each recent update moved of the records' text, by [`Self::moved`], oldest first:
+    /// What each recent update moved of the documents' text, by [`Self::moved`], oldest first:
     /// what a reader that keeps one entry per resource (the search index) replaces, and what it
-    /// drops, instead of reading every record again.
+    /// drops, instead of reading every document again.
     text_moves: std::collections::VecDeque<(u64, TextMoves)>,
     /// The published records that are what a window reaches of them, each with only the
-    /// resources it reaches ([`Self::reached`]): every other record in [`Self::trees`] is whole.
+    /// resources it reaches ([`Self::reached`]): every other document in [`Self::trees`] is whole.
     reached: std::collections::BTreeSet<String>,
     /// What the window showed when the reached trees were read, and the snapshot they were read
     /// from: a frame that shows the same reads nothing.
     shown: Option<(Arc<crate::store::Snapshot>, Vec<String>)>,
-    /// The reached records whose tree holds less than the window reaches of them: an item the
-    /// index did not answer yet when the record was read. One is read again once its app's
+    /// The reached documents whose tree holds less than the window reaches of them: an item the
+    /// index did not answer yet when the document was read. One is read again once its app's
     /// index answers more ([`Self::grown`]).
     short: std::collections::BTreeSet<String>,
-    /// The apps whose index answered more of the record since the reached trees were read.
+    /// The apps whose index answered more of the document since the reached trees were read.
     grown: std::collections::BTreeSet<tilolang_runtime::ids::AppId>,
 }
 
-/// A record built whole off the frame: its tree and the resource whose text names it.
+/// A document built whole off the frame: its tree and the resource whose text names it.
 struct Built {
     doc: String,
     tree: ResourceSpec,
     named_by: Option<String>,
 }
 
-/// A record to build whole.
+/// A document to build whole.
 struct Whole {
     doc: String,
     types: Arc<ActionTypes>,
@@ -913,12 +922,12 @@ struct Whole {
     type_id: String,
 }
 
-/// What a window reaches of a record, by the resource holding it: the resources under it the
-/// window shows, each by its path. A read without one reaches every item of every record.
+/// What a window reaches of a document, by the resource holding it: the resources under it the
+/// window shows, each by its path. A read without one reaches every item of every document.
 type Reached = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
 
-/// What `shown` reaches, by the record it is in: each record with the paths of the resources
-/// under it that `shown` names, and the path each of them is reached by from the record down.
+/// What `shown` reaches, by the document it is in: each document with the paths of the resources
+/// under it that `shown` names, and the path each of them is reached by from the document down.
 fn reached_by_doc(app: &str, shown: &[String]) -> std::collections::BTreeMap<String, Reached> {
     let prefix = resource_id(app, "");
     let mut out: std::collections::BTreeMap<String, Reached> = std::collections::BTreeMap::new();
@@ -928,7 +937,7 @@ fn reached_by_doc(app: &str, shown: &[String]) -> std::collections::BTreeMap<Str
         };
         let doc = path.split('/').next().unwrap_or(path);
         let reached = out.entry(doc.to_owned()).or_default();
-        // Every step from the record down to what is shown: the route the window reaches it by.
+        // Every step from the document down to what is shown: the route the window reaches it by.
         let mut at = path;
         while let Some((parent, _)) = at.rsplit_once('/') {
             reached
@@ -941,10 +950,10 @@ fn reached_by_doc(app: &str, shown: &[String]) -> std::collections::BTreeMap<Str
     out
 }
 
-/// What `tree`, the published `doc` of a record, reaches of it: every resource in it, each under
-/// the one that holds it — the reach a change to the whole record is read again with.
+/// What `tree`, the published `doc` of a document, reaches of it: every resource in it, each under
+/// the one that holds it — the reach a change to the whole document is read again with.
 fn reach_of(tree: &ResourceSpec, doc: &str) -> Reached {
-    // A resource's path is its published id without the prefix [`resource_id`] puts the record
+    // A resource's path is its published id without the prefix [`resource_id`] puts the document
     // under.
     let width = tree.id.as_str().len().saturating_sub(doc.len());
     let mut out = Reached::new();
@@ -963,7 +972,7 @@ fn collect_reached(spec: &ResourceSpec, width: usize, out: &mut Reached) {
 
 impl Whole {
     fn build(&self, snapshot: &crate::store::Snapshot, reached: Option<&Reached>) -> Built {
-        // This record is published by the package version the snapshot's store was taken from.
+        // This document is published by the package version the snapshot's store was taken from.
         let _schemas = snapshot.scoped();
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
@@ -978,9 +987,9 @@ impl Whole {
             |(text, _)| text.clone(),
         );
         let view = snapshot
-            .record_of(&self.doc)
+            .document_of(&self.doc)
             .and_then(|(app, _)| snapshot.view(app));
-        let mut tree = publish_record(&self.types, &self.type_name, &self.doc, &label);
+        let mut tree = publish_resource(&self.types, &self.type_name, &self.doc, &label);
         if let (Some(view), Some(schema)) = (view, schema) {
             for child in indexed_items(&self.types, &view, snapshot, &self.doc, schema, reached) {
                 tree = tree.with_child(child);
@@ -1005,7 +1014,7 @@ fn indexed_items(
     reached: Option<&Reached>,
 ) -> Vec<ResourceSpec> {
     // What a window reaches: the items it shows, read by their paths, not the ten thousand the
-    // record holds.
+    // document holds.
     if let Some(reached) = reached {
         return reached
             .get(parent)
@@ -1069,7 +1078,7 @@ fn indexed_item(
 }
 
 impl Publications {
-    /// Nothing published yet; the first [`Self::update`] publishes every record whole: what a
+    /// Nothing published yet; the first [`Self::update`] publishes every document whole: what a
     /// host without frames publishes, and what the session's own service and the directory read.
     #[must_use]
     pub fn new(host: &crate::host::Host) -> Self {
@@ -1105,7 +1114,7 @@ impl Publications {
     /// costs an open what it shows.
     ///
     /// A caller that reads the whole workspace (the session's own service, the directory) keeps
-    /// publishing every record ([`Self::everything`]).
+    /// publishing every document ([`Self::everything`]).
     pub fn window(&mut self) {
         self.whole = false;
     }
@@ -1136,7 +1145,7 @@ impl Publications {
         Some(types)
     }
 
-    /// The app, the name of the type and its id of the record `doc`, as the loaded packages
+    /// The app, the name of the type and its id of the document `doc`, as the loaded packages
     /// declare them; `None` when the store holds no such resource or no package declares its
     /// type.
     fn declared(host: &crate::host::Host, doc: &str) -> Option<(String, String, String)> {
@@ -1154,9 +1163,9 @@ impl Publications {
         })
     }
 
-    /// The action types and schema of the record `doc`, as the loaded packages declare it;
+    /// The action types and schema of the document `doc`, as the loaded packages declare it;
     /// `None` when none declares its type or the type is not registered.
-    fn record_types(
+    fn resource_types(
         &mut self,
         host: &crate::host::Host,
         planner: &Arc<dyn Planner>,
@@ -1167,7 +1176,7 @@ impl Publications {
         Some((self.types_of(host, &app, planner)?, schema))
     }
 
-    /// The record `doc` to build whole, as the host has it now: `None` when the store holds no
+    /// The document `doc` to build whole, as the host has it now: `None` when the store holds no
     /// such resource, no loaded package declares its type, or the type is not registered.
     fn whole_of(
         &mut self,
@@ -1185,19 +1194,19 @@ impl Publications {
         })
     }
 
-    /// Have `wake` called (from another thread) when records built off the frame are ready
+    /// Have `wake` called (from another thread) when documents built off the frame are ready
     /// for the next [`Self::update`] to take in.
     pub fn set_waker(&mut self, wake: Waker) {
         self.wake = Some(wake);
     }
 
-    /// Whether records are being built off the frame.
+    /// Whether documents are being built off the frame.
     #[must_use]
     pub fn is_building(&self) -> bool {
         self.building.is_some()
     }
 
-    /// [`Self::update`], waiting first for records being built off the frame: for a host
+    /// [`Self::update`], waiting first for documents being built off the frame: for a host
     /// without frames.
     pub fn settle(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
         let mut touched = self.update(host, planner);
@@ -1210,7 +1219,7 @@ impl Publications {
         touched
     }
 
-    /// Every record of the workspace, published whole: what a caller that asks about the whole
+    /// Every document of the workspace, published whole: what a caller that asks about the whole
     /// workspace (the directory) reads. Nothing of it is what a window shows: a window's surface
     /// holds what it reaches ([`Self::reached`]), and the whole workspace is never published to
     /// it.
@@ -1231,16 +1240,16 @@ impl Publications {
             .collect()
     }
 
-    /// What the window's surface publishes: the records `shown` reaches, each with the
-    /// resources under it `shown` names, read from the store as it is now. A record the window
+    /// What the window's surface publishes: the documents `shown` reaches, each with the
+    /// resources under it `shown` names, read from the store as it is now. A document the window
     /// shows nothing of is not published: a workspace of ten thousand publishes the rows on
     /// screen.
     ///
     /// The answer stands while the window shows what it showed and nothing it reaches changed:
     /// a frame that changed neither publishes without reading anything. What changed is what
-    /// the store's watch names, which [`Self::update`] takes in by reading the records it
-    /// reaches again; a change elsewhere in the store (an index answering more of the record, a
-    /// trial run put back) reads nothing here, but a record whose tree holds less than the
+    /// the store's watch names, which [`Self::update`] takes in by reading the documents it
+    /// reaches again; a change elsewhere in the store (an index answering more of the document, a
+    /// trial run put back) reads nothing here, but a document whose tree holds less than the
     /// window reaches is read again then.
     pub fn reached(
         &mut self,
@@ -1255,7 +1264,7 @@ impl Publications {
         grown.extend(self.watch.indexed());
         let regrown = |doc: &str| {
             snapshot
-                .record_of(doc)
+                .document_of(doc)
                 .is_some_and(|(app, _)| grown.contains(app))
         };
         let stands = self.shown.as_ref().is_some_and(|(at, ids)| {
@@ -1267,7 +1276,7 @@ impl Publications {
         });
         if !stands {
             // What the window no longer reaches is no longer published: a window scrolled away
-            // from a record holds no part of it.
+            // from a document holds no part of it.
             let held: std::collections::BTreeSet<&str> = reach.keys().map(String::as_str).collect();
             let dropped: Vec<String> = self
                 .reached
@@ -1304,7 +1313,7 @@ impl Publications {
             .collect()
     }
 
-    /// The record of the resource `address` names, published down to it: what an invocation is
+    /// The document of the resource `address` names, published down to it: what an invocation is
     /// resolved against when the window shows nothing of it. `None` when the address is no
     /// resource of `app`.
     pub fn addressed(
@@ -1321,7 +1330,7 @@ impl Publications {
         Some(Rc::new(whole.build(&snapshot, Some(&reached)).tree))
     }
 
-    /// Take in records built off the frame.
+    /// Take in documents built off the frame.
     fn take_in(&mut self, built: Vec<Built>, touched: &mut Vec<String>) {
         for Built {
             doc,
@@ -1340,7 +1349,7 @@ impl Publications {
         }
     }
 
-    /// Publish nothing of `doc` any more: a record the window scrolled away from holds no part
+    /// Publish nothing of `doc` any more: a document the window scrolled away from holds no part
     /// of it, and one the workspace no longer has is gone.
     fn unpublish(&mut self, doc: &str) {
         self.reached.remove(doc);
@@ -1353,7 +1362,7 @@ impl Publications {
     }
 
     /// Publish what the window reached of `doc` again: the same resources, read from the store as
-    /// it is now, after a change to the whole record. Whether `doc` was published as reached.
+    /// it is now, after a change to the whole document. Whether `doc` was published as reached.
     fn reread(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>, doc: &str) -> bool {
         let reach = self.trees.get(doc).map(|at| reach_of(at, doc));
         let (Some(reach), Some(whole)) = (reach, self.whole_of(host, planner, doc)) else {
@@ -1369,7 +1378,7 @@ impl Publications {
         true
     }
 
-    /// How many records the updates so far have looked at, one per record per turn: what
+    /// How many records the updates so far have looked at, one per document per turn: what
     /// publishing a change costs, whatever the workspace holds.
     #[must_use]
     pub fn visited(&self) -> u64 {
@@ -1377,7 +1386,7 @@ impl Publications {
     }
 
     /// How many updates have seen a change in the workspace, whether or not it changed what a
-    /// record is published as: what an action's availability, and only it, reads besides.
+    /// document is published as: what an action's availability, and only it, reads besides.
     #[must_use]
     pub fn moved(&self) -> u64 {
         self.moved
@@ -1387,7 +1396,7 @@ impl Publications {
     /// update since read it all again, and `None` when what changed that long ago is no longer
     /// kept, which reads everything too.
     ///
-    /// A field is a record's own or one of its items': what a requirement of an item reads is
+    /// A field is a document's own or one of its items': what a requirement of an item reads is
     /// named as the item's fields, so a change to one item reads that item's requirements again
     /// and leaves every other item's as they were.
     #[must_use]
@@ -1426,7 +1435,7 @@ impl Publications {
         Some(Moved::These(out))
     }
 
-    /// What the updates since `since` moved of the records' text, each once: the entries a
+    /// What the updates since `since` moved of the documents' text, each once: the entries a
     /// reader that keeps one per resource reads again, and those it drops. `None` when what
     /// moved that long ago is no longer kept, which reads everything too.
     #[must_use]
@@ -1462,14 +1471,14 @@ impl Publications {
         Some(TextMoves::These { texts, gone })
     }
 
-    /// How many times the updates so far have read every record in full: what publishing a
+    /// How many times the updates so far have read every document in full: what publishing a
     /// change must never cost, whatever the workspace holds.
     #[must_use]
     pub fn sweeps(&self) -> u64 {
         self.sweeps
     }
 
-    /// The published records, by document id. A record whose tree did not change since an
+    /// The published documents, by document id. A document whose tree did not change since an
     /// earlier call is the very same tree.
     #[must_use]
     pub fn trees(&self) -> &std::collections::BTreeMap<String, Rc<ResourceSpec>> {
@@ -1550,7 +1559,7 @@ impl Publications {
         }
         let changes = self.watch.take();
         // The words a package is published in read in another language now (the person chose
-        // one, or a catalogue of it was added): every record is read again, so its labels,
+        // one, or a catalogue of it was added): every document is read again, so its labels,
         // descriptions and nouns say what they are now called.
         let reworded = {
             let words = host.runtime().words().revision();
@@ -1560,12 +1569,12 @@ impl Publications {
             self.types.clear();
         }
         self.grown.extend(changes.indexed.iter().cloned());
-        // A package loaded or replaced: the records of a type none declares any more go, and
+        // A package loaded or replaced: the documents of a type none declares any more go, and
         // those of a type one declares now are published.
         let reloaded = std::mem::replace(&mut self.packages, host.package_ids()) != self.packages;
-        // An index answering more of the record changes no record: a window's trees hold what
+        // An index answering more of the document changes no document: a window's trees hold what
         // it shows, read already ([`Self::reached`]), and only a publication of every item of
-        // every record has more to publish.
+        // every document has more to publish.
         let all = std::mem::take(&mut self.fresh)
             || reworded
             || reloaded
@@ -1574,7 +1583,7 @@ impl Publications {
         if all {
             if self.whole {
                 // A caller that reads the whole workspace — a host without frames, the
-                // session's own service, the directory — publishes every record, read off the
+                // session's own service, the directory — publishes every document, read off the
                 // frame. No window bounds it, so nothing of it goes unpublished.
                 self.publish_everything(host, planner, relabels, &mut touched);
             } else {
@@ -1586,18 +1595,18 @@ impl Publications {
                 self.forget(&mut touched);
             }
         } else {
-            // Nothing changed: no record is looked at, whether the workspace holds one or ten
+            // Nothing changed: no document is looked at, whether the workspace holds one or ten
             // thousand.
             self.publish_changed(host, planner, &changes, relabels, &mut touched);
         }
         // A change may move what a requirement of an action reads without moving any tree of
         // its own (a task checked, and `Clear done` can run now): a surface holding the actions
-        // reads the requirements of the records that changed again, whether or not the record
+        // reads the requirements of the documents that changed again, whether or not the document
         // is published as something else.
         if all || !changes.is_empty() {
             self.moved = self.moved.saturating_add(1);
-            // Every field a change named, not its record alone: what an item's requirement
-            // reads is the item's fields, and a record of ten thousand items reads one item's
+            // Every field a change named, not its document alone: what an item's requirement
+            // reads is the item's fields, and a document of ten thousand items reads one item's
             // again.
             let moved = if all || changes.everything || !changes.indexed.is_empty() {
                 None
@@ -1608,7 +1617,7 @@ impl Publications {
                     .flatten()
                     .map(|key| (key.resource.clone(), key.field.clone()))
                     .collect();
-                // A document that may have changed anywhere is its record's own resource, and
+                // A document that may have changed anywhere is its document's own resource, and
                 // everything under it.
                 fields.extend(
                     changes
@@ -1635,7 +1644,7 @@ impl Publications {
         touched
     }
 
-    /// Publish the records the turn changed, and no others: what the store's watch says moved,
+    /// Publish the documents the turn changed, and no others: what the store's watch says moved,
     /// answered from its change set, whatever else the workspace holds.
     fn publish_changed(
         &mut self,
@@ -1664,15 +1673,15 @@ impl Publications {
                 continue;
             }
             // Nothing of it is published: what a window reaches of it is built when it reaches
-            // it ([`Self::reached`]), so a change to a record no one published reads no more of
+            // it ([`Self::reached`]), so a change to a document no one published reads no more of
             // it than the surface of what the window shows, which is published again. A
-            // publication of the whole workspace builds it whole, as it builds every record.
+            // publication of the whole workspace builds it whole, as it builds every document.
             if !self.trees.contains_key(doc) && !self.whole {
                 touched.push(doc.to_owned());
                 *relabels = None;
                 continue;
             }
-            // The versions of a resource name no value a record is published as: marks and
+            // The versions of a resource name no value a document is published as: marks and
             // history read them, and what the tree shows stays as it was.
             let fields: Option<BTreeSet<_>> = changes.docs.get(doc).map(|fields| {
                 fields
@@ -1689,7 +1698,7 @@ impl Publications {
                         .any(|key| key.resource == doc && key.field == ANY_FIELD)
                 });
             if whole {
-                // A record the window reaches is read again down to what it shows: a change to
+                // A document the window reaches is read again down to what it shows: a change to
                 // the whole of it does not publish ten thousand items to a window showing ten.
                 if self.reached.contains(doc) {
                     if self.reread(host, planner, doc) {
@@ -1701,7 +1710,7 @@ impl Publications {
                 continue;
             }
             let (Some(fields), Some((types, schema))) =
-                (fields.as_ref(), self.record_types(host, planner, doc))
+                (fields.as_ref(), self.resource_types(host, planner, doc))
             else {
                 continue;
             };
@@ -1742,8 +1751,8 @@ impl Publications {
         }
     }
 
-    /// Publish nothing, forgetting what was published: what a turn that changed what every record
-    /// is published as costs (the words, or the packages loaded) — every record's tree is read
+    /// Publish nothing, forgetting what was published: what a turn that changed what every document
+    /// is published as costs (the words, or the packages loaded) — every document's tree is read
     /// again when something reaches it.
     fn forget(&mut self, touched: &mut Vec<String>) {
         self.shown = None;
@@ -1760,7 +1769,7 @@ impl Publications {
         self.structural = self.revision;
     }
 
-    /// Publish every record in full: what a caller that reads the whole workspace asks for (the
+    /// Publish every document in full: what a caller that reads the whole workspace asks for (the
     /// directory, a host without frames), read off the frame.
     fn publish_everything(
         &mut self,
@@ -1786,7 +1795,7 @@ impl Publications {
             *relabels = None;
         }
         // What is published whole already stays: a caller that asks for the workspace again
-        // reads what it did not read whole before — a record a window reached is read whole.
+        // reads what it did not read whole before — a document a window reached is read whole.
         let missing: Vec<&String> = records
             .iter()
             .map(|(_, _, doc)| doc)
@@ -1794,7 +1803,7 @@ impl Publications {
                 !self.trees.contains_key(doc.as_str()) || self.reached.contains(doc.as_str())
             })
             .collect();
-        // A read of every record in full is a sweep; what is published already is not read
+        // A read of every document in full is a sweep; what is published already is not read
         // again.
         if missing.len() == records.len() {
             self.sweeps = self.sweeps.saturating_add(1);
@@ -1834,7 +1843,7 @@ const RELABELS_KEPT: usize = 256;
 /// How many updates [`Publications::changed_since`] reaches back over.
 const MOTIONS_KEPT: usize = 256;
 
-/// What republishing a record did to its tree.
+/// What republishing a document did to its tree.
 enum Republished {
     /// It is the very tree it was.
     Unchanged,
@@ -1844,42 +1853,42 @@ enum Republished {
     Rebuilt,
 }
 
-/// What to rebuild of a published record: the resources a change reached, each at its own
+/// What to rebuild of a published document: the resources a change reached, each at its own
 /// depth, so a message added to a conversation of ten thousand is one member added to it, and
 /// a draft typed into the conversation is its label read again.
 struct Rework {
     /// The items created, replaced or removed as a whole: built anew, with their own items.
     nodes: std::collections::BTreeSet<String>,
     /// The collections whose membership or order changed, by the resource holding them (the
-    /// record or one of its items) and field.
+    /// document or one of its items) and field.
     collections: std::collections::BTreeSet<(String, String)>,
     /// The items whose label may have changed: those a change reached, and the items holding
     /// them, as an item's label is the first text in it.
     relabels: std::collections::BTreeSet<String>,
-    /// Whether the text that names the record may have changed.
+    /// Whether the text that names the document may have changed.
     relabel: Relabel,
 }
 
-/// Where to look again for the text that names a record (the first text of its fields in id
+/// Where to look again for the text that names a document (the first text of its fields in id
 /// order, a collection's items in order: [`crate::reads::first_text`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Relabel {
     /// Nothing changed at or before the text that names it.
     Kept,
     /// Only the top-level item that holds the name changed: if it still has a text, the first is
-    /// the name, as the items and fields before it hold none; else the whole record is read.
+    /// the name, as the items and fields before it hold none; else the whole document is read.
     Within(String),
     /// A field at or before the one that names it changed.
     Whole,
 }
 
-/// One record being republished.
+/// One document being republished.
 struct Published<'a> {
     store: &'a crate::store::TiloStore,
     types: &'a ActionTypes,
     schema: &'static crate::schema::TypeSchema,
     doc: &'a str,
-    /// Whether the tree is what a window reaches of the record rather than the whole of it
+    /// Whether the tree is what a window reaches of the document rather than the whole of it
     /// ([`Publications::reached`]).
     partial: bool,
 }
@@ -1889,7 +1898,7 @@ impl Published<'_> {
         tilolang_runtime::value::ResourceRef::root(self.doc, self.schema.id.clone())
     }
 
-    /// The text that names the record, and the resource that holds it.
+    /// The text that names the document, and the resource that holds it.
     fn label(&self) -> (String, Option<String>) {
         let named = self.store.first_text(&self.root());
         let label = named.as_ref().map_or_else(
@@ -1899,7 +1908,7 @@ impl Published<'_> {
         (label, named.map(|(_, at)| at))
     }
 
-    /// The first text of the top-level item `top`, which named the record, and where it is.
+    /// The first text of the top-level item `top`, which named the document, and where it is.
     fn label_within(&self, top: &str) -> Option<(String, Option<String>)> {
         let at = self.at(top)?;
         let (text, held) = self.store.first_text(&at)?;
@@ -1915,7 +1924,7 @@ impl Published<'_> {
         Some((holder.id_string(), field))
     }
 
-    /// The resources from the record down to the resource at `path`, the record first and
+    /// The resources from the document down to the resource at `path`, the document first and
     /// `path` last, as the store has them now; `None` for one in no collection.
     fn chain(&self, path: &str) -> Option<Vec<String>> {
         let mut out = vec![path.to_owned()];
@@ -1945,8 +1954,8 @@ impl Published<'_> {
             relabels: std::collections::BTreeSet::new(),
             relabel: Relabel::Kept,
         };
-        // The field of the record the name is read through, when an item holds it: a field
-        // after it in naming order cannot name the record while it does
+        // The field of the document the name is read through, when an item holds it: a field
+        // after it in naming order cannot name the document while it does
         // ([`TypeSchema::naming_scan`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
@@ -1972,9 +1981,9 @@ impl Published<'_> {
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
                 }
-                // Whether the field is read before (or as) the text that names the record.
+                // Whether the field is read before (or as) the text that names the document.
                 // In naming order, not by id: a title is read first whatever id it drew, and
-                // its change always names the record again.
+                // its change always names the document again.
                 let or_before = match (naming_position, self.schema.naming_position(&key.field)) {
                     (None, _) | (Some(_), None) => true,
                     (Some(naming), Some(changed)) => changed <= naming,
@@ -1999,7 +2008,7 @@ impl Published<'_> {
             {
                 rework.relabel = Relabel::Within(top);
             }
-            // The item and every item holding it, up to the record.
+            // The item and every item holding it, up to the document.
             for at in chain.iter().skip(1) {
                 rework.relabels.insert(at.clone());
             }
@@ -2012,7 +2021,7 @@ impl Published<'_> {
                     rework
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
-                    // An item in it may have moved: the one whose text names the record among
+                    // An item in it may have moved: the one whose text names the document among
                     // them, or one now before it.
                     if named_chain.is_some() && rework.relabel != Relabel::Whole {
                         rework.relabel = Relabel::Whole;
@@ -2029,7 +2038,7 @@ impl Published<'_> {
     }
 
     /// Republish in `tree` what the changes to `fields` reached; `named_by` is the resource
-    /// whose text names the record, kept up to date.
+    /// whose text names the document, kept up to date.
     /// What changed in the tree. A change that reached nothing the tree shows (a note's body
     /// typed into, which no label reads) leaves it the very tree it was.
     fn republish(
@@ -2127,7 +2136,7 @@ impl Published<'_> {
             .is_some_and(|chain| chain.iter().any(|at| paths.contains(at)))
     }
 
-    /// The type of the resource at `path`: the record's, or an item's as the store holds it.
+    /// The type of the resource at `path`: the document's, or an item's as the store holds it.
     fn schema_at(&self, path: &str) -> Option<&'static crate::schema::TypeSchema> {
         use tilolang_runtime::store::Store as _;
         if path == self.doc {
@@ -2194,7 +2203,7 @@ impl Published<'_> {
                         nodes.remove(&item);
                         ordered.extend(self.item(&item));
                     }
-                    // A whole record's tree holds every item of its collections; one a window
+                    // A whole document's tree holds every item of its collections; one a window
                     // reaches is [`Self::reached_members`]'.
                     None => ordered.extend(self.item(&item)),
                 }
@@ -2203,7 +2212,7 @@ impl Published<'_> {
         node.children = ordered;
     }
 
-    /// [`Self::membership`] of a tree that holds what a window reached of the record: the items
+    /// [`Self::membership`] of a tree that holds what a window reached of the document: the items
     /// it holds keep their order, those `nodes` names are read again (and leave once they are
     /// gone), and one it did not hold joins where its collection's listing puts it, found among
     /// the held ones by their places. The collection is not read whole: adding a task to ten
@@ -2338,7 +2347,7 @@ impl Published<'_> {
     /// its published children: an item inserted is built (and taken out of `nodes`), one removed
     /// dropped, one moved kept. A change that says no step moved changed no item for those who
     /// read the mirror, and the rows the collection gained are the items the change names: one
-    /// a person placed was where they read it before the record held it
+    /// a person placed was where they read it before the document held it
     /// ([`crate::store::TiloStore::sync_from`]), and it goes where the listing has it. False
     /// when the steps do not fit the children, or the children are then not as many as the
     /// items: they are brought in line with the listing instead.
@@ -2481,7 +2490,7 @@ impl Published<'_> {
             .or_else(|| holder.children.iter().position(|c| c.id.as_str() == id))
     }
 
-    /// The published resource at `path` in `tree`, the record's: each item found where its
+    /// The published resource at `path` in `tree`, the document's: each item found where its
     /// listing puts it.
     fn node<'t>(&self, tree: &'t ResourceSpec, path: &str) -> Option<&'t ResourceSpec> {
         let app = &self.types.meta().app;
@@ -2531,11 +2540,11 @@ fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
 }
 
 /// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first, in
-/// declaration order, by their first non-blank line, and only a record holding none of its own
-/// is named by an item it holds (a record that is nothing but its list). A channel's messages
+/// declaration order, by their first non-blank line, and only a document holding none of its own
+/// is named by an item it holds (a document that is nothing but its list). A channel's messages
 /// never name the channel: its `name` does.
-fn item_label(item: &crate::record::DynRecord) -> Option<String> {
-    use crate::record::DynValue;
+fn item_label(item: &crate::resource::DynResource) -> Option<String> {
+    use crate::resource::DynValue;
     use crate::schema::MergeKind;
     let schema = item.schema();
     let read = |field: &crate::schema::FieldSchema| match item.get(&field.id) {
@@ -2552,7 +2561,7 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     if let Some(text) = texts.find_map(read) {
         return Some(text);
     }
-    // No text of its own: a record that is nothing but its list is named by its first item.
+    // No text of its own: a resource that is nothing but its list is named by its first item.
     for field in &schema.fields {
         match item.get(&field.id) {
             Some(DynValue::Record(record)) => {
@@ -2573,7 +2582,7 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     None
 }
 
-/// The package's own resource, carrying the actions that take no record.
+/// The package's own resource, carrying the actions that take no resource.
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
     let kind = meta.package_kind();
@@ -2622,7 +2631,7 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
         },
     )
     .for_audience(tilo_actions::Audience::Agents)
-    // Offered as the least a commit is, a change of the record, as the host's surface declares
+    // Offered as the least a commit is, a change of the document, as the host's surface declares
     // it; each commit is what the action it carries is, so one that queues an outside effect
     // needs what that effect needs.
     .of_kind(tilo_actions::ActionKind::Undoable)
@@ -2645,7 +2654,7 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
 ///
 /// `field` is the field's **name**, as the app declares it (`title`, `body`), which the edit
 /// verbs publish as their `field` choices; the internal id the document stores it under is
-/// mapped here. An id is still accepted where a caller read one from a record, so a bound
+/// mapped here. An id is still accepted where a caller read one from a document, so a bound
 /// control and an older caller keep working.
 pub fn edit_action(
     meta: &Meta,
@@ -2663,7 +2672,7 @@ pub fn edit_action(
     let schema =
         lookup(&declared.id).ok_or_else(|| format!("the type `{type_name}` is not registered"))?;
     // The field as the type declares it: by its name, the spelling the edit verbs offer, or
-    // by its id, the spelling a record stores and a bound control hands back.
+    // by its id, the spelling a document stores and a bound control hands back.
     let declared_field = declared
         .fields
         .iter()
@@ -2718,7 +2727,7 @@ pub fn edit_action(
             module: meta.module_hash.clone(),
             ..crate::action::Authorship::default()
         },
-        // An item (`<record>/<item>`) is edited in its record, by its id there.
+        // An item (`<document>/<item>`) is edited in its document, by its id there.
         edits: vec![match id.split_once('/') {
             Some((record, item)) => crate::action::DynEdit::Edit {
                 id: record.to_owned(),

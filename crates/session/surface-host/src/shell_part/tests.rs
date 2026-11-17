@@ -515,7 +515,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
         .map(|root| root.ty.clone())
         .expect("the shell's record");
     let shell = host
-        .root_record(&app, &shell)
+        .root_resource(&app, &shell)
         .expect("the shell's record is made");
     let pin = meta
         .actions

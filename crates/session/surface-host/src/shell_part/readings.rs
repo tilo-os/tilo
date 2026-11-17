@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilolang_tilo::origin::OriginCx;
-use tilolang_tilo::records_service::{app_of, placed_records};
+use tilolang_tilo::resource_service::{app_of, placed_documents};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{
@@ -189,8 +189,8 @@ impl SessionLink {
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
         let mut changed = false;
-        for (id, ty) in placed_records(
-            layout.places.iter().map(|place| place.record.as_str()),
+        for (id, ty) in placed_documents(
+            layout.places.iter().map(|place| place.resource.as_str()),
             resources,
         ) {
             if let Some(reading) = read(&id) {
@@ -564,7 +564,7 @@ pub(super) fn place_fields(p: &LayoutPlaceReading) -> Vec<(&'static str, Value)>
         ("strip", text(&p.strip)),
         ("shows", text(&p.shows)),
         ("shown_as", text(&p.shown_as)),
-        ("record", text(&p.record)),
+        ("resource", text(&p.resource)),
         ("title", text(&p.title)),
         ("name", text(&p.name)),
         ("pinned", Value::Bool(p.pinned)),

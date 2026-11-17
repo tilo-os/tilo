@@ -3,7 +3,7 @@
 d-so-tilo-shell = Shell
 
 d-nkjtmr33 = Sicht
-    .doc = Was die Person von ihrer Anordnung zeigt und welche Leiste vorn steht: die eigene Sicht der Shell darauf, in ihrem eigenen Datensatz (`records: .own`, `root viewing: Viewing`).
+    .doc = Was die Person von ihrer Anordnung zeigt und welche Leiste vorn steht: die eigene Sicht der Shell darauf, in ihrem eigenen Datensatz (`resources: .own`, `root viewing: Viewing`).
     .noun = { $count ->
         [one] Sicht
        *[other] Sichten

@@ -84,8 +84,8 @@ pub fn members_of(standing: &Standing, me: &PersonId) -> Vec<Member> {
 }
 
 /// Who of the members reads a resource, as `standing`'s policy answers for each: the node of
-/// the resource under its app and kind, read. A resource of an app whose records are each
-/// member's own is an item of the record of the person at the window, which only they read.
+/// the resource under its app and kind, read. A resource of an app whose documents are each
+/// member's own is an item of the document of the person at the window, which only they read.
 #[must_use]
 pub fn reads_of(standing: &Standing, me: &PersonId, host: &Host) -> Rc<Reads> {
     let kinds: HashMap<String, (String, String, Option<String>)> = host
@@ -93,7 +93,7 @@ pub fn reads_of(standing: &Standing, me: &PersonId, host: &Host) -> Rc<Reads> {
         .into_iter()
         .flat_map(|package| {
             let meta = &package.meta;
-            let own = crate::own_record(meta, standing.person_id().unwrap_or_default());
+            let own = crate::own_document(meta, standing.person_id().unwrap_or_default());
             meta.types
                 .iter()
                 .map(|ty| {

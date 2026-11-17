@@ -8,17 +8,17 @@
 //! from the session (`runtime_portal::tilolang_host`): its broker connection and its
 //! identity-service connection, which the session opened and attested as that app's launch, its
 //! verified module, and its window's patch connection. The broker attributes everything the
-//! instance says to the app from the session's own record of the connection, never from the
+//! instance says to the app from the session's own document of the connection, never from the
 //! host.
 //!
-//! Each instance ([`hosted::Hosted`]) holds its workspace record with its undo log and save state,
+//! Each instance ([`hosted::Hosted`]) holds its workspace document with its undo log and save state,
 //! publishes the app's actions and runs what the broker delivers, all on its own connection, and
 //! drives its window with component patches; the window sends back what the person did.
 //!
 //! **Storage.** One directory per workspace and author, granted to the host at its start, keyed by
-//! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
-//! `<storage>/<package>/indexes` the indexes its instances read the record through, one per
-//! record, shared by every window of it.
+//! package inside: `<storage>/<package>/documents` holds the workspace document's on-disk copy, and
+//! `<storage>/<package>/indexes` the indexes its instances read the document through, one per
+//! document, shared by every window of it.
 
 pub mod files;
 pub mod hosted;
@@ -54,11 +54,11 @@ use tilolang_tilo::meta::MetaExt as _;
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
 use tilolang_tilo::instance::LaterBuilds;
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::instance::document::InstanceDocument;
 
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
-/// record of the workspace for an app whose records are each member's own (`records: .own`),
-/// which only their devices are admitted to, else the workspace's record of the app.
+/// document of the workspace for an app whose documents are each member's own (`documents: .own`),
+/// which only their devices are admitted to, else the workspace's document of the app.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
@@ -68,8 +68,8 @@ pub fn route_of(
     route_under(meta, &meta.app, workspace, person)
 }
 
-/// [`route_of`], for the records the app keeps under `records`: its own id, or for an app
-/// renamed the earliest id it had (`InstanceRequest::documents_under`), whose record it keeps using
+/// [`route_of`], for the documents the app keeps under `documents`: its own id, or for an app
+/// renamed the earliest id it had (`InstanceRequest::documents_under`), whose document it keeps using
 /// where it is.
 #[must_use]
 pub fn route_under(
@@ -78,15 +78,15 @@ pub fn route_under(
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    match tilolang_tilo::own_record(meta, person) {
+    match tilolang_tilo::own_document(meta, person) {
         Some(record) => collaboration::RouteSpec::document(records.to_owned(), workspace, record),
         None => collaboration::RouteSpec::app(records.to_owned(), workspace),
     }
 }
 
-/// Whether an instance joining `route` opens the record `asked`, as a launch names it: a member's
-/// own, by its id. The workspace's record of the app is no record a launch names.
-fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
+/// Whether an instance joining `route` opens the document `asked`, as a launch names it: a member's
+/// own, by its id. The workspace's document of the app is no document a launch names.
+fn opens_document(route: &collaboration::RouteSpec, asked: &str) -> bool {
     collab_types::document::DocumentId::parse(asked)
         .is_some_and(|asked| asked.route() == route.document.as_deref().unwrap_or_default())
 }
@@ -102,21 +102,21 @@ pub enum AdmitError {
     )]
     IdMismatch { launched: String, declared: String },
     #[error(
-        "the session opened the records of `{records}` for `{app}`, an id the module does not \
+        "the session opened the documents of `{records}` for `{app}`, an id the module does not \
          say it had before"
     )]
     Records { app: String, records: String },
     #[error("the workspace `{0}` is no workspace id")]
     Workspace(String),
     #[error(
-        "the window was asked to open the record `{asked}`, but an instance of `{app}` opens \
-         only its own record of the workspace"
+        "the window was asked to open the document `{asked}`, but an instance of `{app}` opens \
+         only its own document of the workspace"
     )]
     OtherResource { app: String, asked: String },
     #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
     #[error(transparent)]
-    Open(#[from] tilolang_tilo::instance::record::RecordError),
+    Open(#[from] tilolang_tilo::instance::document::DocumentError),
     #[error("the window's connection is unusable: {0}")]
     Window(std::io::Error),
 }
@@ -128,7 +128,7 @@ struct Running {
 }
 
 /// An instance being opened: its module read, its connection joining its workspace's route and
-/// the broker's committed read of its record, each waited for off the host's loop, so the
+/// the broker's committed read of its document, each waited for off the host's loop, so the
 /// instances running meanwhile keep producing frames.
 struct Opening {
     app: String,
@@ -137,7 +137,7 @@ struct Opening {
     stage: Stage,
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
-    /// For a change applied at the record's origin instead of a window: the change's
+    /// For a change applied at the document's origin instead of a window: the change's
     /// connection ([`InstanceRequest::applies_change`]).
     change: Option<OwnedFd>,
     identity: Option<OwnedFd>,
@@ -181,7 +181,7 @@ enum Stage {
         bundle: Arc<Bundle>,
         manager: collaboration::CollaborationManager,
     },
-    /// The committed read of the record, taken on a thread of its own.
+    /// The committed read of the document, taken on a thread of its own.
     Reading {
         spec: Spec,
         bundle: Arc<Bundle>,
@@ -215,7 +215,7 @@ pub struct TilolangHost {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
-    /// Changes being applied at their record's origin, each until the session lets go of it.
+    /// Changes being applied at their document's origin, each until the session lets go of it.
     appliers: Vec<hosted::Applier>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
@@ -283,7 +283,7 @@ impl TilolangHost {
         }
     }
 
-    /// Where the instances of `app` keep their workspace record's copy and indexes.
+    /// Where the instances of `app` keep their workspace document's copy and indexes.
     pub fn kept(&self, app: &str) -> std::io::Result<Kept> {
         let Some(storage) = &self.storage else {
             return Ok(Kept {
@@ -439,7 +439,7 @@ impl TilolangHost {
     }
 
     /// Open the instance the session handed over on the API: its module is read, its
-    /// connection joins and its record is read off the host's loop, and it runs once all three
+    /// connection joins and its document is read off the host's loop, and it runs once all three
     /// are done ([`Self::turn`]).
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
         let (window, change) = if request.applies_change {
@@ -489,7 +489,7 @@ impl TilolangHost {
     }
 
     /// Open the instance `spec` of `bundle` on `manager`, whose route it joins (or joined), with
-    /// its window at the far end of `window`: it runs once the route is joined and its record
+    /// its window at the far end of `window`: it runs once the route is joined and its document
     /// read, both waited for off the host's loop.
     pub fn open(
         &mut self,
@@ -578,7 +578,7 @@ impl TilolangHost {
                     tracing::info!(
                         app = opening.app,
                         instance = opening.instance,
-                        "a tilolang instance reads its record's committed history"
+                        "a tilolang instance reads its document's committed history"
                     );
                     let (sender, read) = std::sync::mpsc::channel();
                     let wake = Arc::clone(&self.wake);
@@ -620,7 +620,7 @@ impl TilolangHost {
                             Ok(Step::Waiting)
                         }
                         Err(TryRecvError::Disconnected) => {
-                            Err(AdmitError::Join("the record's read ended".to_owned()))
+                            Err(AdmitError::Join("the document's read ended".to_owned()))
                         }
                     };
                 }
@@ -644,7 +644,7 @@ impl TilolangHost {
                 declared: bundle.meta.app,
             });
         }
-        // The record of an id the app had before, as the session names it: one the module says
+        // The document of an id the app had before, as the session names it: one the module says
         // it had. Whether the same publisher signed both the broker checks as it admits the join.
         let records = match &request.documents_under {
             Some(records) if !bundle.meta.previously.contains(records) => {
@@ -668,10 +668,10 @@ impl TilolangHost {
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         let route = route_under(&bundle.meta, &records, workspace, &request.person);
-        // A window asked for a record: its instance opens the one its route names, and only that
+        // A window asked for a document: its instance opens the one its route names, and only that
         // one is what it was asked for.
         if let Some(asked) = request.record.as_deref()
-            && !opens_record(&route, asked)
+            && !opens_document(&route, asked)
         {
             return Err(AdmitError::OtherResource {
                 app: request.app,
@@ -680,7 +680,7 @@ impl TilolangHost {
         }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
-            &collab_types::document::ResourceType::new(bundle.meta.record_kind()),
+            &collab_types::document::ResourceType::new(bundle.meta.resource_type()),
             broker,
             identity.as_fd(),
             route,
@@ -703,7 +703,7 @@ impl TilolangHost {
         })
     }
 
-    /// The instance, its route joined and its record read: open the record and run it.
+    /// The instance, its route joined and its document read: open the document and run it.
     fn run(
         &self,
         opening: &mut Opening,
@@ -718,7 +718,7 @@ impl TilolangHost {
             .surface()
             .map_err(|error| AdmitError::Module(error.to_string()))?;
         collab_types::app_surface::register_package(&bundle.meta.app, &surface);
-        // The records the route names: the app's own, or those of the id it had before, kept
+        // The documents the route names: the app's own, or those of the id it had before, kept
         // where that app kept them. The changes made there name the app's surface too.
         let records = manager
             .primary_route()
@@ -730,19 +730,19 @@ impl TilolangHost {
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
-        // What the record's actions keep as content lives in the device's content store, as a
-        // native window's record content does: it outlives the instance and reaches the record's
+        // What the document's actions keep as content lives in the device's content store, as a
+        // native window's document content does: it outlives the instance and reaches the document's
         // other readers on its route.
-        let record = InstanceRecord::open_read(
+        let record = InstanceDocument::open_read(
             manager,
             read,
             &kept.documents,
             spec.person.clone(),
-            bundle.meta.record_kind(),
+            bundle.meta.resource_type(),
         )?
         .keeping_content_in(tilo_content_device::for_app());
         if let Some(change) = opening.change.take() {
-            // A change at the record's origin: the record and the package, no instance.
+            // A change at the document's origin: the document and the package, no instance.
             let applier = hosted::Applier::open(
                 spec,
                 record,
@@ -764,7 +764,7 @@ impl TilolangHost {
             .try_clone_to_owned()
             .map_err(AdmitError::Window)?;
         let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-        let mut hosted = Hosted::with_record(
+        let mut hosted = Hosted::with_document(
             spec,
             record,
             bundle,
@@ -904,7 +904,7 @@ impl TilolangHost {
             )
     }
 
-    /// One frame of every instance; an instance whose window closed ends, its record written
+    /// One frame of every instance; an instance whose window closed ends, its document written
     /// first; an instance being opened goes as far as it can without waiting. Whether anything
     /// changed.
     pub fn turn(&mut self) -> bool {
@@ -971,7 +971,7 @@ impl TilolangHost {
     /// other unit of the workspace this host runs holds a change of its action, and otherwise in
     /// every unit that does, each through its own instance, the reverts published as one action.
     ///
-    /// The units and their changes come from the records themselves, lazily, unit by unit: an
+    /// The units and their changes come from the documents themselves, lazily, unit by unit: an
     /// undo works after a restart that lost every log the transport kept, because the action's
     /// invocation names its changes in every document it wrote. Whether anything was taken back.
     fn undo(&mut self, asked_in: u64, invocation: tilo_actions::InvocationId) -> bool {
@@ -1018,7 +1018,7 @@ impl TilolangHost {
             );
             let Some((_, _, changes)) = parts
                 .iter()
-                .find(|(unit_app, unit_record, _)| unit_app == &app && unit_record == &record)
+                .find(|(unit_app, unit_document, _)| unit_app == &app && unit_document == &record)
             else {
                 continue;
             };
@@ -1033,7 +1033,7 @@ impl TilolangHost {
                     );
                 }
             }
-            // What the unit's reverts wrote, in whichever chunk: each part names the record it
+            // What the unit's reverts wrote, in whichever chunk: each part names the document it
             // travels on, so an action undone across a unit's chunks still goes as one commit.
             for (record, change) in running.hosted.unsent_parts() {
                 units.push((app.clone(), record, change));
@@ -1194,34 +1194,34 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
 mod tests {
     use super::*;
 
-    /// A window asked for the workspace's record, or a member's own, opens on an instance whose
-    /// route names that record, and on no other.
+    /// A window asked for the workspace's document, or a member's own, opens on an instance whose
+    /// route names that document, and on no other.
     #[test]
-    fn an_instance_opens_only_the_record_its_route_names() {
+    fn an_instance_opens_only_the_document_its_route_names() {
         let workspace = uuid::Uuid::from_u128(7);
         let own = collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(9));
         let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
         let owns = collaboration::RouteSpec::document("so.tilo.lang.notes", workspace, own.route());
-        assert!(opens_record(&owns, own.as_str()));
+        assert!(opens_document(&owns, own.as_str()));
         assert!(
-            !opens_record(&workspaces, own.as_str()),
-            "the workspace's record is never named: a launch that names one names another"
+            !opens_document(&workspaces, own.as_str()),
+            "the workspace's document is never named: a launch that names one names another"
         );
         let other =
             collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(10));
-        assert!(!opens_record(&owns, other.as_str()));
-        assert!(!opens_record(&owns, "not a record"));
-        // Naming nothing names no record: not the workspace's, whose route names none, by the
+        assert!(!opens_document(&owns, other.as_str()));
+        assert!(!opens_document(&owns, "not a document"));
+        // Naming nothing names no document: not the workspace's, whose route names none, by the
         // empty name or by the key its custody keeps it under, and not a member's own.
         let primary = collab_types::document::DocumentId::package_primary();
         for unnamed in ["", primary.as_str()] {
             assert!(
-                !opens_record(&workspaces, unnamed),
-                "`{unnamed}` opened the workspace's record"
+                !opens_document(&workspaces, unnamed),
+                "`{unnamed}` opened the workspace's document"
             );
             assert!(
-                !opens_record(&owns, unnamed),
-                "`{unnamed}` opened a member's own record"
+                !opens_document(&owns, unnamed),
+                "`{unnamed}` opened a member's own document"
             );
         }
     }

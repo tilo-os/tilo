@@ -1,5 +1,5 @@
 //! `cargo run -p tilolang-host --example components -- <package dir>`: the components a tilolang
-//! app's first window shows, as its instance in a host builds them over an empty record, one JSON
+//! app's first window shows, as its instance in a host builds them over an empty document, one JSON
 //! object per line: `key` (the widget's test id in the window), `kind` and `label`.
 //!
 //! What a test that presses a control by its test id reads, so it names a button by what it says
@@ -25,7 +25,7 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_host::testing::Broker;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::instance::document::InstanceDocument;
 
 fn print(node: &patch::Node) {
     let label = ["label", "title", "text"]
@@ -62,7 +62,7 @@ fn main() {
         handle: Some("person".to_owned()),
     });
     let _ = manager.poll();
-    let record = InstanceRecord::new(
+    let record = InstanceDocument::new(
         automerge::AutoCommit::new(),
         manager,
         route.clone(),
@@ -72,7 +72,7 @@ fn main() {
     let mut host = TilolangHost::new(None, Arc::clone(&wake));
     let kept = host.kept(&app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         Spec::new(app, route.cluster_id.to_string(), 1, "person"),
         record,
         Arc::new(bundle),
@@ -85,7 +85,7 @@ fn main() {
     host.add(hosted, None);
     let mut window = ChannelTransport::new(theirs).unwrap();
     let mut root: Option<patch::Node> = None;
-    // Turn until the window's tree stops changing: the record's publication settles off the frame.
+    // Turn until the window's tree stops changing: the document's publication settles off the frame.
     let mut quiet: u32 = 0;
     while quiet < 40 {
         host.turn();

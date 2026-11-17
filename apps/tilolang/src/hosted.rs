@@ -9,7 +9,7 @@
 //! launch identity stays for its surface and accessibility.
 //!
 //! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
-//! window runs one in its own process ([`start`]), over the app's record on this device alone,
+//! window runs one in its own process ([`start`]), over the app's document on this device alone,
 //! and turns it on its own frames. The instance runs the same either way.
 
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Kept, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
+use tilolang_tilo::instance::document::{DocumentError, InstanceDocument};
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
@@ -65,7 +65,7 @@ pub fn window_instance() -> Option<u64> {
 /// arrived. Idle, nothing runs.
 ///
 /// It wakes the component that runs the window now. The window is made by the component shown
-/// before the record ([`ui::framework::Opened`]) and taken over by the one the record opens,
+/// before the document ([`ui::framework::Opened`]) and taken over by the one the document opens,
 /// which closes the first: a wake captured once would go to a closed component, and the window
 /// would show what its instance sent only when something else woke it. Every pass of the
 /// window points the watch at the component running it ([`Watch::follow`]).
@@ -227,19 +227,19 @@ impl Woken {
     }
 }
 
-/// A tilolang host in this process running the one instance `spec` of `bundle`, over the record
-/// `record` opens where the host keeps the app's data, its words read by `phrases`, woken by
+/// A tilolang host in this process running the one instance `spec` of `bundle`, over the document
+/// `document` opens where the host keeps the app's data, its words read by `phrases`, woken by
 /// `wake`; the host keeps what it keeps under `storage` (in memory without). Answers the host
 /// and the window's end of the instance's patch connection: what a window shows it through
 /// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does; its
 /// instance takes over the later builds `tilolang dev` publishes for it ([`crate::updates`]).
 ///
 /// # Errors
-/// The app's data cannot be kept, its record does not open, or the patch connection cannot be
+/// The app's data cannot be kept, its document does not open, or the patch connection cannot be
 /// made.
 pub fn start(
     spec: Spec,
-    record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+    record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
     bundle: Arc<Bundle>,
     phrases: &Rc<Phrases>,
     storage: Option<std::path::PathBuf>,
@@ -252,7 +252,7 @@ pub fn start(
     let watched = ours.as_fd().try_clone_to_owned()?;
     crate::updates::start(&spec.app);
     host.follow_builds(&spec.app, crate::updates::builds());
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         spec,
         record,
         bundle,
@@ -272,7 +272,7 @@ pub enum StartError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Record(#[from] RecordError),
+    Record(#[from] DocumentError),
 }
 
 /// The longest a capture waits for the instance it runs to show what it stages.
@@ -337,7 +337,7 @@ impl InProcess {
         tracing::error!(owed = ?self.host.owed(), "the instance did not settle for the capture");
     }
 
-    /// Close the instance as a session's host does when its window goes: its record is written
+    /// Close the instance as a session's host does when its window goes: its document is written
     /// to disk.
     fn close(mut self) {
         let began = std::time::Instant::now();
@@ -436,14 +436,14 @@ impl HostedWindow {
     }
 
     /// The window running its instance in this process ([`start`]): `spec` of `bundle`, over the
-    /// record `record` opens, the host keeping the app's data under `storage`. The window turns
+    /// document `document` opens, the host keeping the app's data under `storage`. The window turns
     /// the host on its frames, and is woken when the host's work off the frame is ready.
     ///
     /// # Errors
     /// As [`start`].
     pub fn in_process(
         spec: Spec,
-        record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+        record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
         bundle: Arc<Bundle>,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, StartError> {
@@ -565,7 +565,7 @@ impl HostedWindow {
 
 impl Drop for HostedWindow {
     /// A window running its instance in this process closes it as a session's host does: the
-    /// patch connection goes first, and the instance ends, its record written to disk.
+    /// patch connection goes first, and the instance ends, its document written to disk.
     fn drop(&mut self) {
         if let Some(running) = self.in_process.take() {
             self.connected = None;
@@ -598,11 +598,11 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
-/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the record's, and the
-/// record is the instance's: they go to the instance, which takes back the person's last step
+/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the document's, and the
+/// document is the instance's: they go to the instance, which takes back the person's last step
 /// there, typing into a field included, and sends the window what it shows then. The window
-/// holds no record, so no undo of its own could take anything back; and a field keeps no
-/// history beside the record's.
+/// holds no document, so no undo of its own could take anything back; and a field keeps no
+/// history beside the document's.
 impl ui::undo::LocalUndo for HostedWindow {
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
         let Some(connected) = &mut self.connected else {
@@ -639,7 +639,7 @@ impl ui::component_lifecycle::HearsElsewhere for HostedWindow {
     }
 }
 
-/// The window is named by what it shows: the item it shows as its page, else the page, the record,
+/// The window is named by what it shows: the item it shows as its page, else the page, the document,
 /// the place its instance's composed shell names in its content header. Two windows of the app
 /// read apart in the desktop's tabs, the switcher and assistive technology without either being
 /// opened.

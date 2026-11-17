@@ -1,4 +1,4 @@
-//! A notice is the workspace's record of a person being told something: every device of theirs
+//! A notice is the workspace's document of a person being told something: every device of theirs
 //! shows it and no one else's does, what one of them does with it is what all of them see, and
 //! what it opens resolves from any of them.
 
@@ -9,7 +9,7 @@ use tilo_session_core::notice::{Closed, Notice};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Resolution, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 use crate::fixtures::{Replica, action_id};
 
@@ -57,10 +57,10 @@ view note(n: Note) {
 const TELLER_APP: &str = "so.tilo.test.teller";
 const WORKSPACE: &str = "workspace";
 
-/// An app that keeps each person's resources in their own record, and tells them about one of
-/// them: what a notice from it names to open is that person's own record, not the workspace's.
+/// An app that keeps each person's resources in their own document, and tells them about one of
+/// them: what a notice from it names to open is that person's own document, not the workspace's.
 const OWN: (&str, &str) = (
-    r#"app so.tilo.test.own "Own records" (records: .own)
+    r#"app so.tilo.test.own "Own documents" (documents: .own)
 
 type Note {
     text: Text
@@ -115,11 +115,11 @@ fn args(value: Json) -> Map<String, Json> {
     value.as_object().cloned().unwrap()
 }
 
-/// A session's record service over `record`, for `person`, telling what it shows to a recorder.
+/// A session's document service over `document`, for `person`, telling what it shows to a recorder.
 /// Its clock stands before the reminder, so its own turn runs nothing until it is told to.
-fn service(name: &str, person: &str, record: &AutoCommit) -> (RecordService, Recorder) {
+fn service(name: &str, person: &str, record: &AutoCommit) -> (ResourceService, Recorder) {
     let Replica { host, .. } = Replica::new(name, record.clone(), &[DISCUSSION, TASKS]).0;
-    let mut service = RecordService::new(host, person);
+    let mut service = ResourceService::new(host, person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
@@ -129,7 +129,7 @@ fn service(name: &str, person: &str, record: &AutoCommit) -> (RecordService, Rec
 /// Ada's workspace with its tasks, as the session runs them, and the clock its app and its
 /// triggers read.
 fn ada_workspace() -> (
-    RecordService,
+    ResourceService,
     Recorder,
     std::rc::Rc<std::cell::RefCell<String>>,
 ) {
@@ -142,7 +142,7 @@ fn ada_workspace() -> (
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
     let Replica { host, .. } = ada;
-    let mut service = RecordService::new(host, "ada");
+    let mut service = ResourceService::new(host, "ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -153,7 +153,7 @@ fn ada_workspace() -> (
 }
 
 /// The id of the app's published root: the tasks.
-fn tasks_root(service: &RecordService) -> tilo_actions::ResourceId {
+fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
     service
         .resources()
         .into_iter()
@@ -163,7 +163,7 @@ fn tasks_root(service: &RecordService) -> tilo_actions::ResourceId {
 }
 
 /// A task added under `title`: its id as the workspace names it.
-fn task(service: &mut RecordService, title: &str) -> String {
+fn task(service: &mut ResourceService, title: &str) -> String {
     let root = tasks_root(service);
     let started = service
         .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
@@ -176,7 +176,7 @@ fn task(service: &mut RecordService, title: &str) -> String {
 }
 
 /// Ada makes `call` due today and Bo's, with a reminder in an hour; then the moment comes.
-fn remind(service: &mut RecordService, call: &str, clock: &std::cell::RefCell<String>) {
+fn remind(service: &mut ResourceService, call: &str, clock: &std::cell::RefCell<String>) {
     for (action, values) in [
         ("assign", json!({ "who": { "person": "bo" } })),
         ("due_today", json!({})),
@@ -188,12 +188,12 @@ fn remind(service: &mut RecordService, call: &str, clock: &std::cell::RefCell<St
     assert!(service.poll(), "the reminder's moment came");
 }
 
-/// The record as it is here, to give the next device.
-fn record_of(service: &RecordService) -> AutoCommit {
+/// The document as it is here, to give the next device.
+fn document_of(service: &ResourceService) -> AutoCommit {
     service.record()
 }
 
-/// What the notice's tag names: its id in the record.
+/// What the notice's tag names: its id in the document.
 fn id_of(tag: &str) -> String {
     tag.strip_prefix("notice:")
         .expect("a notice's tag starts with its kind")
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
         assert_eq!(notices(&ada.host).len(), 1, "told once");
 
         // Grace holds no journal of the run: answering runs the whole action again, telling the
-        // person once more before it reaches the ask — under the record ada wrote, so it is one
+        // person once more before it reaches the ask — under the document ada wrote, so it is one
         // notice — and then answering that seals the note.
         let answer = |grace: &Replica| {
             grace.host.runtime().resolve_invocation(
@@ -446,7 +446,7 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
     let call = task(&mut ada, "Call the landlord");
 
     // Both of Bo's devices are there before its moment, having looked: nothing yet.
-    let before = record_of(&ada);
+    let before = document_of(&ada);
     let (mut laptop, laptop_notices) = service("bo", "bo", &before);
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     laptop.poll();
@@ -455,8 +455,8 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
     // The moment comes on the workspace's device; each of Bo's takes in what it wrote, and
     // shows it, saying what the task is and when it is due.
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&record_of(&ada));
-    phone.take_in(&record_of(&ada));
+    laptop.take_in(&document_of(&ada));
+    phone.take_in(&document_of(&ada));
     for notices in [&laptop_notices, &phone_notices] {
         let shown = notices.shown.borrow();
         assert_eq!(shown.len(), 1, "one notice: {shown:#?}");
@@ -483,21 +483,21 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
 fn dismissing_a_notice_on_one_device_clears_it_on_the_others() {
     let (mut ada, _, clock) = ada_workspace();
     let call = task(&mut ada, "Call the landlord");
-    let before = record_of(&ada);
+    let before = document_of(&ada);
     let (mut laptop, laptop_notices) = service("bo", "bo", &before);
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     laptop.poll();
     phone.poll();
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&record_of(&ada));
-    phone.take_in(&record_of(&ada));
+    laptop.take_in(&document_of(&ada));
+    phone.take_in(&document_of(&ada));
     let shown = laptop_notices.shown.borrow().clone();
     assert_eq!(shown.len(), 1);
     assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
 
-    // Bo dismisses it on their laptop: the record says it is seen, as their own change.
+    // Bo dismisses it on their laptop: the document says it is seen, as their own change.
     laptop.notice_seen(&id_of(&shown[0].tag));
-    phone.take_in(&record_of(&laptop));
+    phone.take_in(&document_of(&laptop));
 
     // Their phone takes the notification back, and shows it no more.
     assert_eq!(
@@ -516,14 +516,14 @@ fn dismissing_a_notice_on_one_device_clears_it_on_the_others() {
 fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     let (mut ada, _, clock) = ada_workspace();
     let call = task(&mut ada, "Call the landlord");
-    let before = record_of(&ada);
+    let before = document_of(&ada);
     let (mut laptop, laptop_notices) = service("bo", "bo", &before);
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     laptop.poll();
     phone.poll();
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&record_of(&ada));
-    phone.take_in(&record_of(&ada));
+    laptop.take_in(&document_of(&ada));
+    phone.take_in(&document_of(&ada));
     let shown = laptop_notices.shown.borrow().clone();
     assert_eq!(shown.len(), 1);
     assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
@@ -532,7 +532,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // theirs to see, and their phone keeps showing it.
     laptop_notices.close(&shown[0].tag, Closed::Expired);
     laptop.poll();
-    phone.take_in(&record_of(&laptop));
+    phone.take_in(&document_of(&laptop));
     assert!(
         phone_notices.withdrawn.borrow().is_empty(),
         "an expiry answers nothing: {:#?}",
@@ -543,7 +543,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // devices has seen.
     laptop_notices.close(&shown[0].tag, Closed::Withdrawn);
     laptop.poll();
-    phone.take_in(&record_of(&laptop));
+    phone.take_in(&document_of(&laptop));
     assert!(
         phone_notices.withdrawn.borrow().is_empty(),
         "taking one back answers nothing: {:#?}",
@@ -554,7 +554,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // phone takes it back.
     laptop_notices.close(&shown[0].tag, Closed::Dismissed);
     laptop.poll();
-    phone.take_in(&record_of(&laptop));
+    phone.take_in(&document_of(&laptop));
     assert_eq!(
         phone_notices.withdrawn.borrow().clone(),
         vec![shown[0].tag.clone()],
@@ -573,15 +573,15 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
     let call = task(&mut ada, "Call the landlord");
 
     // Bo's phone is there before the moment, having looked: nothing yet.
-    let early = record_of(&ada);
+    let early = document_of(&ada);
     let (mut phone, phone_notices) = service("bo", "bo", &early);
     phone.poll();
     assert!(phone_notices.shown.borrow().is_empty());
 
     // The moment comes, and the phone takes in what the workspace wrote: this is news to it.
     remind(&mut ada, &call, &clock);
-    let record = record_of(&ada);
-    phone.take_in(&record_of(&ada));
+    let record = document_of(&ada);
+    phone.take_in(&document_of(&ada));
     assert_eq!(phone_notices.shown.borrow().len(), 1, "news to this device");
 
     // A device that restarts having told it keeps that, and tells nothing again.
@@ -593,7 +593,7 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
         "delivered before, and kept"
     );
 
-    // A device that joins after the record holds it tells nothing of it: what the record held
+    // A device that joins after the document holds it tells nothing of it: what the document held
     // when it first looked is not news.
     let (mut joining, late) = service("bo", "bo", &record);
     joining.poll();
@@ -604,7 +604,7 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
     );
 
     // Nor does another device's turn run the trigger a second time.
-    joining.take_in(&record_of(&ada));
+    joining.take_in(&document_of(&ada));
     assert_eq!(notices(ada.host()).len(), 1, "one notice in the workspace");
 }
 
@@ -612,11 +612,11 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
 fn what_a_notice_opens_resolves_from_another_device() {
     let (mut ada, _, clock) = ada_workspace();
     let call = task(&mut ada, "Call the landlord");
-    let before = record_of(&ada);
+    let before = document_of(&ada);
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     phone.poll();
     remind(&mut ada, &call, &clock);
-    phone.take_in(&record_of(&ada));
+    phone.take_in(&document_of(&ada));
     let shown = phone_notices.shown.borrow().clone();
     let place = place(&shown[0]);
     assert_eq!(place.app, TASKS_APP);
@@ -629,9 +629,9 @@ fn what_a_notice_opens_resolves_from_another_device() {
 }
 
 #[test]
-fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
-    // A person with a root identity (the hex of their user key) keeps their own record of an
-    // app declaring `records: .own`; a notice about what they keep there names that record, so
+fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
+    // A person with a root identity (the hex of their user key) keeps their own document of an
+    // app declaring `documents: .own`; a notice about what they keep there names that document, so
     // it opens on any device of theirs.
     let person = "ab".repeat(32);
     let mut own = Replica::new(&person, AutoCommit::new(), &[OWN]).0;
@@ -639,7 +639,7 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
     own.commit();
 
     let Replica { host, .. } = own;
-    let mut service = RecordService::new(host, &person);
+    let mut service = ResourceService::new(host, &person);
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
     service.poll();
@@ -661,8 +661,8 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
     let place = place(&shown[0]);
     assert_eq!(
         place.record,
-        tilolang_tilo::member_record_of("so.tilo.test.own", &person)
-            .expect("their own record of the workspace")
+        tilolang_tilo::member_document_of("so.tilo.test.own", &person)
+            .expect("their own document of the workspace")
     );
     assert_eq!(place.resource, note.as_str());
     assert_eq!(
@@ -671,7 +671,7 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
     );
 }
 
-/// The notices the record holds: each one's person, what it says, and the resource it opens.
+/// The notices the document holds: each one's person, what it says, and the resource it opens.
 fn notices(host: &Host) -> Vec<(String, String, String, String)> {
     host.store()
         .resources_of(tilolang::HOST_APP, tilolang::NOTICE_TYPE)

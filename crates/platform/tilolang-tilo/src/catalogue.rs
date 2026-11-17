@@ -2,13 +2,13 @@
 //!
 //! The catalogue is the one description of an app: its resources' surfaces
 //! (`tilo_actions::surface::Surface`), whichever language the app is written in. Read as a
-//! package, a surface's resource kinds are its types, the records and enums its fields name are
+//! package, a surface's resource kinds are its types, the documents and enums its fields name are
 //! types and enums, and its verbs are actions on their resource. That package is what another
 //! package `use`s (`use so.tilo.chat as chat`), type-checked against at compile time, and what
 //! `tilolang describe` prints, native and tilolang apps alike.
 //!
-//! A tilolang record type is a resource of its own, so a field holding a record of another
-//! type refers to it ([`FieldType::Resource`]); a native record nested in a resource is part of
+//! A tilolang record type is a resource of its own, so a field holding a document of another
+//! type refers to it ([`FieldType::Resource`]); a native document nested in a resource is part of
 //! it ([`FieldType::Named`]). Both read as a type whose fields code reads. What the vocabulary
 //! does not describe ([`FieldType::Any`]), and the platform's reactions and outboxes, are left
 //! out: tilolang code does not read them.
@@ -52,7 +52,7 @@ struct ManifestPackage {
 }
 
 /// Where a resource a `surface.toml` lists is published, read beside its surface. A native app
-/// leaves both out: its resources are its records. A description of what a session publishes
+/// leaves both out: its resources are its documents. A description of what a session publishes
 /// says, of each resource kind, the address of the one resource of it (`id`), or that each
 /// resource of it stands alone (`instances`): a window, a run.
 #[derive(Deserialize)]
@@ -121,14 +121,14 @@ pub struct NativeSurface {
 
 impl NativeSurface {
     /// The package this app publishes: its actions named by the catalogue ([`action_id`]), and
-    /// the root a program names its own record by ([`record_root`]).
+    /// the root a program names its own document by ([`document_root`]).
     pub fn package(&self) -> Result<PackageMeta, String> {
         let (surfaces, instances) = read_surfaces(&self.surface)?;
         let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
         for action in &mut meta.actions {
             action.id = action_id(&meta.app, &action.id);
         }
-        if let Some(root) = record_root(
+        if let Some(root) = document_root(
             &self.app,
             &surfaces,
             &kind_names(&surfaces, &instances),
@@ -141,22 +141,22 @@ impl NativeSurface {
 }
 
 /// The package of the native app `app` named `title` that publishes the surface file `text`, for
-/// a runtime that shows the app's record without running the app and without holding the record: a
+/// a runtime that shows the app's document without running the app and without holding the document: a
 /// view a person or an agent wrote, drawn where an app places it. Its types are read from readings
-/// ([`package_of`]), the record the app keeps for the workspace is a root a view names
+/// ([`package_of`]), the document the app keeps for the workspace is a root a view names
 /// (`tasks.tracker`), published under the kind it is of, and its actions are named by its app
 /// ([`action_id`]), so several apps that publish a shared kind (the accounts every mail and
 /// calendar app keeps) load side by side.
 ///
 /// # Errors
 /// The surface file does not read.
-pub fn published_record(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
+pub fn published_document(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
     let surfaces = parse_surfaces(text)?;
     let mut meta = package_with(app, title, &surfaces, &[], Ids::Readings);
     for action in &mut meta.actions {
         action.id = action_id(&meta.app, &action.id);
     }
-    if let Some(root) = record_root(app, &surfaces, &kind_names(&surfaces, &[]), Ids::Readings) {
+    if let Some(root) = document_root(app, &surfaces, &kind_names(&surfaces, &[]), Ids::Readings) {
         meta.named_roots.push(root);
     }
     Ok(meta)
@@ -218,7 +218,7 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
 /// A task's host and `tilolang check` both read a native app through this one reader, so a
 /// program compiles against the same package either way: [`NativeSurface::package`] adds what
 /// only an app the session does not run has, its actions named by its app ([`action_id`]) and
-/// its record a root a program names ([`record_root`]).
+/// its document a root a program names ([`document_root`]).
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
     let (surfaces, instances) = read_surfaces(text)?;
     Ok(package_with(app, title, &surfaces, &instances, Ids::Record))
@@ -237,13 +237,13 @@ fn read_surfaces(text: &str) -> Result<(Vec<Surface>, Vec<String>), String> {
     Ok((surfaces, instances))
 }
 
-/// The named root of a native app's own record: the first resource of its surface that stores
+/// The named root of a native app's own document: the first resource of its surface that stores
 /// fields (`chat.workspace`), which its verbs are declared on and whose history its steps are
-/// taken back with. A program names it where such a verb takes the record
+/// taken back with. A program names it where such a verb takes the document
 /// (`chat.rename_channel(chat.workspace, ...)`), and reaches the app through it without reading
-/// it. `None` for an app whose surface stores nothing, whose resource is no record a program
+/// it. `None` for an app whose surface stores nothing, whose resource is no document a program
 /// could name.
-fn record_root(
+fn document_root(
     app: &str,
     surfaces: &[Surface],
     kinds: &BTreeMap<String, String>,
@@ -408,8 +408,8 @@ fn package_with(
 }
 
 /// The type name of each resource kind of `surfaces`. A resource with stored fields is a type;
-/// one without is where loose verbs are. A resource whose name a record or enum of the app
-/// already has is named by more of its kind (`tilo.workspace.emoji`, holding `Emoji` records, is
+/// one without is where loose verbs are. A resource whose name a document or enum of the app
+/// already has is named by more of its kind (`tilo.workspace.emoji`, holding `Emoji` documents, is
 /// `WorkspaceEmoji`). A resource of a kind of `instances` is a type too, though it stores no
 /// fields: its verbs act on the one resource they are called on.
 fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, String> {
@@ -435,19 +435,19 @@ fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, St
 /// How a package spells the ids of its types.
 #[derive(Clone, Copy)]
 enum Ids {
-    /// A record the app itself reads (`so.tilo.tasks.Issue`): a resource a program reads from
-    /// the app's record, as it reads any app's the session holds.
+    /// A document the app itself reads (`so.tilo.tasks.Issue`): a resource a program reads from
+    /// the app's document, as it reads any app's the session holds.
     Record,
     /// A resource the session publishes as a reading (`so.tilo.device#Power`), which a view
-    /// reads without a record.
+    /// reads without a document.
     Readings,
 }
 
 impl Ids {
     /// The id of the type or enum `name` of the app `app`, qualified by the app so two apps'
-    /// types of one name are two types wherever both are loaded. A record the app reads itself
+    /// types of one name are two types wherever both are loaded. A document the app reads itself
     /// keeps them apart as `so.tilo.tasks.Issue`: an id with a `#` names a resource read from
-    /// its published reading ([`tilolang_runtime::foreign`]), which an app whose record the
+    /// its published reading ([`tilolang_runtime::foreign`]), which an app whose document the
     /// session holds is not.
     fn id(self, app: &str, name: &str) -> String {
         match self {

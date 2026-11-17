@@ -227,11 +227,11 @@ impl Instance {
         self.out.extend(sent);
     }
 
-    /// Whether the view of `lane` has nothing to run over: a resource the record does not
+    /// Whether the view of `lane` has nothing to run over: a resource the document does not
     /// name — what was removed, or an item a change has not brought here yet — has no view, and
-    /// the window keeps the tree it has until the record holds it. A view of another app's
+    /// the window keeps the tree it has until the document holds it. A view of another app's
     /// resource runs over the reading the session publishes for it, which stands where the
-    /// record would: it has something to run over from the first reading, and runs again when
+    /// document would: it has something to run over from the first reading, and runs again when
     /// that reading moves.
     fn unheld(&self, host: &Host, lane: Lane) -> bool {
         self.lane(lane).is_some_and(|shown| {
@@ -386,7 +386,7 @@ impl Instance {
                 }
                 // The run's log is the system's: the window's host shows it.
                 ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
-                // An undo a view applied is the record's, carried out as the window's undo is.
+                // An undo a view applied is the document's, carried out as the window's undo is.
                 ViewEvent::Undo(tilolang_runtime::UndoAsk::Step { change, .. }) => {
                     self.history.push(HistoryAsk::UndoStep(change));
                 }

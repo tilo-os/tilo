@@ -3,7 +3,7 @@
 //! (`tilolang_tilo::instance` and `tilo_ui_host::AppWindow` over the patch protocol), in one
 //! process: each half measured on its own.
 //!
-//! - **App host**: `count` instances of the package (its runtime over a workspace record of its
+//! - **App host**: `count` instances of the package (its runtime over a workspace document of its
 //!   own, its views, what it publishes on the API), each sending its window patches. The
 //!   anonymous memory they add, per instance.
 //! - **UI host**: a window for each, built from what its instance sent, laid out at 1280x800
@@ -114,7 +114,7 @@ impl NameHost for Alone {
     }
 }
 
-/// One app open: its instance over a workspace record of its own, and the window end of its
+/// One app open: its instance over a workspace document of its own, and the window end of its
 /// connection.
 struct Open {
     instance: Instance,
@@ -130,7 +130,7 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
             mode: Mode::Live,
             device: None,
             index_dir: None,
-            record_loader: None,
+            document_loader: None,
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             root: tilolang_tilo::host::RootView::default(),
         },

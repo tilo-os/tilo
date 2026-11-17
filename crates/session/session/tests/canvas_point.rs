@@ -270,7 +270,7 @@ fn the_rectangle_is_filled(text: &str, needle: &str) {
     let found = wait_for(&mut session, "what it finds placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains(needle))
+            .find(|place| place.resource.contains(needle))
     });
     let (px, py, pw, ph) = wait_for(
         &mut session,
@@ -313,7 +313,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let (px, py, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -358,7 +358,7 @@ fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
     let notes = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     for _ in 0..30 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -403,14 +403,14 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     assert_eq!(inbox.title, "All inboxes", "named for its view: {inbox:?}");
     point_and_say(&mut session, (x + w * 0.65, y + h * 0.1), "my notes");
     let notes = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     assert_eq!(notes.title, "Notes", "named for its view: {notes:?}");
     for _ in 0..30 {
@@ -442,7 +442,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
 fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
     places(session).iter().find_map(|place| {
         let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
-        (strip.placed && place.record.contains(needle)).then_some((
+        (strip.placed && place.resource.contains(needle)).then_some((
             strip.canvas_x,
             strip.canvas_y,
             strip.canvas_width,
@@ -537,7 +537,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     assert_eq!(
         turn.shown_as, "turn",
@@ -546,7 +546,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     assert!(
         !places(&session)
             .iter()
-            .any(|place| place.record.contains("channels")),
+            .any(|place| place.resource.contains("channels")),
         "the channel's page is not placed: {:?}",
         places(&session)
     );
@@ -642,7 +642,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     // The rectangle's room keeps its size: what fills it does not hug.
     let filled = places(&session)
         .into_iter()
-        .find(|place| place.record.contains("so.tilo.lang.notes"))
+        .find(|place| place.resource.contains("so.tilo.lang.notes"))
         .expect("the notes' place");
     let strip =
         crate::common::strip(&session, crate::common::number(&filled.strip)).expect("its strip");
@@ -675,7 +675,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     let (tx, ty, tw, th) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
     let root_of = |session: &Session, app: &str| {
@@ -737,14 +737,14 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
         .find(|place| place.key == turn.key)
         .expect("the turn's place still stands");
     assert!(
-        still.record.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
+        still.resource.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
         "the turn's place still shows the turn: {still:?}"
     );
     // The `show` named no view: the mail stands as the thing, its inbox's list, never Mail's
     // whole window with its sidebar of accounts (canvas.md §7, "The thing, never the app").
     let inbox = places(&session)
         .into_iter()
-        .find(|place| place.record.contains("so.tilo.lang.mail"))
+        .find(|place| place.resource.contains("so.tilo.lang.mail"))
         .expect("the inbox's place");
     assert_eq!(
         inbox.title, "All inboxes",
@@ -797,7 +797,7 @@ fn the_whole_conversation_stands_beside_its_turn() {
     let whole = wait_for(&mut session, "the conversation placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record == "chat.workspace.channels:c_ask")
+            .find(|place| place.resource == "chat.workspace.channels:c_ask")
     });
     assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
     let (cx, cy, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
@@ -823,7 +823,7 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -900,7 +900,7 @@ fn inbox_in(
     let inbox = wait_for(session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     let at = wait_for(session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -942,7 +942,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
     let offered: Vec<String> = session
         .resources()
         .into_iter()
-        .find(|spec| spec.id.as_str() == inbox.record)
+        .find(|spec| spec.id.as_str() == inbox.resource)
         .map(|spec| spec.actions.iter().map(|a| a.label.clone()).collect())
         .unwrap_or_default();
     assert!(!offered.is_empty(), "the inbox offers actions: {inbox:?}");
@@ -1170,7 +1170,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     assert!(
         canvas_says(&session).is_none(),
@@ -1222,7 +1222,7 @@ fn a_turn_asked_at_the_edge_is_panned_into_view() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1274,7 +1274,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1306,7 +1306,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let placed = wait_for(&mut session, "the notes placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.notes"))
+            .find(|place| place.resource.contains("so.tilo.lang.notes"))
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1382,7 +1382,7 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+            .find(|place| place.resource.starts_with("chat.workspace.turns:"))
     });
     let (tx, _, tw, _) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
     // What the turn's own `conversation` action runs, as its handle's menu offers it (the action
@@ -1390,12 +1390,12 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     session
         .layout()
         .borrow_mut()
-        .open_conversation_of(&crate::common::as_person(PERSON), &turn.record)
+        .open_conversation_of(&crate::common::as_person(PERSON), &turn.resource)
         .unwrap_or_else(|error| panic!("the turn opens its conversation: {error}"));
     let whole = wait_for(&mut session, "the conversation placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record == "chat.workspace.channels:c_ask")
+            .find(|place| place.resource == "chat.workspace.channels:c_ask")
     });
     assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
     let (cx, _, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
@@ -1545,7 +1545,7 @@ fn the_agents_open_of_an_apps_root_stands_its_place_view() {
     let placed = wait_for(&mut session, "the tasks placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.tasks"))
+            .find(|place| place.resource.contains("so.tilo.lang.tasks"))
     });
     // The views Tasks publishes for its root: the one marked for a place (`place view`), and its
     // default view, the whole app.
@@ -1813,7 +1813,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
     // A click on free canvas, below everything the first turn stood.
     let below = places(&session)
         .iter()
-        .filter_map(|place| canvas_box(&session, &place.record))
+        .filter_map(|place| canvas_box(&session, &place.resource))
         .map(|(_, py, _, ph)| py + ph)
         .max()
         .unwrap_or_default();
@@ -1911,7 +1911,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.lang.mail"))
     });
     steps(&mut session);
     let (ix, _, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
@@ -1955,9 +1955,9 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     for place in places(&session) {
         assert!(
             place_on_screen(&session, &place).is_some()
-                || canvas_box(&session, &place.record).is_some(),
+                || canvas_box(&session, &place.resource).is_some(),
             "{} stays drawn",
-            place.record
+            place.resource
         );
     }
 }

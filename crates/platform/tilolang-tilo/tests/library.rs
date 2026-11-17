@@ -1,15 +1,15 @@
-//! A package that writes through a library's action: the record it makes is the library's, an
-//! ordinary workspace record under the library's app id, and the package reads it back through
+//! A package that writes through a library's action: the document it makes is the library's, an
+//! ordinary workspace document under the library's app id, and the package reads it back through
 //! the library's own function.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{UiNode, Value, ViewInstance};
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, button_key, field_id};
 
 /// The library: a record type of its own, an enum, a function over its resource type, and the
-/// one action that writes its records.
+/// one action that writes its documents.
 const MARKS: &str = r#"app test.marks "Marks"
 
 /// How much a mark matters.
@@ -111,7 +111,7 @@ fn texts(view: &ViewInstance) -> Vec<Option<&Value>> {
 }
 
 #[test]
-fn a_library_owns_the_records_its_action_writes() {
+fn a_library_owns_the_documents_its_action_writes() {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(MARKS, ""), (NOTES, "")]);
     let (library, _user) = (&packages[0], &packages[1]);
     ada.host.root_of(LIBRARY).unwrap();
@@ -124,7 +124,7 @@ fn a_library_owns_the_records_its_action_writes() {
     ada.commit();
 
     // The press ran the user's action, which applied the library's action: the mark is in the
-    // library's root record, under the library's app id.
+    // library's root document, under the library's app id.
     let record = ada.root(LIBRARY);
     let Some(DynValue::Collection(marks)) = record.get(&field_id(&library.meta, "Marks", "marks"))
     else {

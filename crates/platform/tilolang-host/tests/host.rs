@@ -1,5 +1,5 @@
 //! A tilolang host runs an app's instance without the toolkit: it drives a window in another
-//! end of a patch connection, commits what the person did there to the workspace record on the
+//! end of a patch connection, commits what the person did there to the workspace document on the
 //! instance's own connection, takes it back on the person's Undo, publishes the app's actions on
 //! that connection and runs what the broker delivers there as its invoker's step. An instance ends
 //! when its window closes.
@@ -31,7 +31,7 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_host::testing::{Actions, Broker, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::instance::document::InstanceDocument;
 use tilolang_tilo::runtime::Value;
 
 /// What an action too large to record whole keeps as content, on its device and its peer's.
@@ -39,7 +39,7 @@ use tilolang_tilo::runtime::Value;
 mod content;
 #[path = "host/indexes.rs"]
 mod indexes;
-/// Tasks in a hosted window, and Today reading it from Tasks' own record.
+/// Tasks in a hosted window, and Today reading it from Tasks' own document.
 #[path = "host/tasks.rs"]
 mod tasks;
 #[path = "host/wakes.rs"]
@@ -219,7 +219,7 @@ fn running_with(
     running_on(person, app, bundle, directory, automerge::AutoCommit::new())
 }
 
-/// [`running_with`], the record holding `doc` as the workspace handed it.
+/// [`running_with`], the document holding `doc` as the workspace handed it.
 fn running_on(
     person: &str,
     app: &str,
@@ -269,7 +269,7 @@ fn instance_on(
     )
 }
 
-/// [`instance_on`], the record's content kept in `content`, as the device's content store keeps
+/// [`instance_on`], the document's content kept in `content`, as the device's content store keeps
 /// it.
 fn instance_keeping(
     host: &mut TilolangHost,
@@ -295,12 +295,12 @@ fn instance_keeping(
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person)
+    let record = InstanceDocument::new(doc, manager, route.clone(), &attributes.person)
         .keeping_content_in(content);
     let kept = host.kept(&attributes.app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         attributes,
         record,
         Arc::new(bundle),
@@ -368,8 +368,8 @@ fn documents_sent(sent: &Sent) -> usize {
         .count()
 }
 
-/// A host whose counter instance opens its record as the host does, joined on a broker the test
-/// plays, from the copy `documents` keeps: no committed read, as a sealed workspace's record the workspace
+/// A host whose counter instance opens its document as the host does, joined on a broker the test
+/// plays, from the copy `documents` keeps: no committed read, as a sealed workspace's document the workspace
 /// does not hold yet opens.
 fn opened_from_own_copy(
     person: &str,
@@ -396,12 +396,12 @@ fn opened_from_own_copy_in(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::open_read(manager, None, documents, person, "tl.test").unwrap();
+    let record = InstanceDocument::open_read(manager, None, documents, person, "tl.test").unwrap();
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(APP).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         Spec::new(APP, route.cluster_id.to_string(), 1, person),
         record,
         Arc::new(counter()),
@@ -416,7 +416,7 @@ fn opened_from_own_copy_in(
     (host, window, sent, route)
 }
 
-/// What the workspace holds of the record: every change the instance sent on its connection, and
+/// What the workspace holds of the document: every change the instance sent on its connection, and
 /// nothing else, as a sealed workspace's channel keeps it.
 fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
     let mut workspace = automerge::AutoCommit::new();
@@ -433,11 +433,11 @@ fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
 }
 
 tilo_test_env::scenario! {
-    fn a_record_the_host_made_or_found_stamped_reaches_its_workspace_whole;
+    fn a_document_the_host_made_or_found_stamped_reaches_its_workspace_whole;
 
-    phase a_record_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds;
+    phase a_document_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds;
     {
-        // A record the workspace did not hold opens from the host's own copy, whose making (its schema
+        // A document the workspace did not hold opens from the host's own copy, whose making (its schema
         // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
         let documents: Rc<dyn durable_store::DurableStore> =
             Rc::new(durable_store::MemoryStore::default());
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         assert_eq!(value_of(host.instances().next().unwrap()), 1);
 
-        // The workspace's copy alone is the whole record: nothing it holds builds on a change that never
+        // The workspace's copy alone is the whole document: nothing it holds builds on a change that never
         // reached it, so a reader that has only the workspace's writes can read it back.
         let workspace = workspace_copy(&sent);
         assert_eq!(
@@ -469,20 +469,20 @@ tilo_test_env::scenario! {
         assert_eq!(
             value_of(reopened.instances().next().unwrap()),
             1,
-            "the reopened instance shows the record as it was"
+            "the reopened instance shows the document as it was"
         );
     }
 
-    phase a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole;
-    // A record an older store wrote, whose first change is its schema stamp committed with no
+    phase a_document_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole;
+    // A document an older store wrote, whose first change is its schema stamp committed with no
     // message, is handed to its workspace whole on the next send, every change of it claimed: the
-    // stamp, a root change with no deps that only sets the schema version, as the record's
+    // stamp, a root change with no deps that only sets the schema version, as the document's
     // genesis. No change is rewritten and no id changes.
     {
         let documents: Rc<dyn durable_store::DurableStore> =
             Rc::new(durable_store::MemoryStore::default());
         let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-        // The record as the store wrote it before a record's first change named itself: its layout
+        // The document as the store wrote it before a document's first change named itself: its layout
         // version, put on the root by the store that created it, and nothing else.
         let stamp = {
             use automerge::transaction::Transactable as _;
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             automerge::ReadDoc::get_missing_deps(&workspace, &[]),
             Vec::new(),
-            "the workspace holds the whole record"
+            "the workspace holds the whole document"
         );
         for request in sent.borrow().iter() {
             if let CollabRequest::Document { mutation, .. } = request {
@@ -650,8 +650,8 @@ tilo_test_env::scenario! {
 
     phase another_devices_edit_shows_in_a_hosted_window_beside_its_own;
     // What grace did in her window on another device reaches ada's hosted window as the workspace's
-    // committed read of the record: ada sees it, beside the press she made meanwhile, and the read
-    // is acknowledged, so her connection's reader confirms it and the record takes her next change.
+    // committed read of the document: ada sees it, beside the press she made meanwhile, and the read
+    // is acknowledged, so her connection's reader confirms it and the document takes her next change.
     {
         let (mut host, mut window, _sent, inbox, route) = running("ada");
         settle(&mut host, &mut window);
@@ -690,7 +690,7 @@ tilo_test_env::scenario! {
         let cluster = uuid::Uuid::new_v4();
         let mut host = TilolangHost::new(None, wake());
         let actions: Actions = Rc::default();
-        // The person's one action wrote both units, as a run does: each record holds the change
+        // The person's one action wrote both units, as a run does: each document holds the change
         // the action's invocation names. The endpoint restarted since, so no log remembers it.
         let invocation = tilo_actions::InvocationId::new();
         let first_route = RouteSpec::document(APP, cluster, "a");
@@ -751,7 +751,7 @@ tilo_test_env::scenario! {
             Some(invocation.0),
             "the undo ran under an invocation of its own"
         );
-        // The two units reverted through their own live instances: each record holds the undo as its
+        // The two units reverted through their own live instances: each document holds the undo as its
         // own step, which the person can redo.
         let redoable: Vec<bool> = host
             .instances()
@@ -863,8 +863,8 @@ fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
         })
 }
 
-/// A counter record holding one change of the action `invocation` names, as an action that wrote
-/// the unit left it: the endpoints restarted since, so nothing but the record remembers it.
+/// A counter document holding one change of the action `invocation` names, as an action that wrote
+/// the unit left it: the endpoints restarted since, so nothing but the document remembers it.
 fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
     let actor = tilolang_tilo::runtime::Actor::Member(
@@ -898,7 +898,7 @@ fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::Au
     doc
 }
 
-/// Apply `action` to `doc` as the record does: for `person`, in the invocation `invocation` when
+/// Apply `action` to `doc` as the document does: for `person`, in the invocation `invocation` when
 /// the change is part of an action's.
 fn applied(
     doc: &mut automerge::AutoCommit,
@@ -1084,7 +1084,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         match answered(&sent, 1) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                let value = output.value.expect("read answers what the record holds");
+                let value = output.value.expect("read answers what the document holds");
                 assert!(value.get("records").is_some(), "{value}");
             }
             other => panic!("read was answered {other:?}"),
@@ -1143,7 +1143,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_instance_answers_a_late_joiners_snapshot_request_with_its_record;
+    phase the_instance_answers_a_late_joiners_snapshot_request_with_its_document;
     {
         let (mut host, mut window, sent, inbox, route) = running("ada");
         settle(&mut host, &mut window);
@@ -1169,7 +1169,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             snapshots(&sent),
             before + 1,
-            "the record went to the late joiner"
+            "the document went to the late joiner"
         );
     }
 
@@ -1332,7 +1332,7 @@ impl PeerTransport for SlowBroker {
         })
     }
 
-    /// The records every app of the workspace opens beside its own are joined too.
+    /// The documents every app of the workspace opens beside its own are joined too.
     fn join_route(
         &mut self,
         _: RouteSpec,
@@ -1492,9 +1492,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase an_agent_lists_the_apps_root_record_and_its_actions;
-    // The app's root record is listed at the directory's top level to an agent as to a person: its
-    // `open` changes only the caller's own window, so it discloses the record under the caller's
+    phase an_agent_lists_the_apps_root_document_and_its_actions;
+    // The app's root document is listed at the directory's top level to an agent as to a person: its
+    // `open` changes only the caller's own window, so it discloses the document under the caller's
     // policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
     // the actions an agent takes there.
     {
@@ -1508,7 +1508,7 @@ tilo_test_env::scenario! {
             .rows
             .iter()
             .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
-            .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+            .unwrap_or_else(|| panic!("the root document is at the top: {:?}", top.rows))
             .clone();
         let visibility = root
             .visibility
@@ -1516,7 +1516,7 @@ tilo_test_env::scenario! {
             .expect("a listed resource names its visibility");
         assert!(
             visibility.contract.discloses_resource(),
-            "the root record is disclosed only to its publisher through `{}`",
+            "the root document is disclosed only to its publisher through `{}`",
             visibility.action
         );
         let level = page(
@@ -1660,9 +1660,9 @@ struct Typed {
     broker: Vec<String>,
     /// The resource labels the instance's directory finds for what was typed, asked after.
     found: Vec<String>,
-    /// How many records publication looked at while the keys were typed.
+    /// How many documents publication looked at while the keys were typed.
     visited: u64,
-    /// How many times it read every record in full while the keys were typed.
+    /// How many times it read every document in full while the keys were typed.
     swept: u64,
 }
 
@@ -1672,10 +1672,10 @@ fn visited(host: &TilolangHost) -> u64 {
         .next()
         .expect("the app runs")
         .instance()
-        .visited_records()
+        .visited_documents()
 }
 
-/// How many times the instance's publication has read every record in full so far.
+/// How many times the instance's publication has read every document in full so far.
 fn swept(host: &TilolangHost) -> u64 {
     host.instances()
         .next()
@@ -1876,20 +1876,20 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
         held_by.push((held, body.visited));
         assert_eq!(
             body.swept, 0,
-            "typing a body read every record in full {} times with {held} notes",
+            "typing a body read every document in full {} times with {held} notes",
             body.swept
         );
     }
-    // A key republishes the note it typed into, and no other record the notebook holds: what a
+    // A key republishes the note it typed into, and no other document the notebook holds: what a
     // turn costs is the same with one note as with two hundred.
     assert!(
         held_by[0].1 >= 5 && held_by[0].1 <= 10,
-        "five keys looked at {} records",
+        "five keys looked at {} documents",
         held_by[0].1
     );
     assert_eq!(
         held_by[0].1, held_by[1].1,
-        "five keys looked at {} records with one note, {} with 200",
+        "five keys looked at {} documents with one note, {} with 200",
         held_by[0].1, held_by[1].1
     );
     // A note's title is its label: each key publishes that label alone, the same work with one
@@ -1900,7 +1900,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
         held_by.push((held, title.visited));
         assert_eq!(
             title.swept, 0,
-            "typing a title read every record in full {} times with {held} notes",
+            "typing a title read every document in full {} times with {held} notes",
             title.swept
         );
         assert_eq!(
@@ -1936,12 +1936,12 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     }
     assert!(
         held_by[0].1 >= 3 && held_by[0].1 <= 6,
-        "three keys looked at {} records",
+        "three keys looked at {} documents",
         held_by[0].1
     );
     assert_eq!(
         held_by[0].1, held_by[1].1,
-        "three keys looked at {} records with one note, {} with 200",
+        "three keys looked at {} documents with one note, {} with 200",
         held_by[0].1, held_by[1].1
     );
 }
@@ -2006,7 +2006,7 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     );
 }
 
-/// The origin of a counter's record for `person`, on a broker the test plays, taking its
+/// The origin of a counter's document for `person`, on a broker the test plays, taking its
 /// change on the far end of the returned connection.
 fn applier(
     person: &str,
@@ -2019,7 +2019,7 @@ fn applier(
     applier_of(person, APP, &counter(), doc)
 }
 
-/// The origin of `app`'s records, built as `bundle`, for `person`, holding `doc`: as
+/// The origin of `app`'s documents, built as `bundle`, for `person`, holding `doc`: as
 /// [`applier`] is the counter's.
 fn applier_of(
     person: &str,
@@ -2044,7 +2044,7 @@ fn applier_of(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(doc, manager, route.clone(), person);
+    let record = InstanceDocument::new(doc, manager, route.clone(), person);
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
         Spec::new(app, route.cluster_id.to_string(), 1 << 62, person),
@@ -2058,7 +2058,7 @@ fn applier_of(
     (applier, ours, sent)
 }
 
-/// Where the counter's Increment is published on a record of the workspace, and that record: the
+/// Where the counter's Increment is published on a document of the workspace, and that document: the
 /// one a task read, whose resources its change names.
 fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
     let (mut host, mut window, _sent, _inbox, _route) = running("ada");
@@ -2112,9 +2112,9 @@ fn task_invoker() -> serde_json::Value {
 }
 
 tilo_test_env::scenario! {
-    fn a_change_with_no_instance_runs_at_the_records_origin_or_is_refused_with_why;
+    fn a_change_with_no_instance_runs_at_the_documents_origin_or_is_refused_with_why;
 
-    phase a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance;
+    phase a_tasks_change_runs_at_the_documents_origin_as_its_step_with_no_instance;
     {
         let (address, doc) = increment();
         let (mut applier, connection, sent) = applier("ada", doc);
@@ -2142,7 +2142,7 @@ tilo_test_env::scenario! {
             documents_sent(&sent) > 0,
             "what it wrote was handed to the workspace"
         );
-        // A preview made from an earlier read that no longer holds is applied as the record is
+        // A preview made from an earlier read that no longer holds is applied as the document is
         // now, and the answer says it differed.
         let (address, doc) = increment();
         let (mut applier, connection, _sent) = self::applier("ada", doc);
@@ -2162,7 +2162,7 @@ tilo_test_env::scenario! {
         assert_eq!(answer["differs"], true, "{answer}");
     }
 
-    phase a_change_the_record_cannot_take_is_refused_with_why;
+    phase a_change_the_document_cannot_take_is_refused_with_why;
     {
         let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
         let answer = apply(
@@ -2187,9 +2187,9 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
-    let (address, _window_record) = increment();
+    let (address, _window_document) = increment();
     assert!(address.resource.contains(":root-"), "{}", address.resource);
-    // No window ever opened the app here: its record holds no root.
+    // No window ever opened the app here: its document holds no root.
     let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
     let answer = apply(
         &mut applier,
@@ -2214,7 +2214,7 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
     tilo_automerge::ApplyIncoming::load_incoming(&mut read, &wrote).unwrap();
     assert!(
         read.get_missing_deps(&[]).is_empty(),
-        "what it says it wrote holds the root it made, for a task that read no record"
+        "what it says it wrote holds the root it made, for a task that read no document"
     );
     assert!(
         documents_sent(&sent) > 0,
@@ -2267,10 +2267,10 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
     );
 }
 
-/// A change its workspace refuses is taken back out of the record at its origin, and the task is
-/// answered why: the record is never left holding, building on and keeping a change the workspace
-/// has none of. Here the surface the workspace decides the record's changes by publishes the
-/// counter's record but none of its actions.
+/// A change its workspace refuses is taken back out of the document at its origin, and the task is
+/// answered why: the document is never left holding, building on and keeping a change the workspace
+/// has none of. Here the surface the workspace decides the document's changes by publishes the
+/// counter's document but none of its actions.
 ///
 /// The surface a process decides an app's changes by is the process's, and this test names the
 /// counter's app a surface no other test may inherit: it runs in a process of its own.
@@ -2306,7 +2306,7 @@ fn a_change_the_workspace_refuses_is_never_kept() {
             assert_eq!(
                 applier.record().doc().get_heads(),
                 before,
-                "the record holds nothing of the refused change"
+                "the document holds nothing of the refused change"
             );
             assert_eq!(
                 documents_sent(&sent),

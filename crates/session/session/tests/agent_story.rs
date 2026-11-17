@@ -59,7 +59,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
     crate::common::until(&mut session, "the notebook's window", |session| {
         crate::common::places(session)
             .iter()
-            .any(|place| place.record == notebook || place.shows == notebook)
+            .any(|place| place.resource == notebook || place.shows == notebook)
     });
 
     // Hold the person's banners back, as the Quick Settings switch does.

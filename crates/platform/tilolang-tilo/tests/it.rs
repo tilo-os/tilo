@@ -1,4 +1,4 @@
-//! The platform integration without a window: records, replayable actions, the published
+//! The platform integration without a window: documents, replayable actions, the published
 //! surface, and two replicas of one workspace running the real compiled packages.
 
 #![allow(
@@ -17,19 +17,22 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
-#[cfg(feature = "record")]
-mod chunk_records;
+#[cfg(feature = "document")]
+mod chunk_documents;
 mod chunks;
 mod collab;
 mod columns;
 mod composer;
 mod discussion;
+#[cfg(feature = "document")]
+mod document;
+mod documents;
 mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;
 mod headings;
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 mod history_views;
 mod incremental;
 mod index;
@@ -52,16 +55,13 @@ mod outbox;
 mod outcomes;
 mod policy;
 mod publication;
-#[cfg(feature = "record")]
-mod record;
-mod records;
-mod records_service;
 mod reflection;
 mod relatives;
+mod resource_service;
 mod rich_text;
 mod scenarios;
-#[cfg(feature = "record")]
-mod shell_record;
+#[cfg(feature = "document")]
+mod shell_document;
 mod suggest;
 mod surface;
 mod sync;
@@ -71,7 +71,7 @@ mod tasks;
 mod tasks_places;
 mod tasks_today;
 mod triggers;
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 mod undo_own;
 mod unions;
 mod unsaved;

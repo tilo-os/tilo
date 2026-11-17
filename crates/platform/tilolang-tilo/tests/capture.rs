@@ -1,6 +1,6 @@
 //! Capture: an app's create action with one `Text` parameter run from
 //! anywhere with one line a person typed. The API reads the words for the action's own field
-//! types — a day, a moment, a person, a record — fills them, and titles the rest, so a palette
+//! types — a day, a moment, a person, a document — fills them, and titles the rest, so a palette
 //! makes what the app's entry would. What it is made from, when it is made from something, is
 //! the change's.
 
@@ -171,7 +171,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
         "ten in the morning of that Friday"
     );
 
-    // What the invocation records is the same, so a replay makes the same task without reading
+    // What the invocation documents is the same, so a replay makes the same task without reading
     // the line again.
     assert_eq!(made.args.get("title"), Some(&json!("Call the landlord")));
     assert_eq!(made.args.get("due"), Some(&json!(due)));

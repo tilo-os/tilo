@@ -152,7 +152,7 @@ view desktop(a: Layout) {
 }
 
 /// The style the person shows, as the session found it (`Viewing.style`, a package and a
-/// view): the strips when their record names none, so a shell that has never picked one opens.
+/// view): the strips when their document names none, so a shell that has never picked one opens.
 fn style_of(v: Viewing) -> Text {
     if v.style != "" { v.style } else { "so.tilo.shell:strips" }
 }

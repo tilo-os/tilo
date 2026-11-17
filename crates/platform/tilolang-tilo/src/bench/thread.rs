@@ -23,7 +23,7 @@ use super::{
     composer_input, execute, frame_list, item_id, ms, root_id, text_input, typed, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
-use crate::record::{DynRecord, DynValue};
+use crate::resource::{DynResource, DynValue};
 use crate::schema::MergeKind;
 
 /// The id of the one item of the root's list: the thread whose transcript the scenarios show.
@@ -56,7 +56,7 @@ pub(super) fn filled(
     label: &str,
     depth: usize,
     actors: &Actors,
-) -> Result<DynRecord, String> {
+) -> Result<DynResource, String> {
     let mut record = super::unwritten(ty)?;
     let schema = record.schema();
     let author = tilolang_runtime::value::to_json(&Value::Actor(Actor::Member(

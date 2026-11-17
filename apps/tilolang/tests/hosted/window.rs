@@ -928,7 +928,7 @@ fn first_draft(session: &mut Session) -> ResourceRef {
         .expect("the shell holds a draft")
 }
 
-/// Whether the letter went, as the record says: no device sends it again.
+/// Whether the letter went, as the document says: no device sends it again.
 fn sent(session: &mut Session, draft: &ResourceRef) -> bool {
     session.settle();
     read(session, draft, "sent") == Some(RtValue::Bool(true))
@@ -1024,7 +1024,7 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
     assert!(
         tilolang_tilo::runtime::store::Store::outbox_pending(session.instance_host().store())
             .is_empty(),
-        "the record says it was delivered, so no device queues it again"
+        "the document says it was delivered, so no device queues it again"
     );
 }
 
@@ -1101,7 +1101,7 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
 // USER REQUIREMENT: a change the workspace refuses never stays on this device unsaid. The window
 // marks it unsaved in plain words at once, and rests instead of sending it again every frame.
 // Every later change builds on the refused one, so the workspace can take none of them alone:
-// once it takes changes again, the person's next step, or "Try again", hands it the record whole,
+// once it takes changes again, the person's next step, or "Try again", hands it the document whole,
 // and it holds every letter typed meanwhile.
 fn a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(try_again: bool) {
     let workspace = super::WorkspaceEnd::default();

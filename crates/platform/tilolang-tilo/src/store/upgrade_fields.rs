@@ -1,12 +1,12 @@
-//! A build whose field changed from `Text` to `RichText`: the records keep their words.
+//! A build whose field changed from `Text` to `RichText`: the documents keep their words.
 //!
-//! A running app keeps its records in the workspace, and a new build of it may keep a field as rich
+//! A running app keeps its documents in the workspace, and a new build of it may keep a field as rich
 //! text where the old one kept plain text (`crate::upgrade::compare` lets that one type change
-//! take over in place). The text a record holds there is not lost: when the workspace's origin opens
-//! the record, every record of such a type — and every item of it — has the plain text it holds
+//! take over in place). The text a document holds there is not lost: when the workspace's origin opens
+//! the document, every document of such a type — and every item of it — has the plain text it holds
 //! there turned into rich text: the same characters, a paragraph per line, no marks, as an
-//! ordinary change of the record. The record keeps its id and its items keep theirs; a value
-//! that was not text stays exactly as it was, and a record that already holds rich text there
+//! ordinary change of the document. The document keeps its id and its items keep theirs; a value
+//! that was not text stays exactly as it was, and a document that already holds rich text there
 //! is not written at all, so a second open writes nothing.
 //!
 //! The change is a [`DynEdit::Edit`] under the field, applying as the splices and marks that
@@ -24,12 +24,12 @@ use crate::items::Items;
 use crate::schema::{MergeKind, TypeSchema, lookup};
 
 impl Inner {
-    /// Turn the plain text each record of `app` holds in a field its type now keeps as rich
-    /// text, and write each as a change of the record: one committed action per record changed,
-    /// the app's own. Returns how many records changed.
+    /// Turn the plain text each document of `app` holds in a field its type now keeps as rich
+    /// text, and write each as a change of the document: one committed action per document changed,
+    /// the app's own. Returns how many documents changed.
     ///
-    /// A field is one to turn when its type keeps it as a [`MergeKind::RichText`] and a record
-    /// holds a text object there: a record the new build made holds rich text from the start,
+    /// A field is one to turn when its type keeps it as a [`MergeKind::RichText`] and a document
+    /// holds a text object there: a document the new build made holds rich text from the start,
     /// so nothing is written for it, and a second open finds nothing to write.
     pub(super) fn upgrade_plain_text(&mut self, app: &str, module: &str) -> usize {
         let docs: Vec<(String, String)> = self
@@ -40,17 +40,17 @@ impl Inner {
             .collect();
         let mut changed = 0usize;
         for (doc, ty) in docs {
-            if self.upgrade_record(app, module, &ty, &doc) {
+            if self.upgrade_document(app, module, &ty, &doc) {
                 changed = changed.saturating_add(1);
             }
         }
         changed
     }
 
-    /// [`Self::upgrade_plain_text`] of one record `doc` of the type `ty`: every field the type
-    /// now keeps as rich text that the record — or an item of it — holds as plain text, turned
-    /// and written, then committed as one action of the record. Whether it wrote anything.
-    fn upgrade_record(&mut self, app: &str, module: &str, ty: &str, doc: &str) -> bool {
+    /// [`Self::upgrade_plain_text`] of one document `doc` of the type `ty`: every field the type
+    /// now keeps as rich text that the document — or an item of it — holds as plain text, turned
+    /// and written, then committed as one action of the document. Whether it wrote anything.
+    fn upgrade_document(&mut self, app: &str, module: &str, ty: &str, doc: &str) -> bool {
         let Some(schema) = lookup(ty) else {
             return false;
         };
@@ -61,7 +61,7 @@ impl Inner {
             return false;
         };
         let targets = self.upgrade_targets(app, doc, schema, &root);
-        // What each record and item of it holds as plain text, read before any of it is written.
+        // What each document and item of it holds as plain text, read before any of it is written.
         let plans = self.upgrade_plans(targets, mirror);
         let mut edits: Vec<DynEdit> = Vec::new();
         let mut args = serde_json::Map::new();
@@ -115,7 +115,7 @@ impl Inner {
         true
     }
 
-    /// The record `doc` and every item of it whose own type keeps a field as rich text, each with
+    /// The document `doc` and every item of it whose own type keeps a field as rich text, each with
     /// the chunk its map is stored in.
     fn upgrade_targets(
         &self,
@@ -175,7 +175,7 @@ impl Inner {
     }
 }
 
-/// A field holder a build's text upgrade writes: the record or item, the chunk its map is
+/// A field holder a build's text upgrade writes: the document or item, the chunk its map is
 /// stored in, its map there, and the fields it holds as rich text now.
 type Target = (
     ResourceRef,

@@ -133,10 +133,10 @@ fn a_scenarios_named_person_is_a_member_of_the_workspace() {
     );
 }
 
-/// Today reads the roots of the apps it uses by name, each from that app's own record: opened
+/// Today reads the roots of the apps it uses by name, each from that app's own document: opened
 /// before they are made, it shows them once their scenarios fill them. Each app keeps its
-/// record, as installed apps do, and Today's runtime loads them as other apps' packages, so
-/// nothing of theirs is in Today's record for its cards to read by mistake.
+/// document, as installed apps do, and Today's runtime loads them as other apps' packages, so
+/// nothing of theirs is in Today's document for its cards to read by mistake.
 #[test]
 fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     const TODAY: &str = "so.tilo.lang.today";
@@ -189,7 +189,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
             .unwrap();
         owner.commit();
     }
-    // Today's runtime reads each app from its record, through that app's own package.
+    // Today's runtime reads each app from its document, through that app's own package.
     let mut used: Vec<UsedApp> = owners
         .iter()
         .map(|(owner, loaded)| {
@@ -214,7 +214,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         for root in &app.roots {
             assert!(
                 !today.host.store().contains(&format!("root-{root}")),
-                "Today's record holds no root of {}",
+                "Today's document holds no root of {}",
                 app.app
             );
         }

@@ -196,7 +196,7 @@ pub fn person_resource_types(app_id: &str) -> Vec<String> {
 }
 
 /// The kinds `app_id`'s surface marks each member's own record in the
-/// workspace (`own`, a tilolang package's `records: .own`). Empty when this
+/// workspace (`own`, a tilolang package's `resources: .own`). Empty when this
 /// process holds no surface for it.
 #[must_use]
 pub fn own_resource_types(app_id: &str) -> Vec<String> {

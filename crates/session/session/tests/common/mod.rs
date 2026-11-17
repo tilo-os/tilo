@@ -40,7 +40,7 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 /// The canvas, as assistive technology names it: the map the framed style draws its places
 /// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
@@ -586,13 +586,13 @@ pub fn show_preset(session: &mut Session, style: &str) {
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.
-pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
+pub fn notebook(titles: &[&str]) -> (ResourceService, Vec<String>) {
     notebook_of(PERSON, titles)
 }
 
 /// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
 /// the id a session acts as on a device that has an identity of its own.
-pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
+pub fn notebook_of(person: &str, titles: &[&str]) -> (ResourceService, Vec<String>) {
     let host = Host::new(
         &tilo_resource::Doc::new(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
@@ -610,7 +610,7 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
     )
     .unwrap();
     host.root_of(NOTES).unwrap();
-    let mut service = RecordService::new(host, person);
+    let mut service = ResourceService::new(host, person);
     let book = service
         .resources()
         .into_iter()
@@ -908,7 +908,7 @@ pub fn repl_session(
     root: &Path,
     questions: &Questions,
     admit_repl: Vec<std::path::PathBuf>,
-    notes: RecordService,
+    notes: ResourceService,
 ) -> Session {
     Session::headless(
         Options {
@@ -975,7 +975,7 @@ pub fn strip_of(session: &Session, key: u64) -> Option<layout::StripReading> {
 pub fn placed(session: &Session, resource: &str) -> usize {
     places(session)
         .iter()
-        .filter(|place| place.record == resource)
+        .filter(|place| place.resource == resource)
         .count()
 }
 
@@ -988,7 +988,7 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
         .filter_map(|place| {
             tilo_actions::api::locate(
                 &resources,
-                &tilo_actions::ActionAddress::new(&place.record, "open"),
+                &tilo_actions::ActionAddress::new(&place.resource, "open"),
             )
             .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
         })
@@ -1224,7 +1224,7 @@ fn surface_stack(session: &Session) -> Value {
 pub fn place_title(session: &Session, record: &str) -> String {
     places(session)
         .into_iter()
-        .find(|place| place.record == record)
+        .find(|place| place.resource == record)
         .map_or_else(
             || panic!("the shell holds a place for {record}"),
             |place| place.name,
@@ -1240,7 +1240,7 @@ pub fn place_title(session: &Session, record: &str) -> String {
 pub fn drawn_name(session: &Session, record: &str) -> String {
     places(session)
         .into_iter()
-        .find(|place| place.record == record)
+        .find(|place| place.resource == record)
         .map_or_else(
             || panic!("the shell holds a place for {record}"),
             |place| {

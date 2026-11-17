@@ -6,7 +6,7 @@ app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .offi
 /// the row of the task it is about, and the place holding it, count a new comment the way they
 /// count an edit.
 ///
-/// What the rest of a workspace makes of these records is the page's to say: a page that draws
+/// What the rest of a workspace makes of these resources is the page's to say: a page that draws
 /// the thread under a resource draws what is about it there, and leaves it out of `std.linked`
 /// (`said_about`).
 type Comment {

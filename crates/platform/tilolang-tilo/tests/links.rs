@@ -10,7 +10,7 @@ use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::host::Package;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 use tilolang_tilo::{Authorship, schema};
 
 use crate::fixtures::{Replica, field_id};
@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
             text(call(&ada, "made_from", vec![Value::resource(&source)])),
             ""
         );
-        // It is a fact of the change, so another replica reads it from the record.
+        // It is a fact of the change, so another replica reads it from the document.
         let ben = ada.fork("ben", &[(LINKS, &loaded[0].ids)]);
         ben.host.sync_from(&ben.doc);
         assert_eq!(
@@ -214,13 +214,13 @@ fn seeded(n: usize) -> (Replica, Vec<Package>) {
     let note_schema = schema::lookup(&note_ty.id).unwrap();
     let mut notes = Collection::default();
     for i in 0..n {
-        let mut item = DynRecord::empty(note_schema).unwrap();
+        let mut item = DynResource::empty(note_schema).unwrap();
         if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Note", "title")) {
             *title = format!("Note {i:05}");
         }
         notes.push(Id::from_raw(format!("note-{i:05}")), item);
     }
-    let mut record = DynRecord::empty(schema::lookup(&board_ty.id).unwrap()).unwrap();
+    let mut record = DynResource::empty(schema::lookup(&board_ty.id).unwrap()).unwrap();
     if let Some(DynValue::Collection(slot)) = record.get_mut(&field_id(&meta, "Board", "notes")) {
         *slot = notes;
     }

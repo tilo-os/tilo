@@ -1,7 +1,7 @@
 //! The signals that stop the host: SIGTERM, SIGINT and SIGHUP end its loop as the session closing
 //! its api does, so the instances it runs are dropped and every index they keep is closed with
 //! them. A process killed by a signal's default action unwinds nothing: each index file is left as
-//! its last commit wrote it, and every later start has to build it anew from the record.
+//! its last commit wrote it, and every later start has to build it anew from the document.
 //!
 //! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe, and the
 //! loop waits on the pipe beside its api and its wake ([`crate::wait`]). A second SIGINT while

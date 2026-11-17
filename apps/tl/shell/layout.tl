@@ -11,7 +11,7 @@
 /// another shell made keeps it and never changes or removes it.
 /// The person's layout as the session reads it off the layout: the workspaces it holds, its
 /// rows, its strips, and every place. Which style it shows and which strip stands in front are
-/// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
+/// the shell's own view of it (`viewing`), this package's document, so a shell is picked per
 /// person and device without changing what the layout holds.
 type Layout (origin: session.layout) {
     /// The person at this device, by their name.
@@ -49,7 +49,7 @@ type LayoutQuery (origin: session.layout_query) {
 }
 
 /// A resource a query found: its address, the name it goes by, and its kind, the same three words a
-/// place's record is named by.
+/// place's document is named by.
 type LayoutRef (origin: session.layout_ref) {
     key: Text merge register
     /// The query it is of, by its key.
@@ -116,8 +116,8 @@ type LayoutPlace (origin: session.layout_place) {
     shows: Text merge register
     /// The view it shows the resource through; empty for the app's default.
     shown_as: Text merge register
-    /// The record it shows, when it shows one.
-    record: Text merge register
+    /// The document it shows, when it shows one.
+    resource: Text merge register
     /// The title it is shown under.
     title: Text merge register
     /// What this place is called, on every surface: its window's title and its app's own name
@@ -156,7 +156,7 @@ fn permille_of(w: Width) -> Int {
 }
 
 /// What the person shows of their layout, and which strip stands in front: the shell's own
-/// view of it, in their own record (`records: .own`, `root viewing: Viewing`). The layout
+/// view of it, in their own document (`resources: .own`, `root viewing: Viewing`). The layout
 /// is the session's and the same whichever way it is shown; this is what changes when the
 /// person picks a style or brings a strip forward, and switching keeps every place where
 /// it was.
@@ -176,7 +176,7 @@ default view viewing_settings for Viewing
 
 /// The shell's own settings: the style the person shows, and where to pick another. The
 /// styles every installed package offers are listed by their own words; picking one
-/// switches the shell, and the style's own settings stand under the list, from its own record.
+/// switches the shell, and the style's own settings stand under the list, from its own document.
 view viewing_settings(v: Viewing) {
     page {
         section("Shell") {

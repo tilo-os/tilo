@@ -26,7 +26,7 @@ pub struct Catalogue {
     /// The id each app keeps its records under, when it was renamed from an earlier one.
     pub documents_under: BTreeMap<String, String>,
     /// The apps whose records the API changes itself, rather than invoking their actions.
-    pub changed_at_record: BTreeSet<String>,
+    pub changed_at_document: BTreeSet<String>,
 }
 
 /// Where a task's catalogue comes from: the workspace's apps, as its host runs them.
@@ -83,7 +83,7 @@ impl crate::TaskHosts for TaskHosts {
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
             documents_under: catalogue.documents_under,
-            changed_at_record: catalogue.changed_at_record,
+            changed_at_document: catalogue.changed_at_document,
         };
         std::thread::Builder::new()
             .name("tilo-task-host".into())

@@ -1,6 +1,6 @@
 //! Whether a new build of a package can take over a running one in place.
 //!
-//! A running app keeps its state outside its module: resources in the workspace record, by
+//! A running app keeps its state outside its module: resources in the workspace document, by
 //! declaration id; view state in the runtime, by window, the person looking and
 //! declaration id; scroll, selection and the open detail in the window. A new module can take
 //! over all of it when it reads that state as the old one wrote it. [`compare`] says whether
@@ -9,7 +9,7 @@
 //!
 //! Declarations are matched by id (the ids lock keeps an id across a rename), so renaming a type,
 //! a field or a variant keeps state. A declaration the new build no longer has keeps its stored
-//! values in the record: nothing reads them, and nothing deletes them.
+//! values in the document: nothing reads them, and nothing deletes them.
 
 use tilolang_runtime::meta::{EnumMeta, FieldMeta, Meta, TypeMeta};
 
@@ -118,7 +118,7 @@ fn fields_obstacle(before: &[FieldMeta], after: &[FieldMeta]) -> Option<String> 
     None
 }
 
-/// Whether `now` is `before` changed from `Text` to `RichText`: the one type change a record
+/// Whether `now` is `before` changed from `Text` to `RichText`: the one type change a document
 /// keeps its data through, the text it held becoming rich text with the same words. It is the
 /// store that turns it, when the app's build takes over ([`crate::store`]'s `upgrade_fields`).
 fn from_text_to_rich_text(before: &FieldMeta, now: &FieldMeta) -> bool {

@@ -1,4 +1,4 @@
-//! A workspace record kept in memory beside its instance, standing where the action API stands:
+//! A workspace document kept in memory beside its instance, standing where the action API stands:
 //! it takes each step the instance hands over, writes it down as the person's step and answers it,
 //! as a session's API does. What runs an instance with no session around it keeps one: a browser
 //! page that runs the app and its window side by side, and a capture.
@@ -12,14 +12,14 @@ use crate::action::{DynAction, DynEdit};
 use crate::host::Host;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 
-/// The record, and the person whose steps are written into it when a step names no author.
-pub struct MemoryRecord {
+/// The document, and the person whose steps are written into it when a step names no author.
+pub struct MemoryDocument {
     doc: Doc,
     person: String,
 }
 
-impl MemoryRecord {
-    /// The record `doc`, written into as `person`.
+impl MemoryDocument {
+    /// The document `doc`, written into as `person`.
     #[must_use]
     pub fn new(doc: Doc, person: impl Into<String>) -> Self {
         Self {
@@ -28,20 +28,20 @@ impl MemoryRecord {
         }
     }
 
-    /// The record as it stands.
+    /// The document as it stands.
     #[must_use]
     pub fn doc(&self) -> &Doc {
         &self.doc
     }
 
-    /// Bring `instance` up to date with the record, write down every step it handed over and
+    /// Bring `instance` up to date with the document, write down every step it handed over and
     /// answer each, and bring it up to date again with what they wrote. A step dated `sample_at`
     /// (a scenario's sample data, which it writes without a time of its own) is dated a second
     /// before the earliest step it dates, so what the scenario dates is the story it tells.
     /// Whether a step was written.
     ///
     /// # Errors
-    /// A step the record refused.
+    /// A step the document refused.
     pub fn take_in(
         &mut self,
         instance: &mut Instance,
@@ -85,21 +85,21 @@ impl MemoryRecord {
             self.commit(&host, &action)?;
             instance.answered(&address, None);
         }
-        // The steps are in the record now: the marks and catch-ups that read them read the
-        // record as it stands after them.
+        // The steps are in the document now: the marks and catch-ups that read them read the
+        // document as it stands after them.
         instance.sync(Some(&self.doc));
         Ok(true)
     }
 
-    /// Apply `action` to the record as the action API applies one for a session: encoded, as the
-    /// person's step, with the context a step on the record carries, so what the store tells of
+    /// Apply `action` to the document as the action API applies one for a session: encoded, as the
+    /// person's step, with the context a step on the document carries, so what the store tells of
     /// the change (who made it, when, and the version it is of each resource) reads as a
     /// session's.
     fn commit(&mut self, host: &Host, action: &DynAction) -> Result<(), String> {
-        // A resource its origin derives (the shell's own record and layout, a session's record)
-        // lives in the store's unsaved layer and is never the workspace record's to have, so its
+        // A resource its origin derives (the shell's own document and layout, a session's document)
+        // lives in the store's unsaved layer and is never the workspace document's to have, so its
         // steps stay there.
-        let Some(action) = only_the_record(action, host) else {
+        let Some(action) = only_the_document(action, host) else {
             return Ok(());
         };
         // The step is its author's, and the change commits under their actor: a gesture's
@@ -125,9 +125,9 @@ impl MemoryRecord {
     }
 }
 
-/// The step `action` as the workspace record takes it: its edits of the resources the record
+/// The step `action` as the workspace document takes it: its edits of the resources the document
 /// holds, `None` when it has none.
-fn only_the_record(action: &DynAction, host: &Host) -> Option<DynAction> {
+fn only_the_document(action: &DynAction, host: &Host) -> Option<DynAction> {
     let edits: Vec<_> = action
         .edits
         .iter()
@@ -156,14 +156,14 @@ fn resource_of(edit: &DynEdit) -> &str {
         | DynEdit::Migrated { id, .. }
         | DynEdit::TriggerRan { id, .. }
         | DynEdit::RemoveItem { id, .. } => id,
-        // A run of a collection counts against the record it is a field of, which names no
-        // record of its own.
+        // A run of a collection counts against the document it is a field of, which names no
+        // document of its own.
         DynEdit::RunChunk { holder, .. } => holder,
         DynEdit::In { edit, .. } | DynEdit::Chunk { edit, .. } => resource_of(edit),
     }
 }
 
-/// The moment a second before `at` (an RFC 3339 time), written as the record writes one.
+/// The moment a second before `at` (an RFC 3339 time), written as the document writes one.
 fn second_before(at: &str) -> String {
     let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(at) else {
         return at.to_owned();

@@ -1,10 +1,10 @@
-//! [`TiloStore`] — the runtime's [`Store`] over the workspace record.
+//! [`TiloStore`] — the runtime's [`Store`] over the workspace document.
 //!
 //! The runtime reads and mutates resources through the `Store` trait and expects its own commits
-//! to be visible at once. The workspace record, though, belongs to the framework: every change to it
+//! to be visible at once. The workspace document, though, belongs to the framework: every change to it
 //! is a recorded action committed by the executor, so it carries the invoker, the group and the
 //! encoded action, and replays on every peer. The store therefore writes to a **mirror**, a
-//! replica of the workspace record, and reads from each package's **index** ([`crate::index`]):
+//! replica of the workspace document, and reads from each package's **index** ([`crate::index`]):
 //!
 //! * a transaction applies each mutation to the mirror as it is made and records it as a
 //!   [`DynEdit`]; what it changed is derived, field by field, into the index's **overlay** (the
@@ -12,26 +12,26 @@
 //! * committing queues a [`DynAction`] for the host, which commits it through the executor
 //!   ([`TiloStore::take_committed`]). The mirror keeps what the store wrote as its open
 //!   transaction, never as a change of its own;
-//! * when the workspace record moves on (the executor applied the queued action, or a peer's change
+//! * when the workspace document moves on (the executor applied the queued action, or a peer's change
 //!   arrived), [`TiloStore::sync`] drops the mirror's open transaction and the overlay,
-//!   applies the record's new changes to the mirror, derives what they changed into each index
-//!   (stamped with the record's heads) and tells each subscriber exactly which fields of which
+//!   applies the resource's new changes to the mirror, derives what they changed into each index
+//!   (stamped with the resource's heads) and tells each subscriber exactly which fields of which
 //!   resources they changed, and how each collection's listing moved.
 //!
 //! Lists, filters and the fields rows show are read from the index, page by page, so opening a
-//! window reads what it shows and not the record. The store may even open before the record is
+//! window reads what it shows and not the resource. The store may even open before the resource is
 //! loaded ([`TiloStore::detached`]): it reads indexes stamped with the heads they reflect, and
-//! takes the record when it is had ([`TiloStore::sync`], or the loader the host gave it
+//! takes the resource when it is had ([`TiloStore::sync`], or the loader the host gave it
 //! for a write or a field no index holds), catching each index up from its heads.
 //!
 //! **The unsaved layer.** What an origin derives from nothing at every start (the clock, the
 //! layout, the device's state: a type whose origin kind says [`crate::schema::TypeSchema::derived`])
-//! is never put in the record. Its writes go into the same mirror open transaction as any
+//! is never put in the resource. Its writes go into the same mirror open transaction as any
 //! write, and so are read at once, but committing them queues nothing: they stay in the
-//! mirror's open transaction and its overlay, which is what reads answer from. The record
-//! moving on ([`TiloStore::sync`]) drops the store's saved writes (the record has them)
+//! mirror's open transaction and its overlay, which is what reads answer from. The resource
+//! moving on ([`TiloStore::sync`]) drops the store's saved writes (the resource has them)
 //! and leaves the derived ones where they are, so an origin's update never round-trips through
-//! the record: no action is committed, no peer replays it, and no index is rebuilt for it.
+//! the resource: no action is committed, no peer replays it, and no index is rebuilt for it.
 //!
 //! One transaction may be open at a time: rolling one back puts the mirror and the overlay back
 //! as the store's earlier writes left them.
@@ -45,11 +45,11 @@
 //! the typing ([`TiloStore::set_edit_pause`]), at another field or another person, and at
 //! anything else the person does.
 //!
-//! **Chunks.** The record may be split: resources it does not hold itself are in chunk documents
+//! **Chunks.** The resource may be split: resources it does not hold itself are in chunk documents
 //! above it ([`crate::chunk`]), each a document of its own the host sends when it is wanted. The
-//! store holds the chunks it was sent ([`TiloStore::sync`]) beside the record, and every
-//! read and write of a resource is routed to the chunk the record's manifest places it in, so a
-//! write reaches one document. A record written before chunks is one chunk whose manifest is
+//! store holds the chunks it was sent ([`TiloStore::sync`]) beside the resource, and every
+//! read and write of a resource is routed to the chunk the resource's manifest places it in, so a
+//! write reaches one document. A resource written before chunks is one chunk whose manifest is
 //! empty, and reads and writes as it always did.
 
 use std::cell::RefCell;
@@ -67,13 +67,13 @@ use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, Listing,
-    ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
+    ListingChange, Mutation, NewResource, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
     SubId, Txn, Version, doc_of,
 };
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
-    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, edit_seed, outbox_entries,
+    Authorship, DynAction, DynEdit, RESOURCES_KEY, apply_edits, edit_seed, outbox_entries,
     read_resource, read_target, target_of,
 };
 use crate::background::Waker;
@@ -86,7 +86,7 @@ use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
 use crate::reads::{changed_by, default_value, field_of_json, locate_ref, read_field, type_at};
-use crate::record::DynRecord;
+use crate::resource::DynResource;
 use crate::schema::{MergeKind, TYPE_KEY, lookup};
 
 type Doc = tilo_resource::Doc;
@@ -116,12 +116,12 @@ struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// The collections whose items joined, left or moved, by the document that holds them.
     collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
-    /// The records the transaction made ([`Inner::create_in`]): a transaction that is rolled
+    /// The resources the transaction made ([`Inner::create_in`]): a transaction that is rolled
     /// back takes them out of the index again.
     created: Vec<String>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
-    /// The resources it wrote that are saved to the record, and those their origin derives
+    /// The resources it wrote that are saved to the resource, and those their origin derives
     /// ([`crate::schema::TypeSchema::derived`]): the latter go to the store's unsaved layer.
     /// One action's transaction writes one kind or the other, never both.
     saved: usize,
@@ -130,7 +130,7 @@ struct TxnState {
     reshapes: bool,
 }
 
-/// What the record moved on from, when known: the heads of each chunk before, the versions its
+/// What the resource moved on from, when known: the heads of each chunk before, the versions its
 /// new changes made, and where those changes placed the items they did.
 type Since<'a> = Option<(&'a Stamps, &'a Ends, &'a idx::reflect::Placed)>;
 
@@ -155,7 +155,7 @@ pub const DEFAULT_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_mi
 /// receiver, and the identity service that signs the change, decides it against the package's
 /// surface, which publishes such an edit as `edit-flag` (a checkbox, with the arguments
 /// `{field, value}`) or `edit-text` (anything else, with `{field}`: what was typed is the edit
-/// the change records, never the text it leaves). The keystrokes of one typing burst are one
+/// the change resources, never the text it leaves). The keystrokes of one typing burst are one
 /// gesture of that action, so history lists them as one entry and undo takes them back as one
 /// step.
 fn published_name(note: &ChangeNote) -> (String, Json) {
@@ -214,23 +214,23 @@ struct LocalWrite {
     /// The items whose placement it wrote, each with whether it made them.
     placed: Vec<(DocId, String, bool)>,
     /// For the last write of a committed action, the versions it made, provisional until the
-    /// record holds the action: per resource it changed, the invoker and the invocation's
+    /// document holds the action: per resource it changed, the invoker and the invocation's
     /// recorded time ([`Inner::provisional_versions`]).
     versions: Option<Ends>,
     /// Whether it wrote only resources its origin derives ([`crate::schema::TypeSchema::derived`]):
-    /// it is the store's unsaved layer, and no change commits it. The record moving on leaves
+    /// it is the store's unsaved layer, and no change commits it. The document moving on leaves
     /// it in the mirror ([`Inner::drop_committed_local`]).
     derived: bool,
     /// Whose change it is written as: the store's author when it was written
     /// ([`TiloStore::writing_as`]); none for a derived write, which no change commits.
     author: Option<crate::runtime::Actor>,
     /// Whether those who read the mirror were told what it changed when its action committed
-    /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
+    /// ([`unsaved::tell`]): the document's change that carries it then tells only what the document
     /// says differently ([`TiloStore::sync`]).
     told: bool,
 }
 
-/// A write of the store's the record holds, with the change that carried it: the overlay derives
+/// A write of the store's the document holds, with the change that carried it: the overlay derives
 /// it until the index its app reads from reflects that change ([`Inner::rebuild_overlay`]).
 struct Accepted {
     write: LocalWrite,
@@ -303,7 +303,7 @@ struct Planned {
 type Written = (BTreeMap<DocId, Vec<ListingChange>>, Vec<FieldKey>);
 
 /// Where an item is: the resource holding its collection, the field, the order key; where an
-/// item of a record written before items were flat is nested; and its type.
+/// item of a document written before items were flat is nested; and its type.
 struct ItemAt {
     holder: String,
     field: String,
@@ -337,19 +337,19 @@ impl Triggering {
 /// What the store did, for tests and the benchmark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoreStats {
-    /// Times the store took the record: its first copy of it, whole.
+    /// Times the store took the document: its first copy of it, whole.
     pub attaches: u64,
-    /// Syncs that applied the record's new changes to the mirror.
+    /// Syncs that applied the document's new changes to the mirror.
     pub incremental_syncs: u64,
-    /// Syncs that had to copy the whole record: the mirror held a change of its own.
+    /// Syncs that had to copy the whole document: the mirror held a change of its own.
     pub full_syncs: u64,
-    /// Copies of the record their holder writes that held changes the store lacked, taken in
+    /// Copies of the document their holder writes that held changes the store lacked, taken in
     /// ([`TiloStore::sync_from`]).
     pub merges: u64,
     /// Actions whose writes the store made became their change as written, with nothing
     /// applied a second time ([`TiloStore::commit_action`]).
     pub written_once: u64,
-    /// Indexes built from the record whole, there being none to read (or none to trust).
+    /// Indexes built from the document whole, there being none to read (or none to trust).
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
@@ -363,10 +363,10 @@ pub struct StoreStats {
 }
 
 /// How much the store read, counted since it was made: work that does not depend on the
-/// machine or its load, which tests hold to how it grows with the record.
+/// machine or its load, which tests hold to how it grows with the document.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadStats {
-    /// Of the record: resources found by walking it, field values, collections listed by
+    /// Of the document: resources found by walking it, field values, collections listed by
     /// walking their entries, and those entries. Opening over an index reads none of them.
     pub doc: DocReads,
     /// Of the indexes: list directories and pages, and field values.
@@ -379,8 +379,8 @@ pub struct ReadStats {
     /// The changes those derivations read: the log of the chunks holding a history that was
     /// asked for, never the workspace's.
     pub version_changes: u64,
-    /// Versions the store handed out: what asking for a record's history costs, which a
-    /// catch-up reads a page of rather than the whole of a record's log.
+    /// Versions the store handed out: what asking for a document's history costs, which a
+    /// catch-up reads a page of rather than the whole of a document's log.
     pub versions_read: u64,
 }
 
@@ -416,25 +416,25 @@ mod written;
 use versions::{NO_CHUNK_VERSIONS, note_versions};
 
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
-/// holds. `None` when the record cannot be had.
+/// holds. `None` when the document cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
 
 struct Inner {
-    /// The documents the store holds: the workspace record (chunk [`chunk::FIRST`]) and the
+    /// The documents the store holds: the workspace document (chunk [`chunk::FIRST`]) and the
     /// chunks above it it was sent, each with the store's writes as its open transaction. The
-    /// record is `None` until it is had (see [`TiloStore::detached`]). Each document is shared
+    /// document is `None` until it is had (see [`TiloStore::detached`]). Each document is shared
     /// with the snapshots taken of it until it changes.
     chunks: Chunks,
-    /// What the store wrote into the mirror since it last caught up with the record, oldest
+    /// What the store wrote into the mirror since it last caught up with the document, oldest
     /// first: the mirror's open transaction.
     local: Vec<LocalWrite>,
-    /// The transactions of `local` the record holds ([`Self::settle_versions`]): a change of the
-    /// record's carries what they wrote, so reads hold it from the index and the writes are not
+    /// The transactions of `local` the document holds ([`Self::settle_versions`]): a change of the
+    /// document's carries what they wrote, so reads hold it from the index and the writes are not
     /// derived into the overlay again.
     settled: BTreeSet<Vec<u8>>,
-    /// The store's writes the record holds that an index read from does not reflect yet: what
+    /// The store's writes the document holds that an index read from does not reflect yet: what
     /// the overlay keeps deriving until that index's heads take in the change that carried each
-    /// ([`Inner::drop_committed_local`]), so a write the record accepted while its app's index
+    /// ([`Inner::drop_committed_local`]), so a write the document accepted while its app's index
     /// is still being derived reads back all along.
     accepted: Vec<Accepted>,
     stats: StoreStats,
@@ -447,10 +447,10 @@ struct Inner {
     /// Where the indexes are kept: `None` keeps them in memory, built when a package loads.
     index_dir: Option<PathBuf>,
     loader: Option<Loader>,
-    /// Whether the store holds the record's chunks as their holder's one copy
-    /// ([`TiloStore::adopt`]): the chunks above the record it has not read yet are among them.
+    /// Whether the store holds the document's chunks as their holder's one copy
+    /// ([`TiloStore::adopt`]): the chunks above the document it has not read yet are among them.
     adopted: bool,
-    /// Who the record's holder writes as: an action's writes into a chunk with no other open
+    /// Who the document's holder writes as: an action's writes into a chunk with no other open
     /// writes are made under this actor, so they are the change the holder commits for it
     /// ([`TiloStore::commit_action`]).
     author: Option<crate::runtime::Actor>,
@@ -461,7 +461,7 @@ struct Inner {
     waited: BTreeSet<ChunkNo>,
     /// Called when an index built off the frame is ready to be taken in.
     wake: Option<Waker>,
-    /// What the store read of the record so far: derivation, and reads no index answered.
+    /// What the store read of the document so far: derivation, and reads no index answered.
     doc_reads: std::cell::Cell<DocReads>,
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
@@ -485,7 +485,7 @@ struct Inner {
     /// commits records that it ran ([`DynEdit::Migrated`]).
     migrating: Option<(String, DocId)>,
     /// The trigger run under way: the resource it runs for, and what it last did for it, which
-    /// the action it commits records in the same change ([`DynEdit::TriggerRan`]).
+    /// the action it commits documents in the same change ([`DynEdit::TriggerRan`]).
     triggering: Option<Triggering>,
     next_sub: u64,
     /// What each [`Watch`] has not taken yet.
@@ -504,7 +504,7 @@ struct Inner {
     /// what a store whose index has not caught up with the resource does.
     refused_read: Option<String>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
-    /// record's local changes and in what it queued, so that a run that fails anywhere takes all
+    /// document's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
     runs: HashMap<String, run::RunBegin>,
     /// Handed to the host and not yet answered by the API.
@@ -519,13 +519,13 @@ struct Inner {
     versions: HashMap<ChunkNo, versions::Versions>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
-    /// the record, and this device alone settles them.
+    /// the document, and this device alone settles them.
     device: String,
     counter: u64,
     /// The last snapshot taken, while the store has not changed since: what search and
     /// publication starting in one frame share.
     snapshot: std::sync::Weak<Snapshot>,
-    /// Where the items of records written before items were flat are.
+    /// Where the items of documents written before items were flat are.
     nested: Nested,
     /// What a reference to a resource the reader does not hold says, in their language
     /// ([`crate::reading`]).
@@ -578,9 +578,9 @@ impl Snapshot {
         })
     }
 
-    /// The app and type of the record `doc`.
+    /// The app and type of the document `doc`.
     #[must_use]
-    pub fn record_of(&self, doc: &str) -> Option<&(AppId, TypeId)> {
+    pub fn document_of(&self, doc: &str) -> Option<&(AppId, TypeId)> {
         self.index.get(doc)
     }
 
@@ -607,7 +607,7 @@ impl Snapshot {
 }
 
 /// The text that names `at`: one it holds itself. A root is the app's one resource, named by the
-/// app's name when it holds no text of its own, never by a record inside it (a notebook's first
+/// app's name when it holds no text of its own, never by a document inside it (a notebook's first
 /// note is not the notebook's name).
 fn named_by(at: &ResourceRef, found: Option<(FieldValue, String)>) -> Option<(FieldValue, String)> {
     match at.item {
@@ -663,11 +663,11 @@ pub struct Changes {
     pub docs: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// The documents that may have changed anywhere.
     pub whole: BTreeSet<DocId>,
-    /// Anything anywhere may have changed: the record was taken anew, or an index opened or
+    /// Anything anywhere may have changed: the document was taken anew, or an index opened or
     /// rebuilt.
     pub everything: bool,
-    /// The apps whose index answers more of the record than it did (a step of its build was
-    /// taken in): no record changed, but a read through their index may find more.
+    /// The apps whose index answers more of the document than it did (a step of its build was
+    /// taken in): no document changed, but a read through their index may find more.
     pub indexed: BTreeSet<AppId>,
     /// How collections' items changed, in the order the changes happened (see
     /// [`ChangeSummary::listings`]); a collection named in `docs` without steps here changed in
@@ -743,7 +743,7 @@ impl Watch {
         changes.everything || changes.whole.contains(doc) || changes.docs.contains_key(doc)
     }
 
-    /// The apps whose index answered more of the record since the last [`Self::take`].
+    /// The apps whose index answered more of the document since the last [`Self::take`].
     #[must_use]
     pub fn indexed(&self) -> BTreeSet<AppId> {
         self.changes.borrow().indexed.clone()
@@ -761,7 +761,7 @@ pub struct Checkpoint {
     overlay: Arc<Overlay>,
 }
 
-/// The runtime's store over the workspace record. A cheap handle: clones share the mirror.
+/// The runtime's store over the workspace document. A cheap handle: clones share the mirror.
 #[derive(Clone)]
 pub struct TiloStore {
     inner: Rc<RefCell<Inner>>,
@@ -789,7 +789,7 @@ fn not_found(what: impl Into<String>) -> StoreError {
 }
 
 impl TiloStore {
-    /// A store whose mirror starts as `record`, whose outside effects `device` carries out.
+    /// A store whose mirror starts as `document`, whose outside effects `device` carries out.
     #[must_use]
     pub fn on_device(record: &Doc, device: &str) -> Self {
         let store = Self::new(record);
@@ -797,7 +797,7 @@ impl TiloStore {
         store
     }
 
-    /// A store whose mirror starts as `record`, its indexes in memory.
+    /// A store whose mirror starts as `document`, its indexes in memory.
     #[must_use]
     pub fn new(record: &Doc) -> Self {
         let store = Self::empty(None);
@@ -805,10 +805,10 @@ impl TiloStore {
         store
     }
 
-    /// A store without the record yet, reading the indexes kept in `dir` (`None`: built in
-    /// memory): what opens a workspace before its record is loaded, or before its holder hands
-    /// the record's chunks over ([`Self::adopt`]). Packages whose index is missing show nothing
-    /// until the record is had ([`Self::sync_from`], or the [`Loader`]).
+    /// A store without the document yet, reading the indexes kept in `dir` (`None`: built in
+    /// memory): what opens a workspace before its document is loaded, or before its holder hands
+    /// the document's chunks over ([`Self::adopt`]). Packages whose index is missing show nothing
+    /// until the document is had ([`Self::sync_from`], or the [`Loader`]).
     #[must_use]
     pub fn detached(dir: Option<PathBuf>) -> Self {
         Self::empty(dir)
@@ -896,13 +896,13 @@ impl TiloStore {
         self.mutate().wake = Some(wake);
     }
 
-    /// Whether the store holds the workspace record (else it reads indexes alone).
+    /// Whether the store holds the workspace document (else it reads indexes alone).
     #[must_use]
-    pub fn has_record(&self) -> bool {
-        self.held().chunks.has_record()
+    pub fn has_document(&self) -> bool {
+        self.held().chunks.has_document()
     }
 
-    /// What the store holds of each chunk, the record first: how many changes of it the store
+    /// What the store holds of each chunk, the document first: how many changes of it the store
     /// has, and how many writes of its own are open in it. A resource placed in a chunk is read
     /// and written there, so its writes show in that chunk's count alone.
     #[must_use]
@@ -1183,7 +1183,7 @@ impl TiloStore {
     }
 
     /// Whether the resource `doc` is one its origin derives: it lives in the store's unsaved
-    /// layer, so a change of it is never written into the workspace record.
+    /// layer, so a change of it is never written into the workspace document.
     #[must_use]
     pub fn derives(&self, doc: &str) -> bool {
         self.held()
@@ -1205,19 +1205,19 @@ impl TiloStore {
         self.mutate().migrating = migrating;
     }
 
-    /// Record in the change committed from now on, as the trigger `triggering` of `app`, what
+    /// Document in the change committed from now on, as the trigger `triggering` of `app`, what
     /// the trigger last did for its resource, or, with `None`, commit as not a trigger's run.
     pub fn set_triggering(&self, triggering: Option<Triggering>) {
         self.mutate().triggering = triggering;
     }
 
-    /// Turn the plain text each record of `app` holds in a field its type now keeps as rich
-    /// text into rich text with the same words, and write each as a change of the record, the
-    /// app's own. A record already
+    /// Turn the plain text each document of `app` holds in a field its type now keeps as rich
+    /// text into rich text with the same words, and write each as a change of the document, the
+    /// app's own. A document already
     /// holding rich text is not written, so a second run writes nothing. Returns how many
-    /// records changed. The workspace's origin calls it once, as it opens (`Host::migrate`).
+    /// documents changed. The workspace's origin calls it once, as it opens (`Host::migrate`).
     pub fn upgrade_plain_text(&self, app: &str, module: &str) -> usize {
-        if self.load_record().is_err() {
+        if self.load_document().is_err() {
             return 0;
         }
         let mut inner = self.mutate();
@@ -1228,7 +1228,7 @@ impl TiloStore {
     /// instant it fired at. `None` when it never ran on the resource.
     #[must_use]
     pub fn triggered(&self, doc: &str, key: &str) -> Option<String> {
-        if self.load_record().is_err() {
+        if self.load_document().is_err() {
             return None;
         }
         let inner = self.held();
@@ -1242,10 +1242,10 @@ impl TiloStore {
     /// change of its own: the platform keeps no other mark of it, and runs a migration on each
     /// resource of its target type once, whether an earlier version wrote the resource or
     /// this one. A migration reads what an older version left, so one that finds nothing of it
-    /// changes nothing, and a record made by this version starts with every migration of its
+    /// changes nothing, and a document made by this version starts with every migration of its
     /// type run.
     pub fn mark_migrated(&self, doc: &str, migration: &str) -> Result<(), StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let mut inner = self.mutate();
         let Some((app, ty)) = inner.index.get(doc).cloned() else {
             return Err(not_found(format!("resource {doc}")));
@@ -1273,7 +1273,7 @@ impl TiloStore {
 
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
     pub fn migrated(&self, doc: &str, migration: &str) -> Result<bool, StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let inner = self.held();
         let (app, _) = inner
             .index
@@ -1290,7 +1290,7 @@ impl TiloStore {
     /// change sets the notice's `seen` flag, as a bound control's edit of a field does, and
     /// waits for the host to commit it (`Host::take_committed`).
     pub fn see(&self, doc: &str, person: &str) -> Result<(), StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let mut inner = self.mutate();
         let Some((app, ty)) = inner.index.get(doc).cloned() else {
             return Err(not_found(format!("resource {doc}")));
@@ -1353,9 +1353,9 @@ impl TiloStore {
             .collect()
     }
 
-    /// The record of the resource `doc`, as the runtime sees it now: read from the workspace
-    /// record, which is had first if the store opened without it.
-    pub fn record(&self, doc: &str) -> Result<DynRecord, StoreError> {
+    /// The document of the resource `doc`, as the runtime sees it now: read from the workspace
+    /// document, which is had first if the store opened without it.
+    pub fn record(&self, doc: &str) -> Result<DynResource, StoreError> {
         self.load_doc(doc)?;
         let inner = self.held();
         let (app, _) = inner
@@ -1408,7 +1408,7 @@ impl TiloStore {
         inner
     }
 
-    /// This store's schema table, to install while reading, writing or deriving: a record's
+    /// This store's schema table, to install while reading, writing or deriving: a document's
     /// type id resolves to the schema of the package version this store holds.
     pub(crate) fn schemas(&self) -> Arc<crate::schema::Schemas> {
         self.inner.borrow().schemas.clone()
@@ -1438,9 +1438,9 @@ impl TiloStore {
         Changing::of(&self.schemas(), &self.inner)
     }
 
-    /// The record of the resource at `at` (a document or an item in one), as the runtime
+    /// The document of the resource at `at` (a document or an item in one), as the runtime
     /// sees it now: an item is read without reading its siblings.
-    pub fn record_at(&self, at: &ResourceRef) -> Result<DynRecord, StoreError> {
+    pub fn document_at(&self, at: &ResourceRef) -> Result<DynResource, StoreError> {
         self.load_at(at)?;
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
@@ -1448,14 +1448,14 @@ impl TiloStore {
         let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
         let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         match located.obj {
-            Some(obj) => <DynRecord as tilo_resource::Fields>::read_fields(source, &obj),
+            Some(obj) => <DynResource as tilo_resource::Fields>::read_fields(source, &obj),
             // An item stored as its order key alone: every field reads as its default.
-            None => DynRecord::empty(located.schema),
+            None => DynResource::empty(located.schema),
         }
         .map_err(backend)
     }
 
-    /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
+    /// The first text of the resource at `at`, in the order of [`DynResource`]'s text collection,
     /// as the store's reader reads it ([`crate::reading`]), and the path of the resource that
     /// holds it: what names a resource. A root is named by a text of its own alone
     /// (`named_by`).
@@ -1476,7 +1476,7 @@ impl TiloStore {
     /// [`Self::first_text`] as stored.
     fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
         // A row the index answers needs no chunk: a window names what it shows from the index,
-        // and reads the record only for what the index does not hold.
+        // and reads the document only for what the index does not hold.
         let indexed = {
             let inner = self.held();
             let (app, ty) = inner.locate(at).ok()?;
@@ -1499,7 +1499,7 @@ impl TiloStore {
             locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested).ok()?;
         let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         let (items, resolved) = inner.resolved(at).ok()?;
-        let record = crate::reads::RecordItems {
+        let record = crate::reads::DocumentItems {
             doc: &at.doc,
             items: &items,
             resolved: &resolved,
@@ -1557,8 +1557,12 @@ impl TiloStore {
     /// its package's root, whose whole content the origin writes again at every start.
     ///
     /// # Errors
-    /// The type is not registered, the resource already exists, or the record cannot be had.
-    pub fn create_with_id(&self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+    /// The type is not registered, the resource already exists, or the document cannot be had.
+    pub fn create_with_id(
+        &self,
+        record: &NewResource,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
         self.load_doc(id)?;
         let mut inner = self.mutate();
         if inner.index.contains_key(id) {
@@ -1566,7 +1570,7 @@ impl TiloStore {
         }
         let schema = lookup(&record.ty)
             .ok_or_else(|| not_found(format!("type {} is not registered", record.ty)))?;
-        let empty = DynRecord::empty(schema).map_err(backend)?;
+        let empty = DynResource::empty(schema).map_err(backend)?;
         let edit = DynEdit::Create {
             id: id.to_owned(),
             record: empty.to_json(),
@@ -1605,18 +1609,18 @@ impl TiloStore {
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
 
-    /// Create the record `id` inside the open transaction `txn`: what makes it is the change of
+    /// Create the resource `id` inside the open transaction `txn`: what makes it is the change of
     /// the action that did, committed with the rest of it and taken back when it fails. What
     /// creates it writes nothing of an app's own — `notify` writes a notice of the host's
     /// ([`crate::notify`]) — so the change keeps the app and kind of what else the action wrote.
     ///
     /// # Errors
     /// The type is not registered, the resource already exists, no transaction is open, or the
-    /// record cannot be had.
+    /// resource cannot be had.
     pub fn create_in(
         &self,
         txn: Txn,
-        record: &NewRecord,
+        record: &NewResource,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
         self.load_doc(id)?;
@@ -1629,7 +1633,7 @@ impl TiloStore {
         }
         let schema = lookup(&record.ty)
             .ok_or_else(|| not_found(format!("type {} is not registered", record.ty)))?;
-        let empty = DynRecord::empty(schema).map_err(backend)?;
+        let empty = DynResource::empty(schema).map_err(backend)?;
         let edit = DynEdit::Create {
             id: id.to_owned(),
             record: empty.to_json(),
@@ -1696,7 +1700,7 @@ fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
 /// The versions the changes of the chunks `moved` since their stamps `from` made, and where they
 /// placed the items they placed: what an index stamped with those heads takes in, and what the
 /// items that left a collection are written from when the index never held them. A change that
-/// wrote nothing but where the record places its resources (`$chunks`) made no version of one
+/// wrote nothing but where the document places its resources (`$chunks`) made no version of one
 /// and placed no item, and its message is not read. Each chunk's changes are walked once for
 /// both.
 fn ends_of_chunks(
@@ -1751,9 +1755,9 @@ impl Inner {
         }
     }
 
-    /// Tell every subscriber that the indexes of `apps` answer more of the record: no record
+    /// Tell every subscriber that the indexes of `apps` answer more of the document: no document
     /// changed, but a read through them may find more than it did (a list's rows, a count). A
-    /// watch is told that, not that a record changed: its trees of the records stand.
+    /// watch is told that, not that a document changed: its trees of the documents stand.
     fn notify_indexed(&mut self, apps: &BTreeSet<AppId>) {
         self.watched(|changes| changes.indexed.extend(apps.iter().cloned()));
         for sub in &mut self.subs {
@@ -1767,8 +1771,8 @@ impl Inner {
         self.listed.borrow_mut().clear();
     }
 
-    /// [`Self::changed`], for a change that reached only `fields` (per record; an empty list
-    /// for a record changed as a whole): the listings of collections it did not reach are
+    /// [`Self::changed`], for a change that reached only `fields` (per document; an empty list
+    /// for a document changed as a whole): the listings of collections it did not reach are
     /// still what they were, and are kept.
     fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>, items: &ItemTouches) {
         self.snapshot = std::sync::Weak::new();
@@ -1798,7 +1802,7 @@ impl Inner {
         });
     }
 
-    /// The document the resource `id` is stored in, when the store holds its chunk: the record
+    /// The document the resource `id` is stored in, when the store holds its chunk: the document
     /// for a resource its manifest names no chunk for.
     fn held_doc(&self, id: &str) -> Result<&Doc, StoreError> {
         self.chunks
@@ -1806,14 +1810,14 @@ impl Inner {
             .ok_or_else(|| StoreError::Backend(format!("the chunk holding {id} is not loaded")))
     }
 
-    /// Derive what the record's last changes reached into every index read from, stamped
+    /// Derive what the document's last changes reached into every index read from, stamped
     /// with the heads the store saw. An index that fails is built anew.
     ///
-    /// `since` is, when known, the heads the record moved on from and the versions its new
+    /// `since` is, when known, the heads the document moved on from and the versions its new
     /// changes made ([`idx::reflect::ends_of`]): what an index stamped with those heads takes
     /// in. Another one reads its versions from the changes since its own heads.
     ///
-    /// Returns the collections items joined or left, with those items, and the records
+    /// Returns the collections items joined or left, with those items, and the documents
     /// derived anew whole.
     fn derive_all(
         &mut self,
@@ -1823,7 +1827,7 @@ impl Inner {
         let mut moved = ItemTouches::new();
         let mut wholes = BTreeSet::new();
         let mut notified: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        if !self.chunks.has_record() {
+        if !self.chunks.has_document() {
             return (moved, wholes, notified);
         }
         // A change writes the index of each app it has something of to take in, and no other: an
@@ -1910,7 +1914,7 @@ impl Inner {
                     }
                 }
                 Err(error) => {
-                    // The index is built anew from the record: what the failed derivation read
+                    // The index is built anew from the document: what the failed derivation read
                     // of the index it replaces is not what the new one holds, so every resource
                     // of the package is derived again whole, and what a window read of it again.
                     tracing::warn!(app = %app, %error, "the index of a change was not derived");
@@ -1927,8 +1931,8 @@ impl Inner {
         (moved, wholes, notified)
     }
 
-    /// Write `edit` on the record `doc` in the transaction `txn`, adding it to `state`: what a
-    /// migration or a trigger did to a resource is a change of the record like any other.
+    /// Write `edit` on the document `doc` in the transaction `txn`, adding it to `state`: what a
+    /// migration or a trigger did to a resource is a change of the document like any other.
     /// Whether the record's type is known here, which a mark needs.
     fn mark(
         &mut self,
@@ -2015,9 +2019,9 @@ impl Inner {
     ) -> Result<Vec<FieldKey>, StoreError> {
         let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
         let chunk = self.chunks.chunk_of(&edit);
-        if chunk == chunk::FIRST && !self.chunks.has_record() {
+        if chunk == chunk::FIRST && !self.chunks.has_document() {
             return Err(StoreError::Backend(
-                "the workspace record is not loaded".into(),
+                "the workspace document is not loaded".into(),
             ));
         }
         // A chunk the manifest names and the store was not sent holds resources this write
@@ -2171,7 +2175,7 @@ impl Inner {
         read_field(source, &located, spec)
     }
 
-    /// Count what was read of the record.
+    /// Count what was read of the document.
     fn count(&self, reads: DocReads) {
         let mut held = self.doc_reads.get();
         held.take_in(reads);
@@ -2323,9 +2327,9 @@ impl Inner {
                     }
                 }
             }
-            None if self.chunks.has_record() => {
+            None if self.chunks.has_document() => {
                 // The package's index is being built: its lists show nothing until it is,
-                // as the platform's loading state; the record says the resource is there.
+                // as the platform's loading state; the document says the resource is there.
                 let mirror = self.held_doc(&at.doc)?;
                 locate_ref(mirror, Some(&self.chunks), (&app, &ty), at, &self.nested)?;
                 Listing::default()
@@ -2351,7 +2355,7 @@ impl Inner {
     }
 }
 
-/// A key that is safe as the name of an entry in the record.
+/// A key that is safe as the name of an entry in the document.
 fn sanitize_key(key: &str) -> String {
     key.chars()
         .map(|c| {

@@ -1,12 +1,12 @@
 //! A file an action takes in: its bytes are kept in the device's content store, and what the
-//! record, the history and a replay carry is the address of them, never the bytes.
+//! document, the history and a replay carry is the address of them, never the bytes.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 use tilolang_runtime::ViewEvent;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, MAX_CHOSEN, SaveRequest};
 use tilolang_runtime::run::WebRequest;
@@ -66,7 +66,7 @@ action make_unsafe(p: Page) -> File {
     File.zip("bad.zip", [File.of_text("../outside.md", p.words)])
 }
 
-/// The picture the page holds, by the address its own record names.
+/// The picture the page holds, by the address its own document names.
 action again(p: Page) -> File {
     File.at("again.png", p.picture?.url ?? "")
 }
@@ -247,7 +247,7 @@ fn button(view: &ViewInstance, label: &str) -> String {
 }
 
 /// The key of the last button saying `label`: the newest of a list's rows.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn last_button(view: &ViewInstance, label: &str) -> String {
     let keys = buttons(view, label);
     keys.last()
@@ -280,8 +280,8 @@ const PIXELS: &[u8] = b"\x89PNG\r\n\x1a\n-a-picture-nobody-should-store-as-a-reg
 tilo_test_env::scenario! {
     fn a_chosen_file_is_kept_or_refused;
 
-    phase a_chosen_file_is_kept_by_address_and_never_in_the_record;
-    // A person picks a picture: the bytes go to the content store, the record keeps its address,
+    phase a_chosen_file_is_kept_by_address_and_never_in_the_document;
+    // A person picks a picture: the bytes go to the content store, the document keeps its address,
     // history says what the action did, and a replica that syncs reads the same picture.
     {
         let device = Device::with(vec![Pick {
@@ -311,7 +311,7 @@ tilo_test_env::scenario! {
             Value::Int(i64::try_from(PIXELS.len()).expect("a size"))
         );
 
-        // What is recorded is the address: the record's own bytes hold the hash and none of the
+        // What is recorded is the address: the document's own bytes hold the hash and none of the
         // picture.
         let recorded = String::from_utf8_lossy(&ada.doc.save()).to_string();
         assert!(
@@ -324,7 +324,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             !recorded.contains("nobody-should-store-as-a-register"),
-            "no byte of the picture is in the record"
+            "no byte of the picture is in the document"
         );
 
         // A replica that syncs reads the same file, and a view shows its name and address.
@@ -531,7 +531,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_action_names_the_content_an_address_holds;
-    // An action names the content an address holds: the picture its record shows, and none a device
+    // An action names the content an address holds: the picture its document shows, and none a device
     // does not hold.
     {
         let device = Device::with(vec![Pick {
@@ -561,7 +561,7 @@ tilo_test_env::scenario! {
 
 /// A picture put in a note is taken back like any other change: the field it wrote goes back
 /// to what it held, and history no longer says it.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 #[test]
 fn undoing_the_step_takes_the_picture_back_out() {
     use tilolang_runtime::UndoAsk;

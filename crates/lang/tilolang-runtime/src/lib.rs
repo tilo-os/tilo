@@ -92,7 +92,7 @@ pub use project::ProjectOptions;
 pub use render::ViewTarget;
 pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Suggestion};
 pub use runtime::{BlockOutput, MemorySink, Reading, Runtime, SettleReport};
-pub use settle::{AgentBlock, InvocationRecord};
+pub use settle::{AgentBlock, InvocationEntry};
 pub use space::Space;
 pub use store::{
     ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Listing, ListingChange, PagedItems, Splice,

@@ -1,6 +1,6 @@
-//! One undo, as the record's platform history verb (`collaboration::history_source::verbs`):
+//! One undo, as the document's platform history verb (`collaboration::history_source::verbs`):
 //! `undo(v)` on a step and `undo(run)` on an agent's run, which the tilolang host running the
-//! instance applies to the record.
+//! instance applies to the document.
 
 use tilolang_tilo::DynValue;
 use ui::tilo_actions::{ActionContext, ActionInvoker};

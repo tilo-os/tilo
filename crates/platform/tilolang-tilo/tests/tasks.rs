@@ -466,7 +466,7 @@ tilo_test_env::scenario! {
         assert_eq!(list_count(&after), Some(2), "and after");
     }
 
-    phase a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing;
+    phase a_window_open_over_midnight_moves_what_today_lists_without_the_document_changing;
     {
         let (mut ada, root) = workspace();
         let dated = |title: &str| call(&ada, "new_task", create(&root, title));
@@ -495,7 +495,7 @@ tilo_test_env::scenario! {
         );
         go_to(&mut view, "Upcoming");
         assert_eq!(home_list_titles(&ada, &mut view), ["Order a present"]);
-        // The record did not change; the clock did. The same window runs again and lists the day
+        // The document did not change; the clock did. The same window runs again and lists the day
         // it is now.
         ada.host.set_clock(|| "2026-10-30T10:00:00Z".to_owned());
         assert!(
@@ -897,7 +897,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     // Below a lane's last card.
     drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
-    // A window hears of a change once, after the record holds it: it runs again now, and shows
+    // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
     view.poll_patches().unwrap();
     assert_eq!(
@@ -1263,7 +1263,7 @@ tilo_test_env::scenario! {
 
     phase a_scenario_reads_the_keys_of_the_branch_it_stages;
     // A scenario's branch reads its counts and its fold from the tasks it staged, as soon as the
-    // record has them: no migration runs after a record.
+    // document has them: no migration runs after a document.
     {
         let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
         let scenario = loaded
@@ -1276,7 +1276,7 @@ tilo_test_env::scenario! {
             .expect("Tasks stages a task's subtasks")
             .action
             .clone();
-        // The packages' record holds no tasks yet: the app's root makes them.
+        // The packages' document holds no tasks yet: the app's root makes them.
         ada.host.root_of(APP).unwrap();
         ada.commit();
         ada.host
@@ -1681,7 +1681,7 @@ fn a_peers_completion_takes_its_row_away() {
 }
 
 /// The assignee a task holds, as its page reads it: who, or nobody.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn assignee(r: &Replica, task: &Value) -> Option<String> {
     match read(r, task, "assignee") {
         Value::Opt(Some(held)) => match *held {
@@ -1694,7 +1694,7 @@ fn assignee(r: &Replica, task: &Value) -> Option<String> {
 }
 
 /// The case a task's priority holds, by the case's name.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn priority(r: &Replica, task: &Value) -> String {
     match read(r, task, "priority") {
         Value::Enum(case) => case.variant,
@@ -1703,7 +1703,7 @@ fn priority(r: &Replica, task: &Value) -> String {
 }
 
 /// The key of the node bound to `field`.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
     if node
         .binding
@@ -1719,7 +1719,7 @@ pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 }
 
 /// Every text the tree shows.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
@@ -1737,7 +1737,7 @@ pub(crate) fn texts(node: &UiNode) -> Vec<String> {
 
 /// A task made by Ada in a workspace of Ada and Ben, and the page showing it: the list the
 /// assignee's chip opens offers the workspace's members, and the key the page binds it to.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, String) {
     let (mut ada, root) = workspace();
     ada.host.runtime().set_members(
@@ -1759,7 +1759,7 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
 }
 
 /// The text a person field hands back for the person `id`: their identity as the runtime sent it.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn pick(id: &str) -> Value {
     Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
         tilolang_tilo::runtime::ids::MemberId::person(id),
@@ -1767,7 +1767,7 @@ fn pick(id: &str) -> Value {
 }
 
 /// The person picks `pick` for the task's assignee in the page's chip, and the page redraws.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
     page.edit(key, pick).unwrap();
     ada.commit();
@@ -1775,7 +1775,7 @@ fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick
 }
 
 tilo_test_env::scenario! {
-    #[cfg(feature = "record")]
+    #[cfg(feature = "document")]
     fn a_tasks_assignee_priority_and_copy_are_single_fields_and_steps;
 
     phase the_assignee_is_one_person_field_whose_chip_shows_each_pick;
@@ -2913,9 +2913,9 @@ tilo_test_env::scenario! {
     }
 
     phase a_tasks_action_names_the_kind_of_a_task;
-    // An action run on a task names the kind it is published on, a task's, not the record's that
+    // An action run on a task names the kind it is published on, a task's, not the document's that
     // holds the task: the workspace decides the change against the actions of that kind, and a
-    // change naming the record's kind with a task's action is refused.
+    // change naming the document's kind with a task's action is refused.
     {
         let (ada, root) = workspace();
         let made = call(&ada, "new_task", create(&root, "Water the plants"));

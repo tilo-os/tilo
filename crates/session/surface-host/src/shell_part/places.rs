@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 use tilolang_tilo::runtime::Actor;
 use tilolang_tilo::runtime::ids::MemberId;
 
@@ -37,7 +37,7 @@ fn click(part: &mut ShellPart, name: &str) {
 }
 
 /// A room's notebook, published as the session publishes it.
-fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
+fn notebook() -> (ResourceService, tilolang_tilo::runtime::Meta) {
     let host = Host::new(
         &tilo_resource::Doc::new(),
         Actor::Member(MemberId::person("Pat")),
@@ -56,7 +56,7 @@ fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
         )
         .unwrap();
     host.root_of(NOTES_APP).unwrap();
-    (RecordService::new(host, "Pat"), notes.meta)
+    (ResourceService::new(host, "Pat"), notes.meta)
 }
 
 fn action_id(meta: &tilolang_tilo::runtime::Meta, name: &str) -> String {
@@ -79,7 +79,7 @@ fn field_id(meta: &tilolang_tilo::runtime::Meta, ty: &str, field: &str) -> Strin
 }
 
 /// A note titled `title`, made through the notes app's own actions.
-fn note(service: &mut RecordService, title: &str) -> String {
+fn note(service: &mut ResourceService, title: &str) -> String {
     let notebook = service
         .resources()
         .into_iter()
@@ -137,7 +137,7 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
             strip: "s1".to_owned(),
             shows: shows.to_owned(),
             shown_as: shown_as.to_owned(),
-            record: record.to_owned(),
+            resource: record.to_owned(),
             ..LayoutPlaceReading::default()
         }],
     }
@@ -149,7 +149,7 @@ fn note_layout(record: &str) -> LayoutReading {
 }
 
 /// The shell part showing `note` in a place, its reading published, drawn.
-fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) {
+fn showing(service: &ResourceService, note: &str) -> (ShellPart, Rc<SessionLink>) {
     let (mut part, link) = part_with(reading_with_windows());
     let layout = note_layout(note);
     link.publish_layout(layout.clone());
@@ -166,7 +166,7 @@ fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) 
 /// What the session hands the shell for `layout`'s places, as it does on its turn: the
 /// notes app's package, which the places show, and the readings of the records they name.
 /// Whether a reading changed.
-fn follow(link: &SessionLink, layout: &LayoutReading, service: &RecordService) -> bool {
+fn follow(link: &SessionLink, layout: &LayoutReading, service: &ResourceService) -> bool {
     link.publish_packages(BTreeMap::from([(
         NOTES_APP.to_owned(),
         service.module(NOTES_APP).expect("the notes app's module"),
@@ -175,7 +175,7 @@ fn follow(link: &SessionLink, layout: &LayoutReading, service: &RecordService) -
 }
 
 /// Run what the shell asked against the note's API, as the session's turn does.
-fn serve(link: &SessionLink, service: &mut RecordService) {
+fn serve(link: &SessionLink, service: &mut ResourceService) {
     link.serve(|ask| {
         let arguments: Map<String, Json> = ask
             .arguments
@@ -436,7 +436,7 @@ fn target(value: &Value) -> ResourceRef {
 /// The room the session publishes: a chat with the channel `design` and Bo's message in it, a
 /// tasks app, and the task Ada made from that message through its own menu.
 struct Room {
-    service: RecordService,
+    service: ResourceService,
     channel: String,
     message: ResourceRef,
     task: ResourceRef,
@@ -503,7 +503,7 @@ fn room() -> Room {
         other => panic!("new_task: {other:?}"),
     };
     Room {
-        service: RecordService::new(host, "ada"),
+        service: ResourceService::new(host, "ada"),
         channel: target(&design).id_string(),
         message,
         task: published(&target(&made)),
@@ -609,13 +609,13 @@ fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> 
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
     room.needed = needed;
-    for ty in tilolang_tilo::records_service::placed_records(
-        layout.places.iter().map(|place| place.record.as_str()),
+    for ty in tilolang_tilo::resource_service::placed_documents(
+        layout.places.iter().map(|place| place.resource.as_str()),
         &room.service.resources(),
     )
     .values()
     {
-        if let Some(app) = tilolang_tilo::records_service::app_of(ty) {
+        if let Some(app) = tilolang_tilo::resource_service::app_of(ty) {
             apps.insert(app.to_owned());
         }
     }

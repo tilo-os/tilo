@@ -1,4 +1,4 @@
-//! The shell's configuration is the person's own record: every change of the bar, the dock and
+//! The shell's configuration is the person's own document: every change of the bar, the dock and
 //! the layouts is one action on it, an agent acting for the person runs the same action, and
 //! undo takes any of it back — one setting changed, and a whole preset at once.
 
@@ -12,7 +12,7 @@
 use automerge::AutoCommit;
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::Replica;
 
@@ -100,14 +100,14 @@ fn workspace() -> Replica {
             )
         });
     replica.host.load_compiled(&compiled).unwrap();
-    // The person's shell record, made as the session makes it, and the package's migration
+    // The person's shell document, made as the session makes it, and the package's migration
     // seeding it: the bar's parts and the dock's items, on a shell never arranged.
     let meta = replica.host.package(APP).unwrap().meta;
     for root in &meta.named_roots {
         replica
             .host
-            .root_record(APP, &root.ty)
-            .expect("the shell record is made");
+            .root_resource(APP, &root.ty)
+            .expect("the shell document is made");
     }
     replica.host.migrate();
     // The layout's root the session writes, as the session makes it.
@@ -121,7 +121,7 @@ fn workspace() -> Replica {
         })
         .cloned();
     if let Some(ty) = layout_ty {
-        let root = replica.host.root_record(APP, &ty).unwrap();
+        let root = replica.host.root_resource(APP, &ty).unwrap();
         let meta = replica.host.package(APP).unwrap().meta;
         let person = crate::fixtures::field_id(&meta, "Layout", "person");
         replica
@@ -184,7 +184,7 @@ fn choose(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     }
 }
 
-/// What a field of the shell's record holds now, by its name, as the record holds it: an
+/// What a field of the shell's document holds now, by its name, as the document holds it: an
 /// enum's case is its id, a flag a `Bool`.
 fn field(r: &Replica, name: &str) -> DynValue {
     let meta = r.host.package(APP).unwrap().meta;
@@ -195,23 +195,23 @@ fn field(r: &Replica, name: &str) -> DynValue {
         .unwrap_or(DynValue::Register(serde_json::Value::Null))
 }
 
-/// The `Shell` record as the person holds it now: the package's named root.
-fn shell(r: &Replica) -> tilolang_tilo::record::DynRecord {
+/// The `Shell` document as the person holds it now: the package's named root.
+fn shell(r: &Replica) -> tilolang_tilo::resource::DynResource {
     let meta = r.host.package(APP).unwrap().meta;
     let ty = meta
         .named_roots
         .iter()
         .find(|root| root.name == "shell")
         .map(|root| root.ty.clone())
-        .expect("the shell declares its record as a named root");
-    r.host.root_record(APP, &ty).unwrap();
+        .expect("the shell declares its resource as a named root");
+    r.host.root_resource(APP, &ty).unwrap();
     r.host
         .store()
         .record(&format!("root-{ty}"))
-        .expect("the shell record is made")
+        .expect("the shell resource is made")
 }
 
-/// A case of an enum the record keeps, as the record holds it: its id.
+/// A case of an enum the resource keeps, as the resource holds it: its id.
 fn case(r: &Replica, ty: &str, variant: &str) -> String {
     let meta = r.host.package(APP).unwrap().meta;
     meta.enums
@@ -242,7 +242,7 @@ fn pick(r: &Replica, ty: &str, variant: &str) -> Value {
 }
 
 /// Whether the enum field `name` holds the case `variant` of `ty` now. A register holds an
-/// enum's case as its variant's id, which is what the record keeps.
+/// enum's case as its variant's id, which is what the document keeps.
 fn is(r: &Replica, name: &str, ty: &str, variant: &str) -> bool {
     let want = case(r, ty, variant);
     match field(r, name) {
@@ -255,7 +255,7 @@ fn is(r: &Replica, name: &str, ty: &str, variant: &str) -> bool {
     }
 }
 
-/// Whether the shell's own record says `flag`.
+/// Whether the shell's own document says `flag`.
 fn flag(r: &Replica, name: &str) -> bool {
     let meta = r.host.package(APP).unwrap().meta;
     let id = crate::fixtures::field_id(&meta, "Shell", name);
@@ -266,7 +266,7 @@ fn flag(r: &Replica, name: &str) -> bool {
 }
 
 #[test]
-fn a_settings_action_changes_the_record_and_undo_restores_it() {
+fn a_settings_action_changes_the_document_and_undo_restores_it() {
     let mut r = workspace();
     r.commit();
     assert!(
@@ -314,7 +314,7 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
 
 // ----- What a person sees: the presets, and when the chrome shows ---------------------------
 
-/// The person's shell record: the package's named root, `root shell: Shell`.
+/// The person's shell document: the package's named root, `root shell: Shell`.
 fn shell_ref(r: &Replica) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
     let ty = meta
@@ -322,12 +322,12 @@ fn shell_ref(r: &Replica) -> Value {
         .iter()
         .find(|root| root.name == "shell")
         .map(|root| root.ty.clone())
-        .expect("the shell declares its record as a named root");
-    Value::resource(&r.host.root_record(APP, &ty).unwrap())
+        .expect("the shell declares its document as a named root");
+    Value::resource(&r.host.root_resource(APP, &ty).unwrap())
 }
 
 /// The screen the session shows (the layout's default view, `shell_view`), laid out as the
-/// person sees it: the bar and the dock over the shell and the person's shell record.
+/// person sees it: the bar and the dock over the shell and the person's shell document.
 fn shell_view(r: &Replica) -> tilolang_runtime::ViewInstance {
     r.host
         .open_layer(
@@ -426,7 +426,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     assert!(!runs.is_empty(), "the dock and the bar are runs");
 }
 
-/// The bar's material is the theme's own, chosen by the person's record: the glass of the
+/// The bar's material is the theme's own, chosen by the person's document: the glass of the
 /// translucent style, the calm opaque surface of the solid one, on the same chrome.
 #[test]
 fn the_bars_material_is_the_one_its_style_names() {
@@ -866,7 +866,7 @@ fn set_screen(r: &mut Replica, field: &str, on: bool) {
 fn undo(r: &mut Replica) {
     use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
     use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
-    use tilolang_tilo::instance::record::HostHistoryEdit;
+    use tilolang_tilo::instance::document::HostHistoryEdit;
 
     let edit = HistoryEdit::Undo {
         steps: None,

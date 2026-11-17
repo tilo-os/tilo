@@ -11,7 +11,7 @@ use tilolang_runtime::{Actor, SourceWords};
 use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 
 use crate::fixtures::{Replica, field_id};
 
@@ -180,7 +180,7 @@ impl Workspace {
     }
 
     /// The items of the collection `field` (of the type `ty`) of `holder`, as `who`'s store lists
-    /// them from its index, checked against the record read whole.
+    /// them from its index, checked against the document read whole.
     fn listed(&self, who: &str, (ty, field): (&str, &str), holder: Option<&str>) -> Vec<String> {
         let replica = if who == "ada" { &self.ada } else { &self.grace };
         let field = field_id(&self.meta, ty, field);
@@ -205,7 +205,7 @@ impl Workspace {
         };
         assert_eq!(
             listed, whole,
-            "{who}: the index lists what the record holds"
+            "{who}: the index lists what the document holds"
         );
         listed
     }
@@ -246,7 +246,7 @@ impl Workspace {
     }
 }
 
-fn items_of(record: &DynRecord, field: &str) -> Vec<String> {
+fn items_of(record: &DynResource, field: &str) -> Vec<String> {
     match record.get(field) {
         Some(DynValue::Collection(items)) => {
             items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
@@ -255,8 +255,8 @@ fn items_of(record: &DynRecord, field: &str) -> Vec<String> {
     }
 }
 
-/// The item `id` anywhere in `record`.
-fn find<'r>(record: &'r DynRecord, id: &str) -> Option<&'r DynRecord> {
+/// The item `id` anywhere in `resource`.
+fn find<'r>(record: &'r DynResource, id: &str) -> Option<&'r DynResource> {
     for field in &record.schema().fields {
         if let Some(DynValue::Collection(items)) = record.get(&field.id) {
             for (item_id, item) in items.iter() {
@@ -375,7 +375,7 @@ tilo_test_env::scenario! {
             }
         };
         // Where a card stands, and whether the column holds it, are read of the column's index:
-        // what the record would be walked for — its entries — stays where it was.
+        // what the document would be walked for — its entries — stays where it was.
         let before = walked(&r.ada);
         assert_eq!(stands(&r, &first), Some(0), "the first card's place");
         assert_eq!(stands(&r, &second), Some(1), "the second card's place");
@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             walked(&r.ada),
             before,
-            "reading a card's place walked the record's entries"
+            "reading a card's place walked the document's entries"
         );
         // A card that leaves is one the column no longer holds, and the one after it stands where
         // the one before it did.
@@ -486,7 +486,7 @@ tilo_test_env::scenario! {
         let stays = ResourceRef::parse_id(&r.at(&stays), card).unwrap();
         let root = r.root.clone();
         let todo_at = r.at(&todo);
-        // The column goes, and the card in it: the record still holds what the card held, so a copy
+        // The column goes, and the card in it: the document still holds what the card held, so a copy
         // of it answers the card's fields, and only the index says the card is gone.
         r.act(
             "ada",
@@ -498,8 +498,8 @@ tilo_test_env::scenario! {
             r.ada.host.store().type_of(&stays).is_err(),
             "the card went with its column"
         );
-        // The indexes a window of that record keeps, and the record itself: a window opened over
-        // them answers what they name, before it reads the record.
+        // The indexes a window of that document keeps, and the document itself: a window opened over
+        // them answers what they name, before it reads the document.
         let dir = std::env::temp_dir().join(format!("tilolang-kept-index-card-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (doc, lock) = (r.ada.doc.clone(), r.lock.clone());
@@ -521,12 +521,12 @@ tilo_test_env::scenario! {
             host.index_ready(),
             "the window opens over the index it kept"
         );
-        assert!(!host.store().has_record(), "before its record");
+        assert!(!host.store().has_document(), "before its document");
         let read = host.runtime().read(&stays, "title");
         assert!(read.is_err(), "the card went with its column: {read:?}");
         assert!(
-            !host.store().has_record(),
-            "the record is not read for a card the workspace no longer holds"
+            !host.store().has_document(),
+            "the document is not read for a card the workspace no longer holds"
         );
         assert!(
             host.store().type_of(&stays).is_err(),
@@ -815,7 +815,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The index a window of the record `doc` keeps under `dir`: built from the record and left
+/// The index a window of the document `doc` keeps under `dir`: built from the document and left
 /// there for the next window to open over.
 fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
     std::fs::create_dir_all(dir).unwrap();

@@ -131,7 +131,7 @@ is a new rule at those points, never an app change:
   code for it.
 - **Creators, not owners.** A workspace's resources belong to the workspace. Who
   made or changed something is in its history, and a person's own records
-  (`records: .own`) are theirs. A grant can name any of these facts; no app
+  (`resources: .own`) are theirs. A grant can name any of these facts; no app
   declares an owner.
 
 ## 7. What a hostile app can do

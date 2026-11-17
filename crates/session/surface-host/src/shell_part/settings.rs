@@ -50,7 +50,7 @@ impl ShellPart {
             )
             .ok_or_else(|| format!("`{app}` declares no record `{action}` acts on"))?;
         let record = host
-            .root_record(&app, &root.ty)
+            .root_resource(&app, &root.ty)
             .map_err(|error| format!("the shell's `{}` is not made: {error:?}", root.name))?;
         let mut values = vec![Value::resource(&record)];
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {

@@ -860,10 +860,10 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
-  "crates/platform/tilolang-tilo/tests/records_service.rs",
+  "crates/platform/tilolang-tilo/tests/resource_service.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
-  "crates/platform/tilolang-tilo/tests/shell_record.rs",
+  "crates/platform/tilolang-tilo/tests/shell_document.rs",
   "crates/platform/tilolang-tilo/tests/suggest.rs",
   "crates/platform/tilolang-tilo/tests/surface.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
@@ -900,7 +900,7 @@ readers = [
   "crates/platform/tilolang-host/src/task.rs",
   "crates/platform/tilolang-host/src/phrases.rs",
   "crates/platform/tilolang-host/tests/host.rs",
-  "crates/platform/tilolang-host/tests/own_records.rs",
+  "crates/platform/tilolang-host/tests/own_resources.rs",
 ]
 
 

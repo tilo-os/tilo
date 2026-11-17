@@ -1,17 +1,17 @@
-//! An agent task's reads of a workspace's records, outside their apps
-//! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
+//! An agent task's reads of a workspace's documents, outside their apps
+//! (`docs/designs/app-language/agents.md`, "Reading documents outside their app").
 //!
-//! The task reads each app's record itself: the API hands it the record's committed content
-//! ([`RecordSource`]), read-only and decided for the task by the broker, and it reads that
+//! The task reads each app's document itself: the API hands it the document's committed content
+//! ([`DocumentSource`]), read-only and decided for the task by the broker, and it reads that
 //! content with the app's own package, the same reads an app's host answers: a resource's
 //! fields ([`Host::read_values`]) and a program's `grep`, `find`, `read` and `describe`
-//! ([`tilolang_runtime::Runtime::answer_read`]) over the record's index, built here. No app runs
+//! ([`tilolang_runtime::Runtime::answer_read`]) over the document's index, built here. No app runs
 //! for it, so whether an app's window is open never matters.
 //!
-//! A record is fetched once per program and kept for that program only: the next program
+//! A document is fetched once per program and kept for that program only: the next program
 //! fetches it again, so each read is decided anew and a grant revoked in the middle of a task
-//! cuts what follows. What the record's origin applied for the task is taken into the record
-//! it read ([`RecordReads::take_in`]) and kept for the task's life: the program reads its own
+//! cuts what follows. What the document's origin applied for the task is taken into the document
+//! it read ([`DocumentReads::take_in`]) and kept for the task's life: the program reads its own
 //! changes at once, and every later program of the task reads them too, whether or not the copy
 //! the API hands over holds them yet.
 
@@ -26,42 +26,42 @@ use tilolang_runtime::reads::ReadRequest;
 use crate::bundle::Bundle;
 use crate::host::Host;
 
-/// Where a task gets a record's committed content: the API, as the task.
-pub trait RecordSource {
-    /// The record `record` (empty for the app's record of the workspace) of the app `app`: its
-    /// content (an Automerge document), or `None` when the workspace holds no such record.
+/// Where a task gets a document's committed content: the API, as the task.
+pub trait DocumentSource {
+    /// The document `document` (empty for the app's document of the workspace) of the app `app`: its
+    /// content (an Automerge document), or `None` when the workspace holds no such document.
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
-/// The records a task reads, each with the package of its app.
-pub struct RecordReads {
+/// The documents a task reads, each with the package of its app.
+pub struct DocumentReads {
     person: Option<String>,
     /// Each app's package, by its id.
     bundles: HashMap<String, Bundle>,
-    /// The id whose records an app keeps, when it is not its own: an app renamed keeps the
-    /// record of its earliest id.
+    /// The id whose documents an app keeps, when it is not its own: an app renamed keeps the
+    /// document of its earliest id.
     documents_under: BTreeMap<String, String>,
-    source: Rc<dyn RecordSource>,
-    /// The records this program read, by app, each held by a host of its own.
+    source: Rc<dyn DocumentSource>,
+    /// The documents this program read, by app, each held by a host of its own.
     open: RefCell<HashMap<String, Host>>,
-    /// The apps whose record this program read as none: what the program saw of it (its root,
+    /// The apps whose document this program read as none: what the program saw of it (its root,
     /// say) was made by the read alone, never written anywhere.
     read_none: RefCell<std::collections::HashSet<String>>,
-    /// What the records' origins applied for this task, by app, in order: kept for the task's
-    /// life and put into every record the task reads, so each of its programs reads its own
+    /// What the documents' origins applied for this task, by app, in order: kept for the task's
+    /// life and put into every document the task reads, so each of its programs reads its own
     /// earlier changes while the copy the API hands over still lags the origin.
     written: RefCell<HashMap<String, Vec<Vec<u8>>>>,
 }
 
-impl RecordReads {
-    /// Reads of the records of the apps `bundles` are the packages of, for `person`, fetched
+impl DocumentReads {
+    /// Reads of the documents of the apps `bundles` are the packages of, for `person`, fetched
     /// from `source`.
     #[must_use]
     pub fn new(
         bundles: &[Bundle],
         documents_under: BTreeMap<String, String>,
         person: Option<&str>,
-        source: Rc<dyn RecordSource>,
+        source: Rc<dyn DocumentSource>,
     ) -> Self {
         // The ids the session believes each app had before are the ones a task honours: a
         // package's own `previously:` is a claim the installed catalogue decides on.
@@ -82,8 +82,8 @@ impl RecordReads {
         }
     }
 
-    /// Where the app `app` keeps the records a task reads: the id they are under and the
-    /// record, the person's own for an app whose records are each member's own.
+    /// Where the app `app` keeps the documents a task reads: the id they are under and the
+    /// document, the person's own for an app whose documents are each member's own.
     #[must_use]
     pub fn address(&self, app: &str) -> Option<(String, String)> {
         let bundle = self.bundles.get(app)?;
@@ -95,26 +95,26 @@ impl RecordReads {
         let record = self
             .person
             .as_deref()
-            .and_then(|person| crate::own_record(&bundle.meta, person))
+            .and_then(|person| crate::own_document(&bundle.meta, person))
             .unwrap_or_default();
         Some((under, record))
     }
 
-    /// Forget every record read: a new program reads them again, with what the task wrote.
+    /// Forget every document read: a new program reads them again, with what the task wrote.
     pub fn forget(&self) {
         self.open.borrow_mut().clear();
         self.read_none.borrow_mut().clear();
     }
 
-    /// Forget the record of the app `app`: the program changed it.
+    /// Forget the document of the app `app`: the program changed it.
     pub fn forget_app(&self, app: &str) {
         self.open.borrow_mut().remove(app);
         self.read_none.borrow_mut().remove(app);
     }
 
-    /// Take in `change`, what the record's origin applied for this task to the record of the
+    /// Take in `change`, what the document's origin applied for this task to the document of the
     /// app `app`: what this program and every later one of the task reads holds it, without
-    /// waiting for the workspace. A record this program has not read is read whole when it is next
+    /// waiting for the workspace. A document this program has not read is read whole when it is next
     /// read, with the change in it.
     pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
         self.written
@@ -122,8 +122,8 @@ impl RecordReads {
             .entry(app.to_owned())
             .or_default()
             .push(change.to_vec());
-        // A record read as none holds only what the read made of it; the origin, which made the
-        // record for the change, answers it whole, and that is the record from now on.
+        // A document read as none holds only what the read made of it; the origin, which made the
+        // document for the change, answers it whole, and that is the document from now on.
         if self.read_none.borrow_mut().remove(app) {
             let opened = self.host_over(app, Some(change))?;
             self.open.borrow_mut().insert(app.to_owned(), opened);
@@ -139,18 +139,18 @@ impl RecordReads {
             })
             .0
             .map(|_| ())
-            .map_err(|error| format!("{app}'s change does not apply to its record: {error}"))
+            .map_err(|error| format!("{app}'s change does not apply to its document: {error}"))
     }
 
     /// The fields of the resource `item` of the app `app` ([`Host::read_values`]).
     ///
     /// # Errors
-    /// The record cannot be read, or the item names nothing in it.
+    /// The document cannot be read, or the item names nothing in it.
     pub fn read(&self, app: &str, item: &str) -> Result<Json, String> {
         self.with_host(app, |host| host.read_values(item))
     }
 
-    /// What the app `app`'s record answers to a program's `request`.
+    /// What the app `app`'s document answers to a program's `request`.
     pub fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
         let request: ReadRequest = serde_json::from_value(request.clone())
             .map_err(|error| format!("the request is not one a program makes: {error}"))?;
@@ -158,9 +158,9 @@ impl RecordReads {
     }
 
     /// What the action `call` (`{app, resource, action, arguments}`) would write, planned with
-    /// the app's package over its record as this program read it, for `caller`: the preview the
-    /// record's origin compares its own run with. The origin runs the action again against
-    /// the record as it is then, so this decides nothing.
+    /// the app's package over its document as this program read it, for `caller`: the preview the
+    /// document's origin compares its own run with. The origin runs the action again against
+    /// the document as it is then, so this decides nothing.
     pub fn plan(
         &self,
         call: &Json,
@@ -206,7 +206,7 @@ impl RecordReads {
         answer
     }
 
-    /// A host of the app `app`'s package over its record, as the API hands it now.
+    /// A host of the app `app`'s package over its document, as the API hands it now.
     fn open_host(&self, app: &str) -> Result<Host, String> {
         let (under, record) = self
             .address(app)
@@ -220,12 +220,12 @@ impl RecordReads {
         self.host_over_with(app, bytes.as_deref(), wrote)
     }
 
-    /// A host of the app `app`'s package over its record `bytes` (none: an empty record).
+    /// A host of the app `app`'s package over its document `bytes` (none: an empty document).
     fn host_over(&self, app: &str, bytes: Option<&[u8]>) -> Result<Host, String> {
         self.host_over_with(app, bytes, &[])
     }
 
-    /// [`Self::host_over`], the record holding what the task wrote to it (`wrote`, the changes
+    /// [`Self::host_over`], the document holding what the task wrote to it (`wrote`, the changes
     /// its origin answered, in order) whether or not `bytes` holds it yet.
     fn host_over_with(
         &self,
@@ -239,12 +239,12 @@ impl RecordReads {
             .ok_or_else(|| format!("{app} is not installed"))?;
         let mut doc = match bytes {
             Some(bytes) => tilo_resource::Doc::load(bytes)
-                .map_err(|error| format!("{app}'s record does not read: {error}"))?,
+                .map_err(|error| format!("{app}'s document does not read: {error}"))?,
             None => tilo_resource::Doc::new(),
         };
         for change in wrote {
             tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change).map_err(|error| {
-                format!("what the task wrote to {app}'s record does not apply to it: {error}")
+                format!("what the task wrote to {app}'s document does not apply to it: {error}")
             })?;
         }
         let viewer = Actor::Member(crate::runtime::ids::MemberId::person(

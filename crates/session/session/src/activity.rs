@@ -575,7 +575,7 @@ impl Activity {
         let Ok(services) = services.try_borrow() else {
             return Vec::new();
         };
-        let kept = services.history_records();
+        let kept = services.history_documents();
         kept.into_iter()
             .map(|record| DetachedRecordHistory {
                 // The service's record is the app's record of the workspace, which the history

@@ -1,7 +1,7 @@
 //! What a person keeps of a window and a workspace of their own: the view state they
 //! picked in views, and what they have seen, as the runtime holds it for them.
 //!
-//! A window is given the person's entries of the workspace's record of them when it opens, and
+//! A window is given the person's entries of the workspace's document of them when it opens, and
 //! what they change here is what the host keeps back into it ([`super::personal`]).
 
 use super::Instance;
@@ -10,7 +10,7 @@ use crate::runtime::seen::SeenWrite;
 use crate::runtime::view_state::StateKey;
 
 impl Instance {
-    /// Give the views what `held`, the workspace's record of each person's own state, keeps of
+    /// Give the views what `held`, the workspace's document of each person's own state, keeps of
     /// the person at the window `tab` (the shell's tab it takes): how this window shows their
     /// resources, where they are in it, and what they have seen. Another window's place is its
     /// own. A slot already holding its value is left alone, so a host may run this every frame.
@@ -43,7 +43,7 @@ impl Instance {
     }
 
     /// What the person at the window `tab` changed of their own state since last asked, as the
-    /// changes that keep it in the workspace's record of it, which holds `held` now: the view
+    /// changes that keep it in the workspace's document of it, which holds `held` now: the view
     /// state they set in this window, and what they marked seen. Someone else's mark is not theirs
     /// to keep.
     pub fn take_personal(&mut self, held: &PersonalState, tab: u64) -> Vec<Keep> {

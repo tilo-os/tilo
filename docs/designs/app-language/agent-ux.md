@@ -47,7 +47,7 @@ Resources are shared content; views belong to whoever chose them.
   resolved when it is checked (`tilolang::compile_view_definition`), so it reads any type the
   workspace has. It runs as the viewer, so it shows each person what they can see.
 - **It is the person's own code**, a `WrittenView` in their own record of Views
-  (`apps/tl/views`, `records: .own`), with its author as the host recorded them: the agent task
+  (`apps/tl/views`, `resources: .own`), with its author as the host recorded them: the agent task
   that answered, the person, or who sent it. That author is its code author, so its actions ask
   first unless the viewer trusts them (the code-author grants of `tilo_action_policy`).
 - **An agent's answer is one.** The Tasks agent finishes with `plan` and a `view`; the Views host

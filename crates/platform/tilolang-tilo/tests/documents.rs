@@ -5,7 +5,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit, read_resource, register_actions};
 use tilolang_tilo::chunk::Chunks;
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 use tilolang_tilo::schema::lookup;
 
 use crate::fixtures::{COUNTER, Replica, TODO, field_id};
@@ -33,7 +33,7 @@ fn loaded() -> (tilolang_runtime::Meta, tilolang_runtime::Meta) {
 }
 
 fn create(doc: &mut AutoCommit, app: &str, ty: &str, id: &str) {
-    let record = DynRecord::empty(lookup(ty).unwrap()).unwrap();
+    let record = DynResource::empty(lookup(ty).unwrap()).unwrap();
     action(
         app,
         "create",
@@ -48,9 +48,9 @@ fn create(doc: &mut AutoCommit, app: &str, ty: &str, id: &str) {
 }
 
 tilo_test_env::scenario! {
-    fn a_record_is_read_and_edited_by_its_merge_kinds;
+    fn a_document_is_read_and_edited_by_its_merge_kinds;
 
-    phase a_record_written_and_read_back_is_the_same_record;
+    phase a_document_written_and_read_back_is_the_same_document;
     {
         let (counter, _) = loaded();
         let ty = &counter.types[0].id;
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
         create(&mut doc, &counter.app, ty, "c1");
         let record = read_resource(&Chunks::of(doc.clone()), &counter.app, "c1").unwrap();
         assert_eq!(record.schema().name, "Counter");
-        let again = DynRecord::from_json(&record.to_json()).unwrap();
+        let again = DynResource::from_json(&record.to_json()).unwrap();
         assert_eq!(again, record);
     }
 
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
     fn dates_and_times_are_text_and_the_clock_answers_iso_utc;
 
     phase dates_and_times_are_text_fields_and_now_is_the_hosts_clock;
-    // A Date or a Time is text in the record: a plain register for one, a structured one for an
+    // A Date or a Time is text in the document: a plain register for one, a structured one for an
     // option; both read and write through the host, and `now` is the host's clock.
     {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(DATED, "")]);

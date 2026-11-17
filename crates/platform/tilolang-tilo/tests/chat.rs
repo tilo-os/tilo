@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
     phase a_deleted_message_is_gone_for_everyone_and_leaves_a_version_of_the_removal;
     // A message is deleted from its channel by one of the destructive actions offered on it: the
     // person who wrote it removes their own, and it is gone for everyone, its removal a version
-    // the record keeps (so undo brings it back). The thread it started goes with it, and no
+    // the document keeps (so undo brings it back). The thread it started goes with it, and no
     // message of another channel is touched.
     {
         let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
@@ -977,7 +977,7 @@ fn says(view: &mut ViewInstance, said: &str) -> bool {
 /// Two packages loaded here at once, of the two versions of Chat this repository keeps: the
 /// current one and the one before channels, as a workspace upgraded from the old build has
 /// them — and as every test of this suite has them, since it loads both in one process. A
-/// record of one version is read and changed by its own types, never by the other's; the type
+/// document of one version is read and changed by its own types, never by the other's; the type
 /// `Message` both declare is the same id with different fields, which is what takes the wrong
 /// schema.
 #[test]
@@ -1029,7 +1029,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
 
     // The current Chat's channel still reads its message, and still takes one written by the
     // current version's action: the older version's schema, loaded second, never takes over how
-    // the current version's records read.
+    // the current version's documents read.
     let mut seen_again = current.host.open_resource(&target(&channel), None).unwrap();
     assert_eq!(
         said(&mut seen_again),
@@ -1198,9 +1198,9 @@ tilo_test_env::scenario! {
             "a person has one conversation"
         );
         // It takes a message from Ben, which Ada reads as any conversation's: an item created by
-        // `insert` is held in its holder's record, and the store's index of records learns of it
+        // `insert` is held in its holder's document, and the store's index of documents learns of it
         // on the next scan, as a `commit` and a sync does.
-        // Ada's own sync first: the workspace's host scans the records, so the new conversation is
+        // Ada's own sync first: the workspace's host scans the documents, so the new conversation is
         // one the store can find.
         ada.commit();
         ben.host.sync_from(&ada.doc);

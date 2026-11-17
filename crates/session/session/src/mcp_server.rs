@@ -1408,7 +1408,7 @@ enum ApiAsk {
     /// record of.
     Record {
         app: String,
-        done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
+        done: tilo_actions::remote::Completer<Option<tilo_service::Document>>,
     },
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
@@ -1745,7 +1745,7 @@ impl SessionServices {
                     Err(why) => done.complete(Err(why)),
                 },
                 ApiAsk::Record { app, done } => {
-                    done.complete(services.borrow().record(&app));
+                    done.complete(services.borrow().document(&app));
                 }
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
@@ -2408,7 +2408,7 @@ fn session_packages(
     use runtime_portal::tilolang_host::{App, Module};
     services
         .borrow()
-        .records()
+        .documents()
         .into_iter()
         .flat_map(|record| record.packages)
         .map(|wasm| {

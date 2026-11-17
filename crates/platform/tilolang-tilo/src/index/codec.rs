@@ -1,6 +1,6 @@
 //! How the index writes what it holds: field values, the pages of a list and a list's
 //! directory, each sealed with a checksum. A value that does not check out is never read as
-//! one: the index it is in is corrupt, and is built again from the record.
+//! one: the index it is in is corrupt, and is built again from the document.
 
 use tilolang_runtime::store::{FieldValue, Scalar};
 

@@ -89,16 +89,16 @@ pub struct InstanceRequest {
     pub person: String,
     pub module_len: u64,
     /// The id whose workspace record the instance opens, when it is not the app's own: an app renamed
-    /// keeps using the record of its earliest id, as the installed catalogue believes the same
-    /// publisher signed it. The broker admits the instance's connection to that record only on
+    /// keeps using the document of its earliest id, as the installed catalogue believes the same
+    /// publisher signed it. The broker admits the instance's connection to that document only on
     /// the same belief.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documents_under: Option<String>,
-    /// The instance applies one change to the record at its origin instead of running a
+    /// The instance applies one change to the document at its origin instead of running a
     /// window: an agent task's invocation the broker admitted (`docs/designs/app-language/agents.md`,
-    /// "Reading records outside their app"). The descriptor in the window's place is the change's
+    /// "Reading documents outside their app"). The descriptor in the window's place is the change's
     /// connection: the session writes the [`Change`] on it as one JSON line, and the host runs the
-    /// action's code against the record as it is then, applies what it wrote as the invoker's
+    /// action's code against the document as it is then, applies what it wrote as the invoker's
     /// step and answers on it with one JSON line. No window and no instance run. `instance` is
     /// then the change's own id, never a window's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -116,17 +116,17 @@ pub struct InstanceRequest {
     /// the host's own environment speak.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub language: String,
-    /// The record the window was asked to open, by its id, when its launch named one: the
-    /// instance opens only the record its route names (the workspace's, or the person's own), so
+    /// The document the window was asked to open, by its id, when its launch named one: the
+    /// instance opens only the document its route names (the workspace's, or the person's own), so
     /// a window asked for another is refused rather than shown that one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
-    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
-    /// package the app uses that is one of them is another app, whose records the instance reads
-    /// from that app's own record and whose changes it asks of that app's socket. A package it uses
-    /// that is not installed as an app keeps its records in the app's own.
+    /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
+    /// package the app uses that is one of them is another app, whose documents the instance reads
+    /// from that app's own document and whose changes it asks of that app's socket. A package it uses
+    /// that is not installed as an app keeps its documents in the app's own.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub installed: std::collections::BTreeMap<String, String>,
     /// What the person may do in the app, as the workspace's policy says it: the instance's views
@@ -160,7 +160,7 @@ pub struct TaskRequest {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub documents_under: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub changed_at_record: std::collections::BTreeSet<String>,
+    pub changed_at_document: std::collections::BTreeSet<String>,
 }
 
 /// The descriptors a task arrives with, in the order the socket carries them.
@@ -838,7 +838,7 @@ mod tests {
                 person: Some("ada".into()),
                 apps_len: 3,
                 documents_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
-                changed_at_record: ["so.tilo.shell".into()].into(),
+                changed_at_document: ["so.tilo.shell".into()].into(),
             };
             let fds = TaskFds {
                 program: connection(),

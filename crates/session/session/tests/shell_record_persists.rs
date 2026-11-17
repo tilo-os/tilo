@@ -2,7 +2,7 @@
 //! style, where the dock rides and the style's own settings — survives
 //! the session ending, and it is the same record their other devices read and change.
 //!
-//! The shell keeps those choices in its own record (`records: .own`), one document opened through
+//! The shell keeps those choices in its own record (`resources: .own`), one document opened through
 //! the store every app's own record of the person's is opened through, and carried on the
 //! person's own cluster. Where a note stands on the canvas is not the shell's: it is the
 //! workspace's layout, kept in the workspace's own record. This proves the file half of both: a
@@ -131,7 +131,10 @@ fn place(session: &mut Session, resource: &str) -> u64 {
 /// layout holds a place for it.
 fn placed(session: &Session, record: &str) -> Option<(i64, i64, i64, i64)> {
     let reading = session.layout().borrow().reading();
-    let place = reading.places.iter().find(|place| place.record == record)?;
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.resource == record)?;
     let strip = reading
         .strips
         .iter()

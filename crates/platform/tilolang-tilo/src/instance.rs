@@ -1,7 +1,7 @@
 //! An app instance: one window of a tilolang app as its app host runs it, without the toolkit.
 //!
-//! The instance holds what the window shows and does, as data: the host over the workspace record
-//! (or its indexes, before the record), the window's two views (the root, and the view of the
+//! The instance holds what the window shows and does, as data: the host over the workspace document
+//! (or its indexes, before the document), the window's two views (the root, and the view of the
 //! resource `open(r)` or a row went to), the rows of their virtual lists, what bound controls
 //! show, and the commits waiting for the API. It sends its window component patches and hears
 //! what the person did, over the patch protocol (`tilo_render_protocol::patch`), through any
@@ -10,7 +10,7 @@
 //!
 //! Each frame the instance
 //!
-//! 1. brings the runtime's mirror of the workspace record up to date with the record,
+//! 1. brings the runtime's mirror of the workspace document up to date with the document,
 //! 2. takes what the person did and runs it in the runtime, which plans the change,
 //! 3. re-runs a view if what it read changed, and sends the window the patches that bring its
 //!    copy of the view's tree up to date, and
@@ -22,11 +22,11 @@
 //! primary action a person runs shows what it made.
 
 mod convert;
+#[cfg(feature = "document")]
+pub mod document;
 pub mod form;
 pub mod memory;
 mod person_state;
-#[cfg(feature = "record")]
-pub mod record;
 pub mod rows;
 mod shown;
 mod views;
@@ -72,16 +72,16 @@ pub enum Mode {
     Capture,
 }
 
-/// What the person asked of their history at the window: the record's undo or redo
+/// What the person asked of their history at the window: the document's undo or redo
 /// (`ToApp::Undo`, `ToApp::Redo`), or an undo a view applied (`undo(v)`, `undo(run)`), as the
-/// one who runs the instance carries it out on the record through its history verb `undo`.
+/// one who runs the instance carries it out on the document through its history verb `undo`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryAsk {
     /// Take back their last step.
     Undo,
     /// Bring back what their last undo took back.
     Redo,
-    /// Take back the step the change (a change id of the record) is part of.
+    /// Take back the step the change (a change id of the document) is part of.
     UndoStep(String),
     /// Take back every step of the run (its group).
     UndoRun(String),
@@ -152,26 +152,26 @@ impl LaterBuilds {
     }
 }
 
-/// What the instance publishes on the API while it lives: the workspace's records with their
+/// What the instance publishes on the API while it lives: the workspace's documents with their
 /// actions, kept up to date change by change.
 pub trait Publication {
-    /// Bring what is published up to date with the record.
+    /// Bring what is published up to date with the document.
     fn update(&self);
-    /// Whether records are still being read off the frame.
+    /// Whether documents are still being read off the frame.
     fn pending(&self) -> bool;
-    /// Bring what is published up to date, waiting for the records being read off the frame:
+    /// Bring what is published up to date, waiting for the documents being read off the frame:
     /// for an embedder with no frame to take them in on, which reads what is published once it
-    /// covers the record. Whether what is published changed.
+    /// covers the document. Whether what is published changed.
     fn settle(&self) -> bool {
         self.update();
         false
     }
-    /// How many records the updates so far have looked at, one per record per turn: what
+    /// How many records the updates so far have looked at, one per document per turn: what
     /// publishing a change costs, whatever the workspace holds.
     fn visited(&self) -> u64 {
         0
     }
-    /// How many times the updates so far have read every record in full
+    /// How many times the updates so far have read every document in full
     /// ([`Publications::sweeps`](crate::publish::Publications::sweeps)).
     fn sweeps(&self) -> u64 {
         0
@@ -195,7 +195,7 @@ pub struct Config {
     pub index_dir: Option<std::path::PathBuf>,
     /// Reads the workspace record when the instance opens over the indexes before it: a write, or a
     /// field no index holds, waits for it.
-    pub record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
+    pub document_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
     /// The root and the view the window opens over, each by name. A package with more than one
@@ -353,20 +353,20 @@ pub struct Instance {
     mode: Mode,
     device: Option<String>,
     index_dir: Option<std::path::PathBuf>,
-    record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
+    document_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where the host reads the person's standing in the workspace, once its embedder has one.
     standing: Rc<RefCell<Option<Rc<crate::authority::StandingSource>>>>,
-    /// Whether the instance shows the workspace before its record, over its indexes.
+    /// Whether the instance shows the workspace before its document, over its indexes.
     opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
     /// What the workspace's member list calls people, which `names` reads first.
     told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
-    /// The chunks of the record the frame before the host opened handed over: the store reads and
-    /// writes the resources the record's manifest places in them, and an index is built over them
-    /// all rather than over the record's own chunk alone ([`Host::open`]).
-    record_chunks: Option<crate::chunk::Chunks>,
+    /// The chunks of the document the frame before the host opened handed over: the store reads and
+    /// writes the resources the document's manifest places in them, and an index is built over them
+    /// all rather than over the document's own chunk alone ([`Host::open`]).
+    document_chunks: Option<crate::chunk::Chunks>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
@@ -390,7 +390,7 @@ pub struct Instance {
     /// Whether the window was told the person has changes the workspace has not taken yet
     /// ([`ToUi::Kept`]).
     kept: bool,
-    /// Whether the person asked to save again since the record last looked.
+    /// Whether the person asked to save again since the document last looked.
     save_again: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// Whether the view of a shell places what it opens on the canvas, rather than opening a
@@ -410,7 +410,7 @@ pub struct Instance {
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
     /// The window's notice offers to take back the marks the person just moved seen, not the
-    /// record's last change: it is about what the window said last.
+    /// document's last change: it is about what the window said last.
     seen_offer: bool,
     /// The actions the person chose at the window (a press, the palette), with the press each
     /// is, in order, until the host runs them as the person's own steps.
@@ -426,7 +426,7 @@ pub struct Instance {
     rootless: bool,
     loading: bool,
     moved: bool,
-    /// Whether the package's migrations ran over the workspace record since the window opened.
+    /// Whether the package's migrations ran over the workspace document since the window opened.
     migrated: bool,
     /// Whether this replica is the workspace's origin, the one place the package's migrations run
     /// ([`Self::set_origin`]).
@@ -482,14 +482,14 @@ impl Instance {
             mode: config.mode,
             device: config.device,
             index_dir: config.index_dir,
-            opening: config.record_loader.is_some(),
-            record_loader: config.record_loader,
+            opening: config.document_loader.is_some(),
+            document_loader: config.document_loader,
             standing: Rc::default(),
             platform,
             names: Rc::clone(&told) as Rc<dyn NameHost>,
             told,
             host: Rc::default(),
-            record_chunks: None,
+            document_chunks: None,
             publication: None,
             root: None,
             detail: None,
@@ -658,22 +658,22 @@ impl Instance {
         Rc::clone(&self.outgoing)
     }
 
-    /// The host, once the instance has the record or its indexes.
+    /// The host, once the instance has the document or its indexes.
     #[must_use]
     pub fn host(&self) -> Option<Host> {
         self.host.borrow().clone()
     }
 
-    /// How many records the instance's publication has looked at so far, one per record per
+    /// How many records the instance's publication has looked at so far, one per document per
     /// turn ([`Publication::visited`]).
     #[must_use]
-    pub fn visited_records(&self) -> u64 {
+    pub fn visited_documents(&self) -> u64 {
         self.publication
             .as_ref()
             .map_or(0, |publication| publication.visited())
     }
 
-    /// How many times the instance's publication has read every record in full
+    /// How many times the instance's publication has read every document in full
     /// ([`Publication::sweeps`]).
     #[must_use]
     pub fn sweeps(&self) -> u64 {
@@ -860,19 +860,19 @@ impl Instance {
 
     // ----- the host ------------------------------------------------------------------------
 
-    /// The host over the workspace record `doc`, built with the package the first time; without the
-    /// record (while it is read off the frame), over the workspace's indexes.
+    /// The host over the workspace document `doc`, built with the package the first time; without the
+    /// document (while it is read off the frame), over the workspace's indexes.
     fn host_for(&mut self, doc: Option<&tilo_resource::Doc>, had: bool) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             // An index built off the frame changes what every view reads, as a change does.
-            // The store takes in only what the record holds that it lacks: a frame over a
+            // The store takes in only what the document holds that it lacks: a frame over a
             // record that did not move merges nothing.
             let synced = doc.is_some_and(|doc| host.sync_from(doc));
             if synced | host.poll_index() {
                 self.moved = true;
             }
             // Opened on what an earlier version wrote, the package brings it to where it keeps
-            // it now, once the record is had; what they commit goes as any action does.
+            // it now, once the document is had; what they commit goes as any action does.
             if had && !self.migrated && self.origin && self.mode == Mode::Live {
                 self.migrated = true;
                 if host.migrate() > 0 {
@@ -889,11 +889,11 @@ impl Instance {
             None
         };
         // The chunks are the host's from here on: the store holds the one copy of each.
-        let chunks = self.record_chunks.take();
+        let chunks = self.document_chunks.take();
         let loader = match (doc.is_some() || chunks.is_some(), self.opening, &index_dir) {
             (true, _, _) => None,
-            (false, true, Some(_)) => Some(self.record_loader.take()?),
-            // Without the record, a window opens over the indexes it keeps or not at all.
+            (false, true, Some(_)) => Some(self.document_loader.take()?),
+            // Without the document, a window opens over the indexes it keeps or not at all.
             (false, _, _) => return None,
         };
         let opening = Opening {
@@ -912,7 +912,7 @@ impl Instance {
             Ok(host) => host,
             Err(error) => {
                 tracing::error!(%error, "the tilolang runtime could not be set up");
-                self.record_chunks = chunks;
+                self.document_chunks = chunks;
                 return None;
             }
         };
@@ -920,8 +920,8 @@ impl Instance {
             host.adopt(chunks);
         }
         if let Some(loader) = loader {
-            // A write, or a field no index holds, waits for the record and lands on it.
-            host.set_record_loader(Box::new(loader));
+            // A write, or a field no index holds, waits for the document and lands on it.
+            host.set_document_loader(Box::new(loader));
         }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
@@ -989,7 +989,7 @@ impl Instance {
 
     /// Take over the latest later build of the package, when this instance runs an older one:
     /// in place when it reads the state the old one wrote, and otherwise by starting over on
-    /// the workspace record `doc` with it, as the app's next start would. The host the instance runs
+    /// the workspace document `doc` with it, as the app's next start would. The host the instance runs
     /// on afterwards.
     fn follow_updates(&mut self, doc: Option<&tilo_resource::Doc>, host: Host) -> Host {
         let Some(update) = self
@@ -1068,11 +1068,11 @@ impl Instance {
         self.commit_planned();
     }
 
-    /// Start over on the workspace record `doc`: a new runtime that loads the latest build and reads
-    /// the record afresh, as a start of the app does. View state and the open detail start
-    /// over; the record, and so every resource, is the one the instance had.
+    /// Start over on the workspace document `doc`: a new runtime that loads the latest build and reads
+    /// the document afresh, as a start of the app does. View state and the open detail start
+    /// over; the document, and so every resource, is the one the instance had.
     fn start_over(&mut self, doc: Option<&tilo_resource::Doc>, old: &Host) -> Option<Host> {
-        // The record the store held goes over to the new host's store: one copy of it, still.
+        // The document the store held goes over to the new host's store: one copy of it, still.
         let held = doc.is_none().then(|| old.store().release());
         self.publication = None;
         self.root = None;
@@ -1084,12 +1084,12 @@ impl Instance {
             self.sink = Some(Box::new(crate::sink::LogSink::dev()));
         }
         self.started = false;
-        self.record_chunks = held;
+        self.document_chunks = held;
         let host = self.host_for(doc, true);
         if host.is_none()
-            && let Some(chunks) = self.record_chunks.take()
+            && let Some(chunks) = self.document_chunks.take()
         {
-            // No new host: the old one keeps the record.
+            // No new host: the old one keeps the document.
             old.adopt(chunks);
         }
         host
@@ -1220,8 +1220,8 @@ impl Instance {
     }
 
     /// What the person asked for did not happen, for `why`, and the window says so: the
-    /// record's changes stay on this device (the workspace refused them for good), an undo or
-    /// redo failed (somebody else having changed the record since is never a failure: undo
+    /// document's changes stay on this device (the workspace refused them for good), an undo or
+    /// redo failed (somebody else having changed the document since is never a failure: undo
     /// leaves their newer value), or the action they chose from the window's command palette
     /// did not run.
     pub fn failed(&mut self, why: String) {
@@ -1318,7 +1318,7 @@ impl Instance {
     }
 
     fn settle_outbox(&mut self) -> bool {
-        // What waits in the record is settled once the instance reads the record.
+        // What waits in the document is settled once the instance reads the document.
         if self.opening || !std::mem::take(&mut self.settle_due) || self.mode != Mode::Live {
             return false;
         }
@@ -1476,11 +1476,11 @@ impl Instance {
     /// Take in what the window tells of itself and of the person at it, which runs nothing
     /// there and then: where the keyboard is, whether an input method composes, the space a
     /// view has, and the undos and redos asked for, which the one who runs
-    /// the instance carries out on the record ([`Self::take_history`]).
+    /// the instance carries out on the document ([`Self::take_history`]).
     fn window_told(&mut self, told: ToApp) {
         match told {
             // The notice in front takes back what it reported: the marks the person just moved
-            // seen, where it was that notice, else the record's last change.
+            // seen, where it was that notice, else the document's last change.
             ToApp::Undo => {
                 let taken = std::mem::take(&mut self.seen_offer)
                     && self
@@ -1638,7 +1638,7 @@ impl Instance {
     }
 
     /// Show what the presses the host ran this frame made ([`Self::press_ran`]) once they are
-    /// in the record: what they opened, drawn, and the window told they ran, in the frame that
+    /// in the document: what they opened, drawn, and the window told they ran, in the frame that
     /// ran them rather than the next, so the window takes all of it in one frame and what the
     /// person typed after a press goes to what it opened.
     pub fn show_ran(&mut self) {
@@ -1712,7 +1712,7 @@ impl Instance {
         let value = value.and_then(wire::runtime_value);
         // What a drag from another view carried reaches this view by its published address and
         // nothing more (a chip dropped on a composer, a place's handle dropped on the canvas):
-        // its type is read here, from the record this workspace holds or the reading its app
+        // its type is read here, from the document this workspace holds or the reading its app
         // published, so the action the drop runs takes the resource it names. An address
         // neither knows yet keeps what it arrived as, and an action taking it as any resource
         // (`host.Resource`) still runs.
@@ -1753,7 +1753,7 @@ impl Instance {
 
     /// `value` with every reference in it naming its type: a resource a drag from another view
     /// carried reached this one by its published address, and its type is read from the
-    /// workspace's record, else from the reading its app published ([`Runtime::resolve_ref`]).
+    /// workspace's document, else from the reading its app published ([`Runtime::resolve_ref`]).
     /// A resource that already names its type, and a value that holds none, is returned as it
     /// is.
     fn resolved(&self, value: Value) -> Value {
@@ -1821,7 +1821,7 @@ impl Instance {
     }
 
     /// Show the form of the action `address` names, which the window's bar or the palette ran,
-    /// when it still needs arguments a form asks for: the action as the record it is bound to
+    /// when it still needs arguments a form asks for: the action as the document it is bound to
     /// gives it. Whether it opened one.
     fn open_chosen_form(&mut self, address: &ActionAddress) -> bool {
         let Some(host) = self.host() else {
@@ -2233,22 +2233,22 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
-    /// Open the instance over the record's chunks, the store holding them from then on: the
+    /// Open the instance over the document's chunks, the store holding them from then on: the
     /// host opens over them, or the one opened over the workspace's indexes takes them. The
     /// chunks back when no host could be had, for the next frame to try again.
     pub fn open_over(&mut self, chunks: crate::chunk::Chunks) -> Option<crate::chunk::Chunks> {
         let host = self.host.borrow().as_ref().cloned();
         match host {
             Some(host) => host.adopt(chunks),
-            None => self.record_chunks = Some(chunks),
+            None => self.document_chunks = Some(chunks),
         }
         self.sync_held(true);
         self.read_short();
-        self.record_chunks.take()
+        self.document_chunks.take()
     }
 
     /// Have the store read the chunks the lists a window opens over need: an index that
-    /// reflects fewer chunks than the record's manifest names cannot say the rows it lacks.
+    /// reflects fewer chunks than the document's manifest names cannot say the rows it lacks.
     fn read_short(&mut self) {
         let host = self.host.borrow().as_ref().cloned();
         if host.is_some_and(|host| host.store().load_short()) {
@@ -2256,8 +2256,8 @@ impl Instance {
         }
     }
 
-    /// The first half of a frame over the record the store holds ([`Self::open_over`]):
-    /// `moved` when a write of the record's since the last frame moved what the store reads.
+    /// The first half of a frame over the document the store holds ([`Self::open_over`]):
+    /// `moved` when a write of the document's since the last frame moved what the store reads.
     pub fn sync_held(&mut self, moved: bool) {
         if moved {
             self.moved = true;
@@ -2266,14 +2266,14 @@ impl Instance {
         self.frame(None, true);
     }
 
-    /// The first half of a frame: bring the runtime up to date with the workspace record `record`
+    /// The first half of a frame: bring the runtime up to date with the workspace document `document`
     /// (`None` while the instance opens over the workspace's indexes), open the root once the
     /// indexes are read, stage a scenario, and send the window what changed.
     pub fn sync(&mut self, record: Option<&tilo_resource::Doc>) {
         self.frame(record, record.is_some());
     }
 
-    /// [`Self::sync`]; `had` when the record is had, as `record` or in the store.
+    /// [`Self::sync`]; `had` when the document is had, as `document` or in the store.
     fn frame(&mut self, record: Option<&tilo_resource::Doc>, had: bool) {
         let Some(host) = self.host_for(record, had) else {
             return;
@@ -2286,7 +2286,7 @@ impl Instance {
         if !self.started {
             // Until the indexes hold rows to read, the lists would show nothing: the window
             // shows the platform's loading state. Once the first step of a build is taken in
-            // it opens over those rows, and the rest of the record is read under them.
+            // it opens over those rows, and the rest of the document is read under them.
             if host.index_answers() {
                 self.started = true;
                 self.loading = false;
@@ -2326,7 +2326,7 @@ impl Instance {
 
     /// Whether work is still under way off the frame that changes what the window shows: an
     /// index the store is deriving, or records the publication is reading. A window drawn while
-    /// it is has not read the workspace the record holds.
+    /// it is has not read the workspace the document holds.
     #[must_use]
     pub fn pending(&self) -> bool {
         self.host().is_some_and(|host| host.index_pending())
@@ -2337,8 +2337,8 @@ impl Instance {
     }
 
     /// Whether a frame has work the window has not seen: a change no sync has sent it yet
-    /// (`moved`: the record moved, an index was taken in), an invocation the window handed the
-    /// host (`outgoing`), a write the record's
+    /// (`moved`: the document moved, an index was taken in), an invocation the window handed the
+    /// host (`outgoing`), a write the document's
     /// outbox owes ([`Self::settle_owed`]), or work under way off the frame
     /// ([`Self::pending`]). A frame taken while any of it holds shows what the workspace held
     /// before it, so a window that owes one syncs — and the host runs what it is owed — before it
@@ -2348,14 +2348,14 @@ impl Instance {
         self.moved || self.settle_owed() || !self.outgoing.borrow().is_empty() || self.pending()
     }
 
-    /// Whether the record's outbox owes a settlement a frame would take in: only a live window
-    /// settles it, and only once it reads the record.
+    /// Whether the document's outbox owes a settlement a frame would take in: only a live window
+    /// settles it, and only once it reads the document.
     fn settle_owed(&self) -> bool {
         self.settle_due && !self.opening && self.mode == Mode::Live
     }
 
     /// Wait for the work under way off the frame and take it in, so that what the window shows
-    /// next is read from indexes and a publication that cover the record: for an embedder with
+    /// next is read from indexes and a publication that cover the document: for an embedder with
     /// no frame to take them in on. Whether what the window shows may have moved.
     pub fn settle_pending(&mut self) -> bool {
         let indexed = self.host().is_some_and(|host| host.wait_index());
@@ -2419,7 +2419,7 @@ impl Instance {
         changed
     }
 
-    /// The workspace refuses the record's changes, or takes them again: the window marks them
+    /// The workspace refuses the document's changes, or takes them again: the window marks them
     /// unsaved, and offers to try again, while it does.
     pub fn refused_by_workspace(&mut self, refused: bool) {
         if refused != self.kept {
@@ -2429,7 +2429,7 @@ impl Instance {
         }
     }
 
-    /// Whether the person asked to try saving again since the last ask: the record then hands
+    /// Whether the person asked to try saving again since the last ask: the document then hands
     /// the workspace what it refused.
     pub fn take_save_again(&mut self) -> bool {
         std::mem::take(&mut self.save_again)
@@ -2525,7 +2525,7 @@ impl Instance {
 
 impl Drop for Instance {
     /// What the indexes hold reaches the disk as the instance ends: the next window of the workspace
-    /// opens over them before its record.
+    /// opens over them before its document.
     fn drop(&mut self) {
         if let Some(host) = self.host() {
             host.persist_index();
@@ -2762,7 +2762,7 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
     sorted
 }
 
-/// The other packages of the workspace whose records the package `app` holds references to.
+/// The other packages of the workspace whose documents the package `app` holds references to.
 fn used_packages(host: &Host, app: &str) -> Vec<Rc<Package>> {
     let Some(own) = host.package(app) else {
         return Vec::new();

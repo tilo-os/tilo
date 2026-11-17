@@ -66,7 +66,7 @@ fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
         .filter_map(|place| {
             let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
             strip.placed.then_some((
-                place.record.clone(),
+                place.resource.clone(),
                 strip.canvas_x,
                 strip.canvas_y,
                 strip.canvas_width,
@@ -216,7 +216,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox_name = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.record == inbox.0)
+        .find(|place| place.resource == inbox.0)
         .map(|place| place.title)
         .expect("the inbox stands");
     // The widest box drawn for the place's name is the place itself (its frame's group reads the

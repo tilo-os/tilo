@@ -4,7 +4,7 @@
 
 use super::Inner;
 
-/// Where a run began: the record's local changes and the actions queued when it started.
+/// Where a run began: the document's local changes and the actions queued when it started.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RunBegin {
     pub(super) local: usize,
@@ -26,7 +26,7 @@ impl Inner {
     }
 
     /// The run failed somewhere: nothing of it is queued to be applied, and nothing of it stays in
-    /// the record.
+    /// the document.
     pub(super) fn abort_run(&mut self, run: &str) {
         let Some(begin) = self.runs.remove(run) else {
             return;

@@ -1,5 +1,5 @@
 //! Who else is in a conversation and who of them is writing, as the people at two devices see it:
-//! each device's instance runs in its own host, on a connection to the same record, the broker
+//! each device's instance runs in its own host, on a connection to the same document, the broker
 //! relays what each says of its person to the other, and names everyone by the workspace's member
 //! list it hands each connection.
 
@@ -34,7 +34,7 @@ fn composer(session: &mut Session) -> (f64, f64) {
     (rect.center().x, rect.center().y)
 }
 
-/// Ada and Bo, members of one workspace, each at a Chat window on its record, both in the
+/// Ada and Bo, members of one workspace, each at a Chat window on its document, both in the
 /// conversation #design, which Ada made.
 fn ada_and_bo_in_design() -> (Session, Session) {
     let bus = Rc::new(Bus::default());
@@ -54,7 +54,7 @@ fn ada_and_bo_in_design() -> (Session, Session) {
         "the channel was made: {made:?}"
     );
     ada.settle();
-    // Bo's device holds the workspace's record as Ada's does.
+    // Bo's device holds the workspace's document as Ada's does.
     let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"), record(&ada));
     for session in [&mut ada, &mut bo] {
         let (x, y) = shown_at(session, "design");

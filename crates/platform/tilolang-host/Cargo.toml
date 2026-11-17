@@ -21,7 +21,7 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-tilolang-tilo = { path = "../tilolang-tilo", features = ["record"] }
+tilolang-tilo = { path = "../tilolang-tilo", features = ["document"] }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
 # The API the session hands instances over.
@@ -48,12 +48,12 @@ tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 serde_json.workspace = true
 # What the person may do in an app, as the session hands it with each instance.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
-# The workspace's record of each person's own state, which every app of the workspace opens: its
+# The workspace's document of each person's own state, which every app of the workspace opens: its
 # id, its document, and the changes that arrive for it.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-# A record the API hands over travels as base64 on the program connection.
+# A document the API hands over travels as base64 on the program connection.
 base64.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -69,7 +69,7 @@ tilolang-mail = { path = "../tilolang-mail", default-features = false }
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
-# Presence as every window decodes it: who is where in a record, and who is writing there.
+# Presence as every window decodes it: who is where in a document, and who is writing there.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
 [dev-dependencies]

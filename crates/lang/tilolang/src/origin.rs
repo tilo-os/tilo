@@ -243,7 +243,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A workspace the person's shell shows.",
         derived: true,
         fields: &[
-            field("key", "Text", "Its id, as the record names it."),
+            field("key", "Text", "Its id, as the layout names it."),
             field("name", "Text", "Its name."),
             field(
                 "current",
@@ -266,7 +266,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A row of the shell: a strip across a workspace's width, holding columns.",
         derived: true,
         fields: &[
-            field("key", "Text", "Its id, as the record names it."),
+            field("key", "Text", "Its id, as the layout names it."),
             field("workspace", "Text", "The workspace it is a row of."),
             field("name", "Text", "Its name."),
             field(
@@ -286,7 +286,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A strip: a column of places, with a width, in a row of a workspace.",
         derived: true,
         fields: &[
-            field("key", "Text", "Its id, as the record names it."),
+            field("key", "Text", "Its id, as the layout names it."),
             field("workspace", "Text", "The workspace it is in."),
             field("row", "Text", "The row it stands in."),
             field(
@@ -327,7 +327,7 @@ pub const KINDS: &[OriginKind] = &[
         doc: "A place: one window, showing a resource through a view.",
         derived: true,
         fields: &[
-            field("key", "Text", "Its id, as the record names it."),
+            field("key", "Text", "Its id, as the layout names it."),
             field("strip", "Text", "The strip it is in."),
             field(
                 "shows",
@@ -339,7 +339,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The view it shows the resource through; empty for the app's default.",
             ),
-            field("record", "Text", "The record it shows, when it shows one."),
+            field(
+                "resource",
+                "Text",
+                "The resource it shows, when it shows one.",
+            ),
             field("title", "Text", "The title it is shown under."),
             field("pinned", "Bool", "Whether the person pinned it."),
             field(
@@ -358,7 +362,7 @@ pub const KINDS: &[OriginKind] = &[
               place's record does (`session.layout_ref`).",
         derived: true,
         fields: &[
-            field("key", "Text", "Its id, as the record names it."),
+            field("key", "Text", "Its id, as the layout names it."),
             field("text", "Text", "What the person typed."),
             field("in_app", "Text", "The app asked, by its canonical id."),
             field(

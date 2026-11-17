@@ -4,7 +4,7 @@
 d-so-tilo-lang-views = Views
 
 d-bqgmjsyo = Written view
-    .doc = A view of the person's own: a view written in tilolang, as an app declares one, kept as their code in their own record.
+    .doc = A view of the person's own: a view written in tilolang, as an app declares one, kept as their code in their own document.
     .noun = { $count ->
         [one] written view
        *[other] written views

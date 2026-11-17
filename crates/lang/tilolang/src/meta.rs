@@ -78,9 +78,9 @@ fn write_leb(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
-/// The record kind of each person's own state of an app: the view state they set and what they have
+/// The resource type of each person's own state of an app: the view state they set and what they have
 /// seen, on every device of theirs and readable by every member.
-pub const PERSONAL_RECORD_KIND: &str = "tilolang.personal";
+pub const PERSONAL_RESOURCE_TYPE: &str = "tilolang.personal";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageMeta {
@@ -94,10 +94,10 @@ pub struct PackageMeta {
     /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
-    /// Each member keeps the app's records in their own record (`records: .own`), which only that
+    /// Each member keeps the app's resources in their own document (`resources: .own`), which only that
     /// person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub own_records: bool,
+    pub own_resources: bool,
     /// The hosts the app's `uses web` requests may reach (`web: ["example.com"]`). A request to any
     /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

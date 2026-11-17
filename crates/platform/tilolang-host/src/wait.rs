@@ -16,7 +16,7 @@ use tilolang_tilo::background::Waker;
 
 use crate::TilolangHost;
 
-/// The host's own wake: work off the frame (a module read, a join, a record's read, a
+/// The host's own wake: work off the frame (a module read, a join, a document's read, a
 /// publication) writes it, and the loop's wait ends. It owns both ends, so what woke the loop is
 /// taken out here ([`Self::consume`]) and nowhere else.
 pub struct Wake {

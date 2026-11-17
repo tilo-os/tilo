@@ -8,9 +8,9 @@
 //! once all the time: the Chat's conversation types and its channel types both declare a type
 //! `Message`, and two versions of one app share every id while their types differ. A
 //! process-wide table keyed by type id lets one loaded package overwrite the other's schema, and
-//! then a record of the first reads its fields by the second's shape — a trap, or a field read
+//! then a document of the first reads its fields by the second's shape — a trap, or a field read
 //! as missing. So a store keeps its own table, and hands it out as `&'static` schemas: one
-//! package version is registered once and read for as long as anything may hold its records.
+//! package version is registered once and read for as long as anything may hold its documents.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -39,7 +39,7 @@ pub enum MergeKind {
     Set,
     /// Per key.
     Map,
-    /// Stable item ids and order keys; the items are records.
+    /// Stable item ids and order keys; the items are documents.
     Collection,
     /// A nested record, stored as a map.
     Record,
@@ -88,7 +88,7 @@ pub struct FieldSchema {
     /// The field id: the key it is stored under.
     pub id: String,
     pub kind: MergeKind,
-    /// The type id of the items of a [`MergeKind::Collection`], or of a [`MergeKind::Record`].
+    /// The type id of the items of a [`MergeKind::Collection`], or of a [`MergeKind::Document`].
     pub record: Option<String>,
     /// What an unwritten register reads as; `null` when none.
     pub default: serde_json::Value,
@@ -118,9 +118,9 @@ impl FieldSchema {
         }
     }
 
-    /// The field holds records of the type `type_id`.
+    /// The field holds documents of the type `type_id`.
     #[must_use]
-    pub fn of_record(mut self, type_id: impl Into<String>) -> Self {
+    pub fn of_document(mut self, type_id: impl Into<String>) -> Self {
         self.record = Some(type_id.into());
         self
     }
@@ -200,10 +200,10 @@ pub struct TypeSchema {
     pub columns: Vec<ColumnSchema>,
     /// The outside kind it holds (`type Message (origin: imap.message)`), when it holds one.
     pub origin: Option<String>,
-    /// The field the type says names its records (`(title: subject)`), by id: the first text
+    /// The field the type says names its documents (`(title: subject)`), by id: the first text
     /// [`Self::naming_scan`] reads.
     pub title: Option<String>,
-    /// What one of its records is called while its title is empty, as the app wrote it
+    /// What one of its documents is called while its title is empty, as the app wrote it
     /// (`(untitled: "Untitled")`); its type's name when it declares none.
     pub untitled: Option<String>,
 }
@@ -231,7 +231,7 @@ impl TypeSchema {
         spoken(&self.name)
     }
 
-    /// What one of its records is called while its title is empty, in the words the app wrote.
+    /// What one of its documents is called while its title is empty, in the words the app wrote.
     #[must_use]
     pub fn untitled(&self) -> String {
         self.untitled.clone().unwrap_or_else(|| self.spoken_name())
@@ -252,7 +252,7 @@ impl TypeSchema {
     }
 
     /// Whether its origin derives its resources, and so they are never saved to a collaborative
-    /// record: the store keeps them in its unsaved layer ([`crate::store`]).
+    /// document: the store keeps them in its unsaved layer ([`crate::store`]).
     #[must_use]
     pub fn derived(&self) -> bool {
         self.origin
@@ -279,14 +279,14 @@ impl TypeSchema {
     }
 
     /// The order [`crate::reads::first_text`] looks at the fields: every text of the resource's
-    /// own first, then the records and collections it holds, in that order. A resource holding
+    /// own first, then the documents and collections it holds, in that order. A resource holding
     /// a text of its own is named by it before any item it holds. The order is the type's
     /// declaration order, never the fields' ids: ids are drawn per compile, so an order over
     /// them would name a type with two texts differently on every build.
     #[must_use]
     pub fn naming_scan(&self) -> Vec<&FieldSchema> {
         // The field the type says names it comes before the others, so a type whose first text
-        // is a fact of the record (a message's sender, a draft's address) is still named by what
+        // is a fact of the document (a message's sender, a draft's address) is still named by what
         // names it.
         let named = self.title.as_ref().and_then(|id| {
             self.fields
@@ -326,8 +326,8 @@ thread_local! {
 
 /// Every schema any package registered here, by type id, whichever table did: what a caller
 /// that holds no table of its own reads — a compiler tool, a layout check, a peer reading a
-/// workspace's record without its app's host. Every `register` fills it as well as its own
-/// table, so a record read through no host resolves the last version registered for its type;
+/// workspace's document without its app's host. Every `register` fills it as well as its own
+/// table, so a document read through no host resolves the last version registered for its type;
 /// a store, which holds one version, reads through its own and never through this.
 ///
 /// One for the process, not one per thread: a caller with no table of its own (a view opened
@@ -340,7 +340,7 @@ fn fallback() -> Arc<Schemas> {
 thread_local! {
     /// The schemas of each package this thread loaded, by the app it is of and the hash of its
     /// module: a record's type id names one package version, never another's. An action may be
-    /// applied (`Action::apply`) or described outside the store that holds its records — a
+    /// applied (`Action::apply`) or described outside the store that holds its documents — a
     /// receiver replaying it, a task's api — and resolves through its own package's table.
     static PACKAGES: std::cell::RefCell<BTreeMap<(String, String), Arc<PackageSchemas>>> =
         const { std::cell::RefCell::new(BTreeMap::new()) };
@@ -402,7 +402,7 @@ impl Schemas {
     }
 
     /// A table of a store's own: the packages it loads, and, for a type none of them declares
-    /// (a record naming another app's type), whatever package registered it on this thread.
+    /// (a document naming another app's type), whatever package registered it on this thread.
     #[must_use]
     pub fn store() -> Self {
         Self::over(fallback())
@@ -498,13 +498,13 @@ impl Schemas {
 /// Register `meta`'s package's schemas for the process's shared table of packages, by its app
 /// and `module` (the runtime's id of the loaded module, which an action records as its
 /// `authorship.module`): what an action applied or described outside the store that holds its
-/// records resolves its own package's types through ([`for_module`]).
+/// documents resolves its own package's types through ([`for_module`]).
 pub fn register_package(
     meta: &tilolang_runtime::meta::Meta,
     module: &tilolang_runtime::ids::ModuleHash,
 ) -> Arc<PackageSchemas> {
     // The types it declares it holds by its own version; a type it does not (the host's
-    // `Invocation`, a record of another app) it resolves by whatever registered it, as a store
+    // `Invocation`, a document of another app) it resolves by whatever registered it, as a store
     // does. An action that writes one of those would otherwise refuse under its package's table.
     let schemas = Arc::new(PackageSchemas {
         schemas: Arc::new(Schemas::over(fallback())),
@@ -564,7 +564,7 @@ pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
     Schemas::grabbed().lookup_in(app, name)
 }
 
-/// Record that `app` was published under the ids `before` earlier: the records the workspace holds
+/// Record that `app` was published under the ids `before` earlier: the documents the workspace holds
 /// under them are `app`'s, where they are and under the ids they have, and grants written under
 /// them are its (the process's one table, `tilo_action_policy::earlier`). Only what the installed
 /// catalogue believes is registered (the same publisher signed both): a package's own
@@ -579,12 +579,12 @@ pub fn previously(app: &str) -> Vec<String> {
     tilo_action_policy::earlier::held_of(app)
 }
 
-/// The app the records stored under `stored` belong to: the app that was published as `stored`
+/// The app the documents stored under `stored` belong to: the app that was published as `stored`
 /// before (`previously:`), else `stored` itself.
 ///
 /// Read where an app's id is the process's ([`tilo_action_policy::earlier`]): its `previously:`
-/// is fixed by the version of the app whose records these are, so a later version of another app
-/// renaming to it, another package loaded here for another host, never takes its records over.
+/// is fixed by the version of the app whose documents these are, so a later version of another app
+/// renaming to it, another package loaded here for another host, never takes its documents over.
 #[must_use]
 pub fn successor(stored: &str) -> String {
     tilo_action_policy::earlier::held_current(stored)
@@ -597,7 +597,7 @@ pub fn earlier_ids() -> EarlierIds {
     tilo_action_policy::earlier::held()
 }
 
-/// The keys the records of `app` may be stored under: its own id, then each it had before.
+/// The keys the documents of `app` may be stored under: its own id, then each it had before.
 #[must_use]
 pub fn stored_under(app: &str) -> Vec<String> {
     let mut out = vec![app.to_owned()];

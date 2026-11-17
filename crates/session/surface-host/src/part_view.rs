@@ -406,7 +406,7 @@ impl PartView {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 sink: None,
                 root: tilolang_tilo::host::RootView::default(),
             },

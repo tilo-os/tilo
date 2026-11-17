@@ -244,7 +244,7 @@ impl Fixture {
     }
 }
 
-/// `person`'s own record of Mail, the one an app with `records: .own` keeps.
+/// `person`'s own record of Mail, the one an app with `resources: .own` keeps.
 fn own_resource(person: &str) -> String {
     collab_types::OwnResource::of_person(person, OWN_KIND)
         .expect("a person's own record")

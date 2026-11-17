@@ -1,10 +1,10 @@
-//! Who the people of a record are, where they are, and who of them is writing a message: the
+//! Who the people of a document are, where they are, and who of them is writing a message: the
 //! workspace's member list and presence, as they arrive on an instance's own connection, and
 //! presence as the instance says it of its person there.
 //!
 //! The broker hands every connection the workspace's member list (`CollabEvent::Context`): what
 //! the instance's views call each person, its own person among them, as a native app's window
-//! calls them. It relays every member's presence frame on the record's route to the other
+//! calls them. It relays every member's presence frame on the document's route to the other
 //! connections on it. The instance's views read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
@@ -22,7 +22,7 @@ use ui::component_lifecycle::Heard;
 use ui::permissions::MemberId;
 use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
-/// What an instance heard of the record's members, and what it last said of its own.
+/// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
     app: String,
     me: MemberId,
@@ -40,7 +40,7 @@ pub struct Presence {
 }
 
 impl Presence {
-    /// Presence in the records of the app `app`, for the person `me`.
+    /// Presence in the documents of the app `app`, for the person `me`.
     #[must_use]
     pub fn new(app: &str, me: &str) -> Self {
         let mut heard = PresenceCtx::default();

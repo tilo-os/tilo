@@ -1,30 +1,30 @@
 //! The apps an app uses that are apps of their own: Today's cards over Tasks, Notes and Chat.
 //!
-//! A used package installed as an app keeps its records in that app's own record, never in the
-//! record of the app that uses it. The using app's runtime loads its package as another app's
+//! A used package installed as an app keeps its documents in that app's own document, never in the
+//! document of the app that uses it. The using app's runtime loads its package as another app's
 //! ([`Host::load_foreign_package`]): its views draw the resources from their readings, and what
-//! they change is asked of that app's api. Each used app is read here from its record, held
+//! they change is asked of that app's api. Each used app is read here from its document, held
 //! read-only, through its own package ([`UsedApp`]), and the readings the using app's views ask
-//! for are answered from it ([`answer`]), again whenever the record moves.
+//! for are answered from it ([`answer`]), again whenever the document moves.
 
 use std::collections::BTreeMap;
 
 use crate::host::{Host, HostError};
-use crate::records_service::{app_of, reading_of};
+use crate::resource_service::{app_of, reading_of};
 use crate::runtime::{Actor, Meta, ResourceRef, Runtime};
 
-/// One used app, read from its own record through its own package.
+/// One used app, read from its own document through its own package.
 pub struct UsedApp {
     app: String,
     host: Host,
     /// The resources whose readings the using app's runtime asked for, by published id, each
-    /// with its type (`<app>#<Type>`): what is read again when the record moves.
+    /// with its type (`<app>#<Type>`): what is read again when the document moves.
     handed: BTreeMap<String, String>,
 }
 
 impl UsedApp {
     /// The app of `packages`' last package, read for `person`: the packages before it are those
-    /// it uses that its record holds, in the order they load.
+    /// it uses that its document holds, in the order they load.
     ///
     /// # Errors
     /// A package does not load, or `packages` is empty.
@@ -53,13 +53,13 @@ impl UsedApp {
         &self.app
     }
 
-    /// The runtime the record is read through.
+    /// The runtime the document is read through.
     #[must_use]
     pub fn host(&self) -> &Host {
         &self.host
     }
 
-    /// Read again every resource handed to `runtime`, the record having moved. Whether a
+    /// Read again every resource handed to `runtime`, the document having moved. Whether a
     /// reading changed.
     pub fn refresh(&self, runtime: &Runtime) -> bool {
         let mut moved = false;
@@ -69,7 +69,7 @@ impl UsedApp {
         moved
     }
 
-    /// Hand `runtime` the reading of `id`, a resource of type `ty`. A resource the record does
+    /// Hand `runtime` the reading of `id`, a resource of type `ty`. A resource the document does
     /// not hold (yet) is left reading as it would start. Whether its reading changed.
     fn hand(&self, runtime: &Runtime, id: &str, ty: &str) -> bool {
         let Some(reading) = self.host.with_schemas(|| reading_of(&self.host, id)) else {

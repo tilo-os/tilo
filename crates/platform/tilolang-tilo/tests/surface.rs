@@ -8,9 +8,9 @@ use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
-    ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
+    ActionTypes, PlanRequest, Planner, publish_package, publish_resource, resource_id,
 };
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
 use crate::fixtures::{COUNTER, Replica, TASKS_SOURCE, TODO, field_id};
@@ -38,10 +38,10 @@ tilo_test_env::scenario! {
         let increment = &meta.actions[0];
         let counter = &surfaces[0];
         // By the action's id, the one its changes' claims name: its name is what the API offers
-        // it by, not what a record keeps.
+        // it by, not what a document keeps.
         assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
         assert!(counter.verb(&increment.name).is_none());
-        // The record parameter is the resource itself, so the verb takes none.
+        // The document parameter is the resource itself, so the verb takes none.
         assert!(
             counter
                 .verbs
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         let first = replica.host.next_ticket();
         view.edit(&input, &tilolang_runtime::value::Value::text("Groceries"))
             .unwrap();
-        // The keystroke is a change of the record as it is typed, and the change it queues is what
+        // The keystroke is a change of the document as it is typed, and the change it queues is what
         // the workspace commits.
         let committed = replica.host.take_committed_from(first);
         assert_eq!(committed.len(), 1, "the keystroke commits one change");
@@ -142,7 +142,7 @@ tilo_test_env::scenario! {
                 action.args
             );
         }
-        // What was typed is the edit the change records, never the text it leaves: the change names
+        // What was typed is the edit the change documents, never the text it leaves: the change names
         // the field, and its edit carries the words.
         assert!(
             !args.contains_key("value"),
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
 
     phase an_edit_verb_names_its_fields_the_app_declares;
     // A note's `edit-text` lists the type's editable fields by their **names** — `title` and
-    // `body`, never the internal ids a record stores them under — so an agent reads the field to
+    // `body`, never the internal ids a document stores them under — so an agent reads the field to
     // set from the verb itself.
     {
         let (meta, _) = note_package();
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             !choices.contains(&crate::fixtures::field_id(&meta, "Note", "body").as_str()),
-            "never the internal id a record stores the body under"
+            "never the internal id a document stores the body under"
         );
         // The flag verb offers the flag field the same way.
         let flag = note
@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
         let (meta, planner) = note_package();
         // The verb's own binding takes the name, and the edit reaches the note's body.
         let note_id = tilolang_tilo::publish::resource_id(APP_NOTE, "anote");
-        let bound = publish_record(
+        let bound = publish_resource(
             &ActionTypes::new(&meta, &planner, &SourceWords),
             "Note",
             "anote",
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             by_name.args["field"],
             json!(crate::fixtures::field_id(&meta, "Note", "body")),
-            "the name is mapped to the id the record stores it under"
+            "the name is mapped to the id the document stores it under"
         );
     }
 
@@ -351,7 +351,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_read_actions_answer_is_typed_by_the_surface;
-    // A native app's read action is an action of its record in the catalogue,
+    // A native app's read action is an action of its document in the catalogue,
     // typed by the value the surface publishes it answers with.
     {
         let text = r#"
@@ -393,7 +393,7 @@ fields = [{ name = "name", type = "text" }]
             .types
             .iter()
             .find(|ty| ty.name == "FormFields")
-            .expect("the answer's record is a type");
+            .expect("the answer's document is a type");
         let fields: Vec<(&str, &str)> = form
             .fields
             .iter()
@@ -419,7 +419,7 @@ fn bound_to(node: &tilolang_runtime::UiNode, field: &str) -> Option<String> {
 }
 
 /// A package with a note's shape — a title, a body and a flag — the same fields the Notes app
-/// declares; it stands alone so it compiles without another app's records. What it compiles to,
+/// declares; it stands alone so it compiles without another app's documents. What it compiles to,
 /// and the planner a surface that only builds its verbs is published with.
 fn note_package() -> (Meta, Arc<dyn Planner>) {
     const NOTE: &str = r#"app so.tilo.lang.note "Note"
@@ -481,7 +481,7 @@ tilo_test_env::scenario! {
     {
         let meta = counter();
         let planner: Arc<dyn Planner> = Arc::new(Recording);
-        let resource = publish_record(
+        let resource = publish_resource(
             &ActionTypes::new(&meta, &planner, &SourceWords),
             "Counter",
             "c1",
@@ -512,9 +512,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_parameter_of_another_apps_record_picks_a_resource_of_its_kind;
+    phase a_parameter_of_another_apps_document_picks_a_resource_of_its_kind;
     // A parameter of another app's record type (`list: todo.TodoList` in a package that uses the
-    // todo app) picks a resource of that kind, as one of the package's own records does: the API
+    // todo app) picks a resource of that kind, as one of the package's own documents does: the API
     // takes the catalogue's reference to it. Published as an array, no caller could pass one.
     {
         const BOARD: &str = r#"app so.tilo.board "Board"
@@ -542,7 +542,7 @@ action attach(b: Board, list: todo.TodoList) {
         let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, ""), (BOARD, "")]);
         let meta = &packages[1].meta;
         let planner: Arc<dyn Planner> = Arc::new(Recording);
-        let resource = publish_record(
+        let resource = publish_resource(
             &ActionTypes::new(meta, &planner, &SourceWords),
             "Board",
             "b1",
@@ -571,7 +571,7 @@ action attach(b: Board, list: todo.TodoList) {
     // An action's requirement is the app's to answer, and the app answers it for the one resource
     // a caller names: an API planning the action against an item whose rule does not hold is
     // refused with the rule's reason, where before the answer had to be published for every item
-    // of every record.
+    // of every document.
     {
         const CHORES: &str = r#"app so.tilo.chores "Chores"
 

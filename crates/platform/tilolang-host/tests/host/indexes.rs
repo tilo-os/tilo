@@ -1,9 +1,9 @@
-//! The indexes a host keeps for the windows it runs: one per workspace record, read by every
+//! The indexes a host keeps for the windows it runs: one per workspace document, read by every
 //! window of it.
 
 use super::*;
 
-/// Two windows of one app in one host share the record's index and both read it: the second reads
+/// Two windows of one app in one host share the document's index and both read it: the second reads
 /// what the first built rather than building it again, and nothing is kept per window. Copies an
 /// earlier build kept per window are removed.
 #[test]
@@ -11,13 +11,13 @@ fn two_windows_of_one_app_in_a_host_share_one_index_and_both_read_it() {
     let storage = tempfile::tempdir().unwrap();
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
-    let record_dir = storage
+    let document_dir = storage
         .path()
         .join(APP)
         .join("indexes")
         .join("workspaces")
         .join(&workspace);
-    let old_copy = record_dir.join("instance-1");
+    let old_copy = document_dir.join("instance-1");
     std::fs::create_dir_all(&old_copy).unwrap();
     std::fs::write(old_copy.join(format!("{APP}.index")), b"").unwrap();
     let mut host = TilolangHost::new(Some(storage.path().to_owned()), wake());
@@ -62,8 +62,8 @@ fn two_windows_of_one_app_in_a_host_share_one_index_and_both_read_it() {
         "one window built the indexes, and the other read what it built: {builds:?}"
     );
     assert!(
-        record_dir.join(format!("{APP}.index")).is_file(),
-        "the record's index is kept"
+        document_dir.join(format!("{APP}.index")).is_file(),
+        "the document's index is kept"
     );
     assert!(!old_copy.exists(), "a window's own copy is gone");
 }

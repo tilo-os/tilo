@@ -142,7 +142,7 @@ pub fn manifest_text(
     publisher: &str,
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
-    let record_kind = tilolang_tilo::meta::MetaExt::record_kind(meta);
+    let resource_type = tilolang_tilo::meta::MetaExt::resource_type(meta);
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
@@ -191,7 +191,7 @@ aarch64 = "aarch64"
 {capabilities}
 
 [resources]
-kinds = [{record_kinds}]
+kinds = [{resource_types}]
 
 {invokes}[publisher]
 identity = "ed25519:{publisher}"
@@ -234,9 +234,9 @@ ext = []
         tilolang = toml_string(&options.tilolang_runtime),
         // The app's workspace record, and the workspace's record of each person's own state of it,
         // which every app of the language opens.
-        record_kinds = [
-            toml_string(&record_kind),
-            toml_string(tilolang::PERSONAL_RECORD_KIND),
+        resource_types = [
+            toml_string(&resource_type),
+            toml_string(tilolang::PERSONAL_RESOURCE_TYPE),
         ]
         .join(", "),
         bin = toml_string(RUNTIME_BIN),

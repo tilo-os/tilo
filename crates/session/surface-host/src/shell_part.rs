@@ -971,7 +971,7 @@ impl ShellPart {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 sink: None,
                 // The shell's whole screen, not whatever root the package lists first.
                 root: screen_layer(),
@@ -1048,7 +1048,7 @@ impl ShellPart {
             .map(|package| package.meta.named_roots)
             .unwrap_or_default();
         for root in &roots {
-            if let Err(error) = host.root_record(self.instance.app(), &root.ty) {
+            if let Err(error) = host.root_resource(self.instance.app(), &root.ty) {
                 tracing::warn!(%error, "the shell's record could not be made");
                 return;
             }

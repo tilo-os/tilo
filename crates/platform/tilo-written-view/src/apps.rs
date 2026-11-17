@@ -1,7 +1,7 @@
 //! The workspace's apps as a written view names them.
 //!
 //! Every app ships its published surface (`app_fleet::surface`). Read as a package for readings
-//! ([`catalogue::published_record`]) it gives a view the app's types, its actions, and the record
+//! ([`catalogue::published_document`]) it gives a view the app's types, its actions, and the record
 //! the app keeps for the workspace as a root (`tasks.tracker`). A view names an app by the last
 //! part of its id, as every written view does.
 //!
@@ -50,7 +50,7 @@ struct Verb {
 impl App {
     /// The app `id` that people call `title`, from its surface file.
     pub(crate) fn of(id: &str, title: &str, surface: &str) -> Result<Self, String> {
-        let meta = catalogue::published_record(id, title, surface)?;
+        let meta = catalogue::published_document(id, title, surface)?;
         let verbs = catalogue::parse_surfaces(surface)?
             .into_iter()
             .flat_map(|surface| surface.verbs)

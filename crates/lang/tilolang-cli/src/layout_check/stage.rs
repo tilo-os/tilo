@@ -10,7 +10,7 @@ use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::memory::MemoryRecord;
+use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::tilolang::Compiled;
 use ui::headless::FrameHarness;
@@ -250,7 +250,7 @@ impl Staged {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 root: tilolang_tilo::host::RootView {
                     root: staging.root.clone(),
                     view: None,
@@ -264,7 +264,7 @@ impl Staged {
             names,
             Box::new(app_end),
         );
-        let mut record = MemoryRecord::new(staging.record.unwrap_or_default(), ME.to_owned());
+        let mut record = MemoryDocument::new(staging.record.unwrap_or_default(), ME.to_owned());
 
         instance.sync(Some(record.doc()));
         // The window is laid out for a still picture: no frame comes to take in the indexes its
@@ -291,7 +291,7 @@ impl Staged {
                     .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
             });
             for ty in roots {
-                host.root_record(app, &ty)
+                host.root_resource(app, &ty)
                     .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
@@ -433,7 +433,7 @@ impl Staged {
             field("Layout", "places"),
             field("LayoutPlace", "key"),
             field("LayoutPlace", "shows"),
-            field("LayoutPlace", "record"),
+            field("LayoutPlace", "resource"),
         ) else {
             return Vec::new();
         };
@@ -450,7 +450,7 @@ impl Staged {
         let Some(tilolang_tilo::DynValue::Collection(items)) = held.get(&places) else {
             return Vec::new();
         };
-        let text = |item: &tilolang_tilo::DynRecord, id: &str| -> String {
+        let text = |item: &tilolang_tilo::DynResource, id: &str| -> String {
             match item.get(id) {
                 Some(tilolang_tilo::DynValue::Text(said)) => said.clone(),
                 Some(tilolang_tilo::DynValue::Register(serde_json::Value::String(said))) => {

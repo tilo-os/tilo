@@ -86,7 +86,7 @@ impl TaskCatalogue for SessionCatalogue {
         Catalogue {
             apps,
             documents_under,
-            changed_at_record: kept,
+            changed_at_document: kept,
         }
     }
 }

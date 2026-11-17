@@ -367,9 +367,9 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
         .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
     let scheme = scheme.to_ascii_lowercase();
     // Every app opens its own records; the record names nothing outside them.
-    let own_record = scheme == collab_types::DOCUMENT_URI_SCHEME;
+    let own_document = scheme == collab_types::DOCUMENT_URI_SCHEME;
     if rest.is_empty()
-        || !(own_record || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
+        || !(own_document || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
     {
         return Err(RunError::InvalidOpenUri(format!(
             "{} does not declare scheme {scheme}",
@@ -509,11 +509,11 @@ mod headless_console_launch_tests {
                     ..Default::default()
                 };
                 validate_open_uri(&manifest, &accepted).unwrap();
-                let own_record = RunOptions {
+                let own_document = RunOptions {
                     open_uri: Some("tilo-document:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
                     ..Default::default()
                 };
-                validate_open_uri(&manifest, &own_record)
+                validate_open_uri(&manifest, &own_document)
                     .expect("every app opens its own records unclaimed");
 
                 for uri in [

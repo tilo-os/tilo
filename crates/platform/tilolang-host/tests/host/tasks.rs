@@ -1,5 +1,5 @@
 //! Tasks in a hosted window: the palette and the form that make a task, the person's today, and
-//! Today over Tasks' own record on one broker, its cards reading that record and what it changes
+//! Today over Tasks' own document on one broker, its cards reading that document and what it changes
 //! of it running at Tasks' api.
 
 use super::*;
@@ -223,10 +223,10 @@ tilo_test_env::scenario! {
         the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
     }
 
-    phase a_task_no_window_shows_opens_from_search_through_its_record;
+    phase a_task_no_window_shows_opens_from_search_through_its_document;
     // A task's entry in the session's search index opens it in a window that shows none of its
     // items: the window stands on Today, so the Inbox task is published by no window, and the entry
-    // names the `open` of the record that holds it, which every window showing the record publishes
+    // names the `open` of the document that holds it, which every window showing the document publishes
     // and which a person choosing it in the palette runs as it is. Told the task, it takes the window
     // to the place that holds it — the Inbox, for one with no day — and opens the task there.
     {
@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             record.prompt_param(),
             None,
-            "chosen as it is, the record's `open` asks for nothing"
+            "chosen as it is, the document's `open` asks for nothing"
         );
         let arguments = serde_json::json!({ "anchor": entry.resource }).to_string();
         inbox.borrow_mut().push_back(CollabEvent::Invocation {
@@ -414,7 +414,7 @@ fn add_to_inbox(host: &mut TilolangHost, window: &mut Window, title: &str) {
     settle(host, window);
 }
 
-/// The day the task `task` is due, as its record holds it.
+/// The day the task `task` is due, as its document holds it.
 fn due_of(hosted: &Hosted, task: &Value) -> Option<String> {
     let Value::Ref(task) = task else {
         panic!("a task is a resource: {task:?}")
@@ -498,7 +498,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
     );
 }
 
-/// An instance of `bundle` for `attributes` in `host` on `route`, over an empty record: its
+/// An instance of `bundle` for `attributes` in `host` on `route`, over an empty document: its
 /// window, what its connection sent, what the broker delivers to it and the other routes it
 /// joined.
 fn joined_instance(
@@ -519,7 +519,7 @@ fn joined_instance(
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(
+    let record = InstanceDocument::new(
         automerge::AutoCommit::new(),
         manager,
         route.clone(),
@@ -528,7 +528,7 @@ fn joined_instance(
     let kept = host.kept(&attributes.app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_record(
+    let hosted = Hosted::with_document(
         attributes,
         record,
         Arc::new(bundle),
@@ -547,7 +547,7 @@ fn joined_instance(
     )
 }
 
-/// Today and Tasks on one broker, each over its own record, as their windows run in a session.
+/// Today and Tasks on one broker, each over its own document, as their windows run in a session.
 struct Shell {
     host: TilolangHost,
     tasks: Window,
@@ -612,7 +612,7 @@ impl Shell {
             .unwrap()
     }
 
-    /// Run the host until it settles, the broker carrying between the two: Tasks' record to
+    /// Run the host until it settles, the broker carrying between the two: Tasks' document to
     /// Today, which joined it to read, and what Today asks of Tasks' api to Tasks.
     fn settle(&mut self) {
         let began = std::time::Instant::now();
@@ -709,7 +709,7 @@ impl Shell {
         format!("{:?}", self.today.root).contains(text)
     }
 
-    /// The titles of the tasks Tasks' own record holds.
+    /// The titles of the tasks Tasks' own document holds.
     fn titles_in_tasks(&self) -> Vec<String> {
         let host = self.tasks_instance().instance().host().unwrap();
         let root = host.root_of(TASKS).unwrap();
@@ -746,16 +746,16 @@ impl Shell {
     }
 }
 
-/// Today's cards read Tasks' own record, joined read-only on Today's connection: a task due today
+/// Today's cards read Tasks' own document, joined read-only on Today's connection: a task due today
 /// that Tasks makes shows in Today, one checked off in Tasks leaves it, and Today's Morning
-/// cleanup clears the finished tasks at Tasks' api, in Tasks' record. Today's record holds none
+/// cleanup clears the finished tasks at Tasks' api, in Tasks' document. Today's document holds none
 /// of Tasks' resources.
 #[test]
-fn today_reads_tasks_from_its_record_and_clears_it_at_its_api() {
+fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
     let (mut shell, joined) = Shell::new();
     assert!(
         joined.borrow().contains(&shell.tasks_route),
-        "Today joined Tasks' record: {:?}",
+        "Today joined Tasks' document: {:?}",
         joined.borrow()
     );
     assert!(
@@ -763,7 +763,7 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_api() {
             .borrow()
             .iter()
             .any(|route| route.app_id == "so.tilo.lang.discussion"),
-        "Discussion is no app here: its records are the apps' that use it"
+        "Discussion is no app here: its documents are the apps' that use it"
     );
     shell.settle();
 
@@ -817,7 +817,7 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_api() {
     shell.settle();
     assert!(
         shell.titles_in_tasks().is_empty(),
-        "the finished task went from Tasks' own record"
+        "the finished task went from Tasks' own document"
     );
     let filed = shell.today_sent.borrow().iter().any(|request| {
         matches!(request, CollabRequest::RemoteAction {
@@ -833,6 +833,6 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_api() {
         .unwrap();
     assert!(
         today.instance().host().unwrap().root_of(TASKS).is_err(),
-        "Today's record holds no root of Tasks"
+        "Today's document holds no root of Tasks"
     );
 }

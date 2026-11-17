@@ -1,9 +1,9 @@
 /// The person's shell: which parts the top bar and the dock have, in what order, on which
-/// edge, how they look and when they show. It is the person's own record, synced to their
+/// edge, how they look and when they show. It is the person's own document, synced to their
 /// devices with history and undo; every change is one of the actions below, so an agent
 /// acting for the person changes it exactly as they do, and undo takes any of it back.
 ///
-/// shell.md's model: a shell is a view of the person's layout. This record is the
+/// shell.md's model: a shell is a view of the person's layout. This document is the
 /// layout's chrome — the bar and the dock — and the rest of the person's layout
 /// (windows, strips, canvas places) is the shell's own layout beside it.
 /// The edge of the screen a part rides.
@@ -105,7 +105,7 @@ enum ChromePreset {
     windows_desktop (icon: .app_window)
 }
 
-/// The person's own shell record, reached as `shell` (`root shell: Shell`).
+/// The person's own shell document, reached as `shell` (`root shell: Shell`).
 type Shell {
     /// The preset the settings were last made from; `tuned` says whether the person has
     /// changed a setting since.
@@ -140,7 +140,7 @@ type Shell {
     dock_zoom: Bool = false
     /// Whether the chosen style's own settings stand over the shell (`style_settings`), opened
     /// from the bar's style menu: the one place a person changes the style they show without an
-    /// agent, as `shell.md` §6 says. It is the person's record, so
+    /// agent, as `shell.md` §6 says. It is the person's document, so
     /// it survives a switch and an agent opens and closes it as they do.
     settings_open: Bool = false
     /// Strips: whether a strip of several places shows its tab bar. Off, the strip shows the
@@ -160,7 +160,7 @@ type BarPart {
     /// What the part is; the bar draws it from this, so a part moved is a part the same, and its
     /// name is the one that part goes by.
     kind: BarPartKind = .menu
-    /// Whether it shows on the bar; a part off keeps its place in the record.
+    /// Whether it shows on the bar; a part off keeps its place in the document.
     shown: Bool = true
 }
 
@@ -211,7 +211,7 @@ root shell: Shell
 
 /// A shell that has never been arranged: the bar's parts and the dock's, in the order the
 /// default shell shows them. The platform runs it once on the person's first shell, as it
-/// runs an app's migrations (`migration action`), so the record is theirs to change from
+/// runs an app's migrations (`migration action`), so the document is theirs to change from
 /// then on.
 migration action seed(s: Shell) {
     if s.bar_parts.is_empty() {
@@ -516,7 +516,7 @@ action move_item(s: Shell, item: DockItem, before: DockItem) (icon: .arrow_up_do
 }
 
 /// Puts a dock item at `position`, counted from the leading edge: what a drag that names a
-/// place gives. An item the person's record does not hold yet — an app running on the dock
+/// place gives. An item the person's document does not hold yet — an app running on the dock
 /// that they never pinned, which the dock drew from the shell — is pinned where it lands, so
 /// moving an app they already run keeps it on the dock after it closes.
 action place_item(s: Shell, item: DockItem, position: Int) (icon: .arrow_up_down, label: "Move") {

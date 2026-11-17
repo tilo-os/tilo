@@ -239,7 +239,7 @@ impl Broker {
         Rc::clone(&self.routed)
     }
 
-    /// The records every app of the workspace opens beside its own, as the connection joined
+    /// The documents every app of the workspace opens beside its own, as the connection joined
     /// them.
     #[must_use]
     pub fn routes(&self) -> Rc<RefCell<Vec<RouteSpec>>> {
@@ -289,7 +289,7 @@ impl PeerTransport for Broker {
         self.joined.take().map(Ok)
     }
 
-    /// Admits every route the connection joins: the records every app of the workspace opens
+    /// Admits every route the connection joins: the documents every app of the workspace opens
     /// beside its own (its chunks, each person's own state) travel on routes of their own, and a
     /// broker that refused the join would close the instance's whole connection.
     fn join_route(&mut self, route: RouteSpec, _: ResourceType) -> Result<(), String> {

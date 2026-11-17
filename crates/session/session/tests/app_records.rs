@@ -231,10 +231,10 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
 
 /// What a program's find of `words` answers over the Tasks record `bytes`, as an agent's program
 /// reads it: the record the API hands the task's host, read with the app's own package
-/// ([`tilolang_tilo::task_records::RecordReads`]).
+/// ([`tilolang_tilo::task_documents::DocumentReads`]).
 fn program_find(bytes: &[u8], words: &str) -> String {
     struct Held(Vec<u8>);
-    impl tilolang_tilo::task_records::RecordSource for Held {
+    impl tilolang_tilo::task_documents::DocumentSource for Held {
         fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
             if (app, record) != (TASKS, "") {
                 return Err(format!("the task reads Tasks' record, not {app}:{record}"));
@@ -249,7 +249,7 @@ fn program_find(bytes: &[u8], words: &str) -> String {
         .find(|app| app.app_id == TASKS)
         .expect("Tasks is installed");
     let bundle = Bundle::read(&tasks.payload_root).expect("Tasks' payload");
-    let reads = tilolang_tilo::task_records::RecordReads::new(
+    let reads = tilolang_tilo::task_documents::DocumentReads::new(
         &[bundle],
         std::collections::BTreeMap::new(),
         Some(PERSON),
@@ -280,12 +280,12 @@ fn tasks_bundle() -> Bundle {
 /// as the window holds it and committed to it as the window's step, past the record it was made on.
 fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
     struct Held(Vec<u8>);
-    impl tilolang_tilo::task_records::RecordSource for Held {
+    impl tilolang_tilo::task_documents::DocumentSource for Held {
         fn record(&self, _app: &str, _record: &str) -> Result<Option<Vec<u8>>, String> {
             Ok(Some(self.0.clone()))
         }
     }
-    let reads = tilolang_tilo::task_records::RecordReads::new(
+    let reads = tilolang_tilo::task_documents::DocumentReads::new(
         &[tasks_bundle()],
         std::collections::BTreeMap::new(),
         Some(person),
@@ -383,7 +383,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
         host.load_bundle(&tasks_bundle())
             .expect("Tasks' package loads")
             .meta
-            .record_kind()
+            .resource_type()
     };
     std::thread::scope(|scope| {
         // The window's own path to its workspace: its collaboration connection and its identity,
@@ -412,7 +412,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
             // The window opens its record as an instance does: the workspace's committed copy.
             let documents: std::rc::Rc<dyn durable_store::DurableStore> =
                 std::rc::Rc::new(durable_store::MemoryStore::default());
-            let mut record = tilolang_tilo::instance::record::InstanceRecord::open(
+            let mut record = tilolang_tilo::instance::document::InstanceDocument::open(
                 manager,
                 &documents,
                 person.clone(),

@@ -52,10 +52,10 @@ pub struct Convert<'a> {
     /// What a reference the text projects shows of its own content, one level deep: asked for
     /// the references the text projects, and no other.
     pub preview: &'a dyn Fn(&Reference) -> Option<Vec<rich_wire::Run>>,
-    /// The catalogue's reference to a record, and how it reads for the person reading: what a
+    /// The catalogue's reference to a document, and how it reads for the person reading: what a
     /// component offered it as a link shows.
     pub link: &'a dyn Fn(&ResourceRef) -> (String, String),
-    /// The kind of a record and the id its app publishes it under: what a control that edits or
+    /// The kind of a document and the id its app publishes it under: what a control that edits or
     /// toggles a field of it names it by, as an action on it is named.
     pub published: &'a dyn Fn(&ResourceRef) -> Option<(String, String)>,
 }
@@ -115,9 +115,9 @@ impl Convert<'_> {
         }
     }
 
-    /// The window's value of the prop `name` of a node of the component `kind`: a record the
+    /// The window's value of the prop `name` of a node of the component `kind`: a document the
     /// component offers as a link is named as the catalogue names it and reads as it reads for
-    /// the person now, which the view names by the record itself.
+    /// the person now, which the view names by the document itself.
     fn prop(&self, kind: &str, name: &str, value: &Value) -> wire::Value {
         let ty = wire::description(kind)
             .and_then(|description| description.prop(name))
@@ -128,7 +128,7 @@ impl Convert<'_> {
         }
     }
 
-    /// The window's value of `value` as a value of the prop's `ty`: a record as what names it
+    /// The window's value of `value` as a value of the prop's `ty`: a document as what names it
     /// and how it reads now, in a list too.
     fn typed(&self, value: &Value, ty: &wire::PropType) -> wire::Value {
         use wire::PropType as Type;

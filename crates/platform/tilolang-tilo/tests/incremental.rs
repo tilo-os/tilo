@@ -13,7 +13,7 @@ use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, Publications, publish_tree, resource_id,
 };
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 use tilolang_tilo::search::{every_hit, hits};
 
 use crate::fixtures::{COUNTER, Replica, TODO, field_id};
@@ -207,14 +207,14 @@ tilo_test_env::scenario! {
         // surface nothing shows.
         assert!(
             published.trees().is_empty(),
-            "a window that showed nothing published {} records",
+            "a window that showed nothing published {} documents",
             published.trees().len()
         );
-        // What the window shows of one item: its record, published down to it, and nothing of the
-        // other two the record holds.
+        // What the window shows of one item: its document, published down to it, and nothing of the
+        // other two the document holds.
         let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
         let trees = published.reached(&ada.host, &planner, APP, &shown);
-        let reached = trees.first().expect("the item's record is published");
+        let reached = trees.first().expect("the item's document is published");
         assert_eq!(reached.id.as_str(), resource_id(APP, &root));
         assert_eq!(
             reached
@@ -228,13 +228,13 @@ tilo_test_env::scenario! {
         assert_eq!(
             published.visited(),
             1,
-            "what the window shows of three items reads one record"
+            "what the window shows of three items reads one document"
         );
         // Nothing moved and the window shows what it showed: a frame reads nothing again.
         let again = published.reached(&ada.host, &planner, APP, &shown);
         assert!(
             Rc::ptr_eq(&again[0], &trees[0]),
-            "a frame that showed the same read the record again"
+            "a frame that showed the same read the document again"
         );
         // A caller that asks about the whole workspace reads all of it, and publishes nothing of
         // it to the window.
@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
         let (mut ada, meta, root) = workspace();
         let ids = item_ids(&ada, &meta, &root);
         let planner: Arc<dyn Planner> = Arc::new(Refusing);
-        // A window publishes nothing up front: a record is read when a window reaches it.
+        // A window publishes nothing up front: a document is read when a window reaches it.
         let mut windowed = Publications::new(&ada.host);
         windowed.window();
         assert!(windowed.update(&ada.host, &planner).is_empty());
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             windowed.visited(),
             1,
-            "what the window shows of three items reads one record"
+            "what the window shows of three items reads one document"
         );
         // A host without frames publishes the whole workspace, read on another thread, and a
         // change made while it reads is taken in after what it read.
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             shape(&published.trees()[&root]),
             published_anew(&ada, &meta, &root),
-            "every record is published for a caller that reads the whole workspace"
+            "every document is published for a caller that reads the whole workspace"
         );
         retype(&mut ada, &meta, &root, &ids[1], "oat milk");
         published.settle(&ada.host, &planner);
@@ -513,8 +513,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_turn_publishes_only_the_record_it_changed;
-    // A turn publishes the records it changed: the counter's record, which nothing typed into
+    phase a_turn_publishes_only_the_document_it_changed;
+    // A turn publishes the documents it changed: the counter's document, which nothing typed into
     // the to-do list reaches, is neither read nor published again.
     {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
@@ -529,7 +529,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             published.trees().len(),
             2,
-            "both records of the workspace are published"
+            "both documents of the workspace are published"
         );
         let (held, looked_at, sweeps) = (
             Rc::clone(&published.trees()[&counter]),
@@ -542,16 +542,16 @@ tilo_test_env::scenario! {
         assert_eq!(
             published.visited().saturating_sub(looked_at),
             1,
-            "adding an item looked at more than its record"
+            "adding an item looked at more than its document"
         );
         assert_eq!(
             published.sweeps(),
             sweeps,
-            "adding an item read every record of the workspace in full"
+            "adding an item read every document of the workspace in full"
         );
         assert!(
             Rc::ptr_eq(&held, &published.trees()[&counter]),
-            "a change to the to-do list published the counter's record again"
+            "a change to the to-do list published the counter's document again"
         );
     }
 
@@ -657,7 +657,7 @@ tilo_test_env::scenario! {
         };
         edit_text(&mut ada, &root, thread_path("draft"), "hel");
         // Whether the draft names the conversation depends on where its field sorts among the
-        // conversation's texts: the record is reported exactly when its tree changed, and is the
+        // conversation's texts: the document is reported exactly when its tree changed, and is the
         // very same tree when it did not.
         let was = Rc::clone(&published.trees()[&root]);
         let touched = published.update(&ada.host, &planner);
@@ -789,7 +789,7 @@ tilo_test_env::scenario! {
         assert_eq!(listed(), item_ids(&ada, &meta, &root));
 
         // Added by the runtime here: told when the action commits, with the step its item took
-        // into the listing, and not again when the record holds the action's change, which moves
+        // into the listing, and not again when the document holds the action's change, which moves
         // nothing those who read were told.
         let add_action = meta.actions.iter().find(|a| a.name == "add").unwrap();
         ada.host
@@ -948,12 +948,12 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn a_record_is_labelled_by_whatever_names_it;
+    fn a_document_is_labelled_by_whatever_names_it;
 
-    phase a_title_names_a_record_whatever_its_field_ids_are;
-    // A record is published under the name its declaration says it has, and a change to a field
+    phase a_title_names_a_document_whatever_its_field_ids_are;
+    // A document is published under the name its declaration says it has, and a change to a field
     // that names it (a `title`) relabels it, whatever the field's generated id sorts as: an order
-    // over ids would name the record by another text on a build whose ids differ, so naming is
+    // over ids would name the document by another text on a build whose ids differ, so naming is
     // read in the order the source declares (the `title` first, a `body`'s first line next, the
     // rest as declared), never in the order the ids happen to compare.
     {
@@ -969,9 +969,9 @@ tilo_test_env::scenario! {
             );
         };
         let title = |published: &Publications| published.trees()[&root].label.clone();
-        check(&ada, &published, "publishing the record");
+        check(&ada, &published, "publishing the document");
 
-        // The title is a text of the record's own, so it names the record even though the record
+        // The title is a text of the document's own, so it names the document even though the document
         // also holds items with texts (its list's `milk`, `eggs`, `bread`).
         let (title_field, list_field) = (
             field_id(&meta, "TodoList", "title"),
@@ -981,7 +981,7 @@ tilo_test_env::scenario! {
             title_field, list_field,
             "the title and the list are fields of their own"
         );
-        // Retype the title: the record is named by it now.
+        // Retype the title: the document is named by it now.
         ada.apply(&DynAction {
             app: APP.to_owned(),
             kind: "tl.so.tilo.todo.TodoList".to_owned(),
@@ -1003,10 +1003,10 @@ tilo_test_env::scenario! {
         assert_eq!(
             title(&published),
             "Shopping",
-            "the title names the record, not its first item"
+            "the title names the document, not its first item"
         );
 
-        // Clear it: the record holds no title now, and it is the app's one list, so the app's
+        // Clear it: the document holds no title now, and it is the app's one list, so the app's
         // name stands — as reading it anew finds.
         ada.apply(&DynAction {
             app: APP.to_owned(),
@@ -1033,8 +1033,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_label_follows_whatever_names_the_record;
-    // What names a record is a text of its own (a `title` field, or its `body`'s first line); its
+    phase the_label_follows_whatever_names_the_document;
+    // What names a document is a text of its own (a `title` field, or its `body`'s first line); its
     // items name it only where it is not its app's root.
     // A republish reads it again only where a change can move it, and gets it right each time.
     {

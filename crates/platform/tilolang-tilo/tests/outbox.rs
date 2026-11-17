@@ -1,4 +1,4 @@
-//! Outside effects wait in the workspace record for the device that owns them: approved twice, the
+//! Outside effects wait in the workspace document for the device that owns them: approved twice, the
 //! letter leaves once.
 
 use automerge::AutoCommit;
@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
             sent_by_ada.delivered(),
             sent_by_grace.delivered()
         );
-        // Settled in the record: no device has anything left to carry out.
+        // Settled in the document: no device has anything left to carry out.
         assert_eq!(ada.host.store().outbox_pending_count(), 0);
         assert_eq!(grace.host.store().outbox_pending_count(), 0);
     }
@@ -157,14 +157,14 @@ tilo_test_env::scenario! {
     {
         use tilo_actions::ActionKind::{Outside, Undoable};
         let (ada, invocation) = suggested_workspace();
-        // Creating the root is a change of the record. The host offers its commit as one, which a
-        // workspace whose grants let the app author the record allows.
+        // Creating the root is a change of the document. The host offers its commit as one, which a
+        // workspace whose grants let the app author the document allows.
         let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
         fresh.host.root_of("test.letters").unwrap();
         let created = fresh.host.take_committed();
         assert_eq!(created.len(), 1);
         assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
-        // Approving the send queues the letter: committing that reaches outside the record.
+        // Approving the send queues the letter: committing that reaches outside the document.
         ada.host
             .runtime()
             .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
@@ -294,11 +294,11 @@ action new_draft(letters: Letters) -> Draft (icon: .plus) {
 action post_and_record(d: Draft) {
     d.sent = true
     outside("post", (d.to,))
-    record(d)
+    document(d)
 }
 
 /// Seals the posted letter in the archive.
-action record(d: Draft) {
+action document(d: Draft) {
     outside("smtp.send", (d.to,))
     d.sealed = true
 }

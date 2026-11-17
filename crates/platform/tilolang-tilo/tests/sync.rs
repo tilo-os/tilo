@@ -1,4 +1,4 @@
-//! The store follows the workspace record by its changes: a peer's edit of one item reaches the
+//! The store follows the workspace document by its changes: a peer's edit of one item reaches the
 //! runtime as exactly that item's field, and the mirror is never copied.
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use tilolang_runtime::store::{ChangeSummary, FieldKey, Store as _};
 use tilolang_runtime::value::Value;
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, TODO, field_id};
 
@@ -27,7 +27,7 @@ fn workspace() -> (Replica, Replica, tilolang_runtime::Meta, String) {
 /// ids.
 fn workspace_of(n: usize) -> (Replica, Replica, tilolang_runtime::Meta, String, String) {
     use tilo_resource::{Collection, Model as _};
-    use tilolang_tilo::record::DynRecord;
+    use tilolang_tilo::resource::DynResource;
 
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let todo = packages[0].clone();
@@ -44,7 +44,7 @@ fn workspace_of(n: usize) -> (Replica, Replica, tilolang_runtime::Meta, String, 
         let schema = tilolang_tilo::schema::lookup(&item.id).unwrap();
         let mut items = Collection::default();
         for i in 0..n {
-            let mut record = DynRecord::empty(schema).unwrap();
+            let mut record = DynResource::empty(schema).unwrap();
             if let Some(DynValue::Text(text)) = record.get_mut(&field_id(&meta, "Item", "text")) {
                 *text = format!("item {i:04}");
             }
@@ -55,7 +55,8 @@ fn workspace_of(n: usize) -> (Replica, Replica, tilolang_runtime::Meta, String, 
             .iter()
             .find(|held| held.name == "TodoList")
             .unwrap();
-        let mut made = DynRecord::empty(tilolang_tilo::schema::lookup(&list.id).unwrap()).unwrap();
+        let mut made =
+            DynResource::empty(tilolang_tilo::schema::lookup(&list.id).unwrap()).unwrap();
         if let Some(DynValue::Collection(slot)) =
             made.get_mut(&field_id(&meta, "TodoList", "items"))
         {
@@ -78,7 +79,7 @@ fn workspace_of(n: usize) -> (Replica, Replica, tilolang_runtime::Meta, String, 
 }
 
 /// A person typing `text` into the item `item`, as a bound control's edit writes it: the store
-/// holds the edit and the host commits it to the record when it next takes what the store
+/// holds the edit and the host commits it to the resource when it next takes what the store
 /// queued.
 fn typed(ada: &Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str, text: &str) {
     use tilolang_runtime::store::{ChangeNote, Mutation};
@@ -109,7 +110,7 @@ fn typed(ada: &Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str, t
         .unwrap();
 }
 
-/// What the list's record holds: its title, and its items' texts in order.
+/// What the list's document holds: its title, and its items' texts in order.
 fn listed(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> (String, Vec<String>) {
     let record = replica.host.store().record(root).unwrap();
     let title = match record.get(&field_id(meta, "TodoList", "title")) {
@@ -257,7 +258,7 @@ tilo_test_env::scenario! {
         expected.sort_by(|left, right| left.field.cmp(&right.field));
         assert_eq!(
             fields, expected,
-            "only the retyped item, not the whole record"
+            "only the retyped item, not the whole document"
         );
     }
 
@@ -283,7 +284,7 @@ tilo_test_env::scenario! {
         assert_eq!(item_ids(&ada, &meta, &root).len(), 4);
     }
 
-    phase the_mirror_follows_the_record_without_copying_it;
+    phase the_mirror_follows_the_document_without_copying_it;
     {
         let (mut ada, mut grace, meta, root) = workspace();
         let ids = item_ids(&ada, &meta, &root);
@@ -293,7 +294,7 @@ tilo_test_env::scenario! {
         let stats = ada.host.store().stats();
         assert_eq!(stats.full_syncs, 0, "{stats:?}");
         assert!(stats.incremental_syncs >= 2, "{stats:?}");
-        // The runtime reads what the record holds.
+        // The runtime reads what the document holds.
         let items = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
         let first = items.item(&ids[0], type_id(&meta, "Item"));
         assert_eq!(
@@ -306,7 +307,7 @@ tilo_test_env::scenario! {
     phase a_trial_run_takes_back_only_its_own_writes;
     {
         let (mut ada, _grace, meta, root) = workspace();
-        // A press the executor has not committed yet: the runtime sees it, the record does not.
+        // A press the executor has not committed yet: the runtime sees it, the document does not.
         let view = ada.view(APP);
         let title = crate::fixtures::field_id(&meta, "TodoList", "title");
         let input = find_bound(view.tree(), &title).unwrap();
@@ -390,7 +391,7 @@ tilo_test_env::scenario! {
         let ids = item_ids(&ada, &meta, &root);
         let committed = ada.log.len();
 
-        // Ada types into two items and the list's title. The record has none of it: the host has
+        // Ada types into two items and the list's title. The document has none of it: the host has
         // not taken what the store queued.
         typed(&ada, &meta, &root, &ids[0], "oat milk");
         typed(&ada, &meta, &root, &ids[2], "rye");
@@ -401,14 +402,14 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.log.len(),
             committed,
-            "nothing of it is the record's yet"
+            "nothing of it is the document's yet"
         );
 
         // Grace's change arrives first: she adds an item and retypes another.
         add(&mut grace, &meta, &root, "tea");
         retype(&mut grace, &meta, &root, &ids[1], "eggs, large");
         ada.sync_with(&mut grace);
-        assert_eq!(ada.log.len(), committed, "still none of it is the record's");
+        assert_eq!(ada.log.len(), committed, "still none of it is the document's");
 
         // Every edit is still what the store answers, and Grace's change is there too.
         let (held_title, texts) = listed(&ada, &meta, &root);
@@ -428,7 +429,7 @@ tilo_test_env::scenario! {
             "the window shows every edit, and the peer's change"
         );
 
-        // The host takes what the store queued: the record holds every edit, and a start from it
+        // The host takes what the store queued: the document holds every edit, and a start from it
         // reads the same.
         ada.commit();
         assert_eq!(
@@ -471,7 +472,7 @@ fn a_sync_of_one_unrelated_change_takes_no_row_of_a_thousand_away() {
     let before = read(&ada);
     assert_eq!(before.len(), 1_000, "a listing of a thousand items");
 
-    // Ada adds three items: the store's writes, which the record does not hold yet.
+    // Ada adds three items: the store's writes, which the document does not hold yet.
     let add = meta
         .actions
         .iter()

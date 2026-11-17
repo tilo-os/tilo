@@ -45,8 +45,8 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             [one] => options.push(format!("previously: {one}")),
             many => options.push(format!("previously: [{}]", many.join(", "))),
         }
-        if app.own_records {
-            options.push("records: .own".to_owned());
+        if app.own_resources {
+            options.push("resources: .own".to_owned());
         }
         if !app.web.is_empty() {
             let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();

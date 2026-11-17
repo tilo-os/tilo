@@ -22,7 +22,7 @@ impl Store for TiloStore {
         }
     }
 
-    /// The store holds only the records its reader was sent: a resource of a package here
+    /// The store holds only the documents its reader was sent: a resource of a package here
     /// reads by what it is called now when the store holds it, as not shared when it does not.
     fn reading(
         &self,
@@ -31,7 +31,7 @@ impl Store for TiloStore {
         crate::reading::reading(self, reference)
     }
 
-    /// The store answers from every chunk the record names once it has read them all: until
+    /// The store answers from every chunk the document names once it has read them all: until
     /// then what it lists is the part it has read, and a count of it is not the workspace's.
     fn settled(&self) -> bool {
         self.index_whole()
@@ -41,19 +41,23 @@ impl Store for TiloStore {
         self.changing().fresh(prefix)
     }
 
-    fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError> {
+    fn create(&mut self, record: &NewResource) -> Result<ResourceRef, StoreError> {
         let id = self.changing().fresh("r");
         self.create_with_id(record, &id)
     }
 
-    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+    fn create_with_id(
+        &mut self,
+        record: &NewResource,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
         Self::create_with_id(self, record, id)
     }
 
     fn create_in(
         &mut self,
         txn: Txn,
-        record: &NewRecord,
+        record: &NewResource,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
         Self::create_in(self, txn, record, id)
@@ -61,20 +65,20 @@ impl Store for TiloStore {
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         // The index names the type of what it holds, and a write names the one it just made
-        // before the index derives it: a window opens over either without reading the record.
+        // before the index derives it: a window opens over either without reading the document.
         if let Some(ty) = self.held().held_type(at) {
             return Ok(ty);
         }
         let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
-        // An index names every record the workspace holds of its package: one it names nowhere,
+        // An index names every document the workspace holds of its package: one it names nowhere,
         // which no write holds in the place it wrote, is gone — the card that went with its
         // column — and its window says so, as a read of its fields does.
         if inner.view(&app).is_some() {
             return Err(not_found(format!("resource {}", at.id_string())));
         }
-        // Its package's index is not read yet: the record answers for what it holds, and a
+        // Its package's index is not read yet: the document answers for what it holds, and a
         // resource it no longer holds is gone.
         let mirror = inner.held_doc(&at.doc)?;
         let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
@@ -134,7 +138,7 @@ impl Store for TiloStore {
     }
 
     fn begin(&mut self) -> Result<Txn, StoreError> {
-        self.load_record()?;
+        self.load_document()?;
         let mut inner = self.mutate();
         let id = inner.next_txn;
         inner.next_txn = inner.next_txn.wrapping_add(1);
@@ -206,7 +210,7 @@ impl Store for TiloStore {
             state.app = Some(app);
             state.kind = kind;
         }
-        // What its origin derives lives in the store's unsaved layer; the rest is the record's.
+        // What its origin derives lives in the store's unsaved layer; the rest is the document's.
         if lookup(&ty).is_some_and(crate::schema::TypeSchema::derived) {
             state.derived = state.derived.saturating_add(1);
         } else {
@@ -241,7 +245,7 @@ impl Store for TiloStore {
             .remove(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
         // A migration that found nothing to change still ran: its marker is a change of the
-        // record like any other, and the next open reads it instead of asking again.
+        // document like any other, and the next open reads it instead of asking again.
         let migration = inner
             .migrating
             .clone()
@@ -254,8 +258,8 @@ impl Store for TiloStore {
                 .then_some(triggering)
         });
         // A migration or a trigger that changed nothing still ran: its mark is a change of the
-        // record like any other, and the next open or wake reads it instead of asking again.
-        // A trigger whose own record is not among what it wrote — one that only told someone
+        // document like any other, and the next open or wake reads it instead of asking again.
+        // A trigger whose own document is not among what it wrote — one that only told someone
         // something, say — ran too, and records it, so it runs no second time for that instant.
         let own = triggering
             .as_ref()
@@ -273,7 +277,7 @@ impl Store for TiloStore {
             return Ok(());
         };
         // The kind the action is published on: its target's, a task's for an action on a task
-        // the record holds, which the workspace decides the change against. An action on no
+        // the document holds, which the workspace decides the change against. An action on no
         // resource of the app names the kind of what it wrote first.
         let kind = target_kind(&app, &note.args).unwrap_or(written);
         if state.edits.is_empty() {
@@ -281,7 +285,7 @@ impl Store for TiloStore {
         }
         // What its origin derives is the store's unsaved layer: it was applied to the mirror's
         // open transaction and is read through the overlay, and nothing of it is committed,
-        // sent or versioned. It stays there until the record moves on, which leaves it in the
+        // sent or versioned. It stays there until the document moves on, which leaves it in the
         // mirror ([`Inner::drop_committed_local`]). An action writes one kind or the other;
         // one that tried both is a fault, and its derived writes still stay unsaved.
         if unsaved::commit_derived(&mut inner, &mut state, note.invoker.as_ref()) {
@@ -292,10 +296,10 @@ impl Store for TiloStore {
                 app = %app,
                 saved = state.saved,
                 derived = state.derived,
-                "an action wrote both the record's resources and derived ones: the derived ones stay unsaved"
+                "an action wrote both the document's resources and derived ones: the derived ones stay unsaved"
             );
         }
-        // The change records, with what it did, that a migration or a trigger ran on its
+        // The change documents, with what it did, that a migration or a trigger ran on its
         // resource.
         if !marked && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref()) {
             marked = inner.mark(&mut state, txn, &doc, edit)?;
@@ -308,7 +312,7 @@ impl Store for TiloStore {
             .flatten();
         let versioned = app.to_string();
         let (action_id, args) = published_name(note);
-        // A change is one app's, and the record stores each edit under the app its resource is
+        // A change is one app's, and the document stores each edit under the app its resource is
         // of: what the change wrote of another — a notice of the host's, riding in the change
         // that told its person — is addressed to that app, as the store that wrote it read it.
         let edits: Vec<DynEdit> = std::mem::take(&mut state.edits)
@@ -352,7 +356,7 @@ impl Store for TiloStore {
         if let Some(state) = inner.txns.remove(&txn.0) {
             inner.drop_local_from(state.start);
             inner.reapply();
-            // What it made is not in the record the mirror was put back to, and the index is not
+            // What it made is not in the document the mirror was put back to, and the index is not
             // rebuilt from the mirror: it is taken out here.
             for id in &state.created {
                 inner.index.remove(id);
@@ -363,7 +367,7 @@ impl Store for TiloStore {
     }
 
     fn begin_run(&mut self, run: &str) {
-        if self.load_record().is_ok() {
+        if self.load_document().is_ok() {
             self.mutate().begin_run(run);
         }
     }
@@ -385,7 +389,7 @@ impl Store for TiloStore {
         if let Some(value) = self.read_indexed(at, field)? {
             return Ok(value);
         }
-        self.read_record(at, field)
+        self.read_document(at, field)
     }
 
     fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
@@ -557,7 +561,7 @@ impl Store for TiloStore {
     }
 
     /// The field `field` of `at` as it was before the change `change`, read in place at the
-    /// change's dependencies: the cost of the value, not of the record. A rich text field is a
+    /// change's dependencies: the cost of the value, not of the document. A rich text field is a
     /// document of its own, read whole as it stood then; what a change made of one is the
     /// paragraphs it typed into instead ([`Self::written`]).
     fn read_before(
@@ -626,7 +630,7 @@ impl Store for TiloStore {
         {
             return answered;
         }
-        // No index answers yet, or it answers a version this device invoked and the record does
+        // No index answers yet, or it answers a version this device invoked and the document does
         // not name yet: with no change recorded, nothing shows what the version wrote. The log
         // names the change that wrote the field, which is what history reads the entry by.
         Ok(tilolang_runtime::store::last_change_of(
@@ -661,9 +665,9 @@ impl Store for TiloStore {
 
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
         let inner = self.held();
-        // A store without the record has queued nothing yet; what the record holds is carried
+        // A store without the document has queued nothing yet; what the document holds is carried
         // out once it is had.
-        if !inner.chunks.has_record() {
+        if !inner.chunks.has_document() {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -689,7 +693,7 @@ impl Store for TiloStore {
 
     fn outbox_next_held(&self) -> Option<String> {
         let inner = self.held();
-        if !inner.chunks.has_record() {
+        if !inner.chunks.has_document() {
             return None;
         }
         let mut earliest: Option<String> = None;
@@ -793,7 +797,7 @@ impl Store for TiloStore {
 
     fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
         let inner = self.held();
-        if !inner.chunks.has_record() {
+        if !inner.chunks.has_document() {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -836,7 +840,7 @@ impl Store for TiloStore {
 
 impl TiloStore {
     /// The value the index answers for `field` of `at`: a field of a row it derived, or the
-    /// items of a collection. `None` where the record must answer ([`Self::read_record`]).
+    /// items of a collection. `None` where the document must answer ([`Self::read_document`]).
     fn read_indexed(
         &self,
         at: &ResourceRef,
@@ -850,7 +854,7 @@ impl TiloStore {
         let resource = at.id_string();
         let Some(stored) = view.type_of(&resource).map_err(backend)? else {
             // The index names it nowhere and no write holds it: the writes took it away — it
-            // went with its column — and the record answers nothing of it, as it answers the
+            // went with its column — and the document answers nothing of it, as it answers the
             // type of no resource the workspace does not hold.
             return Err(not_found(format!("resource {resource}")));
         };
@@ -862,19 +866,19 @@ impl TiloStore {
             MergeKind::Collection => {
                 Some(FieldValue::Items(inner.listed(at, &field.id, None)?.ids()))
             }
-            // Not a field the index holds: read from the record.
+            // Not a field the index holds: read from the document.
             MergeKind::Record => None,
             _ => match view.field(&resource, &spec.id) {
                 Ok(value) => Some(value.unwrap_or_else(|| default_value(spec))),
-                // Never read from a corrupt index: the record says, until the index is built anew.
-                Err(_) if inner.chunks.has_record() => None,
+                // Never read from a corrupt index: the document says, until the index is built anew.
+                Err(_) if inner.chunks.has_document() => None,
                 Err(error) => return Err(backend(error)),
             },
         })
     }
 
-    /// `field` of `at` read from the record: one the store was not sent is read here.
-    fn read_record(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
+    /// `field` of `at` read from the document: one the store was not sent is read here.
+    fn read_document(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         self.load_at(at)?;
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;

@@ -4,7 +4,7 @@
 //! bundle as its entrypoint (`[entrypoint] runtime = "tilolang/<version>"`), and the launcher
 //! starts this binary from that bundle with `TILO_PACKAGE_ID` (the package's signed id) and
 //! `TILO_APP_MODULE` (its payload: the compiled module, its metadata and its surface). The
-//! binary builds the app's definition from them, so each package has its own id, window, record,
+//! binary builds the app's definition from them, so each package has its own id, window, document,
 //! custody and permissions. It compiles nothing: the package was compiled by `tilolang build`.
 
 #![allow(
@@ -34,9 +34,9 @@ use ui::application::ApplicationDefinition;
 /// the built-in packages run like that.
 pub const UNBUNDLED_ID: &str = "so.tilo.lang";
 
-/// The resource kind of the runtime's own record: the host package's, which every tilolang
+/// The resource kind of the runtime's own document: the host package's, which every tilolang
 /// surface publishes.
-pub const RECORD_KIND: &str = tilolang_tilo::surface::HOST_KIND;
+pub const RESOURCE_TYPE: &str = tilolang_tilo::surface::HOST_KIND;
 
 /// The variable the launcher names the package's signed id with.
 pub const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";

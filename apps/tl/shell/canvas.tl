@@ -4,7 +4,7 @@
 ///
 /// Pan and zoom are the map component's (`ui.Map`) camera: each person's lens, kept on their
 /// device, never in the layout. What this file gives the map is where every place stands,
-/// in canvas pixels. The record keeps a canvas place on each strip (`canvas_x`, `canvas_y`,
+/// in canvas pixels. The document keeps a canvas place on each strip (`canvas_x`, `canvas_y`,
 /// `canvas_width`, `canvas_height`); the places of a strip stand in a row from that corner, so a
 /// strip of several windows is one run of work and a strip of one is one window where it was
 /// dropped (canvas.md §6).
@@ -29,7 +29,7 @@
 ///
 /// Free space invites writing (`canvas.md` §7): over it the pointer is a text cursor, its ground
 /// has a grain so faint it only says "surface", and until the person has asked once the empty
-/// canvas says at its middle what it is for. That it has been said is the person's record
+/// canvas says at its middle what it is for. That it has been said is the person's document
 /// (`Shell.canvas_asked`), so it is said once, never on every empty canvas.
 ///
 /// An answer arrives from where it was asked: each place grows out of the caret or the rectangle
@@ -220,11 +220,11 @@ fn snap(at: Int, pitch: Int) -> Int {
     return (at + pitch / 2) / pitch * pitch
 }
 
-/// The place standing on the canvas that shows the resource `record`, if one does: what a drag
+/// The place standing on the canvas that shows the resource `resource`, if one does: what a drag
 /// that ended on the canvas moves rather than placing a second time.
-fn place_showing(record: Text) -> Option<LayoutPlace> {
+fn place_showing(resource: Text) -> Option<LayoutPlace> {
     let a = layout
-    a.places.find(p -> p.record == record)
+    a.places.find(p -> p.resource == resource)
 }
 
 /// How far apart the canvas's grid lines stand, in canvas pixels: a frame's own width (720) and
@@ -235,16 +235,16 @@ fn canvas_grid() -> Int {
     792
 }
 
-/// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window
+/// How wide a strip's places stand on the canvas: the width the document keeps for it, so a window
 /// that was dropped wide stays wide, and 720 when it kept none.
 fn pin_width(s: LayoutStrip) -> Int {
     if s.canvas_width > 0 { s.canvas_width } else { 720 }
 }
 
 /// Where the place `p` stands on the canvas: its strip's corner, then the places before it in the
-/// strip laid end to end. The record keeps one canvas point on a strip, and the places of the strip
-/// stand in a row from it (canvas.md §6), so a strip of several places is a run of work and none
-/// stands over another.
+/// strip laid end to end. The document keeps one canvas point on a strip, and the places of the
+/// strip stand in a row from it (canvas.md §6), so a strip of several places is a run of work and
+/// none stands over another.
 fn pin_x(a: Layout, s: LayoutStrip, p: LayoutPlace) -> Int {
     let place = 0
     for q in places_of(a, s.key) {
@@ -268,8 +268,8 @@ view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
     if composed(p) {
         ui.Place(
             name: content_title(p),
-            carries: p.record,
-            target: placed_resource(p.record),
+            carries: p.resource,
+            target: placed_resource(p.resource),
             fill,
         ) {
             controls: {
@@ -297,7 +297,9 @@ fn content_title(p: LayoutPlace) -> Text {
 fn composed(p: LayoutPlace) -> Bool {
     if let q = query_of(p.key) {
         true
-    } else if let r = placed_resource(p.record) { p.shown_as != "" or meta(r).opens } else { false }
+    } else if let r = placed_resource(p.resource) {
+        p.shown_as != "" or meta(r).opens
+    } else { false }
 }
 
 /// A foreign window on the canvas: the shell's frame around the well its window shows in, its
@@ -306,7 +308,7 @@ fn composed(p: LayoutPlace) -> Bool {
 view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
-        carries: p.record,
+        carries: p.resource,
         lists_actions: lists_the_place(p),
         fill,
     ) {
@@ -332,7 +334,7 @@ view frameless_place(a: Layout, p: LayoutPlace) {
     }
 }
 
-/// How tall a strip's places stand on the canvas: the height the record keeps for it, so a view
+/// How tall a strip's places stand on the canvas: the height the document keeps for it, so a view
 /// that fills its place (an editor, a mailbox) has the room it was placed with. A strip placed
 /// before it kept one stands as tall as a desktop frame does.
 fn pin_height(s: LayoutStrip) -> Int {

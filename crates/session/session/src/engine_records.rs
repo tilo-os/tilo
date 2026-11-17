@@ -696,7 +696,7 @@ impl crate::Shared {
     /// keeps its records under, its earliest when it was renamed), so the service, the windows,
     /// an agent's programs and the person's other devices read and change one record.
     pub(crate) fn keep_app_records(&self) {
-        let records = self.services.borrow().workspace_records();
+        let records = self.services.borrow().workspace_documents();
         if records.is_empty() {
             return;
         }

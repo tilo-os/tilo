@@ -1,9 +1,9 @@
-//! The workspace's record of each person's own state, as an instance holds it: the view state
+//! The workspace's document of each person's own state, as an instance holds it: the view state
 //! they set in the app's views and what they have seen ([`tilolang_tilo::personal`]).
 //!
-//! It is the record every app of the workspace opens beside its own
+//! It is the document every app of the workspace opens beside its own
 //! (`collab_types::WORKSPACE_DOCUMENTS`), kept by the language's host app: the instance joins its
-//! route on the instance's own connection, keeps a copy of it on disk beside the app's record,
+//! route on the instance's own connection, keeps a copy of it on disk beside the app's document,
 //! writes the person's changes into it and sends them on its route, and takes in what the
 //! person's other windows and devices wrote. So the place a person picked is still theirs after a
 //! restart and on their other devices.
@@ -23,24 +23,24 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Doc, Resource as _};
 use tilolang_tilo::personal::{self, Keep, Personal, PersonalState};
 
-/// The record of each person's own state of one workspace, held by an instance of it.
-pub struct PersonalRecord {
+/// The document of each person's own state of one workspace, held by an instance of it.
+pub struct PersonalDocument {
     route: RouteSpec,
     doc: Doc,
     /// The on-disk copy; `None` keeps it in memory only.
     writer: Option<DocWriter>,
     /// The heads of what the workspace was handed: a send sends what follows them.
     sent: Vec<ChangeHash>,
-    /// What the record holds, read again whenever it moved.
+    /// What the document holds, read again whenever it moved.
     state: PersonalState,
-    /// Whether the record moved since the instance was last given what it holds.
+    /// Whether the document moved since the instance was last given what it holds.
     moved: bool,
     /// The app whose window changes it, as each change names it.
     app: String,
 }
 
-impl PersonalRecord {
-    /// The record of `workspace`, its copy kept in `documents`, joined on `manager`: what this
+impl PersonalDocument {
+    /// The document of `workspace`, its copy kept in `documents`, joined on `manager`: what this
     /// device kept of it before, and what the workspace sends from now on.
     pub fn open(
         workspace: uuid::Uuid,
@@ -55,7 +55,7 @@ impl PersonalRecord {
             collab_types::document::ResourceType::new(personal::KIND),
         );
         let stored = DocumentId::parse(&id)
-            .ok_or_else(|| format!("`{id}` is no record id"))
+            .ok_or_else(|| format!("`{id}` is no document id"))
             .and_then(|id| {
                 resource_document(
                     documents,
@@ -89,25 +89,25 @@ impl PersonalRecord {
         record
     }
 
-    /// What the record holds.
+    /// What the document holds.
     #[must_use]
     pub fn state(&self) -> &PersonalState {
         &self.state
     }
 
-    /// Whether the record moved since the last call: the instance is given what it holds then.
+    /// Whether the document moved since the last call: the instance is given what it holds then.
     pub fn take_moved(&mut self) -> bool {
         std::mem::take(&mut self.moved)
     }
 
-    /// Have the instance given what the record holds on the next turn again: it had no views to
+    /// Have the instance given what the document holds on the next turn again: it had no views to
     /// give it to yet.
     pub fn moved_again(&mut self) {
         self.moved = true;
     }
 
-    /// Keep `keeps`, the changes `person` made of their own state, in the record as theirs, and
-    /// send them on its route. A change the record does not take stays out of it, told once.
+    /// Keep `keeps`, the changes `person` made of their own state, in the document as theirs, and
+    /// send them on its route. A change the document does not take stays out of it, told once.
     pub fn keep(&mut self, person: &str, keeps: Vec<Keep>, manager: &mut CollaborationManager) {
         if keeps.is_empty() {
             return;
@@ -139,8 +139,8 @@ impl PersonalRecord {
         Ok(())
     }
 
-    /// Take in `event` when it is a change of this record. `None` for an event of anything
-    /// else; else whether the record gained a change.
+    /// Take in `event` when it is a change of this document. `None` for an event of anything
+    /// else; else whether the document gained a change.
     pub fn take(
         &mut self,
         event: &CollabEvent,
@@ -187,7 +187,7 @@ impl PersonalRecord {
         Some(true)
     }
 
-    /// Send what the workspace was not handed yet on the record's route: the whole record when
+    /// Send what the workspace was not handed yet on the document's route: the whole document when
     /// it was handed nothing, so the workspace founds it from all of it.
     fn send(&mut self, manager: &mut CollaborationManager) {
         let request = if self.sent.is_empty() {
@@ -218,11 +218,11 @@ impl PersonalRecord {
                     self.moved = true;
                 }
             }
-            Err(error) => tracing::warn!(%error, "personal: the record is unreadable"),
+            Err(error) => tracing::warn!(%error, "personal: the document is unreadable"),
         }
     }
 
-    /// Write what the record holds to its on-disk copy now, as the instance ends.
+    /// Write what the document holds to its on-disk copy now, as the instance ends.
     pub fn flush(&mut self) {
         if let Some(writer) = &mut self.writer {
             writer.request(&self.doc);

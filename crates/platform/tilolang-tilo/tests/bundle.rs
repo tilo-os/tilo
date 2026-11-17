@@ -64,7 +64,7 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
     replica.host.load_bundle(&bundle).unwrap();
     let ada = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
     // Each package's own first scenario fills it, then Today's attaches them, each change
-    // committed through the workspace as a window commits it: the record holds who made what,
+    // committed through the workspace as a window commits it: the document holds who made what,
     // which a place that names what the person has not read asks for.
     for import in &bundle.imports {
         replica.host.root_of(&import.meta.app).unwrap();

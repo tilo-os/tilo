@@ -1,5 +1,5 @@
 //! An agent task's programs (`tilolang_tilo::task`): run in a session of the task's own that
-//! holds no records, reading Notes and Todo through their apps and changing them only by
+//! holds no documents, reading Notes and Todo through their apps and changing them only by
 //! invoking each app's actions, which the apps (here two hosts behind an API) run.
 
 use std::rc::Rc;
@@ -386,7 +386,7 @@ fn a_task_moved_to_another_day_takes_its_moment_and_reminder() {
     assert!(!said.contains("2026-11-18"), "{said}");
 }
 
-/// An action that sets what a record already holds changes nothing and is done, never a failure
+/// An action that sets what a document already holds changes nothing and is done, never a failure
 /// of the program: "move the reminder to Friday" written as the day's move and then the reminder
 /// set to the moment the move already gave it.
 #[test]

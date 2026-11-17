@@ -11,7 +11,7 @@ use tilolang_runtime::value::ResourceRef;
 
 use super::reading::{json_of_scalar, path_to};
 use super::{
-    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, lookup, not_found,
+    DynEdit, DynResource, Inner, ItemAt, Planned, backend, idx, invalid, lookup, not_found,
     sanitize_key,
 };
 use crate::chunk::{ChunkNo, Limits};
@@ -58,7 +58,7 @@ impl Inner {
                 let key = self.key_for(at, field, *index, None)?;
                 let schema = lookup(&item.ty)
                     .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;
-                let record = DynRecord::empty(schema).map_err(backend)?.to_json();
+                let record = DynResource::empty(schema).map_err(backend)?.to_json();
                 let id = id.clone().unwrap_or_else(|| self.fresh("i"));
                 let placement = Placement::At {
                     place: Place {
@@ -70,7 +70,7 @@ impl Inner {
                 };
                 let coll = FieldKey::new(at, field.clone());
                 // The item goes to the chunk of the collection's newest run, which the same
-                // action records in the record's manifest.
+                // action records in the resource's manifest.
                 let (chunk, run) = self.run_for(at, field, &key)?;
                 let mut edits = Vec::new();
                 if let Some(run) = run {
@@ -250,8 +250,8 @@ impl Inner {
         })
     }
 
-    /// The map of the record of `at`, and the record's type.
-    pub(super) fn record_root(
+    /// The map of the document of `at`, and the record's type.
+    pub(super) fn document_root(
         &self,
         at: &ResourceRef,
     ) -> Result<(AppId, automerge::ObjId, &'static crate::schema::TypeSchema), StoreError> {
@@ -263,8 +263,8 @@ impl Inner {
         Ok((app, root, schema))
     }
 
-    /// The path from the record's map to the map of `at`: none for the record, the item's id
-    /// for an item stored by it, the steps it is nested at for one of a record written before
+    /// The path from the document's map to the map of `at`: none for the document, the item's id
+    /// for an item stored by it, the steps it is nested at for one of a document written before
     /// items were flat.
     pub(super) fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
         let Some(item) = &at.item else {
@@ -286,7 +286,7 @@ impl Inner {
             .collect())
     }
 
-    /// Where the item `item` of the record `doc` is now, and how it is stored.
+    /// Where the item `item` of the document `doc` is now, and how it is stored.
     fn item_at(&self, doc: &str, item: &str) -> Result<ItemAt, StoreError> {
         let at = ResourceRef::root(doc, String::new()).item(item, String::new());
         let found = self.found_item(doc, item)?;
@@ -322,13 +322,13 @@ impl Inner {
             .map(|place| place.key.clone()))
     }
 
-    /// The items of the record of `at`, read and resolved from the record: for a package whose
+    /// The items of the document of `at`, read and resolved from the document: for a package whose
     /// index is not read from yet.
     pub(super) fn resolved(
         &self,
         at: &ResourceRef,
     ) -> Result<(Items, tilolang_runtime::place::Resolved), StoreError> {
-        let (app, _, schema) = self.record_root(at)?;
+        let (app, _, schema) = self.document_root(at)?;
         let items = Items::across(&self.chunks, &app, &at.doc, schema);
         self.count(DocReads {
             located: 1,
@@ -397,7 +397,7 @@ impl Inner {
     }
 
     /// Where the item `at` is: the resource holding its collection, and the field. `None` for a
-    /// record.
+    /// document.
     pub(super) fn container(
         &self,
         at: &ResourceRef,
@@ -435,16 +435,16 @@ impl Inner {
 }
 
 impl Inner {
-    /// The chunk the item `item` of the record `doc` is stored in, and its map there.
+    /// The chunk the item `item` of the document `doc` is stored in, and its map there.
     fn found_item(&self, doc: &str, item: &str) -> Result<Found, StoreError> {
         let at = ResourceRef::root(doc, String::new()).item(item, String::new());
-        let (app, _, schema) = self.record_root(&at)?;
+        let (app, _, schema) = self.document_root(&at)?;
         crate::items::find_across(&self.chunks, &app, doc, schema, &self.nested, item)
             .ok_or_else(|| not_found(format!("item `{item}`")))
     }
 
     /// The chunk the index routes the item at `at` to, and `None` while it names none: no step
-    /// has derived a row of it, so where its map is read from is the record's to say.
+    /// has derived a row of it, so where its map is read from is the document's to say.
     pub(super) fn routed_chunk(&self, at: &ResourceRef) -> Option<ChunkNo> {
         let (app, _) = self.locate(at).ok()?;
         let item = at.item.as_ref()?;
@@ -453,12 +453,12 @@ impl Inner {
             .text(&crate::index::derive::item_path(&at.doc, item), idx::CHUNK)
             .ok()??;
         tilo_failure::ignored!(
-            "a row the index wrote before chunks says no chunk, and the record says where the item is",
+            "a row the index wrote before chunks says no chunk, and the document says where the item is",
             held.parse::<ChunkNo>().ok()
         )
     }
 
-    /// Whether the chunks the store holds hold the item `item` of the record `doc`, in a run of
+    /// Whether the chunks the store holds hold the item `item` of the document `doc`, in a run of
     /// one of its collections.
     pub(super) fn holds_item(&self, doc: &str, item: &str) -> bool {
         self.found_item(doc, item).is_ok()
@@ -466,7 +466,7 @@ impl Inner {
 
     /// The chunk the resource at `at` is read and written in: of an item, the chunk its map is
     /// stored in (from the index, or the item's own chunk when the index does not name it), else
-    /// the chunk the record's manifest places the resource in.
+    /// the chunk the document's manifest places the resource in.
     pub(super) fn at_chunk(&self, at: &ResourceRef) -> Result<ChunkNo, StoreError> {
         let Some(item) = &at.item else {
             return Ok(self.chunks.chunk(&at.doc));
@@ -493,7 +493,7 @@ impl Inner {
     }
 
     /// Where the item placed at the order key `key` of the collection `field` of `at` goes: the
-    /// chunk of the collection's newest run, with the edit that records the run in the record's
+    /// chunk of the collection's newest run, with the edit that records the run in the document's
     /// manifest. A full run starts the next chunk, so an item's place never changes with size.
     fn run_for(
         &self,
@@ -559,7 +559,7 @@ fn written_field(m: &Mutation) -> String {
 }
 
 /// The edit a mutation of a field makes below the resource whose map `prefix` reaches.
-pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreError> {
+pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynResource>, StoreError> {
     let (field, op) = match m {
         Mutation::SetRegister { field, value } => (
             field,
@@ -600,7 +600,7 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
         }
         Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => {
             return Err(invalid(
-                "outside effects are not stored in the workspace record yet",
+                "outside effects are not stored in the workspace document yet",
             ));
         }
     };

@@ -35,7 +35,7 @@ changes(of: run)                     // every version the run made, by step, old
 unseen(r)                            // r's versions newer than the person's seen mark for r
 ```
 
-**Seen marks** live in the person's own record (`records: .own`): per resource, the newest
+**Seen marks** live in the person's own record (`resources: .own`): per resource, the newest
 version they have seen. Showing a resource on screen does not set it; the person does
 (§4).
 

@@ -19,7 +19,7 @@
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
-use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::resource_service::ResourceService;
 
 use crate::common::window::KEY_A;
 use crate::common::{
@@ -33,7 +33,7 @@ const NO_WINDOW: &str = "No window here yet";
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
-fn notebook() -> (RecordService, Vec<String>) {
+fn notebook() -> (ResourceService, Vec<String>) {
     notes(&TITLES)
 }
 

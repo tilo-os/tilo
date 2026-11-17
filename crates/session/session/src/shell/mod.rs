@@ -118,8 +118,8 @@ pub(crate) struct Shell {
     /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
     /// The same record as it is kept: where its document lives on this device and how it reaches
-    /// the person's other devices ([`crate::shell_record`]).
-    record_kept: crate::shell_record::ShellRecord,
+    /// the person's other devices ([`crate::shell_document`]).
+    record_kept: crate::shell_document::ShellRecord,
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
@@ -165,7 +165,7 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_record::ShellRecord::open(state, &lists.person);
+        let record = crate::shell_document::ShellRecord::open(state, &lists.person);
         let shared = record.record();
         let mut shell = Self {
             lists,
@@ -404,12 +404,12 @@ impl Shell {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
-            let placed = tilolang_tilo::records_service::placed_records(
-                layout.places.iter().map(|place| place.record.as_str()),
+            let placed = tilolang_tilo::resource_service::placed_documents(
+                layout.places.iter().map(|place| place.resource.as_str()),
                 &resources,
             );
             let mut packages = std::collections::BTreeMap::new();
-            let app_of = tilolang_tilo::records_service::app_of;
+            let app_of = tilolang_tilo::resource_service::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
@@ -423,7 +423,7 @@ impl Shell {
             }
             // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
             // those run as their own app's code here, so their packages are loaded with it, as
-            // an app's own window loads them (`RecordService::service_record`).
+            // an app's own window loads them (`ResourceService::service_document`).
             let packages = tilo_surface_host::shell_part::readings::with_uses(packages, |app| {
                 services
                     .module(app)
@@ -453,7 +453,7 @@ impl Shell {
             }
         }
         for (id, ty) in wanted {
-            let app = tilolang_tilo::records_service::app_of(&ty);
+            let app = tilolang_tilo::resource_service::app_of(&ty);
             let shown = app.is_some_and(|app| {
                 self.link.package_apps().iter().any(|held| held == app) || rust_views.contains(&app)
             });
@@ -862,7 +862,7 @@ impl Shell {
         let taken = services.borrow_mut().share(&tilo_service::Share {
             app: &compiled.meta.app,
             wasm: &compiled.wasm,
-            records: &records,
+            documents: &records,
         });
         match taken {
             Ok(()) => surfaces.keep_records_of(&compiled.meta.app),

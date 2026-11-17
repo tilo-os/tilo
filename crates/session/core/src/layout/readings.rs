@@ -80,7 +80,7 @@ pub struct LayoutPlaceReading {
     pub strip: String,
     pub shows: String,
     pub shown_as: String,
-    pub record: String,
+    pub resource: String,
     /// The title the place recorded when it was made: what the canvas draws it by, where it is
     /// drawn as its own content.
     pub title: String,
@@ -245,11 +245,11 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
 const SHELL: &str = "so.tilo.shell.strips";
 
 /// The layout `tree` as the person's layout, by key: every workspace, its rows, every window
-/// group and every window, each as the layout has it, with what each window shows (`records`) and
+/// group and every window, each as the layout has it, with what each window shows (`resources`) and
 /// what the resource it shows is called (`catalog`).
 pub(super) fn reading_of(
     tree: &Tree,
-    records: &BTreeMap<TabId, String>,
+    resources: &BTreeMap<TabId, String>,
     catalog: &Catalog,
     names: &Names,
 ) -> Reading {
@@ -305,7 +305,7 @@ pub(super) fn reading_of(
                 for tab in &group.tabs {
                     reading
                         .places
-                        .push(place_reading(tab, group.id, records, catalog, names));
+                        .push(place_reading(tab, group.id, resources, catalog, names));
                 }
             }
         }
@@ -317,15 +317,15 @@ pub(super) fn reading_of(
 pub(super) fn place_reading(
     tab: &Tab,
     strip: GroupId,
-    records: &BTreeMap<TabId, String>,
+    resources: &BTreeMap<TabId, String>,
     catalog: &Catalog,
     names: &Names,
 ) -> PlaceReading {
-    let record = records.get(&tab.id).cloned().unwrap_or_default();
-    // A window showing a record is named by that record: its window shows it, so its title is the
-    // record's, unless the person named the window itself.
+    let resource = resources.get(&tab.id).cloned().unwrap_or_default();
+    // A window showing a resource is named by that resource: its window shows it, so its title is the
+    // resource's, unless the person named the window itself.
     let resource_title = catalog
-        .get(&record)
+        .get(&resource)
         .map(|target| target.title.trim().to_owned())
         .unwrap_or_default();
     let title = if tab.app_title.is_none() && !resource_title.is_empty() {
@@ -340,7 +340,7 @@ pub(super) fn place_reading(
             .map(String::from)
             .unwrap_or_default(),
         shown_as: tab.view.clone(),
-        record,
+        resource,
         title: tab.title.clone(),
         name: names(&shown_app(&tab.tile), &title),
         pinned: tab.pinned,

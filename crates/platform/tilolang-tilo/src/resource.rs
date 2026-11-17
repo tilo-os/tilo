@@ -1,15 +1,15 @@
-//! [`DynRecord`] — a tilolang resource as a `tilo_resource` model.
+//! [`DynResource`] — a tilolang resource as a `tilo_resource` model.
 //!
-//! The framework stores typed records through `Model`, which a Rust type implements once. A
-//! tilolang type exists only at run time, so `DynRecord` is one hand-written implementation whose
+//! The framework stores typed resources through `Model`, which a Rust type implements once. A
+//! tilolang type exists only at run time, so `DynResource` is one hand-written implementation whose
 //! schema is looked up from the `$type` id stored in each resource ([`crate::schema`]). Every
 //! operation then delegates to the concrete model of the field's merge kind, so a tilolang
 //! counter merges exactly as a Rust [`Counter`] does.
 //!
 //! Layout of one resource: a map holding `$type`, `$app` and every field by field id, under
-//! `tl/<app>/<resource id>` in the workspace record; its items under `$items`, each such a map by
-//! its id with its placement `$at` ([`crate::items`]). A `DynRecord` read whole
-//! ([`DynRecord::read_whole`]) holds each collection's items as a [`Collection`] again.
+//! `tl/<app>/<resource id>` in the workspace document; its items under `$items`, each such a map by
+//! its id with its placement `$at` ([`crate::items`]). A `DynResource` read whole
+//! ([`DynResource::read_whole`]) holds each collection's items as a [`Collection`] again.
 
 use std::collections::BTreeMap;
 
@@ -24,23 +24,23 @@ use tilo_resource::{
 use crate::chunk::Chunks;
 use crate::schema::{APP_KEY, FieldSchema, MergeKind, TYPE_KEY, TypeSchema, lookup};
 
-/// The value of one field of a [`DynRecord`], in the concrete model of its merge kind.
+/// The value of one field of a [`DynResource`], in the concrete model of its merge kind.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DynValue {
     Register(Json),
     Counter(Counter),
     Text(String),
-    /// tilo-doc's rich text, as native records hold it.
+    /// tilo-doc's rich text, as native resources hold it.
     RichText(Box<tilo_document::RichText>),
     Set(Set<Json>),
     Map(Map<Json>),
-    Collection(Collection<DynRecord>),
-    Record(Box<DynRecord>),
+    Collection(Collection<DynResource>),
+    Record(Box<DynResource>),
 }
 
 /// One resource: its type and its field values.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DynRecord {
+pub struct DynResource {
     schema: &'static TypeSchema,
     fields: BTreeMap<String, DynValue>,
 }
@@ -58,8 +58,8 @@ fn mismatch(field: &FieldSchema) -> ModelError {
     ))
 }
 
-impl DynRecord {
-    /// A record of `schema` whose every field holds its default.
+impl DynResource {
+    /// A resource of `schema` whose every field holds its default.
     pub fn empty(schema: &'static TypeSchema) -> Result<Self, ModelError> {
         let mut fields = BTreeMap::new();
         for field in &schema.fields {
@@ -105,7 +105,7 @@ impl DynRecord {
         Self::assemble(chunks, doc, Some(&obj), schema, (None, &items, &resolved))
     }
 
-    /// The fields of the map `obj` of the record, with each collection field empty: for the
+    /// The fields of the map `obj` of the document, with each collection field empty: for the
     /// edit that makes the item's copy in another chunk, whose collection items stay where they
     /// are.
     pub fn read_own_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
@@ -126,7 +126,7 @@ impl DynRecord {
     }
 
     /// The resource at the map `obj` (none: every field its default) of `schema`, the item
-    /// `holder` of its record (`None` for the record), with its collections' items.
+    /// `holder` of its document (`None` for the document), with its collections' items.
     fn assemble(
         chunks: &Chunks,
         doc: &Doc,
@@ -202,7 +202,7 @@ fn default_value(field: &FieldSchema) -> Result<DynValue, ModelError> {
         MergeKind::Record => {
             let id = field.record.as_deref().unwrap_or_default();
             let schema = lookup(id).ok_or_else(|| unknown_type(id))?;
-            DynValue::Record(Box::new(DynRecord::empty(schema)?))
+            DynValue::Record(Box::new(DynResource::empty(schema)?))
         }
     })
 }
@@ -221,7 +221,7 @@ fn read_field(doc: &Doc, obj: &ObjId, field: &FieldSchema) -> Result<DynValue, M
         MergeKind::Counter => DynValue::Counter(read_key(doc, obj, id)?),
         MergeKind::Text => DynValue::Text(read_key(doc, obj, id)?),
         MergeKind::RichText => {
-            // A record is read whole, its rich text with every paragraph.
+            // A document is read whole, its rich text with every paragraph.
             let mut rich: tilo_document::RichText = read_key(doc, obj, id)?;
             rich.read_whole(doc)?;
             DynValue::RichText(Box::new(rich))
@@ -281,13 +281,13 @@ fn value_from_json(field: &FieldSchema, json: &Json) -> Result<DynValue, ModelEr
         MergeKind::Set => DynValue::Set(Set::from_json(json)?),
         MergeKind::Map => DynValue::Map(Map::from_json(json)?),
         MergeKind::Collection => DynValue::Collection(Collection::from_json(json)?),
-        MergeKind::Record => DynValue::Record(Box::new(DynRecord::from_json(json)?)),
+        MergeKind::Record => DynValue::Record(Box::new(DynResource::from_json(json)?)),
     })
 }
 
-impl Settable for DynRecord {}
+impl Settable for DynResource {}
 
-impl Model for DynRecord {
+impl Model for DynResource {
     tilo_resource::leaf_paths!();
 
     fn to_json(&self) -> Json {
@@ -302,7 +302,7 @@ impl Model for DynRecord {
 
     fn from_json(value: &Json) -> Result<Self, ModelError> {
         let Json::Object(object) = value else {
-            return Err(ModelError::shape("a record object"));
+            return Err(ModelError::shape("a document object"));
         };
         let id =
             object
@@ -341,14 +341,14 @@ impl Model for DynRecord {
             Some((AmValue::Object(ObjType::Map), obj)) => {
                 Self::edit_fields(doc, &obj, path, op, cx)
             }
-            _ => Err(ModelError::shape("a record")),
+            _ => Err(ModelError::shape("a document")),
         }
     }
 
     fn load(doc: &Doc, value: &AmValue<'_>, id: &ObjId) -> Result<Self, ModelError> {
         match value {
             AmValue::Object(ObjType::Map) => Self::read_fields(doc, id),
-            _ => Err(ModelError::shape("a record")),
+            _ => Err(ModelError::shape("a document")),
         }
     }
 
@@ -373,7 +373,7 @@ impl Model for DynRecord {
     }
 }
 
-impl Fields for DynRecord {
+impl Fields for DynResource {
     fn read_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
         let schema = Self::type_at(doc, obj)?;
         let mut fields = BTreeMap::new();

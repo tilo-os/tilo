@@ -3,7 +3,7 @@
 //! their permissions, their zone and language, and what the catalogue calls each resource now.
 //!
 //! Converting is also reading: what the host resolves for the window that the view did not read
-//! (a card of a record inside the text it holds) is taken into the view's reads
+//! (a card of a document inside the text it holds) is taken into the view's reads
 //! ([`ViewInstance::shows`]), so a change to it runs the view again and the host converts again.
 
 use std::cell::RefCell;
@@ -18,7 +18,7 @@ use crate::host::Host;
 use crate::runtime::{Actor, Binding, NameHost, ResourceRef, UiNode, Value, ViewInstance};
 
 /// The window's tree of `view`, converted over `host`: what the window is sent, and what
-/// converting it read of the workspace beside what the view read — the records the cards in its
+/// converting it read of the workspace beside what the view read — the documents the cards in its
 /// text show — which the view then runs again on, so the host converts again.
 #[must_use]
 pub fn window_tree(
@@ -33,7 +33,7 @@ pub fn window_tree(
 
 /// Run `run` with the converter of `view`'s trees over `host`, naming people by `names`, and
 /// tell the view what converting read of the workspace beside what it read (what a card shows of
-/// the record it projects), so a change to one runs the view again and its tree is converted
+/// the document it projects), so a change to one runs the view again and its tree is converted
 /// again.
 pub(crate) fn convert_with<T>(
     host: &Host,
@@ -90,9 +90,9 @@ pub(crate) fn referenced_resource(
     ResourceRef::parse_id(id, String::new())
 }
 
-/// The catalogue's reference to the record `target` and how it reads for the viewer now: what a
+/// The catalogue's reference to the document `target` and how it reads for the viewer now: what a
 /// component offering it as a link is given (`ui.BlockEditor`'s `links`). A type no package here
-/// declares is named by its own id, as the record is found again by that.
+/// declares is named by its own id, as the document is found again by that.
 #[must_use]
 pub fn link_of(host: &Host, target: &ResourceRef) -> (String, String) {
     use crate::runtime::Store as _;
@@ -113,9 +113,9 @@ pub fn link_of(host: &Host, target: &ResourceRef) -> (String, String) {
     (reference, title)
 }
 
-/// The kind of record `target` is and the id it is published under, as its app publishes them:
+/// The kind of document `target` is and the id it is published under, as its app publishes them:
 /// what a control that edits or toggles a field of it names it by, as an action on it is named.
-/// `None` for a record of a type no package here declares.
+/// `None` for a document of a type no package here declares.
 #[must_use]
 pub fn published_of(host: &Host, target: &ResourceRef) -> Option<(String, String)> {
     use crate::meta::MetaExt as _;
@@ -159,16 +159,16 @@ pub fn inline_view(
     }
 }
 
-/// The most of a projected record's content a card shows, in characters: the start of what it
+/// The most of a projected document's content a card shows, in characters: the start of what it
 /// says, the few lines a card has room for and some past them.
 pub const PREVIEW_CHARS: usize = 320;
 
-/// What the record `reference` shows of its own content where a text projects it (an embed):
+/// What the document `reference` shows of its own content where a text projects it (an embed):
 /// the start of what it says, a paragraph per line it breaks, each reference in it read as it
 /// reads now, one level deep — a projection inside it is a link, never opened out, so a note
 /// embedding a note that embeds a note ends in a link, as a note embedding itself does. It is
 /// [`PREVIEW_CHARS`] of it at most; a card shows the lines of that it has room for. Costs the
-/// projected record's one read; `None` when it says nothing, or is a record this reader cannot
+/// projected record's one read; `None` when it says nothing, or is a document this reader cannot
 /// read.
 #[must_use]
 pub fn preview(
@@ -180,7 +180,7 @@ pub fn preview(
     use tilolang_runtime::Store as _;
     let mut target = referenced_resource(host, reference)?;
     target.ty = host.store().type_of(&target).ok()?;
-    // What a card shows is read of the record: the view showing it runs again when it changes.
+    // What a card shows is read of the document: the view showing it runs again when it changes.
     reads.push((
         target.id_string(),
         tilolang_runtime::store::ANY_FIELD.to_owned(),
@@ -211,7 +211,7 @@ pub fn preview(
         if said.is_empty() {
             continue;
         }
-        // A paragraph of it stands under the one before, as it does in the record.
+        // A paragraph of it stands under the one before, as it does in the document.
         if !runs.is_empty() {
             runs.push(runo("\n".to_owned(), None));
             left = left.saturating_sub(1);
@@ -234,7 +234,7 @@ pub fn preview(
     Some(runs).filter(|runs| !runs.is_empty())
 }
 
-/// One paragraph of a projected record, as the runs a card shows of it: its text, a run per
+/// One paragraph of a projected document, as the runs a card shows of it: its text, a run per
 /// reference in it, each read as it reads now.
 fn block_runs(
     host: &Host,
@@ -301,7 +301,7 @@ fn runo(text: String, refers: Option<String>) -> tilo_render_protocol::patch::ri
     }
 }
 
-/// What the record `reference` reads as, a title and nothing else: what a projected run says of
+/// What the document `reference` reads as, a title and nothing else: what a projected run says of
 /// what it names.
 #[must_use]
 pub fn inline_title(
@@ -325,8 +325,8 @@ pub fn inline_title(
     }
 }
 
-/// The first rich text of the record at `at`: the content it says of itself, read as the
-/// record's own fields are.
+/// The first rich text of the document at `at`: the content it says of itself, read as the
+/// document's own fields are.
 pub(crate) fn first_rich(host: &Host, at: &ResourceRef) -> Option<crate::runtime::rich::RichValue> {
     use tilolang_runtime::Store as _;
     let schema = crate::schema::lookup(&at.ty)?;
@@ -346,7 +346,7 @@ pub(crate) fn first_rich(host: &Host, at: &ResourceRef) -> Option<crate::runtime
 
 /// The values the bound controls of `view`'s tree hold now, by the control's key: what a window
 /// is sent as each control's value, converted as it reads for the person — a rich text's
-/// references and the records its cards show resolved now.
+/// references and the documents its cards show resolved now.
 #[must_use]
 pub fn shown_values(
     host: &Host,
@@ -361,7 +361,7 @@ pub fn shown_values(
 }
 
 /// The values the bound controls under `node` (a node of `view`) hold now, converted as what a
-/// control shows of them: a rich text's references and the records its cards show as they read
+/// control shows of them: a rich text's references and the documents its cards show as they read
 /// for the person, which converting reads and the view watches.
 pub(crate) fn bound_values(
     node: &UiNode,
@@ -420,8 +420,8 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    // As the app publishes it: by its name, on the records of its target's type when its target
-    // is one the app declares, and on the app's own resource when it takes a record of another
+    // As the app publishes it: by its name, on the documents of its target's type when its target
+    // is one the app declares, and on the app's own resource when it takes a document of another
     // (`publish_package`): the one address the window, the API and an agent name it by.
     let (asks, published, on) = host.find_in_packages(|package| {
         package
@@ -430,9 +430,9 @@ pub(crate) fn invokes(
             .iter()
             .find(|action| action.id == aref.action)
             .map(|action| {
-                // An action runs on a record it is given first; one that takes a record its app
+                // An action runs on a document it is given first; one that takes a document its app
                 // declares no target of (Today's cleanup over Tasks' list) is published on the
-                // app's own resource. An action given no record is the view's, run in the window.
+                // app's own resource. An action given no document is the view's, run in the window.
                 let on = match aref.args.first() {
                     Some(Value::Ref(target)) => {
                         Some(if package.meta.target_of(&action.params).is_some() {

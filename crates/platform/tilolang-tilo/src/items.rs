@@ -1,10 +1,10 @@
-//! A record's items, by id (docs/designs/app-language/convergence.md, "Storage and sync").
+//! A document's items, by id (docs/designs/app-language/convergence.md, "Storage and sync").
 //!
-//! A record (`tl/<app>/<id>`) stores its items flat under `$items`, each under its id: a map
+//! A document (`tl/<app>/<id>`) stores its items flat under `$items`, each under its id: a map
 //! holding `$type`, `$app`, the item's placement `$at` ([`tilolang_runtime::place`]) and its
 //! fields. A collection is derived from the placements.
 //!
-//! A record written before items were flat holds each item inside the collection it was
+//! A document written before items were flat holds each item inside the collection it was
 //! inserted into, nested in its holder: an entry `{ k: order key, v: the item's map }` (or the
 //! order key alone, for an item whose every field reads as its default) in the collection
 //! field's map. Such an item is read where it is, as an item of the flat form: under its id,
@@ -31,7 +31,7 @@ use crate::schema::{MergeKind, TypeSchema, lookup};
 
 type Doc = tilo_resource::Doc;
 
-/// Where an item of a record written before items were flat is: the steps from the record's
+/// Where an item of a document written before items were flat is: the steps from the document's
 /// map down to it, each a collection field and the item in it.
 pub type Nesting = Vec<(String, ItemId)>;
 
@@ -43,15 +43,15 @@ pub struct Found {
     pub obj: Option<ObjId>,
     /// Its type: the one its map holds, else its collection's item type.
     pub ty: Option<TypeId>,
-    /// Its placement, as stored or (an item of an older record that never moved) where it is.
+    /// Its placement, as stored or (an item of an older document that never moved) where it is.
     pub held: Option<Held>,
-    /// Where an item of an older record is nested; empty for a flat item.
+    /// Where an item of an older document is nested; empty for a flat item.
     pub nesting: Nesting,
     /// The chunk its map is stored in: the document a read of its fields goes to.
     pub chunk: ChunkNo,
 }
 
-/// The copy of an item that is later in the record's order: of two chunks holding an item of the
+/// The copy of an item that is later in the document's order: of two chunks holding an item of the
 /// same id (a move made on two replicas at once), the one whose placing change comes later.
 pub(crate) fn later(held: Option<Found>, next: Found) -> Found {
     fn written(found: &Found) -> (u64, &[u8]) {
@@ -65,9 +65,9 @@ pub(crate) fn later(held: Option<Found>, next: Found) -> Found {
     }
 }
 
-/// Where the items of records written before items were flat are, per record: found by one
-/// walk of the record's nested collections the first time one is wanted, and kept, as those
-/// items never move in the record (a move writes their placement, not their place). Forgotten
+/// Where the items of documents written before items were flat are, per document: found by one
+/// walk of the document's nested collections the first time one is wanted, and kept, as those
+/// items never move in the document (a move writes their placement, not their place). Forgotten
 /// when an entry of a nested collection is put or deleted.
 #[derive(Debug, Default)]
 pub struct Nested {
@@ -80,12 +80,12 @@ impl Nested {
         self.docs.borrow_mut().remove(doc);
     }
 
-    /// Forget every record's.
+    /// Forget every document's.
     pub fn clear(&self) {
         self.docs.borrow_mut().clear();
     }
 
-    /// The nested items of the record `id` (its map `root`, of type `schema`).
+    /// The nested items of the document `id` (its map `root`, of type `schema`).
     fn of(
         &self,
         doc: &Doc,
@@ -170,11 +170,11 @@ fn walk_nested(
     }
 }
 
-/// The map of a flat item `id` of the record map `root`: an item of a record that holds two
+/// The map of a flat item `id` of the document map `root`: an item of a document that holds two
 /// maps of its items ([`crate::containers`]) is in one of them.
 fn flat(doc: &Doc, root: &ObjId, id: &str) -> Option<ObjId> {
-    // The copy the record keeps answers first, then those it replaced: an item of either is
-    // the item, and a write goes where the record keeps its items.
+    // The copy the document keeps answers first, then those it replaced: an item of either is
+    // the item, and a write goes where the document keeps its items.
     crate::containers::maps(doc, root, ITEMS_KEY)
         .iter()
         .rev()
@@ -196,7 +196,7 @@ fn nested_place(nesting: &[(String, ItemId)], key: String) -> Option<Place> {
     })
 }
 
-/// The nested entry at `nesting` below the record map `root`: its order key and map.
+/// The nested entry at `nesting` below the document map `root`: its order key and map.
 pub fn nested_entry(
     doc: &Doc,
     root: &ObjId,
@@ -215,8 +215,8 @@ pub fn nested_entry(
     Some((key?, obj))
 }
 
-/// The item `id` of the record `doc_id` (its map `root`, of type `schema`), wherever it is
-/// stored: `None` when the record holds none.
+/// The item `id` of the document `doc_id` (its map `root`, of type `schema`), wherever it is
+/// stored: `None` when the document holds none.
 pub fn find(
     doc: &Doc,
     (doc_id, root, schema): (&str, &ObjId, &TypeSchema),
@@ -259,8 +259,8 @@ pub fn find(
     })
 }
 
-/// The item `id` of the record `doc` (of `app`), in whichever chunk the store holds holding it:
-/// the copy that is later in the record's order, as [`Items::across`] reads it.
+/// The item `id` of the document `doc` (of `app`), in whichever chunk the store holds holding it:
+/// the copy that is later in the document's order, as [`Items::across`] reads it.
 #[must_use]
 pub fn find_across(
     chunks: &Chunks,
@@ -279,7 +279,7 @@ pub fn find_across(
     found
 }
 
-/// The item `id` of the record `doc` (of `app`) where the chunk `chunk`, held as `held`, holds
+/// The item `id` of the document `doc` (of `app`) where the chunk `chunk`, held as `held`, holds
 /// it: one copy of the ones [`find_across`] reads.
 #[must_use]
 pub fn find_in(
@@ -291,7 +291,7 @@ pub fn find_in(
     id: &str,
 ) -> Option<Found> {
     let root = crate::reads::resource_obj(held, app, doc)?;
-    // An item of a record written before items were flat is nested in the record's own map.
+    // An item of a document written before items were flat is nested in the document's own map.
     if chunk == FIRST {
         find(held, (doc, &root, schema), nested, id)
     } else {
@@ -317,23 +317,23 @@ pub fn nested_item_type(schema: &TypeSchema, nesting: &[(String, ItemId)]) -> Op
     ty
 }
 
-/// Every item of a record, by id: where it is stored and its placement.
+/// Every item of a document, by id: where it is stored and its placement.
 #[derive(Debug, Default)]
 pub struct Items {
     pub found: BTreeMap<ItemId, Found>,
 }
 
 impl Items {
-    /// Every item of the record map `root` (of type `schema`): its flat items, then those
-    /// nested in a record written before items were flat. An id held twice is read once, the
+    /// Every item of the document map `root` (of type `schema`): its flat items, then those
+    /// nested in a document written before items were flat. An id held twice is read once, the
     /// first time it is met; the others are set aside. Of a flat id held in two copies of the
-    /// map of items, the copy the record keeps is read.
+    /// map of items, the copy the document keeps is read.
     #[must_use]
     pub fn scan(doc: &Doc, root: &ObjId, schema: &TypeSchema, chunk: ChunkNo) -> Self {
         let mut found = BTreeMap::new();
-        // Every copy of the map the record keeps its items in, the one it keeps last: the
+        // Every copy of the map the document keeps its items in, the one it keeps last: the
         // items of a copy it does not keep a replica made before it met the others, and they
-        // are the record's just the same.
+        // are the document's just the same.
         for items in crate::containers::maps(doc, root, ITEMS_KEY) {
             for id in doc.keys(&items) {
                 let Some(obj) = map_at(doc, &items, &id) else {
@@ -385,17 +385,17 @@ impl Items {
         Self { found }
     }
 
-    /// Every item of the record `doc` (of `app`) across the chunks the store holds: the items
-    /// of a collection are stored in the chunk of the run they are in, so a record's items are
+    /// Every item of the document `doc` (of `app`) across the chunks the store holds: the items
+    /// of a collection are stored in the chunk of the run they are in, so a document's items are
     /// read from each chunk that holds some. An id held in two chunks (a move made on two
-    /// replicas at once) reads as the copy that is later in the record's order.
+    /// replicas at once) reads as the copy that is later in the document's order.
     #[must_use]
     pub fn across(chunks: &Chunks, app: &str, doc: &str, schema: &TypeSchema) -> Self {
         Self::across_in(chunks, app, doc, schema, None)
     }
 
     /// [`Self::across`] over the chunks `only` names (`None`: every chunk the store holds): what
-    /// a record holds of the chunks a step of a build reads, where a window's first rows are,
+    /// a document holds of the chunks a step of a build reads, where a window's first rows are,
     /// the chunks of the rest arriving as they are read.
     #[must_use]
     pub fn across_in(
@@ -421,7 +421,7 @@ impl Items {
         items
     }
 
-    /// The items resolved into the collections they are in, the record being of `schema`.
+    /// The items resolved into the collections they are in, the document being of `schema`.
     #[must_use]
     pub fn resolve(&self, schema: &TypeSchema) -> Resolved {
         let held: BTreeMap<ItemId, Held> = self
@@ -457,8 +457,8 @@ pub fn item_json(chunks: &Chunks, found: &Found) -> Result<Json, ModelError> {
         .and_then(lookup)
         .ok_or_else(|| ModelError::invalid("the item's type is not registered"))?;
     let record = match &found.obj {
-        Some(obj) => crate::record::DynRecord::read_own_fields(doc, obj)?,
-        None => crate::record::DynRecord::empty(schema)?,
+        Some(obj) => crate::resource::DynResource::read_own_fields(doc, obj)?,
+        None => crate::resource::DynResource::empty(schema)?,
     };
     Ok(record.to_json())
 }

@@ -1,7 +1,7 @@
-//! What a peer taking the window's changes gets: replaying the action each records gives the
+//! What a peer taking the window's changes gets: replaying the action each documents gives the
 //! same change, to the byte.
 
-/// Replay the action each change `doc` holds past `from` records, as a peer taking it does:
+/// Replay the action each change `doc` holds past `from` documents, as a peer taking it does:
 /// every change comes out the same, to the byte. How many recorded an action.
 pub(super) fn replayed(
     doc: &mut automerge::AutoCommit,

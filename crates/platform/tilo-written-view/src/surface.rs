@@ -94,7 +94,7 @@ impl Surface {
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
-                record_loader: None,
+                document_loader: None,
                 // A view reaches nothing outside the workspace by itself.
                 sink: Some(Box::new(MemorySink::new())),
                 root: RootView::default(),

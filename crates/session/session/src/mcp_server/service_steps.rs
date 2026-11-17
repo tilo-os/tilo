@@ -108,7 +108,7 @@ pub(super) fn change_through(
     } else {
         tilo_actions::ActionInvoker::person(actor.person_id()?.to_owned())
     };
-    services.borrow().record(&change.app)?;
+    services.borrow().document(&change.app)?;
     let ran = services.borrow_mut().invoke_as(
         &invoker,
         None,
@@ -120,7 +120,7 @@ pub(super) fn change_through(
         Ok(output) => {
             let document = services
                 .borrow()
-                .record(&change.app)
+                .document(&change.app)
                 .map(|record| record.document);
             let output = match output {
                 tilo_service::Started::Done(output) => serde_json::json!({

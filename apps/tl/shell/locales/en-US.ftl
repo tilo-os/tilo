@@ -4,7 +4,7 @@
 d-so-tilo-shell = Shell
 
 d-cejnvssb = Shell
-    .doc = The person's own shell record, reached as `shell` (`root shell: Shell`).
+    .doc = The person's own shell resource, reached as `shell` (`root shell: Shell`).
     .noun = { $count ->
         [one] shell
        *[other] shells
@@ -125,7 +125,7 @@ d-fjzbw5un = Kind
     .doc = What the part is; the bar draws it from this, so a part moved is a part the same, and its name is the one that part goes by.
 
 d-pbly7ymy = Shown
-    .doc = Whether it shows on the bar; a part off keeps its place in the record.
+    .doc = Whether it shows on the bar; a part off keeps its place in the resource.
 
 d-sfhd6wko-filter-kind = Kind
 
@@ -221,7 +221,7 @@ d-xsjcdedm = Reason
     .doc = Why it failed, in the app's own words; empty while it does better.
 
 d-jq4ftwnw = Layout ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's resource is named by.
     .noun = { $count ->
         [one] layout ref
        *[other] layout refs
@@ -357,8 +357,8 @@ d-jpzk4cli = Shows
 d-nprpusuo = Shown as
     .doc = The view it shows the resource through; empty for the app's default.
 
-d-ofkshr4v = Record
-    .doc = The record it shows, when it shows one.
+d-ofkshr4v = Resource
+    .doc = The resource it shows, when it shows one.
 
 d-qqcejiim = Title
     .doc = The title it is shown under.
@@ -375,7 +375,7 @@ d-soy4vimv = Shell
 d-farfsl4d-filter-pinned = Pinned
 
 d-nkjtmr33 = Viewing
-    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their own record (`records: .own`, `root viewing: Viewing`).
+    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their own document (`resources: .own`, `root viewing: Viewing`).
     .noun = { $count ->
         [one] viewing
        *[other] viewings
@@ -724,7 +724,7 @@ d-chvuqgur-strip = Strip
 d-chvuqgur-index = Index
 
 d-tnecawb6 = A foreign place
-    .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like.
+    .doc = A place of a kind this build has no resource for: it stands as it is, which is what a place another shell made looks like.
 
 d-tnecawb6-strip = Strip
 

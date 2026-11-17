@@ -8,7 +8,7 @@ use tilolang_runtime::value::Value;
 use tilolang_runtime::{Actor, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 
 /// The counter package (`apps/tl/counter`): the first package of the host.
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
@@ -79,7 +79,7 @@ impl AsActor for Actor {
     }
 }
 
-/// One member's machine: a copy of the workspace record and a host over it.
+/// One member's machine: a copy of the workspace document and a host over it.
 pub struct Replica {
     pub name: String,
     pub doc: AutoCommit,
@@ -174,7 +174,7 @@ impl Replica {
         // Recorded in this thread's window, whose store keeps an action's large parts.
         let _window = crate::window::store();
         let mut context = context_of(action, "so.tilo.lang").with_invoker(invoker);
-        // As the record does: every change of a run names it, so the workspace commits the
+        // As the document does: every change of a run names it, so the workspace commits the
         // action and its calls as one, and one undo takes the whole of it back.
         if let Some(run) = &action.authorship.invocation {
             context =
@@ -202,11 +202,11 @@ impl Replica {
         self.host.sync_from(&self.doc);
     }
 
-    /// Apply the history verb `edit` to the record as this replica's person, as the workspace does
+    /// Apply the history verb `edit` to the document as this replica's person, as the workspace does
     /// for a window: a step of their own, recorded like any action.
-    #[cfg(feature = "record")]
+    #[cfg(feature = "document")]
     pub fn history(&mut self, edit: &collaboration::history_source::verbs::HistoryEdit) {
-        let action: tilolang_tilo::instance::record::HostHistoryEdit =
+        let action: tilolang_tilo::instance::document::HostHistoryEdit =
             serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
         let encoded = tilo_actions::EncodedAction {
             type_id: collaboration::history_source::verbs::EDIT_TYPE.to_owned(),
@@ -254,7 +254,7 @@ impl Replica {
     }
 
     /// The root resource of `app` as the runtime reads it now.
-    pub fn root(&self, app: &str) -> DynRecord {
+    pub fn root(&self, app: &str) -> DynResource {
         let root = self.host.root_of(app).unwrap();
         self.host.store().record(&root.doc).unwrap()
     }
@@ -307,8 +307,8 @@ pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
         .unwrap()
 }
 
-/// The counter's value in a root record.
-pub fn count(record: &DynRecord, meta: &Meta) -> i64 {
+/// The counter's value in a root document.
+pub fn count(record: &DynResource, meta: &Meta) -> i64 {
     match record.get(&field_id(meta, "Counter", "value")) {
         Some(DynValue::Counter(counter)) => counter.get(),
         other => panic!("not a counter: {other:?}"),

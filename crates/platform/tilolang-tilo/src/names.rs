@@ -1,6 +1,6 @@
 //! How a view names the workspace's members.
 //!
-//! The record holds ids, the same on every replica; the workspace's member list knows the names:
+//! The document holds ids, the same on every replica; the workspace's member list knows the names:
 //! what it calls each member, the instance's own person among them. A tilolang host names
 //! people by the list its instance's connection heard last ([`Told`]).
 //!

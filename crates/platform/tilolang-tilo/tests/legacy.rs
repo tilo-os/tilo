@@ -1,9 +1,9 @@
-//! Records written before items were stored by their id, read as items of the flat form.
+//! Documents written before items were stored by their id, read as items of the flat form.
 //!
 //! The workspaces in `tests/legacy/` (saved Automerge documents, as hex) were written by the code
 //! of that time (each app's scenarios run in a workspace of its own and saved, before items were
 //! flat): every item is nested in the collection it was inserted into. Opened now, each item is read by its id, in the collection
-//! and place it was in, with what it holds; nothing of the record is rewritten; references
+//! and place it was in, with what it holds; nothing of the document is rewritten; references
 //! written as paths still name their items; and moves, edits and removals of those items work
 //! as on any other, keeping every id.
 
@@ -67,7 +67,7 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
 }
 
 /// One nested item as the old layout holds it: the item holding its collection (`None`: the
-/// record), the collection's field, its id and its map.
+/// document), the collection's field, its id and its map.
 type Nested = (Option<String>, String, String, Option<ObjId>);
 
 fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
@@ -77,7 +77,7 @@ fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// Every item nested below the map `obj` (of `schema`, the item `holder` or the record), as the
+/// Every item nested below the map `obj` (of `schema`, the item `holder` or the document), as the
 /// old layout holds them: in field order, each collection in its stored order.
 fn nested(
     doc: &AutoCommit,
@@ -122,9 +122,9 @@ fn nested(
     }
 }
 
-/// The records of the workspace: app, id and the record's map.
+/// The documents of the workspace: app, id and the document's map.
 fn records(doc: &AutoCommit) -> Vec<(String, String, ObjId)> {
-    let tl = map_at(doc, &automerge::ROOT, "tl").expect("the workspace holds tilolang records");
+    let tl = map_at(doc, &automerge::ROOT, "tl").expect("the workspace holds tilolang documents");
     let mut out = Vec::new();
     for app in doc.keys(&tl).collect::<Vec<_>>() {
         let Some(records) = map_at(doc, &tl, &app) else {
@@ -181,7 +181,7 @@ fn open(hex: &str, packages: &[(&str, &str)]) -> Replica {
 }
 
 #[test]
-fn every_item_of_an_older_record_reads_by_its_id_where_it_was_and_nothing_is_rewritten() {
+fn every_item_of_an_older_document_reads_by_its_id_where_it_was_and_nothing_is_rewritten() {
     for (bytes, packages) in fixtures() {
         let mut replica = open(bytes, &packages);
         let heads = replica.doc.get_heads();
@@ -270,7 +270,7 @@ fn call(replica: &mut Replica, app: &str, name: &str, args: Vec<Value>) -> Value
     }
 }
 
-/// The index `replica` kept holds what deriving it anew from its record holds.
+/// The index `replica` kept holds what deriving it anew from its document holds.
 fn check_index(replica: &Replica, packages: &[(&str, &str)], app: &str) {
     let fresh = Replica::new("fresh", replica.doc.clone().fork(), packages).0;
     assert_eq!(
@@ -301,7 +301,7 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 }
 
 #[test]
-fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
+fn items_of_an_older_document_move_change_and_go_keeping_their_ids() {
     let packages = vec![app!("discussion"), app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let app = "so.tilo.lang.tasks";
@@ -423,7 +423,7 @@ tilo_test_env::scenario! {
                 .map(|(app, id, _)| (app, id))
                 .collect()
         };
-        let records_before = stored(&replica);
+        let documents_before = stored(&replica);
         let before = listed(&replica, &board, &cards_field);
         assert_eq!(before.len(), 9, "the release board's cards");
         let titles = |replica: &Replica, cards: &[String]| -> Vec<Value> {
@@ -487,9 +487,9 @@ tilo_test_env::scenario! {
         assert_eq!(after.concat(), before);
         assert_eq!(titles(&replica, &after.concat()), titles_before);
         assert!(listed(&replica, &board, &cards_field).is_empty());
-        // Nothing was deleted: every record is where it was, and each card still holds the column it
+        // Nothing was deleted: every document is where it was, and each card still holds the column it
         // was in, which the new version no longer reads.
-        assert_eq!(stored(&replica), records_before);
+        assert_eq!(stored(&replica), documents_before);
         let column = replica
             .host
             .runtime()
@@ -538,7 +538,7 @@ tilo_test_env::scenario! {
         let columns = listed(&replica, &board, &columns_field);
         assert_eq!(columns.len(), 1, "the column the new version added");
 
-        // A migration runs once on each record of its target type, on a record the same version
+        // A migration runs once on each document of its target type, on a document the same version
         // made as on an older one: the board the new version made is migrated once, and the
         // migration leaves it as it was, nothing of the older form being there to move.
         assert_eq!(replica.host.migrate(), 1);
@@ -562,8 +562,8 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     // The package's types are known once a host loaded it.
     drop(open(bytes, &packages));
     let mut doc = saved(bytes);
-    // A message id held twice: copied into another conversation of the record, as no code
-    // writes it but a damaged or hand-made record may hold it.
+    // A message id held twice: copied into another conversation of the document, as no code
+    // writes it but a damaged or hand-made document may hold it.
     let (_, id, obj) = records(&doc)
         .into_iter()
         .find(|(app, _, _)| app == "so.tilo.lang.chat")
@@ -629,7 +629,7 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
 }
 
 /// Tasks, published as `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before: the
-/// id Todo's records were written under.
+/// id Todo's documents were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
     // Read as the compiler reads it: the header's wrapping is the formatter's
@@ -641,7 +641,7 @@ fn todo_as_tasks() -> (String, &'static str) {
 }
 
 #[test]
-fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
+fn a_renamed_app_opens_the_documents_of_its_earlier_id_where_they_are() {
     let (source, ids) = todo_as_tasks();
     let packages = vec![app!("discussion"), (source.as_str(), ids)];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
@@ -664,7 +664,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let items = listed(&replica, &list, &items_field);
     assert!(items.len() >= 3, "{items:?}");
-    // Opening changed nothing in the record.
+    // Opening changed nothing in the document.
     assert_eq!(replica.doc.get_heads(), heads);
     assert!(replica.host.take_committed().is_empty());
     // Actions of the renamed app change them where they are, keeping every id.
@@ -702,7 +702,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
         crate::tasks::create(&Value::resource(&list), "after the rename"),
     );
     assert_eq!(listed(&replica, &list, &items_field).len(), items.len() + 1);
-    // Every record is where it was, under the id it had.
+    // Every document is where it was, under the id it had.
     assert_eq!(stored(&replica), before);
     check_index(&replica, &packages, app);
     // A peer that opens the workspace afterwards reads the same.
@@ -714,7 +714,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
 }
 
 #[test]
-fn mail_leaves_the_records_letters_wrote_where_they_are() {
+fn mail_leaves_the_documents_letters_wrote_where_they_are() {
     let packages = vec![app!("mail")];
     let mut replica = open(include_str!("legacy/letters.hex"), &packages);
     let heads = replica.doc.get_heads();
@@ -732,7 +732,7 @@ fn mail_leaves_the_records_letters_wrote_where_they_are() {
                 .all(|(held, _)| held == "so.tilo.lang.letters"),
         "{before:?}"
     );
-    // Mail never was Letters: Letters' records are not Mail's, and opening the workspace beside them
+    // Mail never was Letters: Letters' documents are not Mail's, and opening the workspace beside them
     // changes nothing of them.
     let mail = replica
         .host

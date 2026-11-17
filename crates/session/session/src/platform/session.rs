@@ -662,7 +662,7 @@ impl Session {
         let resource_index = engine.as_ref().map(|engine| {
             crate::resource_index::RecordIndex::start(
                 std::sync::Arc::clone(engine)
-                    as std::sync::Arc<dyn crate::resource_index::RecordSource>,
+                    as std::sync::Arc<dyn crate::resource_index::DocumentSource>,
                 std::sync::Arc::new(crate::resource_index::AppReader::of_device()),
                 Some(std::sync::Arc::clone(&options.content)),
                 crate::platform::records::Changes::clone(&changes),
@@ -1428,7 +1428,7 @@ impl Session {
         // So do the records the services keep of every app the session runs itself (a seeded
         // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
         // session's pass, as it reads the shell's, and starts no app to read one.
-        for record in services.borrow().records() {
+        for record in services.borrow().documents() {
             session_services.keep_records_of(&record.app);
         }
         // The shell's own readings and verbs, on the same API every other

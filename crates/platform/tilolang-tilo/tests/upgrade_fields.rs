@@ -1,4 +1,4 @@
-//! A package whose field changed from `Text` to `RichText`: the records keep their words.
+//! A package whose field changed from `Text` to `RichText`: the documents keep their words.
 //!
 //! The Notes fixture (`tests/legacy/notes.hex`) was written by the build that kept a note's
 //! body as plain text. Opened by the Notes shipped now, which keeps it as rich text, every
@@ -15,7 +15,7 @@ use crate::fixtures::Replica;
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const APP: &str = "so.tilo.lang.notes";
-/// The Notes package, its note's body kept as rich text: the build the fixture's records are
+/// The Notes package, its note's body kept as rich text: the build the fixture's documents are
 /// opened by, and the one the upgrade brings them to.
 const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");

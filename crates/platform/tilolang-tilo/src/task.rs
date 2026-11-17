@@ -1,11 +1,11 @@
 //! An agent task's programs (`docs/designs/app-language/agents.md`, "How a program runs").
 //!
 //! A task's programs run in a tilolang host of their own, whose code author is the task. The
-//! host holds the task's session (the `let`s its programs bound) and no records: it compiles each
+//! host holds the task's session (the `let`s its programs bound) and no resources: it compiles each
 //! program against every installed app's package and runs it over a [`TaskStore`], which reads
 //! through the task's api, and sends every change the program makes back through the API as an
 //! invocation of the action's own app ([`tilolang_runtime::delegate`]), decided there by the
-//! workspace's one policy as the task's. Nothing here decides anything or writes a record.
+//! workspace's one policy as the task's. Nothing here decides anything or writes a resource.
 //!
 //! The API ([`TaskApi`]) is the task's connection: in the session the program connection to
 //! the MCP server (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
@@ -16,13 +16,13 @@
 //! <why>`), and runs every other app as it would without it.
 //!
 //! **Reads** go to the API ([`TaskApi::read`], [`TaskApi::query`]). A tilolang app's the
-//! session's host answers itself from the app's record as the API hands it over, read with the
-//! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
-//! read once per program. A native app's record only the app knows how to read, so a read of it
+//! session's host answers itself from the app's resource as the API hands it over, read with the
+//! app's package ([`crate::task_documents::DocumentReads`]): no app runs for them. One resource is
+//! read once per program. A native app's resource only the app knows how to read, so a read of it
 //! is the app's own `read` action through the API, as the task ([`crate::native`]).
 //!
 //! **Native apps.** A native app publishes what it offers, not how it runs: its verbs are actions
-//! of its catalogue, a field edit of its record is its own `field-edit` action, and both go to
+//! of its catalogue, a field edit of its resource is its own `field-edit` action, and both go to
 //! the app through the API as the task's invocation, which the broker decides as it decides
 //! `tilo_do`'s and runs the app for when it is not running.
 //!
@@ -45,7 +45,7 @@ use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
-    Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
+    Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewResource, OutboxEntry,
     Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
@@ -62,7 +62,7 @@ pub const MANY_RESOURCES: usize = 3;
 
 /// What a task's host asks of its api. Each call waits for the API's answer.
 pub trait TaskApi {
-    /// The fields of the resource `item` (its id in its record) of the app `app`, its type `ty`,
+    /// The fields of the resource `item` (its id in its resource) of the app `app`, its type `ty`,
     /// as [`Host::read_values`] answers them. A native app's id names the item alone; `ty` says
     /// which of the app's collections a program holds it by ([`crate::native`]).
     fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String>;
@@ -75,7 +75,7 @@ pub trait TaskApi {
     fn query(&self, app: &str, request: &Json) -> Result<Json, String>;
 
     /// A program starts: what was read for an earlier one is read again
-    /// ([`crate::task_records::RecordReads::forget`]).
+    /// ([`crate::task_documents::DocumentReads::forget`]).
     fn begin_program(&self) {}
 }
 
@@ -161,7 +161,7 @@ impl TaskSession {
     /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
     /// and the platform's own (the device's and the session's resources, Settings':
     /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
-    /// them. A program names and type-checks every app of them; a native one it names the record
+    /// them. A program names and type-checks every app of them; a native one it names the document
     /// of, invokes and assigns fields of, and reads what it holds through the app
     /// ([`crate::native::NativeReads`]), which `api` carries too. A package that does not load
     /// leaves only its app unreachable ([`Self::could_not_load`]): the session starts with every
@@ -223,11 +223,11 @@ impl TaskSession {
         load_apps(&runtime, &mut apps, native.packages().cloned(), &mut failed);
         let loaded: HashSet<String> = apps.keys().cloned().collect();
         reads.borrow_mut().apps = loaded.iter().cloned().collect();
-        // The platform's packages, the session's own among them: no record holds their
-        // resources, so they are read by no record read; their actions are invoked on the
+        // The platform's packages, the session's own among them: no document holds their
+        // resources, so they are read by no document read; their actions are invoked on the
         // resource the session publishes.
         // The session's own description is one of the platform's (`platform_packages`): its
-        // resources are read without a record, and its actions run at the session's api.
+        // resources are read without a document, and its actions run at the session's api.
         let platform = crate::platform_apps::platform_packages()?;
         let published: std::collections::HashSet<String> =
             load_apps(&runtime, &mut apps, platform, &mut failed)
@@ -299,7 +299,7 @@ impl TaskSession {
     /// app's action of the same id: `on`, the package's own type its first parameter takes (a
     /// resource of that type), or `at`, the resource the session publishes a loose one on. A
     /// `root` is the resource a program names to reach an app the session does not run: the
-    /// record whose verbs are that app's.
+    /// document whose verbs are that app's.
     #[must_use]
     pub fn catalogue(&self) -> Json {
         let signatures = self.runtime.catalogue();
@@ -498,7 +498,7 @@ fn first_param_type(text: &str) -> Option<&str> {
 struct ApiInvoker {
     api: Rc<dyn TaskApi>,
     apps: HashMap<String, Meta>,
-    /// The native apps among them, which a program invokes on their own records.
+    /// The native apps among them, which a program invokes on their own documents.
     native: Rc<Native>,
     /// The platform's apps, whose resources the session publishes under their own ids.
     published: std::collections::HashSet<String>,
@@ -510,7 +510,7 @@ struct ApiInvoker {
 impl ApiInvoker {
     /// The id the session publishes the resource `r` under, as a published action takes it: a
     /// resource of one of the platform's apps (a window) by its own id, a tilolang app's by its
-    /// app and its id in its record (`tl:so.tilo.lang.notes:<id>`). `r`'s type names the app:
+    /// app and its id in its document (`tl:so.tilo.lang.notes:<id>`). `r`'s type names the app:
     /// a type of a package this task holds by its id, any other as `<app>#<Type>`.
     fn published_id(&self, r: &ResourceRef) -> String {
         let id = r.id_string();
@@ -536,7 +536,7 @@ impl Invoker for ApiInvoker {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
         let published = self.published.contains(app);
-        // The record a native app publishes: where its steps are taken back, and what a
+        // The document a native app publishes: where its steps are taken back, and what a
         // program names to invoke it.
         let record = self.native.record(app);
         let call = if published {
@@ -550,8 +550,8 @@ impl Invoker for ApiInvoker {
             Ok(call) => call,
             Err(why) => return Invoked::Failed(why),
         };
-        // A native app's resources are the ids its own record holds; a tilolang app's are its
-        // record's, under the app.
+        // A native app's resources are the ids its own document holds; a tilolang app's are its
+        // document's, under the app.
         let resources: Vec<String> = invocation
             .resources()
             .iter()
@@ -592,7 +592,7 @@ impl Invoker for ApiInvoker {
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
                     // The resource the step is taken back on: the one the session published a
-                    // loose action on, the app's own record, or the record the task's change of
+                    // loose action on, the app's own document, or the document the task's change of
                     // a tilolang app applied to.
                     let resource = if published {
                         call.get("resource")
@@ -773,9 +773,9 @@ fn arguments_of(
 }
 
 /// The API's call for `invocation` of the native app `meta`: its declared verb, as the app's
-/// own api names it, on the resource the program named (the action's own record, or an item of
+/// own api names it, on the resource the program named (the action's own document, or an item of
 /// it), with the arguments the app takes. A field assignment is the app's own `field-edit` of
-/// its record. Either is the task's invocation of the app, decided and undone as every other
+/// its document. Either is the task's invocation of the app, decided and undone as every other
 /// call of its actions: the app keeps the step.
 fn native_call(
     apps: &HashMap<String, Meta>,
@@ -794,11 +794,11 @@ fn native_call(
         } => {
             let Some(record) = record else {
                 return Err(format!(
-                    "{app} publishes no record a program names its actions on"
+                    "{app} publishes no document a program names its actions on"
                 ));
             };
             // The resource the app's own api takes: the one the program named the action on,
-            // else the record the app publishes.
+            // else the document the app publishes.
             let resource = target
                 .as_ref()
                 .map_or_else(|| record.to_owned(), ResourceRef::id_string);
@@ -822,12 +822,12 @@ fn native_call(
         } => {
             let Some(record) = record else {
                 return Err(format!(
-                    "{app} publishes no record a program sets the fields of"
+                    "{app} publishes no document a program sets the fields of"
                 ));
             };
             if target.item.is_some() {
                 return Err(format!(
-                    "a program sets {app}'s own record fields; what its items hold changes through its actions"
+                    "a program sets {app}'s own document fields; what its items hold changes through its actions"
                 ));
             }
             let key = field_id
@@ -928,7 +928,7 @@ fn call_of(
 }
 
 /// What an invocation of `meta`'s action answered (`{value, resources}`), as the program gets
-/// it: a record result as the resource the app says it returned, any other as its value.
+/// it: a document result as the resource the app says it returned, any other as its value.
 fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Value, String> {
     let Invocation::Action { action, .. } = invocation else {
         return Ok(Value::Unit);
@@ -1033,11 +1033,11 @@ struct TaskStore {
     api: Rc<dyn TaskApi>,
     reads: Rc<RefCell<Reads>>,
     /// The module hash of each app's package, by the app: which package version's schemas a
-    /// record of it resolves by. Filled as the packages load, after the store is in the runtime.
+    /// document of it resolves by. Filled as the packages load, after the store is in the runtime.
     packages: Rc<RefCell<HashMap<String, String>>>,
     /// Every installed app's package schemas, as the runtime loaded them: what a read of a
-    /// record resolves its type by when the app the record's type names is not the one being
-    /// read (a field holding another app's record).
+    /// document resolves its type by when the app the record's type names is not the one being
+    /// read (a field holding another app's document).
     schemas: Arc<crate::schema::Schemas>,
     /// The journals of the task's program runs: the task's own, kept in memory.
     journals: HashMap<RunId, Journal>,
@@ -1133,7 +1133,7 @@ impl Store for TaskStore {
         format!("{prefix}task-{}", self.fresh)
     }
 
-    fn create(&mut self, _: &NewRecord) -> Result<ResourceRef, StoreError> {
+    fn create(&mut self, _: &NewResource) -> Result<ResourceRef, StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
     }
 
@@ -1321,7 +1321,7 @@ fn read_of(answer: &Json) -> Result<Read, String> {
 }
 
 impl Host {
-    /// The resource `item` (its id in its record), as a task's host reads it: its type and
+    /// The resource `item` (its id in its document), as a task's host reads it: its type and
     /// every field as stored, by field id, or `{"missing": true}` when the workspace holds no such
     /// resource. The app's half of a task's read; what the task may read the API decided
     /// before it asked.
@@ -1504,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn a_native_apps_verb_is_its_own_on_the_record_it_publishes() {
+    fn a_native_apps_verb_is_its_own_on_the_document_it_publishes() {
         let meta = chat();
         let app = tilolang_runtime::ids::AppId::from(meta.app.as_str());
         let api = Rc::new(Asked::default());
@@ -1542,14 +1542,14 @@ mod tests {
                 "action": "rename-channel",
                 "arguments": {"channel": "general", "name": "town"},
             })],
-            "the app's own verb, on the record it publishes, without the record among the arguments"
+            "the app's own verb, on the document it publishes, without the document among the arguments"
         );
         let steps = steps.borrow();
         assert_eq!(steps.done, 1);
         assert_eq!(
             steps.history,
             [json!({"app": "so.tilo.chat", "resource": "chat.workspace", "published": false})],
-            "the step is taken back on the record the app keeps it in"
+            "the step is taken back on the document the app keeps it in"
         );
     }
 }

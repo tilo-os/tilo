@@ -20,7 +20,7 @@ use super::{
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::chunk::{self, Chunks};
-use crate::record::{DynRecord, DynValue};
+use crate::resource::{DynResource, DynValue};
 
 /// The item's optional dates (its `Option<Date>` fields).
 fn optional_dates(ty: &str) -> Result<Vec<String>, String> {
@@ -35,7 +35,7 @@ fn optional_dates(ty: &str) -> Result<Vec<String>, String> {
 }
 
 /// `n` items of [`List`], as its collection holds them, outside any holder.
-fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
+fn seeded_items(list: &List, n: usize) -> Result<Collection<DynResource>, String> {
     let n = if list.places { n.min(PLACES) } else { n };
     let dates = optional_dates(&list.item_ty)?;
     let mut items = Collection::default();
@@ -77,7 +77,7 @@ fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> 
 
 /// The list's collection, empty, wrapped in the records the collection is inside: each holder is
 /// a record of its own holding the one below it, the topmost in the root.
-pub(crate) fn with_holders(list: &List) -> Result<Collection<DynRecord>, String> {
+pub(crate) fn with_holders(list: &List) -> Result<Collection<DynResource>, String> {
     let mut items = Collection::default();
     // Each holder's own collection holds the one below it, its own id naming it: a mail
     // account's conversations.
@@ -126,7 +126,7 @@ fn holder_id(level: usize) -> String {
 /// A list inside holders comes with its holders: the holders hold one record each (the
 /// workspace's mail accounts; a workspace has a few), and what grows is the collection in the
 /// deepest of them (`add_in_runs`).
-fn seeded_root(shape: &Shape) -> Result<DynRecord, String> {
+fn seeded_root(shape: &Shape) -> Result<DynResource, String> {
     let mut root = unwritten(&shape.root_ty)?;
     if let Some(list) = &shape.list {
         let items = with_holders(list)?;
@@ -212,7 +212,7 @@ pub(super) fn add_in_runs(
     field: &str,
     kind: &str,
     parent: Option<&str>,
-    items: &[(Id, DynRecord)],
+    items: &[(Id, DynResource)],
     who: &str,
     batch: usize,
 ) -> Result<(), String> {

@@ -56,7 +56,7 @@ struct State {
     kinds: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
-    /// The packages whose records are each member's own (`records: .own`), by app id.
+    /// The packages whose documents are each member's own (`documents: .own`), by app id.
     own: HashSet<String>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
@@ -88,7 +88,7 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
-        if meta.own_records {
+        if meta.own_resources {
             state.own.insert(meta.app.clone());
         }
         if !meta.web.is_empty() {
@@ -208,9 +208,9 @@ enum Author {
     Package(String),
 }
 
-/// What a package's code holds of its own app's records, trusted or not: it reads and changes
+/// What a package's code holds of its own app's documents, trusted or not: it reads and changes
 /// what the app keeps as `runner`, the person using it, and reaches nothing outside it.
-fn own_records(workspace: &str, app: &str, runner: &Grantee) -> Grant {
+fn own_resources(workspace: &str, app: &str, runner: &Grantee) -> Grant {
     Grant::new(
         format!("package-records:{app}"),
         runner.clone(),
@@ -253,16 +253,16 @@ impl Authority for TiloAuthority {
         let node = TreePath::workspace(workspace)
             .app(action.app.to_string())
             .kind(kind);
-        // An app whose records are each member's own acts on the record of the person at the
-        // window: whoever else invokes is decided as on anyone's own record, refused.
-        let own_record = standing
+        // An app whose documents are each member's own acts on the document of the person at the
+        // window: whoever else invokes is decided as on anyone's own document, refused.
+        let own_document = standing
             .as_ref()
             .filter(|_| state.own.contains(action.app.as_str()))
             .and_then(|standing| {
                 let person = standing.person_id()?.to_owned();
-                Some((crate::member_record_of(&action.app, &person)?, person))
+                Some((crate::member_document_of(&action.app, &person)?, person))
             });
-        let node = match &own_record {
+        let node = match &own_document {
             Some((record, _)) => node.resource(record.clone()),
             None => node,
         }
@@ -279,7 +279,7 @@ impl Authority for TiloAuthority {
             Some(standing) if Some(person) == viewer => standing.person_id().unwrap_or_default(),
             _ => person,
         });
-        // An app acting by itself (a migration of its package updating its records, or one of
+        // An app acting by itself (a migration of its package updating its documents, or one of
         // its triggers) runs on the workspace's origin: no person's grants decide it, the
         // package's code still bounds it.
         let alone = invoker.app().is_some();
@@ -300,7 +300,7 @@ impl Authority for TiloAuthority {
         // Each author of the code that led here, once, with what it holds of its own. A block is
         // its writer's code. A package's code is the person running it, as trusted as the package
         // is: it asks before reaching outside unless the workspace grants the person that, and
-        // code nobody installed asks before everything but its own records.
+        // code nobody installed asks before everything but its own documents.
         let runner = person.map_or_else(|| grantee(invoker), Grantee::person);
         let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
@@ -317,7 +317,7 @@ impl Authority for TiloAuthority {
                     .unwrap_or_else(|| format!("tl-module:{}", module.0));
                 let mut own = authorship::code_grants(workspace, &runner, trusted);
                 if action.own && *module == action.module {
-                    own.push(own_records(workspace, &app, &runner));
+                    own.push(own_resources(workspace, &app, &runner));
                 }
                 (Author::Package(app), own)
             };
@@ -345,7 +345,7 @@ impl Authority for TiloAuthority {
             });
         }
         let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-        if let Some((record, person)) = &own_record {
+        if let Some((record, person)) = &own_document {
             cx = cx.with_own_resource(record, person);
         }
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
@@ -404,7 +404,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_persons_standing_and_the_workspaces_denials_decide;
 
-        phase a_package_whose_records_are_each_members_own_is_its_persons_alone;
+        phase a_package_whose_documents_are_each_members_own_is_its_persons_alone;
         {
             let ada = "ab".repeat(32);
             let owner = "ef".repeat(32);
@@ -427,7 +427,7 @@ mod tests {
                 authority.decide(&workspace_owner, &[module()], &change),
                 Decision::Allow
             );
-            // Each member's own, it is Ada's record: only she acts on it, not even the workspace's owner.
+            // Each member's own, it is Ada's document: only she acts on it, not even the workspace's owner.
             authority.state.borrow_mut().own.insert(APP.to_owned());
             assert_eq!(
                 authority.decide(&Actor::from(MemberId::person(ada)), &[module()], &change),
@@ -539,7 +539,7 @@ mod tests {
                 authority.decide(&me, &[module(), module()], &own),
                 Decision::Allow
             );
-            // Untrusted, it is still an author of its own records.
+            // Untrusted, it is still an author of its own documents.
             authority.revoke(&module());
             assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
             let foreign = info(EffectClass::Undoable, false);

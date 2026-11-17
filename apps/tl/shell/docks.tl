@@ -1,7 +1,7 @@
 /// The dock: a run of items on the edge the person set (the launcher, the apps and resources they
 /// pinned, and the apps running now), each with its badge, and the ones that want the person
-/// marked. It is a view of the person's `Shell` record and of the layout; every change it offers is
-/// one of `chrome.tl`'s actions.
+/// marked. It is a view of the person's `Shell` resource and of the layout; every change it offers
+/// is one of `chrome.tl`'s actions.
 ///
 /// The gesture is Rust (`ui.DragRun`, the toolkit's run): the person picks an item up, the
 /// run shows where it will land, and letting go runs one action — `place_item` — which is
@@ -26,9 +26,9 @@ view dock(s: Shell) {
 /// leading or trailing edge runs top to bottom. A dock along the top or the foot holding more
 /// than its edge has room for scrolls along it, so the dock stays on the output.
 ///
-/// The run holds the items the shell's record keeps, which a drag rearranges. The apps running
+/// The run holds the items the shell's document keeps, which a drag rearranges. The apps running
 /// now stand beside it (`dock_running_tiles`): a running app the person never pinned names no
-/// record, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
+/// document, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
 view dock_run(s: Shell) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
@@ -89,9 +89,9 @@ view dock_run(s: Shell) {
     }
 }
 
-/// The apps running on this device that the dock's record does not keep, one item an app: the
+/// The apps running on this device that the dock's document does not keep, one item an app: the
 /// window of it the person was in last, named and drawn as that window is. A window of another
-/// of the person's devices is not a window of this shell's dock, and an app the record already
+/// of the person's devices is not a window of this shell's dock, and an app the document already
 /// holds (pinned, or pinned and running) stands in the run, once.
 fn unfiled_running(s: Shell) -> List<DockItem> {
     let windows = device.windows.all.filter(w -> w.local).sort_by(w -> w.recency)
@@ -124,10 +124,10 @@ fn running_item(w: device.Window) -> DockItem {
     )
 }
 
-/// The running apps the record does not keep, each a tile of its own beside the run: a press
+/// The running apps the document does not keep, each a tile of its own beside the run: a press
 /// opens or focuses its window, and it keeps its badge. It is not a `ui.DragItem`, which names
-/// the record an item stands for: a running app the person never pinned has one only here, not
-/// in the shell's record. Pinning the app puts it in the run, where it is rearranged.
+/// the document an item stands for: a running app the person never pinned has one only here, not
+/// in the shell's document. Pinning the app puts it in the run, where it is rearranged.
 view dock_running_tiles(s: Shell, running: List<DockItem>) {
     if not running.is_empty() {
         row(gap: .tight, align: .center) {
@@ -144,8 +144,8 @@ view dock_running_tiles(s: Shell, running: List<DockItem>) {
 /// second copy. An app with no window open is opened (`session.open_app`), and the launcher
 /// shows.
 ///
-/// It takes the app's key and not the item: an item the shell's record holds reaches an action as
-/// a record reference, and the press names the one thing it needs, so a run's item reaches it
+/// It takes the app's key and not the item: an item the shell's document holds reaches an action as
+/// a document reference, and the press names the one thing it needs, so a run's item reaches it
 /// without a `DockItem` parameter to fit.
 action open_item(s: Shell, key: Text (label: "App")) {
     if let w = device.windows.all.find(w -> w.app_key == key) {

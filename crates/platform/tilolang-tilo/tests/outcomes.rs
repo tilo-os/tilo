@@ -9,7 +9,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Meta, SourceWords, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::publish::{Caller, PlanRequest};
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 

@@ -1,4 +1,4 @@
-//! What an origin derives is never saved to the workspace record: the clock, the layout, the device's
+//! What an origin derives is never saved to the workspace document: the clock, the layout, the device's
 //! state are written into the store's unsaved layer, read at once, and gone at the next start,
 //! when the origin writes them again. A change of one reaches the views and leaves no change
 //! behind to be committed, sent or replayed.
@@ -19,7 +19,7 @@ use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::record::DynValue;
+use tilolang_tilo::resource::DynValue;
 
 /// A package whose root holds a kind its origin derives (`session.layout`).
 const SHELL: &str = r#"app so.tilo.test.shell "Shell"
@@ -49,7 +49,7 @@ view bar(d: Layout) {
 
 const SHELL_IDS: &str = "";
 
-/// A host over a fresh record, with the shell package loaded (its ids made fresh).
+/// A host over a fresh document, with the shell package loaded (its ids made fresh).
 fn host() -> (Host, AutoCommit) {
     let doc = AutoCommit::new();
     let host = Host::new(
@@ -80,7 +80,7 @@ fn commit(host: &Host, doc: &mut AutoCommit) {
 
 fn apply(_host: &Host, doc: &mut AutoCommit, action: &DynAction) {
     let context = tilo_actions::ActionContext::for_resource(
-        // The workspace root's path, as the record service names it for an action that wrote
+        // The workspace root's path, as the document service names it for an action that wrote
         // no resource.
         action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
@@ -153,9 +153,9 @@ fn type_of(host: &Host, name: &str) -> String {
 }
 
 tilo_test_env::scenario! {
-    fn what_a_write_made_reads_before_the_record_or_the_index_holds_it;
+    fn what_a_write_made_reads_before_the_document_or_the_index_holds_it;
 
-    phase a_record_a_write_made_answers_a_field_the_write_did_not_write;
+    phase a_document_a_write_made_answers_a_field_the_write_did_not_write;
     {
         let (host, mut doc) = host();
         let layout = host.root_of("so.tilo.test.shell").unwrap();
@@ -179,12 +179,12 @@ tilo_test_env::scenario! {
             .flatten()
             .next()
             .expect("the sync made the workspace");
-        // A field the write did not write is the record's own: the index names the record at its
-        // next derivation, and until then the record answers.
+        // A field the write did not write is the document's own: the index names the document at its
+        // next derivation, and until then the document answers.
         assert_eq!(
             host.runtime().read(&workspace, "name").unwrap(),
             Value::Text(String::new()),
-            "a field the write did not write reads as the record holds it"
+            "a field the write did not write reads as the document holds it"
         );
         assert_eq!(
             host.runtime().read(&workspace, "key").unwrap(),
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_record_a_write_made_has_its_type_before_the_index_names_it;
+    phase a_document_a_write_made_has_its_type_before_the_index_names_it;
     {
         let (host, mut doc) = host();
         let layout = host.root_of("so.tilo.test.shell").unwrap();
@@ -216,14 +216,14 @@ tilo_test_env::scenario! {
             .flatten()
             .next()
             .expect("the sync made the workspace");
-        // A window opens over the record the write made, before the index names it: the writes name
-        // its type, and the record answers.
+        // A window opens over the document the write made, before the index names it: the writes name
+        // its type, and the document answers.
         assert_eq!(
             host.store().type_of(&workspace).unwrap(),
             type_of(&host, "Workspace"),
-            "a record a write just made opens at once"
+            "a document a write just made opens at once"
         );
-        // ... and once the writes take it away, neither the record nor its window has a type for it.
+        // ... and once the writes take it away, neither the document nor its window has a type for it.
         host.runtime()
             .apply_origin(
                 "session",
@@ -255,18 +255,18 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_session_origin_update_writes_nothing_to_the_record;
+    phase a_session_origin_update_writes_nothing_to_the_document;
     {
         let (host, mut doc) = host();
         // The layout is a root of a derived kind: made in the unsaved layer, so making it writes
-        // nothing to the record either.
+        // nothing to the document either.
         let before_root = heads(&mut doc);
         let layout = host.root_of("so.tilo.test.shell").unwrap();
         commit(&host, &mut doc);
         assert_eq!(
             heads(&mut doc),
             before_root,
-            "the derived root is made in the unsaved layer: the record is untouched"
+            "the derived root is made in the unsaved layer: the document is untouched"
         );
 
         // A minute turns: the origin writes the clock.
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             heads(&mut doc),
             before,
-            "a derived update is not committed: the record's heads do not move"
+            "a derived update is not committed: the document's heads do not move"
         );
         // ... and the shell reads what the origin wrote, at once.
         assert_eq!(
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_derived_update_survives_the_record_moving_on;
+    phase a_derived_update_survives_the_document_moving_on;
     {
         let (host, mut doc) = host();
         let layout = host.root_of("so.tilo.test.shell").unwrap();
@@ -297,8 +297,8 @@ tilo_test_env::scenario! {
             clock_of(&host, &layout),
             Some(DynValue::Register(serde_json::json!("12:01")))
         );
-        // The record moves on (a pass, another device): the derived write stays in the unsaved
-        // layer, where it was, and is not re-derived or re-applied through the record.
+        // The document moves on (a pass, another device): the derived write stays in the unsaved
+        // layer, where it was, and is not re-derived or re-applied through the document.
         let mut record = doc.fork();
         automerge::transaction::Transactable::put(&mut record, automerge::ROOT, "a-pass", "kept")
             .unwrap();
@@ -307,7 +307,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             clock_of(&host, &layout),
             Some(DynValue::Register(serde_json::json!("12:01"))),
-            "the record moving on leaves the derived write where it was"
+            "the document moving on leaves the derived write where it was"
         );
     }
 }

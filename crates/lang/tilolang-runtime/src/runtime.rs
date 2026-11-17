@@ -15,7 +15,7 @@ use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::run::Resolution;
-use crate::settle::{AgentBlock, InvocationRecord};
+use crate::settle::{AgentBlock, InvocationEntry};
 use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
@@ -603,7 +603,7 @@ impl Runtime {
     pub fn proposals_of(
         &self,
         resource: &ResourceRef,
-    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+    ) -> Vec<(ResourceRef, crate::InvocationEntry)> {
         self.core.proposals_of(resource)
     }
 
@@ -615,7 +615,7 @@ impl Runtime {
     pub fn read_invocation(
         &self,
         invocation: &ResourceRef,
-    ) -> Result<InvocationRecord, RuntimeError> {
+    ) -> Result<InvocationEntry, RuntimeError> {
         self.core.read_invocation(invocation)
     }
 

@@ -1,6 +1,6 @@
 //! Undo in a workspace two people and an agent work in, with the shipped Notes and Tasks apps: each
 //! person's undo takes back their own step and leaves everybody else's edits standing, and it
-//! is never refused because somebody else changed the same record since.
+//! is never refused because somebody else changed the same document since.
 
 use automerge::AutoCommit;
 use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
@@ -9,7 +9,7 @@ use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
-use tilolang_tilo::instance::record::HostHistoryEdit;
+use tilolang_tilo::instance::document::HostHistoryEdit;
 
 use crate::fixtures::{Replica, field_id, target};
 use crate::legibility::call;
@@ -113,7 +113,7 @@ fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
     edit(r, NOTES_APP, (note, "Note", "body"), EditOp::Rich { rich });
 }
 
-/// `r`'s person runs the history verb `edit` on the record, as their window's Undo does.
+/// `r`'s person runs the history verb `edit` on the document, as their window's Undo does.
 fn history(r: &mut Replica, edit: &HistoryEdit) {
     let payload = serde_json::to_vec(edit).unwrap();
     let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();

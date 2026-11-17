@@ -220,7 +220,7 @@ fn placed_as_agent(
     crate::common::wait_for(session, format!("{record} placed"), |session| {
         crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == record)
+            .find(|place| place.resource == record)
     })
 }
 
@@ -255,7 +255,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let notes = crate::common::wait_for(&mut session, "the notes placed", |session| {
         crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == notes_id)
+            .find(|place| place.resource == notes_id)
     });
     // The place answers what it showed by the title it stands by, so the agent's step line names
     // it beside what the place declares it did ("Showed on the canvas: Notes").
@@ -295,7 +295,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     session.step(Duration::from_millis(1)).expect("a frame");
     let shown = crate::common::places(&session)
         .into_iter()
-        .filter(|place| place.record == notes_id)
+        .filter(|place| place.resource == notes_id)
         .count();
     assert_eq!(shown, 1, "one place shows it");
 }
@@ -378,7 +378,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let moved = crate::common::wait_for(&mut session, "the note moved", |session| {
         let place = crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == notes_id)?;
+            .find(|place| place.resource == notes_id)?;
         let (x, y, _) = canvas_point(session, &place);
         (x < 6000).then_some((x, y))
     });

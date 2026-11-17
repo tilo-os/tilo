@@ -1,6 +1,6 @@
-//! The versions of every resource, read from the workspace record's log (reflection, and what a
+//! The versions of every resource, read from the workspace document's log (reflection, and what a
 //! run did: task-legibility.md §2): each package action's change is a version of each
-//! resource it made, changed or removed; each other step on the record (an undo, a revert) a
+//! resource it made, changed or removed; each other step on the document (an undo, a revert) a
 //! version of each resource it wrote.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -26,7 +26,7 @@ pub(super) type NewestPage = (Vec<(String, Version)>, bool);
 /// Add the versions each of `changes` made to `index`, by the resources it changed: who made
 /// it, when (the time its action recorded, else the change's), and by which action.
 ///
-/// A change that is no action of a package but someone's step on the record all the same (an
+/// A change that is no action of a package but someone's step on the document all the same (an
 /// undo, a revert from History) is a version too, of each resource it wrote, as `mirror` (which
 /// holds it) places what it wrote: who took back an agent's run has seen what they took back.
 pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
@@ -45,7 +45,7 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
             .as_ref()
             .map(|(stamp, _, _)| stamp.clone())
             .or_else(|| idx::reflect::written_stamp(&change));
-        // A change a step took back is no version of what the record holds.
+        // A change a step took back is no version of what the document holds.
         let counts = !undone.contains(&change.hash().to_string());
         let placed: BTreeMap<String, Left> = read
             .as_ref()
@@ -141,7 +141,7 @@ fn note(
         .or_default()
         .push(version.clone());
     // The removal the resource ends at: of two, the later by the order versions keep, which
-    // the index keeps too, so both pick the same one however the record reached them. A
+    // the index keeps too, so both pick the same one however the document reached them. A
     // removal of an item the index already had out leaves the earlier one standing.
     let Some(stamp) = stamp.filter(|_| removed && counts && version.left.is_some()) else {
         return;
@@ -292,7 +292,7 @@ impl Inner {
     }
 }
 
-/// The newest version of `at` ([`Inner::newest`]), else the record's log answers it: what a
+/// The newest version of `at` ([`Inner::newest`]), else the document's log answers it: what a
 /// mark of a resource reads without the resource's log once its package's index is open.
 pub(super) fn newest(store: &TiloStore, at: &ResourceRef) -> Result<Option<Version>, StoreError> {
     if let Some(answered) = store.held().newest(at) {
@@ -303,14 +303,14 @@ pub(super) fn newest(store: &TiloStore, at: &ResourceRef) -> Result<Option<Versi
 }
 
 /// The versions of `at`, oldest first (`Store::versions`), read from the log of the chunk that
-/// holds it: its whole history, which only what shows a record's every change asks for.
+/// holds it: its whole history, which only what shows a document's every change asks for.
 pub(super) fn all(store: &TiloStore, at: &ResourceRef) -> Vec<Version> {
     logged(store, at, None, usize::MAX).versions
 }
 
 /// The versions of `at` after the mark `mark`, the newest `page` of them, with how many there
-/// are (`Store::versions_since`): what a catch-up reads of a record someone changed, so what
-/// opening a window costs is a page of the record's history whatever its length.
+/// are (`Store::versions_since`): what a catch-up reads of a document someone changed, so what
+/// opening a window costs is a page of the document's history whatever its length.
 pub(super) fn since(
     store: &TiloStore,
     at: &ResourceRef,
@@ -332,7 +332,7 @@ fn logged(
     let id = at.id_string();
     // The chunk a resource is read and written in holds its whole log: reading one page's
     // history costs that chunk, not the workspace's every version. A resource no chunk that
-    // routed it holds — one the record no longer has — is in whichever chunk's changes made its
+    // routed it holds — one the document no longer has — is in whichever chunk's changes made its
     // versions.
     let routed: Vec<ChunkNo> = store.held().versions_chunks(at);
     let chunks: Vec<ChunkNo> = store.held().chunks.numbers().collect();
@@ -361,7 +361,7 @@ fn page_in(
 }
 
 /// The newest version of each resource of the document `doc` ([`Inner::newest_page`]), else the
-/// record's log answers it: a page of them, and whether there are more.
+/// document's log answers it: a page of them, and whether there are more.
 pub(super) fn newest_page(
     store: &TiloStore,
     doc: &DocId,
@@ -378,7 +378,7 @@ pub(super) fn newest_page(
 }
 
 /// The items that left the collection `field` of `holder` ([`Inner::removed_in`]), else the
-/// record's log answers it.
+/// document's log answers it.
 pub(super) fn removed_in(
     store: &TiloStore,
     holder: &ResourceRef,

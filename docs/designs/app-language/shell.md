@@ -35,7 +35,7 @@ type Strips { strips: List<Strip> }            type Strip { places: List<Place>,
 type Canvas { places: Map<Place, Point> }      type Place { shows: Resource, view: View, state: … }
 ```
 
-- It lives in the person's own record (`records: .own`), synced across their devices that use
+- It lives in the person's own record (`resources: .own`), synced across their devices that use
   the same shell, with history and undo. Nothing about it is shared with other members.
 - A shell that doesn't know a place a different shell made ignores it and leaves it alone.
 - Today's layout in `tilo_desktop_model` (shared, on the workspace) moves here; the
@@ -137,7 +137,7 @@ reads installed packages from the person's package store the way it reads every 
 - `compile_shell()`'s built-in copy (`include_str!` of `apps/tl/shell`) stays only as the
   fallback described below. It is not the way the shell normally loads.
 
-**Picking a style.** The person's `Viewing` record (`layout.tl`, `records: .own`) holds
+**Picking a style.** The person's `Viewing` record (`layout.tl`, `resources: .own`) holds
 the style as a view reference: package and view name. It is not the closed `Preset` enum,
 which goes away.
 - The style switch in the bar and the Appearance page of Settings list every style of every
@@ -440,7 +440,7 @@ carries its own actions:
 ### The layout belongs to each shell
 
 Each layout is a shell package with its own layout type in the person's own record
-(`records: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
+(`resources: .own`), as §2 says. A place is a resource and a view, and never an app. The app follows
 from the resource, and a foreign window's place names the `Window`.
 
 ```

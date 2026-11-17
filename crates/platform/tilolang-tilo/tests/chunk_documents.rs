@@ -1,7 +1,7 @@
-//! An app's record held as chunk records: the record keeps a document per chunk, one action
+//! An app's resource held as chunk resources: the resource keeps a document per chunk, one action
 //! across chunks is one workspace commit every part of which an undo takes back, a change syncs
 //! in its chunk alone through the routes the collab client joins, a replica that joins gets the
-//! manifest and every chunk, and a record written before chunks opens as one chunk unchanged.
+//! manifest and every chunk, and a resource written before chunks opens as one chunk unchanged.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -30,10 +30,10 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening, RootView};
-use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::instance::document::InstanceDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::items::Items;
-use tilolang_tilo::record::{DynRecord, DynValue};
+use tilolang_tilo::resource::{DynResource, DynValue};
 use tilolang_tilo::runtime::{Actor, MemorySink, NameHost};
 use tilolang_tilo::schema::{TypeSchema, lookup};
 
@@ -238,10 +238,10 @@ impl NameHost for Alone {
     }
 }
 
-/// One replica: its window over the board, and the record it holds the chunks in.
+/// One replica: its window over the board, and the document it holds the chunks in.
 struct Window {
     instance: Instance,
-    workspace: InstanceRecord,
+    workspace: InstanceDocument,
     mine: Inbox,
     _patches: End,
 }
@@ -278,7 +278,7 @@ fn window(
             mode: Mode::Live,
             device: None,
             index_dir: None,
-            record_loader: None,
+            document_loader: None,
             root: RootView::default(),
             sink: Some(Box::new(MemorySink::new())),
         },
@@ -286,7 +286,7 @@ fn window(
         Rc::new(Alone),
         Box::new(app_end),
     );
-    let workspace = InstanceRecord::of(chunks, manager, route.clone(), me, "tl.test");
+    let workspace = InstanceDocument::of(chunks, manager, route.clone(), me, "tl.test");
     Window {
         instance,
         workspace,
@@ -295,8 +295,8 @@ fn window(
     }
 }
 
-/// The window reads what its record holds: the record's chunk, then the chunks above it, a
-/// frame at a time, and derives them off the frame until its index covers the record.
+/// The window reads what its document holds: the document's chunk, then the chunks above it, a
+/// frame at a time, and derives them off the frame until its index covers the document.
 fn catch_up(window: &mut Window) {
     window.workspace.sync_instance(&mut window.instance);
     window.instance.update();
@@ -307,7 +307,7 @@ fn catch_up(window: &mut Window) {
 }
 
 /// The board's cards, `n` of them in the order they were added, written straight into the chunk
-/// of the run each belongs to, and each run recorded in the record's manifest: the documents the
+/// of the run each belongs to, and each run recorded in the document's manifest: the documents the
 /// store's planner would have written, one action at a time being minutes of work at this size.
 /// Their ids.
 fn bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
@@ -346,7 +346,7 @@ fn insert(
             DynEdit::Insert {
                 id: root.to_owned(),
                 item: id.clone(),
-                record: DynRecord::empty(schema).unwrap().to_json(),
+                record: DynResource::empty(schema).unwrap().to_json(),
                 at: Placement::At {
                     place: Place {
                         parent: None,
@@ -370,7 +370,7 @@ fn insert(
     });
 }
 
-/// A record as workspaces written before chunks hold it: its cards in the record itself, and no
+/// A resource as workspaces written before chunks hold it: its cards in the resource itself, and no
 /// manifest naming anything else. Their ids.
 fn pre_chunks(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
     let ids: Vec<String> = (0..n).map(|index| format!("c{index}")).collect();
@@ -417,9 +417,9 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
     let (_host, mut docs, meta, root, _ids) = board();
     let inserted = bulk(&mut docs, &meta, &root, 100_000);
 
-    // The record holds every chunk the runs filled, the record itself first.
+    // The document holds every chunk the runs filled, the document itself first.
     let route = RouteSpec::app(BOARD_APP, uuid::Uuid::new_v4());
-    let record = InstanceRecord::of(
+    let record = InstanceDocument::of(
         docs.chunks(),
         CollaborationManager::with_peer_transport(Routed {
             me: "ada".into(),
@@ -440,10 +440,10 @@ fn a_hundred_thousand_cards_open_and_list_across_their_chunks() {
     assert_eq!(
         record.read(|chunks| chunks.placement().chunks().len()),
         numbers.len() - 1,
-        "the manifest names every chunk above the record"
+        "the manifest names every chunk above the document"
     );
 
-    // Opening the record lists all of them, in the order they were added, under the ids they
+    // Opening the document lists all of them, in the order they were added, under the ids they
     // were given, and each is read from the chunk its run holds.
     let schema = board_schema(&meta);
     let field = field_id(&meta, "Board", "left");
@@ -522,7 +522,7 @@ fn a_retitle_writes_and_syncs_the_card_s_chunk_alone() {
     let field = field_id(&meta, "Board", "left");
     assert_eq!(left(&host, &root, &field), inserted);
     // The index reads the card's fields from the chunk that holds it: a retitle in a chunk
-    // above the record's is the card's new text, not an empty one read from the record.
+    // above the document's is the card's new text, not an empty one read from the document.
     let card_at =
         ResourceRef::root(&root, board_schema(&meta).id).item(&inserted[4150], card_type(&meta));
     assert_eq!(
@@ -554,7 +554,7 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
     let mut ada = window("ada", &route, &platform, &wire, docs.chunks());
     catch_up(&mut ada);
 
-    // The card moves from the record's own chunk into the run's chunk in one action.
+    // The card moves from the document's own chunk into the run's chunk in one action.
     let card = inserted[0].clone();
     let action = act(
         &ada.instance.host().unwrap(),
@@ -606,8 +606,8 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
             .iter()
             .map(|part| part.document.clone())
             .collect::<Vec<_>>(),
-        [String::new(), chunk::record_id("", 1)],
-        "one part per chunk record"
+        [String::new(), chunk::document_id("", 1)],
+        "one part per chunk document"
     );
 
     // The card kept its id: it is read in the chunk it moved to, and no longer where it was.
@@ -624,7 +624,7 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
         .committed_heads();
     assert!(
         !ada.workspace.chunk(0).unwrap().committed_heads().is_empty(),
-        "the record's own chunk holds the manifest's change"
+        "the document's own chunk holds the manifest's change"
     );
 
     // Undo takes the whole move back, its parts as one action of its own: the card is back
@@ -663,18 +663,18 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
     assert_eq!(undo_commit.parts.len(), 2);
     assert!(
         !moved(&before_undo, &ada.workspace.marks()).is_empty(),
-        "the undo is a change of the record"
+        "the undo is a change of the document"
     );
 }
 
 #[test]
-fn a_record_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
+fn a_document_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
     let (_host, mut docs, meta, root, ids) = board();
     let inserted = pre_chunks(&mut docs, &meta, &root, 20);
     let written = docs.chunks();
     let before = written
         .first()
-        .expect("the record")
+        .expect("the document")
         .committed_document()
         .save();
     let heads = written.first().unwrap().committed_heads();
@@ -688,12 +688,12 @@ fn a_record_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
     catch_up(&mut ada);
     ada.workspace.receive(&mut ada.instance);
 
-    // It is one chunk, the record itself, with no manifest naming another.
+    // It is one chunk, the document itself, with no manifest naming another.
     assert_eq!(ada.workspace.chunks().numbers().collect::<Vec<_>>(), [0]);
     assert!(ada.workspace.chunks().placement().is_empty());
     assert!(ada.workspace.chunk(1).is_none());
 
-    // Nothing is copied and nothing rewritten: the record is the bytes it was, and nothing was
+    // Nothing is copied and nothing rewritten: the document is the bytes it was, and nothing was
     // handed the workspace on a route of its own.
     assert_eq!(ada.workspace.doc().committed_document().save(), before);
     assert_eq!(ada.workspace.doc().committed_heads(), heads);
@@ -705,8 +705,8 @@ fn a_record_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
 }
 
 /// Two replicas that each placed the first resource into a chunk before they met made a manifest
-/// of their own: the record keeps one of the two, and what the other places is placed just the
-/// same. The next write folds them into the one the record keeps, on both.
+/// of their own: the document keeps one of the two, and what the other places is placed just the
+/// same. The next write folds them into the one the document keeps, on both.
 #[test]
 fn a_manifest_two_replicas_wrote_places_every_chunk_on_both() {
     let (_host, mut docs, _meta, _root, _ids) = board();
@@ -721,7 +721,7 @@ fn a_manifest_two_replicas_wrote_places_every_chunk_on_both() {
     assert_eq!(
         manifests(docs.doc(chunk::FIRST)),
         0,
-        "the record written before chunks has no manifest"
+        "the document written before chunks has no manifest"
     );
     let mut ada = docs.doc(chunk::FIRST).fork();
     let mut grace = ada.fork();
@@ -731,15 +731,15 @@ fn a_manifest_two_replicas_wrote_places_every_chunk_on_both() {
     grace.commit();
     ada.merge_incoming(&mut grace)
         .expect("ada takes grace's manifest");
-    assert_eq!(manifests(&ada), 2, "the record holds two manifests");
+    assert_eq!(manifests(&ada), 2, "the document holds two manifests");
     let placement = chunk::Placement::read(&ada);
     assert_eq!(placement.chunk("card-ada"), 1);
     assert_eq!(placement.chunk("card-grace"), 2, "both are placed");
 
-    // A write folds the two into the one the record keeps, and every placement stays.
+    // A write folds the two into the one the document keeps, and every placement stays.
     chunk::place(&mut ada, "card-later", 3).expect("ada places another");
     ada.commit();
-    assert_eq!(manifests(&ada), 1, "the record keeps one manifest");
+    assert_eq!(manifests(&ada), 1, "the document keeps one manifest");
     let placement = chunk::Placement::read(&ada);
     for (id, chunk) in [("card-ada", 1), ("card-grace", 2), ("card-later", 3)] {
         assert_eq!(placement.chunk(id), chunk, "{id}");
@@ -763,7 +763,7 @@ fn a_replica_that_joins_gets_the_manifest_and_every_chunk() {
     let mut ada = window("ada", &route, &platform, &wire, docs.chunks());
     catch_up(&mut ada);
 
-    // Grace joins the workspace holding none of it: the record comes first as the whole
+    // Grace joins the workspace holding none of it: the document comes first as the whole
     // document, and its manifest is what names the chunks she asks for.
     let mut grace = window(
         "grace",
@@ -899,7 +899,7 @@ fn a_run_that_fails_leaves_nothing_in_any_chunk() {
 }
 
 /// Cards a person adds past a full run start the next chunk and go on in it: each add is written
-/// once, as the change the store wrote, in the new chunk as in the record's manifest, and the new
+/// once, as the change the store wrote, in the new chunk as in the document's manifest, and the new
 /// chunk is taken in as it was written, never read again whole.
 #[test]
 fn cards_added_past_a_full_run_are_each_written_once_into_the_next_chunk() {
@@ -1078,9 +1078,9 @@ impl Drop for TempDir {
     }
 }
 
-/// A host holding the record `docs` holds, its indexes kept in `dir`, with the board loaded from
+/// A host holding the document `docs` holds, its indexes kept in `dir`, with the board loaded from
 /// the package lock `ids`: the store reads every chunk now when they were all `sent`, else each
-/// chunk above the record as something reaches into it.
+/// chunk above the document as something reaches into it.
 fn opened(docs: &Docs, dir: &Path, ids: &str, sent: bool) -> Host {
     let host = Host::open(
         Opening {
@@ -1101,7 +1101,7 @@ fn opened(docs: &Docs, dir: &Path, ids: &str, sent: bool) -> Host {
     host
 }
 
-/// The chunks above the record `host` read, in order.
+/// The chunks above the document `host` read, in order.
 fn read_above(host: &Host) -> Vec<ChunkNo> {
     holding(host)
         .into_iter()
@@ -1119,7 +1119,7 @@ fn holding(host: &Host) -> Vec<ChunkNo> {
 }
 
 /// The card `id` of the board `root`, as a window reads it, and the chunk its map is in: the
-/// cards are written in order, a chunk of [`chunk::ITEMS`] each from the record's own chunk on.
+/// cards are written in order, a chunk of [`chunk::ITEMS`] each from the document's own chunk on.
 fn card_at(meta: &Meta, root: &str, board: &str, id: &str, at: usize) -> (ResourceRef, ChunkNo) {
     let per = usize::try_from(chunk::ITEMS).unwrap();
     let number = ChunkNo::try_from(at / per).unwrap();
@@ -1195,10 +1195,10 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
     // A row a window shows reads its own chunk, and only that one.
     let board = board_schema(&meta).id;
     let (card, number) = card_at(&meta, &root, &board, &inserted[5_000], 5_000);
-    assert!(lazy.store().record_at(&card).is_ok());
+    assert!(lazy.store().document_at(&card).is_ok());
     assert_eq!(read_above(&lazy), [number], "one chunk, the row's own");
     let (card, number) = card_at(&meta, &root, &board, &inserted[9_999], 9_999);
-    assert!(lazy.store().record_at(&card).is_ok());
+    assert!(lazy.store().document_at(&card).is_ok());
     assert_eq!(
         read_above(&lazy),
         [2, number],
@@ -1229,7 +1229,11 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
     assert!(after.contains(&edited_chunk), "{after:?}");
     let text = field_id(&meta, "Card", "text");
     assert_eq!(
-        lazy.store().record_at(&edited).unwrap().get(&text).cloned(),
+        lazy.store()
+            .document_at(&edited)
+            .unwrap()
+            .get(&text)
+            .cloned(),
         Some(DynValue::Text("changed".into()))
     );
 }
@@ -1243,7 +1247,7 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     assert_eq!(
         docs.chunks().numbers().count(),
         filled,
-        "the first run is written in the record's own chunk, the rest above it"
+        "the first run is written in the document's own chunk, the rest above it"
     );
     let dir = TempDir::new(&format!("open-{cards}"));
 
@@ -1256,11 +1260,11 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     let cold_held = holding(&cold);
     let loaded = read_above(&cold).len();
     assert_eq!(cold_held.len(), filled, "every chunk the manifest names");
-    assert_eq!(loaded, filled - 1, "the record was opened with");
+    assert_eq!(loaded, filled - 1, "the document was opened with");
     cold.persist_index();
     drop(cold);
 
-    // With one, it opens over the record and the index, reading a chunk as a row shows it.
+    // With one, it opens over the document and the index, reading a chunk as a row shows it.
     let warm = Instant::now();
     let lazy = opened(&docs, dir.path(), &ids, false);
     let warm_open = warm.elapsed();
@@ -1268,10 +1272,10 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     assert_eq!(
         held,
         [chunk::FIRST],
-        "the window opened over the record alone"
+        "the window opened over the document alone"
     );
     assert!(read_above(&lazy).is_empty(), "no chunk was read");
-    assert_eq!(lazy.store().stats().attaches, 1, "the record, once");
+    assert_eq!(lazy.store().stats().attaches, 1, "the document, once");
     assert_eq!(
         lazy.store().stats().builds,
         0,
@@ -1285,7 +1289,7 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     let board = board_schema(&meta).id;
     if cards > usize::try_from(chunk::ITEMS).unwrap() {
         let (card, number) = card_at(&meta, &root, &board, &ids_of(cards, cards - 1), cards - 1);
-        assert!(lazy.store().record_at(&card).is_ok());
+        assert!(lazy.store().document_at(&card).is_ok());
         assert_eq!(read_above(&lazy), [number], "the row's chunk alone");
     }
     (filled, loaded, cold_open, warm_open, cold_held, held)
@@ -1304,7 +1308,7 @@ fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_ten_thousand_cards()
             "{cards} cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
              opened over the index in {warm:?} holding {held:?}"
         );
-        // What a window shows is the record and the chunks its rows are in, which it reads as
+        // What a window shows is the document and the chunks its rows are in, which it reads as
         // they scroll: an open that read every chunk took minutes at ten thousand.
         assert!(
             warm < Duration::from_secs(10),
@@ -1313,12 +1317,12 @@ fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_ten_thousand_cards()
     }
 }
 
-/// The record a replica opens from the copies it keeps on disk, on the route `route`.
+/// The document a replica opens from the copies it keeps on disk, on the route `route`.
 fn opened_from_disk(
     route: &RouteSpec,
     documents: &Rc<dyn durable_store::DurableStore>,
     me: &str,
-) -> InstanceRecord {
+) -> InstanceDocument {
     let mut manager = CollaborationManager::with_peer_transport(Routed {
         me: me.to_owned(),
         wire: Wire::default(),
@@ -1334,11 +1338,11 @@ fn opened_from_disk(
         handle: Some(me.to_owned()),
     }));
     let _ = manager.poll();
-    InstanceRecord::open(manager, documents, me, "tl.test").unwrap()
+    InstanceDocument::open(manager, documents, me, "tl.test").unwrap()
 }
 
 #[test]
-fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() {
+fn a_card_written_into_a_chunk_is_there_when_the_document_opens_again_from_disk() {
     let (_host, _docs, meta, root, ids) = board();
     let field = field_id(&meta, "Board", "left");
     let schema = board_schema(&meta);
@@ -1348,7 +1352,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         Rc::new(app_state::FsStore::new(profile.path()));
     let mut record = opened_from_disk(&route, &documents, "ada");
 
-    // The board's root in the record's own chunk, then one card into chunk 2, as the API writes
+    // The board's root in the resource's own chunk, then one card into chunk 2, as the API writes
     // them: nothing of this reaches another replica.
     let board_ty = meta
         .types
@@ -1365,7 +1369,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         authorship: Authorship::default(),
         edits: vec![DynEdit::Create {
             id: root.clone(),
-            record: DynRecord::empty(lookup(&board_ty).unwrap())
+            record: DynResource::empty(lookup(&board_ty).unwrap())
                 .unwrap()
                 .to_json(),
         }],
@@ -1392,7 +1396,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
             DynEdit::Insert {
                 id: root.clone(),
                 item: card.clone(),
-                record: DynRecord::empty(lookup(&card_ty).unwrap())
+                record: DynResource::empty(lookup(&card_ty).unwrap())
                     .unwrap()
                     .to_json(),
                 at: Placement::At {
@@ -1413,7 +1417,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         .unwrap();
     assert!(
         record.chunk(2).is_some(),
-        "the record holds the chunk it wrote"
+        "the resource holds the chunk it wrote"
     );
     record.flush();
     assert_eq!(
@@ -1423,11 +1427,11 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
     drop(record);
 
     // Opened again from the same copies, with no change from anyone: the chunk comes with the
-    // record, and the card is where it was written.
+    // resource, and the card is where it was written.
     let mut reopened = opened_from_disk(&route, &documents, "ada");
     assert!(
         reopened.chunk(2).is_some(),
-        "the chunk's own copy was opened with the record"
+        "the chunk's own copy was opened with the resource"
     );
     assert_eq!(held_in(&reopened.chunks(), 2, &root, &schema), 1);
     assert_eq!(
@@ -1437,7 +1441,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         vec![card.clone()]
     );
 
-    // And a window over it reads the card through the record's change.
+    // And a window over it reads the card through the resource's change.
     let platform = Rc::new(Board {
         ids: RefCell::new(ids),
     });
@@ -1449,7 +1453,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
             mode: Mode::Live,
             device: None,
             index_dir: None,
-            record_loader: None,
+            document_loader: None,
             root: RootView::default(),
             sink: Some(Box::new(MemorySink::new())),
         },
@@ -1507,7 +1511,7 @@ fn a_direct_edit_of_a_card_in_a_chunk_is_written_in_that_chunk() {
             .filter_map(DynEdit::chunk)
             .collect::<Vec<_>>(),
         Vec::<ChunkNo>::new(),
-        "the edit names no chunk: the record routes it"
+        "the edit names no chunk: the document routes it"
     );
     assert_eq!(
         action

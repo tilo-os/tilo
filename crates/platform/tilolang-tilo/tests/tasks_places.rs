@@ -8,7 +8,7 @@ use crate::tasks::{
     APP, ShownPlace, ShownSection, all, call, count, create, go_to, home_list_rows, key_of,
     node_of, places, read, shown_count, shown_title, target, task, workspace,
 };
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 use crate::tasks::{bound_key, task_page};
 
 /// The places under each heading of the sidebar, in order.
@@ -384,7 +384,7 @@ tilo_test_env::scenario! {
 
 /// The assignee's person field offers the workspace's members and its agents, by the people
 /// and software a staged workspace has in it.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 #[test]
 fn the_assignee_offers_the_workspaces_people_and_agents() {
     let (mut ada, _root) = workspace();

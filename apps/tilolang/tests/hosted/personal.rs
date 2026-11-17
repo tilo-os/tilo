@@ -1,5 +1,5 @@
 //! A person's own state of a workspace in a hosted window: the place they pick and what they
-//! mark seen are kept in the workspace's record of each person's own state, so they are still
+//! mark seen are kept in the workspace's document of each person's own state, so they are still
 //! theirs after the window opens again and reach the person's other devices.
 
 use super::{Session, place_at};
@@ -38,7 +38,7 @@ fn pick(session: &mut Session, place: &str) {
     assert_eq!(picked(session), [place], "the sidebar shows {place} picked");
 }
 
-/// Whether the person's own entries of the record hold the run `run` as reviewed.
+/// Whether the person's own entries of the document hold the run `run` as reviewed.
 fn reviewed(session: &Session, run: &str) -> bool {
     session
         .instance()
@@ -73,11 +73,11 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
             .slots
             .iter()
             .any(|slot| slot.person == "ada"),
-        "the record keeps the place as the person's own view state"
+        "the document keeps the place as the person's own view state"
     );
     assert!(
         reviewed(&first, "run-1"),
-        "the record keeps the run as seen"
+        "the document keeps the run as seen"
     );
     first.close();
 
@@ -100,7 +100,7 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     );
 }
 
-/// What `from` sent on the route of the record of each person's own state, delivered to `to` as
+/// What `from` sent on the route of the document of each person's own state, delivered to `to` as
 /// the broker relays it.
 fn relay(from: &Session, to: &mut Session) {
     let sent: Vec<_> = from.wire().1.borrow_mut().drain(..).collect();
@@ -119,7 +119,7 @@ fn relay(from: &Session, to: &mut Session) {
     }
     assert!(
         relayed > 0,
-        "the window sent the place on the record's route"
+        "the window sent the place on the document's route"
     );
     to.settle();
 }

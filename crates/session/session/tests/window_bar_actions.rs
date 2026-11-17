@@ -189,7 +189,7 @@ const KEY_ESCAPE: u32 = 1;
 fn strip_of(session: &Session, record: &str) -> String {
     crate::common::places(session)
         .into_iter()
-        .find(|place| place.record == record)
+        .find(|place| place.resource == record)
         .map_or_else(
             || panic!("the shell holds a place for {record}"),
             |place| place.strip,

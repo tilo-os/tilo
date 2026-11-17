@@ -1,5 +1,5 @@
 //! Reflection over the log: `created(r)`, `updated(r)` and `history(r)` read who made each
-//! version of a resource, when and by which action, from the workspace record's changes, on every
+//! version of a resource, when and by which action, from the workspace document's changes, on every
 //! replica. A scenario's `invoke(..., by: who, at: time)` calls are recorded as that person's,
 //! at that time.
 
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
             described,
             "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:05:00Z Reword 2"
         );
-        // Another replica reads the same versions from the record.
+        // Another replica reads the same versions from the document.
         let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         ben.host.sync_from(&ben.doc);
         ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
@@ -415,13 +415,13 @@ tilo_test_env::scenario! {
             let provisional = text(call(&ada, "ada", "describe", vec![line.clone()]));
             assert!(
                 provisional.starts_with(&want),
-                "round {round}, before the record holds it: {provisional}"
+                "round {round}, before the document holds it: {provisional}"
             );
             ada.commit();
             let committed = text(call(&ada, "ada", "describe", vec![line.clone()]));
             assert!(
                 committed.starts_with(&want),
-                "round {round}, once the record holds it: {committed}"
+                "round {round}, once the document holds it: {committed}"
             );
         }
         ada.sync_with(&mut ben);
@@ -666,11 +666,11 @@ tilo_test_env::scenario! {
 }
 
 /// `r`'s person takes their last step back, as their window's Undo does.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 fn undo(r: &mut Replica) {
     use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
     use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
-    use tilolang_tilo::instance::record::HostHistoryEdit;
+    use tilolang_tilo::instance::document::HostHistoryEdit;
 
     let edit = HistoryEdit::Undo {
         steps: None,
@@ -700,7 +700,7 @@ fn undo(r: &mut Replica) {
 
 /// A change taken back is no change of the field: what last changed it is the version still in
 /// effect, so the day a task was finished goes back with the box.
-#[cfg(feature = "record")]
+#[cfg(feature = "document")]
 #[test]
 fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
@@ -768,7 +768,7 @@ fn opening_a_list_sorted_by_when_a_field_last_changed_reads_the_index_whatever_t
     let (large_first, large_entries, large_evaluated, large_pages) = work(400);
     assert_eq!(small_first.as_deref(), Some("topic 39"));
     assert_eq!(large_first.as_deref(), Some("topic 399"));
-    // Nothing of the record, no item checked one by one, and the pages of the rows shown: a
+    // Nothing of the document, no item checked one by one, and the pages of the rows shown: a
     // field's last change is one value a row, kept as the log is applied.
     assert_eq!((small_entries, large_entries), (0, 0));
     assert_eq!((small_evaluated, large_evaluated), (0, 0));
@@ -797,7 +797,7 @@ fn opening_a_list_sorted_by_versions_reads_what_it_shows_whatever_the_size() {
     let (large_first, large_entries, large_evaluated, large_pages) = work(400);
     assert_eq!(small_first.as_deref(), Some("topic 39"));
     assert_eq!(large_first.as_deref(), Some("topic 399"));
-    // Nothing of the record, no item checked one by one, and the pages of the rows shown.
+    // Nothing of the document, no item checked one by one, and the pages of the rows shown.
     assert_eq!((small_entries, large_entries), (0, 0));
     assert_eq!((small_evaluated, large_evaluated), (0, 0));
     assert!(
