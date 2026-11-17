@@ -22,7 +22,31 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.feeds@a1b6edd52ecfa51c";
+export const SURFACE = "so.tilo.feeds@dcc6478737966c0a";
+
+export interface Feed {
+  title: string;
+  url: string;
+  site_url: string;
+  folder: string | null;
+  kind: FeedKind;
+  certificate_pin: string | null;
+}
+
+/** One of "rss", "atom", "json", "gemini". */
+export type FeedKind = "rss" | "atom" | "json" | "gemini";
+
+export interface Folder {
+  name: string;
+  collapsed: boolean;
+}
+
+export interface Outline {
+  title: string;
+  url: string;
+  site_url: string;
+  folder: string | null;
+}
 
 export interface Article {
   feed_id: string;
@@ -46,18 +70,6 @@ export interface ContentBlock {
   href: string | null;
 }
 
-export interface Feed {
-  title: string;
-  url: string;
-  site_url: string;
-  folder: string | null;
-  kind: FeedKind;
-  certificate_pin: string | null;
-}
-
-/** One of "rss", "atom", "json", "gemini". */
-export type FeedKind = "rss" | "atom" | "json" | "gemini";
-
 export interface Fetched {
   title: string;
   author: string;
@@ -65,18 +77,6 @@ export interface Fetched {
   published: number;
   summary: string;
   blocks: ContentBlock[];
-}
-
-export interface Folder {
-  name: string;
-  collapsed: boolean;
-}
-
-export interface Outline {
-  title: string;
-  url: string;
-  site_url: string;
-  folder: string | null;
 }
 
 /** The arguments of `add-subscription`. */
@@ -88,15 +88,6 @@ export interface AddSubscriptionArgs {
 /** The arguments of `unsubscribe`. */
 export interface UnsubscribeArgs {
   feed: string;
-}
-
-/** The arguments of `mark-feed-read`. */
-export interface MarkFeedReadArgs {
-  feed: string;
-}
-
-/** The arguments of `mark-everything-read`. */
-export interface MarkEverythingReadArgs {
 }
 
 /** The arguments of `new-folder`. */
@@ -114,19 +105,51 @@ export interface ImportSubscriptionsArgs {
   outlines: Outline[];
 }
 
-/** The arguments of `refreshed`. */
-export interface RefreshedArgs {
-  articles: Fetched[];
+/** The arguments of `note-feed`. */
+export interface NoteFeedArgs {
   feed: string;
   title?: string;
   certificate_pin?: string;
+}
+
+/** The arguments of `receive`. */
+export interface ReceiveArgs {
+  feed: string;
+  articles: Fetched[];
+}
+
+/** The arguments of `mark-read`. */
+export interface MarkReadArgs {
+  feed?: string;
+}
+
+/** The arguments of `set-read`. */
+export interface SetReadArgs {
+  article: string;
+  read: boolean;
+}
+
+/** The arguments of `set-starred`. */
+export interface SetStarredArgs {
+  article: string;
+  starred: boolean;
+}
+
+/** The arguments of `set-tags`. */
+export interface SetTagsArgs {
+  article: string;
+  tags: string[];
+}
+
+/** The arguments of `forget-feed`. */
+export interface ForgetFeedArgs {
+  feed: string;
 }
 
 /** Feeds — `feeds.library`. */
 export interface Library extends tilo.Resource {
   folders: Array<tilo.Entry<Folder>>;
   feeds: Array<tilo.Entry<Feed>>;
-  articles: Array<tilo.Entry<Article>>;
   addSubscription(args: {
     url: string;
     folder?: string;
@@ -138,14 +161,6 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unsubscribeMany(items: UnsubscribeArgs[]): Promise<tilo.ActionAnswer[]>;
-  markFeedRead(args: {
-    feed: string;
-  }): Promise<void>;
-  /** Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  markFeedReadMany(items: MarkFeedReadArgs[]): Promise<tilo.ActionAnswer[]>;
-  markEverythingRead(): Promise<void>;
-  /** Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  markEverythingReadMany(items: MarkEverythingReadArgs[]): Promise<tilo.ActionAnswer[]>;
   newFolder(args: {
     name: string;
   }): Promise<void>;
@@ -161,14 +176,13 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `import-subscriptions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importSubscriptionsMany(items: ImportSubscriptionsArgs[]): Promise<tilo.ActionAnswer[]>;
-  refreshed(args: {
-    articles: Fetched[];
+  noteFeed(args: {
     feed: string;
     title?: string;
     certificate_pin?: string;
   }): Promise<void>;
-  /** Runs `refreshed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  refreshedMany(items: RefreshedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `note-feed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  noteFeedMany(items: NoteFeedArgs[]): Promise<tilo.ActionAnswer[]>;
   exportOpml(): Promise<void>;
   readerTextLarger(): Promise<void>;
   readerTextSmaller(): Promise<void>;
@@ -182,10 +196,59 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["addSubscription", "addSubscriptionMany", "unsubscribe", "unsubscribeMany", "markFeedRead", "markFeedReadMany", "markEverythingRead", "markEverythingReadMany", "newFolder", "newFolderMany", "deleteFolder", "deleteFolderMany", "importSubscriptions", "importSubscriptionsMany", "refreshed", "refreshedMany", "exportOpml", "readerTextLarger", "readerTextSmaller", "readerFont", "readerPaper"] as const;
+export const LIBRARY_ACTIONS = ["addSubscription", "addSubscriptionMany", "unsubscribe", "unsubscribeMany", "newFolder", "newFolderMany", "deleteFolder", "deleteFolderMany", "importSubscriptions", "importSubscriptionsMany", "noteFeed", "noteFeedMany", "exportOpml", "readerTextLarger", "readerTextSmaller", "readerFont", "readerPaper"] as const;
 
 /** The `feeds.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
+}
+
+/** Articles — `feeds.articles`. */
+export interface Articles extends tilo.Resource {
+  articles: Array<tilo.Entry<Article>>;
+  readonly read_through: Record<string, number>;
+  receive(args: {
+    feed: string;
+    articles: Fetched[];
+  }): Promise<void>;
+  /** Runs `receive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  receiveMany(items: ReceiveArgs[]): Promise<tilo.ActionAnswer[]>;
+  markRead(args?: {
+    feed?: string;
+  }): Promise<void>;
+  /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
+  setRead(args: {
+    article: string;
+    read: boolean;
+  }): Promise<void>;
+  /** Runs `set-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setReadMany(items: SetReadArgs[]): Promise<tilo.ActionAnswer[]>;
+  setStarred(args: {
+    article: string;
+    starred: boolean;
+  }): Promise<void>;
+  /** Runs `set-starred` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setStarredMany(items: SetStarredArgs[]): Promise<tilo.ActionAnswer[]>;
+  setTags(args: {
+    article: string;
+    tags: string[];
+  }): Promise<void>;
+  /** Runs `set-tags` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setTagsMany(items: SetTagsArgs[]): Promise<tilo.ActionAnswer[]>;
+  forgetFeed(args: {
+    feed: string;
+  }): Promise<void>;
+  /** Runs `forget-feed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forgetFeedMany(items: ForgetFeedArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Articles` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ARTICLES_ACTIONS = ["receive", "receiveMany", "markRead", "markReadMany", "setRead", "setReadMany", "setStarred", "setStarredMany", "setTags", "setTagsMany", "forgetFeed", "forgetFeedMany"] as const;
+
+/** The `feeds.articles` kind at `path`. */
+export function articles(ws: tilo.Workspace, path: string): Articles {
+  return resourceProxy(ws, path, SURFACE, ARTICLES_ACTIONS) as unknown as Articles;
 }
 
