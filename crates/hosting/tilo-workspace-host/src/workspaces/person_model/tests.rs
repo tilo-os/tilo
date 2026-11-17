@@ -734,6 +734,86 @@ async fn the_days_limit_stops_a_run() {
     assert_eq!(money(420_000), "$0.42");
 }
 
+/// A call may spend more than one day: its agent's, and that of a piece of
+/// the agent's work its person bounded on its own. Each counts every
+/// answer, the piece's own limit refuses its next call before the provider
+/// is asked, and the agent's other work goes on under the agent's day.
+#[tokio::test]
+async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let scripted = ScriptedProvider::answering(std::iter::repeat_n(
+        Reply::text("a step").costing(400_000),
+        3,
+    ));
+    workspaces.answer_models_with(scripted.clone());
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let agent = scout("2026-11-17", Some(1_200_000));
+    let watching = Spender {
+        agent: "event:watching".into(),
+        name: "Watching the shelves".into(),
+        limit_micros: Some(500_000),
+        ..agent.clone()
+    };
+    let model = workspaces
+        .person_model(ADA, Interaction::Task)
+        .spending_as(agent.clone());
+    let bounded = model.clone().spending_as(watching.clone());
+
+    let first = bounded.answer(&asking("Look"), soon(), &mut |_| {}).await;
+    assert_eq!(
+        first.unwrap().spent_today_micros,
+        Some(400_000),
+        "the answer says the agent's day"
+    );
+    assert_eq!(bounded.spent_by(&watching), 400_000);
+    let second = bounded.answer(&asking("Look"), soon(), &mut |_| {}).await;
+    assert_eq!(second.unwrap().spent_today_micros, Some(800_000));
+    assert_eq!(bounded.spent_by(&watching), 800_000);
+    let refused = bounded
+        .answer(&asking("Look"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        ModelRefusal::DayLimitReached {
+            agent: "Watching the shelves".into(),
+            limit_micros: 500_000,
+            spent_micros: 800_000,
+        }
+    );
+    assert_eq!(scripted.asked().len(), 2, "the provider is not asked again");
+
+    // The agent's other work goes on under its own day, which counted the
+    // piece's calls too, and spends nothing of the piece's.
+    let other = model.answer(&asking("Go on"), soon(), &mut |_| {}).await;
+    assert_eq!(other.unwrap().spent_today_micros, Some(1_200_000));
+    assert_eq!(model.spent_by(&watching), 800_000);
+
+    // The agent's day is spent now: it refuses another piece of its work
+    // too, however much that piece has left.
+    let fresh = Spender {
+        agent: "event:fresh".into(),
+        name: "Fresh".into(),
+        limit_micros: Some(5_000_000),
+        ..agent.clone()
+    };
+    let refused = model
+        .clone()
+        .spending_as(fresh.clone())
+        .answer(&asking("Look"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, ModelRefusal::DayLimitReached { agent, .. } if agent == "Scout"),
+        "{refused:?}"
+    );
+    assert_eq!(model.spent_by(&fresh), 0);
+    assert_eq!(scripted.asked().len(), 3);
+}
+
 /// Dozens of calls at once for one agent are each counted: no answer's cost
 /// is lost, whichever order they end in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

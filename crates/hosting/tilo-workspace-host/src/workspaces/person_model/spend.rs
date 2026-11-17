@@ -19,14 +19,17 @@ use tilo_lock::MutexRecover as _;
 const FILE: &str = "model-spend.json";
 
 /// Whose day a call spends: an agent in a workspace, and the limit its keeper
-/// set it.
+/// set it. A piece of an agent's work that its person bounded on its own (an
+/// event, a task) is a spender too, under an id no agent has, so the same
+/// call counts on the agent's day and on that work's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spender {
     /// The workspace the agent works in, by its id spelled out.
     pub workspace: String,
-    /// The agent's id in the workspace's record of its agents.
+    /// The agent's id in the workspace's record of its agents, or the id a
+    /// piece of its work keeps its day under (`event:<id>`).
     pub agent: String,
-    /// Its name, as its keeper reads it.
+    /// Its name, as its person reads it.
     pub name: String,
     /// The day counted, `YYYY-MM-DD`, as the agent's record counts its days.
     pub day: String,
