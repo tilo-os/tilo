@@ -1228,6 +1228,10 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     page.peer.close();
 }
 
+/// What a turn finds by words in what its workspace holds.
+#[path = "hosted_search.rs"]
+mod search;
+
 /// What starts a turn besides its person's typing, and what reaches a turn that is going.
 #[path = "hosted_agent_asks.rs"]
 mod asks;

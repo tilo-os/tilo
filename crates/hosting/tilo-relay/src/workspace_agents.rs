@@ -262,6 +262,41 @@ impl ActionHost for WorkspaceActionHost {
                 _ => Err(unavailable()),
             })
     }
+
+    /// The workspace's own search, asked as whoever calls it: what an agent's `find` answers
+    /// with on this server.
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        Some(Arc::new(self.clone()))
+    }
+}
+
+/// What a turn on this server finds in what its workspace holds.
+///
+/// The workspace's action service searches what the workspace holds for every device that asks
+/// it ([`RemoteActionMessage::SearchRequest`]): each resource by what its app tells search
+/// about it, and the files of the workspace's folder. A turn this server carries out asks the
+/// same service the same question, as the caller its tools act as: the person's session,
+/// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
+/// that caller may read and nothing else, decided where every other caller's search is decided,
+/// and nothing is searched a second way here.
+impl tilo_actions::remote::ResourceSearch for WorkspaceActionHost {
+    fn find(
+        &self,
+        caller: &Caller,
+        needle: &str,
+    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
+        self.serve(
+            caller,
+            RemoteActionMessage::SearchRequest {
+                correlation: 0,
+                needle: needle.to_owned(),
+            },
+        )
+        .map(|answer| match answer {
+            RemoteActionMessage::SearchResponse { result, .. } => result,
+            _ => Err(unavailable()),
+        })
+    }
 }
 
 /// What carries one turn's model calls, made fresh for each turn on its own thread: the host's
