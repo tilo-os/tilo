@@ -23,11 +23,11 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_relay_session::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace,
-    DELETE_WORKSPACE, DETACH_HOST, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL,
-    LIST_REVOCATIONS, LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, Refusal,
-    UNHOST_WORKSPACE, WorkspaceLabels, WorkspaceListing, check_labels, labelled,
+    ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
+    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
+    HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
+    LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, Refusal, UNHOST_WORKSPACE,
+    WorkspaceLabels, WorkspaceListing, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -59,7 +59,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 14] = [
+const HOST_VERBS: [(Verb, HostOperation); 12] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -162,26 +162,6 @@ const HOST_VERBS: [(Verb, HostOperation); 14] = [
     ),
     (
         Verb {
-            id: ATTACH_HOST,
-            label: "Have a host serve a workspace",
-            gate: ATTACH_HOST,
-            kind: roles::GOVERNANCE_KIND,
-            params: attach_params,
-        },
-        HostOperation::AttachHost,
-    ),
-    (
-        Verb {
-            id: DETACH_HOST,
-            label: "Stop a host serving a workspace",
-            gate: DETACH_HOST,
-            kind: roles::GOVERNANCE_KIND,
-            params: detach_params,
-        },
-        HostOperation::DetachHost,
-    ),
-    (
-        Verb {
             id: HOST_WORKSPACE,
             label: "Serve a workspace for its governor",
             gate: HOST_WORKSPACE,
@@ -268,38 +248,6 @@ fn name_personal_params() -> Vec<ActionParam> {
             "name",
             ParamType::Text,
             "The name you want it to read by, such as “Claude Code on laptop 2”.",
-        ),
-    ]
-}
-
-fn host_param() -> ActionParam {
-    ActionParam::required(
-        "host",
-        ParamType::Text,
-        "The host's device key, 64 hex characters: a certified host of this person.",
-    )
-}
-
-fn attach_params() -> Vec<ActionParam> {
-    vec![
-        workspace_params().remove(0),
-        host_param(),
-        ActionParam::required(
-            "host_addr",
-            ParamType::Object,
-            "The host's endpoint address.",
-        ),
-    ]
-}
-
-fn detach_params() -> Vec<ActionParam> {
-    vec![
-        workspace_params().remove(0),
-        host_param(),
-        ActionParam::optional(
-            "host_addr",
-            ParamType::Object,
-            "Where to ask the host to stop; the address it last answered when omitted.",
         ),
     ]
 }
@@ -611,10 +559,7 @@ impl Workspaces {
                     invitation: ActionInvitation::of(&issued),
                 })
             }
-            HostOperation::AttachHost
-            | HostOperation::DetachHost
-            | HostOperation::HostWorkspace
-            | HostOperation::UnhostWorkspace => {
+            HostOperation::HostWorkspace | HostOperation::UnhostWorkspace => {
                 self.serving_invoke(device, operation, &args, now).await
             }
             _ => Err(ActionHostError::UnknownAction),
@@ -776,6 +721,27 @@ impl Workspaces {
                 if let Ok(mut one) = self.listing_of(&workspace).await {
                     one.role = Some(role.key().to_owned());
                     listed.push(one);
+                }
+            }
+            // The workspaces another host governs that this one holds as well,
+            // which they are in: what they reach here too.
+            if labels.is_empty() {
+                for one in self
+                    .inner
+                    .hosting
+                    .listed_for(&person, crate::workspaces::system_time(now))
+                    .await
+                {
+                    let reaches = device
+                        .capabilities
+                        .agent
+                        .is_none_or(|scope| scope.reaches(&one.workspace));
+                    if reaches
+                        && only.names(&one.workspace)
+                        && !listed.iter().any(|known| known.workspace == one.workspace)
+                    {
+                        listed.push(one);
+                    }
                 }
             }
             listed.sort_by(|a, b| {
@@ -1015,6 +981,43 @@ impl Workspaces {
         })
     }
 
+    /// Whom this host takes the workspace `request` hands over for, as
+    /// `caller`, its governor, asks: nobody when its work setting takes it
+    /// anyway, else the first of its owners, other than this host's own
+    /// person, this host keeps workspaces for ([`Workspaces::keeps_for_owner`]).
+    ///
+    /// # Errors
+    ///
+    /// The host keeps it for none of its owners: why, for the first of them.
+    async fn kept_for(
+        &self,
+        caller: &DeviceCert,
+        request: &crate::hosted::HostWorkspaceRequest,
+        now: u64,
+    ) -> Result<Option<[u8; 32]>, String> {
+        let host = &self.inner.host;
+        if crate::hosted::work_takes(&host.work, caller, &host.cert, request) {
+            return Ok(None);
+        }
+        let mut refusal = None;
+        // Its own person's workspace is the work setting's to take: for them,
+        // this host is one of their devices, not a host that let them in.
+        let others = crate::hosted::owners(request)?
+            .into_iter()
+            .filter(|owner| *owner != host.cert.user_public_key);
+        for owner in others {
+            match self.keeps_for_owner(&owner, now).await {
+                Ok(()) => return Ok(Some(owner)),
+                Err(reason) => {
+                    refusal.get_or_insert(reason);
+                }
+            }
+        }
+        Err(refusal.unwrap_or_else(|| {
+            "this host keeps a workspace another host governs only for an owner of it".into()
+        }))
+    }
+
     /// The host operations that have one host of the person serve a workspace
     /// another governs ([`crate::hosted`]), already permitted to `device`.
     async fn serving_invoke(
@@ -1025,35 +1028,6 @@ impl Workspaces {
         now: u64,
     ) -> Result<Value, ActionHostError> {
         match operation {
-            HostOperation::AttachHost => {
-                let addr = args
-                    .object("host_addr")?
-                    .ok_or_else(|| invalid("`host_addr` is required"))?;
-                let hint = self
-                    .attach_host(
-                        args.required_text("workspace")?,
-                        device,
-                        args.required_key("host")?,
-                        addr,
-                    )
-                    .await
-                    .map_err(|error| refused(&error))?;
-                answer(&HostedWorkspace {
-                    host_hint: hex_postcard(&hint)?,
-                })
-            }
-            HostOperation::DetachHost => {
-                let confirmed = self
-                    .detach_host(
-                        args.required_text("workspace")?,
-                        device,
-                        args.required_key("host")?,
-                        args.object("host_addr")?,
-                    )
-                    .await
-                    .map_err(|error| refused(&error))?;
-                Ok(serde_json::json!({ "confirmed": confirmed }))
-            }
             HostOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
@@ -1066,10 +1040,14 @@ impl Workspaces {
                     bootstrap: crate::hosted::decode_hex(args.required_text("bootstrap")?)
                         .map_err(|error| invalid(format!("`bootstrap`: {error}")))?,
                 };
+                let kept_for = self
+                    .kept_for(device, &request, now)
+                    .await
+                    .map_err(|error| refused(&error))?;
                 let hint = self
                     .inner
                     .hosting
-                    .host_workspace(device, &request)
+                    .host_workspace(device, &request, kept_for)
                     .await
                     .map_err(|error| refused(&error))?;
                 answer(&HostedWorkspace {

@@ -198,10 +198,10 @@ pub struct PersistentArgs {
     /// [`OperatorEvent`] line on the same connection.
     #[arg(long = "operator-socket", value_name = "PATH")]
     pub operator_socket: Option<PathBuf>,
-    /// The workspaces of other people this host holds when the host governing
-    /// one hands it over ([`OperatorCommand::Hold`] there): `anyone`, or the
-    /// workspaces' ids, comma-separated. Without it the host holds no
-    /// workspace but its own person's.
+    /// The workspaces of other people this host holds whoever's they are, when
+    /// an owner has the host governing one hand it over (`tilo workspace hosts
+    /// add`): `anyone`, or the workspaces' ids, comma-separated. Without it
+    /// the host holds its own person's, and those of the people it let in.
     #[arg(long = "hold-for", value_name = "WORKSPACES")]
     pub hold_for: Option<String>,
     /// An app authored into the workspace at its first start; repeatable.
@@ -835,77 +835,6 @@ fn hold_for(named: Option<&str>) -> anyhow::Result<tilo_relay_protocol::WorkSett
         }
     }
     Ok(work)
-}
-
-/// Have the host at the origin `origin` hold `workspace`, governed here, as
-/// well, as this host's own device asks: the host says who it is and where it
-/// is dialed at its origin, and is then handed the workspace
-/// ([`Workspaces::attach_host`]). Answers what the operator hears.
-async fn hold(workspaces: &Workspaces, own: &DeviceCert, workspace: &str, origin: &str) -> String {
-    let held = async {
-        let (device, addr) = host_at(origin).await?;
-        workspaces.attach_host(workspace, own, device, addr).await?;
-        Ok::<_, String>(device)
-    }
-    .await;
-    match held {
-        Ok(device) => OperatorEvent::Held {
-            workspace: workspace.to_owned(),
-            host_device: hex::encode(device),
-        },
-        Err(reason) => OperatorEvent::HoldRefused {
-            workspace: workspace.to_owned(),
-            reason,
-        },
-    }
-    .to_line()
-}
-
-/// Have the host at the origin `origin` hold `workspace` no more
-/// ([`Workspaces::detach_host`]). Answers what the operator hears.
-async fn unhold(
-    workspaces: &Workspaces,
-    own: &DeviceCert,
-    workspace: &str,
-    origin: &str,
-) -> String {
-    let unheld = async {
-        let (device, addr) = host_at(origin).await?;
-        let confirmed = workspaces
-            .detach_host(workspace, own, device, Some(addr))
-            .await?;
-        Ok::<_, String>((device, confirmed))
-    }
-    .await;
-    match unheld {
-        Ok((device, confirmed)) => OperatorEvent::Unheld {
-            workspace: workspace.to_owned(),
-            host_device: hex::encode(device),
-            confirmed,
-        },
-        Err(reason) => OperatorEvent::HoldRefused {
-            workspace: workspace.to_owned(),
-            reason,
-        },
-    }
-    .to_line()
-}
-
-/// The host at the origin `origin`, as it says at its origin: its device and
-/// where it is dialed.
-async fn host_at(origin: &str) -> Result<([u8; 32], iroh_base::EndpointAddr), String> {
-    let client = tilo_net::Client::builder()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
-        &client, origin,
-    ))
-    .await
-    .map_err(|error| format!("{origin} did not say who it is: {error}"))?;
-    let address = info
-        .address
-        .ok_or_else(|| format!("{origin} names no endpoint to dial"))?;
-    Ok((info.host_cert.device_public_key, address.endpoint_addr))
 }
 
 /// Declare each of `owners` (their user roots, hex) an owner of the workspace
@@ -1887,17 +1816,11 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             )
             .await
             .to_line(),
-            Ok(OperatorCommand::Hold { workspace, host }) => {
-                hold(&context.workspaces, &context.host_cert, &workspace, &host).await
-            }
-            Ok(OperatorCommand::Unhold { workspace, host }) => {
-                unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
-            }
             Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
-                    "the operator socket takes import_people, standing, hold and unhold, not {}; \
-                     owners and administrators let people in with `tilo members add` and \
-                     `tilo members invite`",
+                    "the operator socket takes import_people and standing, not {}; owners and \
+                     administrators let people in with `tilo members add` and `tilo members \
+                     invite`, and owners choose a workspace's hosts with `tilo workspace hosts`",
                     other.to_line().trim()
                 ),
             }
@@ -1988,18 +1911,6 @@ async fn serve_operator(
                     tokio::spawn(async move {
                         println!("{}", context.import_people(command).await);
                     });
-                }
-                Some(Ok(OperatorCommand::Hold { workspace, host })) => {
-                    println!(
-                        "{}",
-                        hold(&context.workspaces, &context.host_cert, &workspace, &host).await
-                    );
-                }
-                Some(Ok(OperatorCommand::Unhold { workspace, host })) => {
-                    println!(
-                        "{}",
-                        unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
-                    );
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its entry"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),

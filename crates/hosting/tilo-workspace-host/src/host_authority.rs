@@ -16,10 +16,11 @@
 //! ([`HostOperation::KeepPersonalList`]). The workspace is governed here like any other; the
 //! person administers it.
 //!
-//! Which hosts hold a workspace is asked of anyone too, and decided by the
-//! handler: the workspace's owner or the person it is kept for chooses the
-//! hosts of a workspace governed here, and a host takes one another host
-//! governs as its work setting says ([`crate::hosted`]).
+//! Holding a workspace another host governs is asked of anyone too, and
+//! decided by the handler: a host takes one as its work setting says, or for
+//! an owner of it the host let in ([`crate::hosted`]). Which hosts hold a
+//! workspace governed here is its owners' choice, made through its governance
+//! (`host.add`, `host.remove`).
 //!
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person
@@ -58,12 +59,6 @@ pub enum HostOperation {
     /// Stop holding a workspace for its governor: the host's person's, or the
     /// governor's person's, which the handler checks.
     UnhostWorkspace,
-    /// Have another host hold a workspace governed here as well. Which hosts
-    /// hold a workspace is its owner's decision, or the person's it is kept
-    /// for, which the handler checks.
-    AttachHost,
-    /// Stop having another host hold a workspace governed here.
-    DetachHost,
     /// Read the revocations of the host's person this host enforces: the
     /// devices their root revoked, as the person's devices announced them.
     ListRevocations,
@@ -118,8 +113,6 @@ impl HostOperation {
             Self::ComputeControl => "compute.control",
             Self::HostWorkspace => "workspace.host",
             Self::UnhostWorkspace => "workspace.unhost",
-            Self::AttachHost => "workspace.attach-host",
-            Self::DetachHost => "workspace.detach-host",
             Self::ListRevocations => "identity.revocations",
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
@@ -137,10 +130,7 @@ impl HostOperation {
     /// catalogue, which has no workspace to ask, offers it to the host's own
     /// person alone.
     pub(crate) const fn decided_by_its_workspace(self) -> bool {
-        matches!(
-            self,
-            Self::HostWorkspace | Self::UnhostWorkspace | Self::AttachHost | Self::DetachHost
-        )
+        matches!(self, Self::HostWorkspace | Self::UnhostWorkspace)
     }
 
     /// Whether the device `caller` may do this on the host of the person
@@ -161,8 +151,6 @@ impl HostOperation {
                     | Self::NamePersonalDevice
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
-                    | Self::AttachHost
-                    | Self::DetachHost
             )
         {
             return false;
@@ -194,9 +182,7 @@ impl HostOperation {
             | Self::AuthorApplications
             | Self::ComputeControl
             | Self::HostWorkspace
-            | Self::UnhostWorkspace
-            | Self::AttachHost
-            | Self::DetachHost => false,
+            | Self::UnhostWorkspace => false,
         }
     }
 }
@@ -206,7 +192,7 @@ mod tests {
     use super::HostOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [HostOperation; 19] = [
+    const ALL: [HostOperation; 17] = [
         HostOperation::CreateWorkspace,
         HostOperation::ListWorkspaces,
         HostOperation::EnterWorkspace,
@@ -218,8 +204,6 @@ mod tests {
         HostOperation::ComputeControl,
         HostOperation::HostWorkspace,
         HostOperation::UnhostWorkspace,
-        HostOperation::AttachHost,
-        HostOperation::DetachHost,
         HostOperation::ListRevocations,
         HostOperation::CreateOwnWorkspace,
         HostOperation::DeleteOwnWorkspace,
@@ -255,8 +239,6 @@ mod tests {
                     | HostOperation::ReadPersonalList
                     | HostOperation::HostWorkspace
                     | HostOperation::UnhostWorkspace
-                    | HostOperation::AttachHost
-                    | HostOperation::DetachHost
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),

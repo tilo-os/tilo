@@ -239,18 +239,6 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Stop serving `workspace` for its governor. Answers `{"stopped": bool}`.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
-/// Have the certified host `host` (its device key, 64 hex) of the person,
-/// reachable at `host_addr` (an endpoint address), serve the workspace `workspace`
-/// governed here as well: admitted as one of the owner's devices, handed the
-/// workspace with [`HOST_WORKSPACE`], and named among the workspace's hosts. Answers a
-/// [`HostedWorkspace`].
-pub const ATTACH_HOST: &str = "workspace.attach-host";
-/// Stop having the host `host` serve `workspace`: it is no longer named among the
-/// workspace's hosts, and is asked to stop at `host_addr` when given, else at the
-/// address it last answered. Answers `{"confirmed": bool}`, whether the host
-/// confirmed it stopped.
-pub const DETACH_HOST: &str = "workspace.detach-host";
-
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
 /// wherever it is hosted (one of their desktops, a paired device, a relay),
@@ -477,7 +465,7 @@ impl PersonalList {
     }
 }
 
-/// What [`HOST_WORKSPACE`] and [`ATTACH_HOST`] answer.
+/// What [`HOST_WORKSPACE`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {
     /// The serving host's own signed address for the workspace, postcard in hex.

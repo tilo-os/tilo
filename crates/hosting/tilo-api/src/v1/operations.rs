@@ -321,6 +321,28 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "WaitList"),
         op(
+            "listHosts",
+            Method::GET,
+            "/v1/workspaces/{workspace}/hosts",
+            "The hosts holding the workspace, the one that governs it first",
+        )
+        .json(200, "Hosts"),
+        op(
+            "addHost",
+            Method::POST,
+            "/v1/workspaces/{workspace}/hosts",
+            "Have another host hold the workspace as well, as that host's rules allow",
+        )
+        .body(Body::Json("NewHost"))
+        .json(200, "Hosts"),
+        op(
+            "removeHost",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/hosts/{host}",
+            "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+        )
+        .json(200, "Hosts"),
+        op(
             "invitePerson",
             Method::POST,
             "/v1/workspaces/{workspace}/members/invitations",

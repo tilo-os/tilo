@@ -445,33 +445,111 @@ impl Workspaces {
     }
 
     /// Whether `caller` may choose which hosts hold `workspace`: a device of
-    /// this host's own person, or of the person the workspace is kept for
-    /// here, who decides where it lives. Never an agent's grant.
+    /// this host's own person, or of an owner of the workspace (a person it is
+    /// kept for), who decides where it lives; or that person's server key,
+    /// which acts for them from a script or a command. Never an agent's grant.
     async fn authorize_hosts(&self, workspace: &str, caller: &DeviceCert) -> Result<(), String> {
-        let person = caller.user_public_key;
-        if caller.capabilities.agent.is_none()
-            && (person == self.inner.host.cert.user_public_key
-                || self.is_keeper(workspace, &person).await)
-        {
+        let governed = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let governed = governed.lock().await;
+        if self.chooses_hosts(&governed, caller) {
             return Ok(());
         }
-        Err(
-            "only the workspace's owner or the person it is kept for chooses where it is held"
-                .into(),
-        )
+        Err("only an owner of the workspace chooses where it is held".into())
     }
 
-    /// Whether the workspace's governance names `person` as whom it is kept for.
-    async fn is_keeper(&self, workspace: &str, person: &[u8; 32]) -> bool {
-        let Ok(governed) = self.workspace(workspace).await else {
-            return false;
+    /// Whether `caller` chooses which hosts hold `governed`
+    /// ([`Self::authorize_hosts`]).
+    pub(super) fn chooses_hosts(&self, governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+        let person = caller.user_public_key;
+        let speaks_for_person =
+            caller.capabilities.agent.is_none() || caller.capabilities.server_key;
+        speaks_for_person
+            && (person == self.inner.host.cert.user_public_key
+                || governed
+                    .peer()
+                    .governance()
+                    .governed_policy()
+                    .is_ok_and(|policy| policy.is_keeper(&hex::encode(person))))
+    }
+
+    /// The hosts holding `workspace`, as its owners list them: this host, its
+    /// governor, first.
+    ///
+    /// # Errors
+    ///
+    /// The caller does not choose the workspace's hosts, or it is not governed
+    /// here.
+    pub async fn host_list(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+    ) -> Result<Vec<WorkspaceHost>, String> {
+        self.authorize_hosts(workspace, caller).await?;
+        let hosts = self
+            .hosts(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(hosts
+            .iter()
+            .enumerate()
+            .map(|(at, hint)| WorkspaceHost {
+                device: hex::encode(hint.host.device_public_key),
+                person: hex::encode(hint.host.user_public_key),
+                governs: at == 0,
+            })
+            .collect())
+    }
+
+    /// Have the host whose site is at `origin` (`https://tilo.sh`) hold
+    /// `workspace` as well, `caller`'s request: the host says who it is and
+    /// where it is dialed at its origin, and is then handed the workspace
+    /// ([`Self::attach_host`]), which it takes as its own rules for whom it
+    /// keeps workspaces say.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::attach_host`], or the origin did not say who it is.
+    pub async fn add_host(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        origin: &str,
+    ) -> Result<TransportHint, String> {
+        self.authorize_hosts(workspace, caller).await?;
+        let (device, addr) = host_at(origin).await?;
+        self.attach_host(workspace, caller, device, addr).await
+    }
+
+    /// Stop having the host `named` hold `workspace`: named by its site's
+    /// origin, or by its device key (64 hex) as [`Self::host_list`] names it.
+    /// Answers whether the host confirmed it let the workspace go
+    /// ([`Self::detach_host`]).
+    ///
+    /// # Errors
+    ///
+    /// The caller does not choose the workspace's hosts, the host is not one of
+    /// the workspace's, or the origin did not say who it is.
+    pub async fn remove_host(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        named: &str,
+    ) -> Result<bool, String> {
+        self.authorize_hosts(workspace, caller).await?;
+        let named = named.trim();
+        let (device, addr) = if let Some(device) = device_key(named) {
+            (device, None)
+        } else {
+            let (device, addr) = host_at(named).await?;
+            (device, Some(addr))
         };
-        let governed = governed.lock().await;
-        governed
-            .peer()
-            .governance()
-            .governed_policy()
-            .is_ok_and(|policy| policy.is_keeper(&hex::encode(person)))
+        if !self.names_host(workspace, device).await {
+            return Err(format!("{named} does not hold the workspace"));
+        }
+        self.detach_host(workspace, caller, device, addr).await
     }
 
     /// `device`, a host at `addr`, reached for its host operations: its
@@ -497,12 +575,12 @@ impl Workspaces {
         .await
         .map_err(|error| match &error {
             // A host refuses a session it does not trust by closing it
-            // unanswered; another person's host trusts one only when its
-            // operator takes workspaces it does not own.
+            // unanswered: another person's host trusts one only when it keeps
+            // workspaces for the people it lets in, or its operator takes
+            // workspaces it does not own.
             tilo_relay_session::client::ClientError::NoHandshakeAnswer(_) => format!(
-                "the host refused this host's session: it holds no workspace of another \
-                 person unless its operator's setting takes that workspace (--hold-for, \
-                 TILO_WORKSPACES_HOLD_FOR) ({error})"
+                "the host refused this host's session: it keeps workspaces only for the \
+                 people it let in, and this one keeps none ({error})"
             ),
             other => other.to_string(),
         })?;
@@ -560,6 +638,48 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
     postcard::to_stdvec(value)
         .map(hex::encode)
         .map_err(|error| error.to_string())
+}
+
+/// One host of a workspace, as its owners list them ([`Workspaces::host_list`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceHost {
+    /// The host's device key, hex: what removing it may name it by.
+    pub device: String,
+    /// The person the host runs for, by their user public key, hex.
+    pub person: String,
+    /// Whether this is the host that governs the workspace: the one it was
+    /// made on, which every other host follows.
+    pub governs: bool,
+}
+
+/// `text` as a device key, when it is 64 hex characters; anything else names
+/// a host by its site.
+fn device_key(text: &str) -> Option<[u8; 32]> {
+    use hex::FromHex as _;
+    <[u8; 32]>::from_hex(text).ok()
+}
+
+/// The host whose site is at `origin`, as it says there: its device and where
+/// it is dialed.
+async fn host_at(origin: &str) -> Result<([u8; 32], EndpointAddr), String> {
+    let origin = origin.trim().trim_end_matches('/');
+    if !(origin.starts_with("https://") || origin.starts_with("http://")) {
+        return Err(format!(
+            "{origin:?} is no host's address: name its site, like https://tilo.sh"
+        ));
+    }
+    let client = tilo_net::Client::builder()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
+        &client, origin,
+    ))
+    .await
+    .map_err(|error| format!("{origin} did not say which host it is: {error}"))?;
+    let address = info
+        .address
+        .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;
+    Ok((info.host_cert.device_public_key, address.endpoint_addr))
 }
 
 impl Workspaces {

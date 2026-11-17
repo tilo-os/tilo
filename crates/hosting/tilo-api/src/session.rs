@@ -30,6 +30,7 @@
 //! does, while the session lives: the host is the session's one voice, so the
 //! server says nothing of it itself.
 
+pub mod hosts;
 pub mod invocations;
 pub mod keys;
 pub mod members;
@@ -353,6 +354,14 @@ impl Session {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let answered = self.members(workspace, tool, arguments, structured).await;
+                return Reply::one(result(&id, &answered));
+            }
+            if hosts::addresses(tool, arguments) {
+                let structured = request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let answered = self.hosts(workspace, tool, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
             if unattended::addresses(tool, arguments) {
@@ -825,6 +834,11 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
+A workspace can be held by more than one host: `tilo_do {path: \"workspace/hosts#add\", \
+args: {origin: \"https://tilo.sh\"}, workspace}` has that host keep it as well (both keep it, a change \
+on either reaches the other, and its people reach it at either; that host takes it only for an owner \
+it let in), `workspace/hosts#list` names the hosts holding it and `workspace/hosts#remove {host}` \
+lets one go; only its owners choose. \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \

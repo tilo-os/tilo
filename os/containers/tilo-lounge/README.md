@@ -62,7 +62,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the workspace lives on |
 | `TILO_WORKSPACES_OWNERS` | none | comma-separated user public keys (64 hex characters) the workspace is started with as its owners: the people who let everyone else in, added at every start where they are not members yet. A deployment names its first ones here |
 | `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator asks the host for what only it does: another host holding a workspace (`hold`, `unhold`), and taking in the people an earlier release kept (`import_people`). Everything about who is in the workspace is an action its owners and administrators take (`tilo members add`, `tilo members invite`), not something this socket does |
-| `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds when the host governing one hands it over (the operator socket takes `hold` and `unhold` there): `anyone`, or their ids, comma-separated |
+| `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds whoever's they are, when an owner has the host governing one hand it over (`tilo workspace hosts add`): `anyone`, or their ids, comma-separated. Without it the host holds those of the people it let in |
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_WORKSPACES_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |

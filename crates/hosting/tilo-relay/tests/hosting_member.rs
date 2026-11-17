@@ -479,8 +479,9 @@ fn send_change(
         .unwrap();
 }
 
-/// Another person's host takes a workspace only when its own operator's work
-/// setting takes it: one taking only its own person's work refuses.
+/// Another person's host that keeps no workspaces for the people it lets in
+/// takes a workspace only when its own operator's work setting takes it: one
+/// taking only its own person's work refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -503,11 +504,12 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
             refusing.host.node_addr(),
         )
         .await;
-    // The operator hears why: the host takes no other person's workspace.
+    // The owner hears why: the host keeps nobody's workspace but its own
+    // person's.
     assert!(
         refused
             .as_ref()
-            .is_err_and(|error| error.contains("its operator's setting takes that workspace")),
+            .is_err_and(|error| error.contains("keeps workspaces only for the people it let in")),
         "{refused:?}"
     );
     assert_eq!(
@@ -631,6 +633,97 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     assert!(!admitted(&gone, workspace.workspace_id).await);
 
     drop((again, gone, local));
+    holder.stop().await;
+    governor.stop().await;
+}
+
+/// A host that keeps workspaces for the people it lets in takes a workspace
+/// another host governs for an owner of it it let in, and for nobody else:
+/// asked before it let the owner in, it refuses and says why; asked after, it
+/// holds the workspace and a member's change through it reaches the governor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let relay = site.enrol("relay", DeviceCapabilities::member());
+    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &phone.cert)
+        .await
+        .unwrap();
+    let holder = host_on(&site, &relay, WorkSetting::own_person()).await;
+    let at_site = holder.host.workspaces();
+    assert!(
+        at_site
+            .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free("site.test"))
+            .unwrap()
+    );
+    let home = at_site.create("Home").await.unwrap();
+    assert!(at_site.admit_own_through(&home.workspace));
+
+    let attach = || {
+        workspaces.attach_host(
+            &workspace.workspace,
+            &laptop.cert,
+            relay.device_pubkey(),
+            holder.host.node_addr(),
+        )
+    };
+    let refused = attach().await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("site.test")),
+        "the site says it has not let Alice in: {refused:?}"
+    );
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        1
+    );
+
+    // The site lets Alice in, as an owner of its home; now it takes hers.
+    at_site
+        .declare_owner(&home.workspace, alice.user_pk, None)
+        .await
+        .unwrap();
+    let hint = attach().await.unwrap();
+    assert_eq!(hint.host, relay.cert);
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        2
+    );
+    let local = governor
+        .host
+        .connect_local(
+            laptop.cert.clone(),
+            laptop.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+    assert!(admitted(&local, workspace.workspace_id).await);
+    let on_holder = session_at(&phone, &site, &relay, &holder).await;
+    tilo_test_env::within("the site admits the workspace's member", async {
+        while !admitted(&on_holder, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(&on_holder, workspace.workspace_id, &phone, b"from the site");
+    assert_eq!(
+        change_author(&local, b"from the site").await,
+        phone.device_pubkey()
+    );
+
+    drop((on_holder, local));
     holder.stop().await;
     governor.stop().await;
 }

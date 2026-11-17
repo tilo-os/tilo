@@ -528,6 +528,14 @@ impl Workspaces {
         Ok(self.inner.own.set(own).is_ok())
     }
 
+    /// Whether this host keeps workspaces for the people it lets in
+    /// ([`Self::offer_own_workspaces`]): theirs, and the ones another host
+    /// governs that their owner has it hold as well.
+    #[must_use]
+    pub fn keeps_workspaces_for_people(&self) -> bool {
+        self.own().is_some()
+    }
+
     pub(super) fn own(&self) -> Option<&OwnWorkspaces> {
         self.inner.own.get()
     }
@@ -565,6 +573,33 @@ impl Workspaces {
             return false;
         };
         self.inner.memberships.holds_any(person) || self.invited(home, *person, now).await
+    }
+
+    /// Whether this host keeps for `person`, an owner of it, a workspace
+    /// another host governs: as it keeps workspaces of their own here, only
+    /// for someone it let in ([`Self::let_in`]) whose workspaces here have
+    /// room left. Why not, in plain words, when it does not.
+    ///
+    /// # Errors
+    ///
+    /// The host does not keep it for them.
+    pub(crate) async fn keeps_for_owner(&self, person: &[u8; 32], now: u64) -> Result<(), String> {
+        if !self.let_in(person, now).await {
+            return Err(self.not_let_in().await.error);
+        }
+        if let Some(own) = self.own() {
+            let limit = own.storage_bytes(person);
+            let used = own.used(&self.inner.dir, person, true);
+            if used >= limit {
+                return Err(format!(
+                    "your workspaces on {} are full: they keep {} of the {} it keeps for you",
+                    own.offer().host,
+                    gigabytes(used),
+                    gigabytes(limit)
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Whether `home`'s entry takes people by invitation only, as its governance

@@ -25,9 +25,12 @@
 //! workspace's governance no longer names this host. The workspace's files
 //! stay on disk either way.
 //!
-//! A host serves a workspace this way only when its work setting takes it:
-//! by default its own person's, and another person's only for the workspaces
-//! its operator names, or anyone's when the operator says so.
+//! A host serves a workspace this way when its work setting takes it (its own
+//! person's, and the workspaces of others its operator names, or anyone's when
+//! the operator says so), or for an owner of the workspace: someone the host
+//! let in, as it keeps workspaces of their own for them, whose workspaces
+//! there have room ([`crate::workspaces::Workspaces::keeps_for_owner`]). The
+//! record keeps whom, so the workspace is served again after a restart.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,16 +78,35 @@ struct HostedRecord {
     governor_hint: String,
     /// The workspace as the governor handed it over, postcard in hex.
     bootstrap: String,
+    /// The owner of the workspace this host took it for, their user public
+    /// key in hex, when it took it for someone it let in rather than as its
+    /// work setting says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kept_for: Option<String>,
 }
 
 impl HostedRecord {
-    fn of(request: &HostWorkspaceRequest) -> Result<Self, String> {
+    fn of(request: &HostWorkspaceRequest, kept_for: Option<[u8; 32]>) -> Result<Self, String> {
         Ok(Self {
             workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
             governor_hint: hex::encode(encode(&request.governor_hint)?),
             bootstrap: hex::encode(encode(&request.bootstrap)?),
+            kept_for: kept_for.map(hex::encode),
         })
+    }
+
+    /// The owner this host took the workspace for, when it did.
+    fn kept_for(&self) -> Result<Option<[u8; 32]>, String> {
+        self.kept_for
+            .as_deref()
+            .map(|person| {
+                let mut key = [0; 32];
+                hex::decode_to_slice(person, &mut key)
+                    .map(|()| key)
+                    .map_err(|error| format!("the record's owner is no key: {error}"))
+            })
+            .transpose()
     }
 
     fn request(&self) -> Result<HostWorkspaceRequest, String> {
@@ -122,7 +144,17 @@ pub(crate) struct Hosting {
     services: WorkspaceServices,
     /// Each served workspace's follower, by workspace. Dropping one stops the workspace's
     /// attach session and its following.
-    served: std::sync::Mutex<HashMap<String, AbortOnDrop>>,
+    served: std::sync::Mutex<HashMap<String, Served>>,
+}
+
+/// One workspace served here for its governor.
+struct Served {
+    /// Its follower: dropping it stops the workspace's attach session and its
+    /// following.
+    _follower: AbortOnDrop,
+    workspace_id: WorkspaceId,
+    /// The replica its members are answered from, current with its governance.
+    replica: Arc<HostedReplica>,
 }
 
 impl Hosting {
@@ -155,7 +187,9 @@ impl Hosting {
                 let record: HostedRecord =
                     serde_json::from_str(&text).map_err(|error| error.to_string())?;
                 let request = record.request()?;
-                self.serve(None, &request, true).await.map(drop)
+                self.serve(None, &request, true, record.kept_for()?)
+                    .await
+                    .map(drop)
             }
             .await;
             if let Err(error) = resumed {
@@ -164,21 +198,24 @@ impl Hosting {
         }
     }
 
-    /// Serve `request.workspace` for its governor, `caller`'s request; answer
+    /// Serve `request.workspace` for its governor, `caller`'s request, and
+    /// for `kept_for` when this host takes it for that owner of it; answer
     /// this host's own signed address for it. Asked again, it starts over
     /// from what the governor hands it now.
     ///
     /// # Errors
     ///
-    /// The device does not take the caller's work, the request does not hold
-    /// up, or the workspace's governance does not admit this device.
+    /// The device takes neither the caller's work nor the workspace for an
+    /// owner, the request does not hold up, or the workspace's governance does
+    /// not admit this device.
     pub(crate) async fn host_workspace(
         &self,
         caller: &DeviceCert,
         request: &HostWorkspaceRequest,
+        kept_for: Option<[u8; 32]>,
     ) -> Result<TransportHint, String> {
-        let hint = self.serve(Some(caller), request, false).await?;
-        let record = HostedRecord::of(request)?;
+        let hint = self.serve(Some(caller), request, false, kept_for).await?;
+        let record = HostedRecord::of(request, kept_for)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
         write_durably(&self.dir, &self.resource_path(&request.workspace), &bytes)?;
         tracing::info!(workspace = %request.workspace, workspace_id = %request.workspace_id, "serving a workspace for its governor");
@@ -246,15 +283,71 @@ impl Hosting {
         Ok(served || workspace_id.is_some())
     }
 
+    /// The workspaces served here for their governor that `person` is in, as
+    /// their governance says now: each with the part they take, `owner` for
+    /// one kept for them. A workspace this host stopped serving is not among
+    /// them.
+    pub(crate) async fn listed_for(
+        &self,
+        person: &[u8; 32],
+        now: SystemTime,
+    ) -> Vec<tilo_relay_session::workspaces::WorkspaceListing> {
+        let served: Vec<(String, WorkspaceId, Arc<HostedReplica>)> = self
+            .served
+            .lock_recover()
+            .iter()
+            .map(|(workspace, served)| {
+                (
+                    workspace.clone(),
+                    served.workspace_id,
+                    Arc::clone(&served.replica),
+                )
+            })
+            .collect();
+        let mut listed = Vec::new();
+        for (workspace, workspace_id, replica) in served {
+            if !self.still_serves(workspace_id, &replica).await {
+                continue;
+            }
+            if let Some(one) = replica.listing_for(&workspace, workspace_id, person, now) {
+                listed.push(one);
+            }
+        }
+        listed
+    }
+
+    /// Whether `workspace_id` is still answered from `replica` here: a
+    /// workspace this host stopped serving is not.
+    async fn still_serves(&self, workspace_id: WorkspaceId, replica: &Arc<HostedReplica>) -> bool {
+        let current = self
+            .services
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        match current {
+            Some(current) => current
+                .lock()
+                .await
+                .hosted_replica
+                .as_ref()
+                .is_some_and(|serving| Arc::ptr_eq(serving, replica)),
+            None => false,
+        }
+    }
+
     /// Check `request`, `caller`'s when a device asks, admit what its
     /// governance admits, and start following the workspace and attaching it to
     /// its governor. `resumed` takes in what this host retained of the
-    /// workspace since it was handed over.
+    /// workspace since it was handed over; `kept_for` is the owner this host
+    /// takes it for, when its work setting does not take it.
     async fn serve(
         &self,
         caller: Option<&DeviceCert>,
         request: &HostWorkspaceRequest,
         resumed: bool,
+        kept_for: Option<[u8; 32]>,
     ) -> Result<TransportHint, String> {
         let services = &self.services;
         let own = &services.cert;
@@ -273,11 +366,7 @@ impl Hosting {
         if caller.is_some_and(|caller| caller.user_public_key != authority.user_public_key) {
             return Err("only the workspace's governor hands it to a host".into());
         }
-        if !takes(&services.work, &authority, own, request.workspace_id) {
-            return Err(
-                "a device serves a workspace placed on it only when it takes that work".into(),
-            );
-        }
+        takes_it(services, kept_for, &authority, request.workspace_id)?;
         let now = tilo_clock::wall();
         let mut peer = replica(&request.bootstrap, now)?;
         if resumed {
@@ -334,7 +423,7 @@ impl Hosting {
             workspace_id: request.workspace_id,
             record: self.resource_path(&request.workspace),
             peer,
-            replica,
+            replica: Arc::clone(&replica),
             named,
             holders: HashMap::new(),
             handed_by: authority.device_public_key,
@@ -344,10 +433,31 @@ impl Hosting {
         follower.dial(&governor);
         follower.dial_holders();
         let task = tokio::spawn(follower.run(notices));
-        self.served
-            .lock_recover()
-            .insert(request.workspace.clone(), AbortOnDrop(task));
+        self.served.lock_recover().insert(
+            request.workspace.clone(),
+            Served {
+                _follower: AbortOnDrop(task),
+                workspace_id: request.workspace_id,
+                replica: Arc::clone(&replica),
+            },
+        );
         own_hint(services, &governor)
+    }
+}
+
+/// Whether this host takes the workspace `workspace_id` that the host
+/// `authority` governs: for `kept_for`, an owner of it it let in, or as its
+/// work setting says.
+fn takes_it(
+    services: &WorkspaceServices,
+    kept_for: Option<[u8; 32]>,
+    authority: &DeviceCert,
+    workspace_id: WorkspaceId,
+) -> Result<(), String> {
+    if kept_for.is_some() || takes(&services.work, authority, &services.cert, workspace_id) {
+        Ok(())
+    } else {
+        Err("a device serves a workspace placed on it only when it takes that work".into())
     }
 }
 
@@ -386,6 +496,37 @@ fn own_hint(
     }
     .transport_hint(&services.key)
     .map_err(|error| error.to_string())
+}
+
+/// The owners of the workspace `request` hands over, by their user public
+/// keys: the person whose host governs it, then the people it is kept for, as
+/// its governance says.
+///
+/// # Errors
+///
+/// The workspace's governance does not hold up.
+pub(crate) fn owners(request: &HostWorkspaceRequest) -> Result<Vec<[u8; 32]>, String> {
+    let peer = replica(&request.bootstrap, tilo_clock::wall())?;
+    let policy = peer.governance().governed_policy()?;
+    let mut owners = vec![peer.owner()];
+    for person in policy.keepers() {
+        let mut key = [0; 32];
+        if hex::decode_to_slice(person, &mut key).is_ok() && !owners.contains(&key) {
+            owners.push(key);
+        }
+    }
+    Ok(owners)
+}
+
+/// Whether `work` takes the workspace `request` hands over from `caller`,
+/// for this host `own`, whoever its owners are.
+pub(crate) fn work_takes(
+    work: &WorkSetting,
+    caller: &DeviceCert,
+    own: &DeviceCert,
+    request: &HostWorkspaceRequest,
+) -> bool {
+    takes(work, caller, own, request.workspace_id)
 }
 
 /// A replica of the workspace `bootstrap` hands over, governing nothing: its
@@ -493,6 +634,50 @@ impl HostedReplica {
             .workspace_hosts()
             .iter()
             .any(|hint| hint.host.device_public_key == device)
+    }
+
+    /// The workspace as `person`'s listing names it, when they are in it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the replica stays locked while its governance is read, which borrows it"
+    )]
+    fn listing_for(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+        person: &[u8; 32],
+        now: SystemTime,
+    ) -> Option<tilo_relay_session::workspaces::WorkspaceListing> {
+        let (role, name) = {
+            let peer = self.peer.lock_recover();
+            let governance = peer.governance();
+            let keeper = governance
+                .governed_policy()
+                .is_ok_and(|policy| policy.is_keeper(&hex::encode(person)));
+            let role = if keeper || peer.owner() == *person {
+                "owner".to_owned()
+            } else {
+                governance
+                    .governed_members(now)
+                    .ok()?
+                    .members
+                    .into_iter()
+                    .find(|member| member.root() == Some(*person) && !member.removed)
+                    .and_then(|member| member.role)?
+                    .key()
+                    .to_owned()
+            };
+            (role, governance.workspace_name().unwrap_or_default())
+        };
+        Some(tilo_relay_session::workspaces::WorkspaceListing {
+            workspace: workspace.to_owned(),
+            workspace_id,
+            name,
+            generation: self.generation,
+            role: Some(role),
+            labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            unattended: false,
+        })
     }
 
     /// The membership answer `device` builds its replica of the workspace from

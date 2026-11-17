@@ -1277,10 +1277,18 @@ where
     // A device the host has not admitted yet may enter a workspace through
     // its entry on this session, where the host governs workspaces.
     let admit = ctx.admin.get().cloned();
+    // A host that keeps workspaces for the people it let in takes a workspace
+    // another host governs for its owner, as it does for an operator taking
+    // others' workspaces: that host's device opens the session to hand it
+    // over before anything here admits it.
+    let takes_handed_over = ctx.holds_for_others
+        || admit
+            .as_deref()
+            .is_some_and(crate::workspaces::Workspaces::keeps_workspaces_for_people);
     let (client_peer, entered) = match ctx
         .identity
         .authenticate_or_enter(
-            if ctx.holds_for_others {
+            if takes_handed_over {
                 EndpointTrust::Fixed(crate::auth::HandshakeTrust::AnyCertifiedDevice)
             } else {
                 EndpointTrust::Live(&ctx.trust_policy)

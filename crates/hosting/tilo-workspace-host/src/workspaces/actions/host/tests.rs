@@ -17,10 +17,9 @@ use tilo_actions::remote::{
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, DETACH_HOST,
-    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS, LIST_WORKSPACES, UNHOST_WORKSPACE,
-    WorkspaceListing,
+    CREATE_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS,
+    LIST_WORKSPACES, UNHOST_WORKSPACE, WorkspaceListing,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -110,8 +109,6 @@ async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
             tilo_relay_session::workspaces::PERSONAL_DEVICE_NAME,
             LIST_REVOCATIONS,
             ENTER_WORKSPACE,
-            ATTACH_HOST,
-            DETACH_HOST,
             HOST_WORKSPACE,
             UNHOST_WORKSPACE
         ]

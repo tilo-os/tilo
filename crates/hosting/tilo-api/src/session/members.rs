@@ -131,6 +131,25 @@ impl Session {
         verb: &str,
         arguments: Map<String, Value>,
     ) -> Result<Value, Outcome> {
+        self.govern_or(
+            workspace,
+            verb,
+            arguments,
+            "a key you created, reaching all your workspaces, brings people into the ones you \
+             administer: it invites as an editor at most, and adds or invites an administrator \
+             or an owner where you may make one",
+        )
+        .await
+    }
+
+    /// [`Self::govern`], with `next` the step a refusal names.
+    pub(super) async fn govern_or(
+        &self,
+        workspace: &str,
+        verb: &str,
+        arguments: Map<String, Value>,
+        next: &str,
+    ) -> Result<Value, Outcome> {
         let id = self
             .connection
             .relay()
@@ -151,9 +170,7 @@ impl Session {
                     failed(
                         "not_permitted",
                         format!("the workspace refused: {}", error.message),
-                        "a key you created, reaching all your workspaces, brings people into the \
-                         ones you administer: it invites as an editor at most, and adds or \
-                         invites an administrator or an owner where you may make one",
+                        next,
                     )
                 }
             })

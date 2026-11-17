@@ -1613,6 +1613,170 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/hosts": {
+      "get": {
+        "operationId": "listHosts",
+        "summary": "The hosts holding the workspace, the one that governs it first",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The hosts holding the workspace, the one that governs it first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "addHost",
+        "summary": "Have another host hold the workspace as well, as that host's rules allow",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Have another host hold the workspace as well, as that host's rules allow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewHost"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/hosts/{host}": {
+      "delete": {
+        "operationId": "removeHost",
+        "summary": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "host",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The host's site (`https://tilo.sh`), or its device key as listing the hosts names it"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hosts"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}/members/invitations": {
       "post": {
         "operationId": "invitePerson",
@@ -3610,6 +3774,24 @@
         "type": "object",
         "additionalProperties": true,
         "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
+      },
+      "Hosts": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "The hosts holding the workspace (`hosts`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that host confirmed it let\nthe workspace go (`confirmed`)."
+      },
+      "NewHost": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "description": "The host's site, like `https://tilo.sh`. You must be let in there, and\nit may refuse by its own rules."
+          }
+        },
+        "required": [
+          "origin"
+        ],
+        "description": "Another host to hold the workspace as well."
       },
       "Invitation": {
         "type": "object",

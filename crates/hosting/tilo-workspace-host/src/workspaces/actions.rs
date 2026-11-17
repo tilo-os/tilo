@@ -116,6 +116,18 @@ pub(crate) const UNLIST: &str = "wait-list.remove";
 /// Mailing the invitation issued for an address on the wait list to it,
 /// where the entry sends mail: part of inviting.
 pub(crate) const MAIL_INVITATION: &str = "wait-list.mail";
+/// The hosts holding the workspace: the one it was made on, which governs
+/// it, and each other host its owners had hold it as well.
+pub(crate) const HOSTS: &str = "host.list";
+/// Having another host, named by its site (`https://tilo.sh`), hold the
+/// workspace as well: both keep it, a change on either reaches the other, and
+/// its members reach it at either. The host takes it as its own rules say.
+pub(crate) const ADD_HOST: &str = "host.add";
+/// Having a host hold the workspace no more.
+pub(crate) const REMOVE_HOST: &str = "host.remove";
+/// What gates choosing the workspace's hosts: its owners', which no grant of
+/// its governance gives ([`Workspaces::chooses_hosts`]).
+const CHOOSES_HOSTS: &str = "choose-hosts";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -184,7 +196,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 22] = [
+const VERBS: [Verb; 25] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -240,6 +252,27 @@ const VERBS: [Verb; 22] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: mail_invitation_params,
+    },
+    Verb {
+        id: HOSTS,
+        label: "List the hosts holding it",
+        gate: CHOOSES_HOSTS,
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: ADD_HOST,
+        label: "Have another host hold it",
+        gate: CHOOSES_HOSTS,
+        kind: roles::GOVERNANCE_KIND,
+        params: add_host_params,
+    },
+    Verb {
+        id: REMOVE_HOST,
+        label: "Have a host hold it no more",
+        gate: CHOOSES_HOSTS,
+        kind: roles::GOVERNANCE_KIND,
+        params: remove_host_params,
     },
     Verb {
         id: NAME,
@@ -436,6 +469,24 @@ fn add_member_params() -> Vec<ActionParam> {
             "How the workspace names them until they name themselves.",
         ),
     ]
+}
+
+fn add_host_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "origin",
+        ParamType::Text,
+        "The other host's site, like https://tilo.sh. You must be let in there, and it may \
+         refuse by its own rules.",
+    )]
+}
+
+fn remove_host_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "host",
+        ParamType::Text,
+        "The host's site, like https://tilo.sh, or its device key (64 hex characters) as the \
+         host list names it.",
+    )]
 }
 
 fn wait_list_entry_param() -> ActionParam {
@@ -1149,6 +1200,9 @@ impl Workspaces {
                     if verb.gate.is_empty() {
                         return speaks_for_themselves(caller);
                     }
+                    if verb.gate == CHOOSES_HOSTS {
+                        return self.chooses_hosts(&workspace, &device);
+                    }
                     self.permits(
                         &device,
                         Some(&workspace),
@@ -1375,14 +1429,18 @@ impl Workspaces {
             // Unknown and forbidden are the same answer. A verb with no gate
             // is the caller's own business, which its run decides: naming
             // themselves, in [`NAME`]'s case, and nobody else.
+            let permitted = match gate {
+                "" => true,
+                CHOOSES_HOSTS => self.chooses_hosts(&workspace, &device),
+                gate => self.permits(
+                    &device,
+                    Some(&workspace),
+                    WorkspaceOp::Govern(gate),
+                    tilo_clock::unix_now_ns(),
+                ),
+            };
             if address.resource != workspace_governance_resource(workspace.workspace())
-                || (!gate.is_empty()
-                    && !self.permits(
-                        &device,
-                        Some(&workspace),
-                        WorkspaceOp::Govern(gate),
-                        tilo_clock::unix_now_ns(),
-                    ))
+                || !permitted
             {
                 return Err(ActionHostError::UnknownAction);
             }
@@ -1412,6 +1470,7 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
+            HOSTS | ADD_HOST | REMOVE_HOST => self.governance_hosts(action, call).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
@@ -1796,6 +1855,46 @@ impl Workspaces {
             .await
             .map_err(|error| refused(&error))?
             .into())
+    }
+
+    /// The workspace's hosts, having another hold it as well, and having one
+    /// hold it no more: each answers the hosts as they are then.
+    async fn governance_hosts(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        let GovernanceCall {
+            workspace,
+            device,
+            args,
+            ..
+        } = call;
+        let confirmed = match action {
+            ADD_HOST => {
+                self.add_host(workspace, device, args.required_text("origin")?)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                None
+            }
+            REMOVE_HOST => Some(
+                self.remove_host(workspace, device, args.required_text("host")?)
+                    .await
+                    .map_err(|error| refused(&error))?,
+            ),
+            _ => None,
+        };
+        let hosts = self
+            .host_list(workspace, device)
+            .await
+            .map_err(|error| refused(&error))?;
+        let mut answered = json!({ "workspace": workspace, "hosts": hosts });
+        if let (Some(confirmed), Some(fields)) = (confirmed, answered.as_object_mut()) {
+            // A host that could not be reached is no longer named to anyone,
+            // and lets the workspace go once it hears so.
+            fields.insert("confirmed".into(), json!(confirmed));
+        }
+        Ok(answered)
     }
 
     /// The workspace's wait list, taking an address off it, and mailing an

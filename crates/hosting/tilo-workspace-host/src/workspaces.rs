@@ -63,6 +63,7 @@ mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod host_invitations;
 mod hosts;
+pub use hosts::WorkspaceHost;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
 pub use tilo_endpoint_reachability::await_relay;
@@ -160,11 +161,11 @@ pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListe
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
 pub use tilo_relay_session::workspaces::{
-    ATTACH_HOST, ActionInvitation, CREATE_WORKSPACE, CancelInvitationRequest, CreatedWorkspace,
-    DETACH_HOST, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
-    HOST_WORKSPACES_RESOURCE, HostedWorkspace, IssueInvitationRequest, IssuedInvitation,
-    LIST_WORKSPACES, PendingInvitation, RemoveMemberRequest, SetMemberRoleRequest,
-    UNHOST_WORKSPACE, WorkspaceListing, WorkspaceSummary, ask_host,
+    ActionInvitation, CREATE_WORKSPACE, CancelInvitationRequest, CreatedWorkspace, ENTER_WORKSPACE,
+    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
+    HostedWorkspace, IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation,
+    RemoveMemberRequest, SetMemberRoleRequest, UNHOST_WORKSPACE, WorkspaceListing,
+    WorkspaceSummary, ask_host,
 };
 
 use crate::peer::WorkspaceRegistry;

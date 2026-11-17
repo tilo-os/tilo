@@ -82,16 +82,15 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          default), administrator or owner. Opened in any
                          browser, it makes the person's identity on the spot
                          and lets them in
-  stack.sh hold WORKSPACE ORIGIN
-                         have the stack at ORIGIN (its site's origin, e.g.
-                         http://127.0.0.1:34000) hold WORKSPACE, a workspace
-                         this stack governs, as well: from then on both hold
-                         it and a change on either reaches the other. That
-                         stack takes it only when it was brought up with
-                         TILO_SH_HOLD_FOR naming the workspace's id (or
-                         anyone), as production's TILO_WORKSPACES_HOLD_FOR
-  stack.sh unhold WORKSPACE ORIGIN
-                         the stack at ORIGIN holds WORKSPACE no more
+  stack.sh tilo workspace hosts add ORIGIN -w WORKSPACE
+                         the stack's owner has the stack at ORIGIN (its site,
+                         e.g. https://127.0.0.1:34000) hold WORKSPACE as well:
+                         both keep it and a change on either reaches the
+                         other. That stack takes it only for a person it let
+                         in: make this stack's owner one of its people there
+                         first (stack.sh owner KEY there, KEY this stack's
+                         $TILO_SH_STATE/owner/key). hosts ls and hosts
+                         remove ORIGIN too
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -522,17 +521,6 @@ relay_env() {
     open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
     *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
   esac
-  # The workspaces another stack governs that this one holds when that stack
-  # hands one over (stack.sh hold there): TILO_SH_HOLD_FOR=anyone, or their
-  # ids, comma-separated. Whenever it is given (to up or to restart relay) the
-  # state keeps it, so a later start without it holds the same; an empty
-  # value takes it back.
-  if [[ -n ${TILO_SH_HOLD_FOR+given} ]]; then
-    printf '%s\n' "$TILO_SH_HOLD_FOR" > "$state/hold-for"
-  fi
-  local hold_for
-  hold_for=$(cat "$state/hold-for" 2>/dev/null || true)
-  [[ -z $hold_for ]] || env+=("TILO_WORKSPACES_HOLD_FOR=$hold_for")
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
@@ -796,36 +784,6 @@ owner_link() {
     || die 'the Lounge made no owner link'
   say 'opening this link in any browser makes that person an owner of the Lounge:'
   printf '%s\n' "$link"
-}
-
-# hold|unhold WORKSPACE ORIGIN: the running relay has the stack at ORIGIN hold
-# WORKSPACE as well, or no more, through its operator socket, as production's
-# operator asks it.
-hold_workspace() {
-  local op=$1
-  shift
-  [[ $# -eq 2 ]] || die "$op WORKSPACE ORIGIN: the workspace this stack governs, and the other stack's origin"
-  local socket=$state/relay/lounge/operator.sock
-  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
-  python3 -I - "$socket" "$op" "$1" "$2" <<'PY' || die "the stack at $2 was not changed for $1"
-import json, socket, sys
-path, op, workspace, host = sys.argv[1:5]
-connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-connection.connect(path)
-connection.sendall((json.dumps({"op": op, "workspace": workspace, "host": host}) + "\n").encode())
-answer = b""
-while chunk := connection.recv(4096):
-    answer += chunk
-event = json.loads(answer.decode().removeprefix("tilo-workspace-operator ").strip())
-if event.get("event") == "held":
-    print(f"{host} holds {workspace} as well (its host {event['host_device']})")
-elif event.get("event") == "unheld":
-    said = "let it go" if event["confirmed"] else "was not reached, and is no longer named"
-    print(f"{host} holds {workspace} no more: it {said}")
-else:
-    print(event.get("reason") or event, file=sys.stderr)
-    sys.exit(1)
-PY
 }
 
 # The mails the entry sent, oldest first: who to, the subject and the links in
@@ -1973,7 +1931,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/hold-for"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
@@ -2008,10 +1966,6 @@ status() {
   if running discord || { [[ -f $state/discord.pid ]] && kill -0 "$(cat "$state/discord.pid")" 2>/dev/null; }; then
     printf '%-9s %-8s %s\n' discord up "http://127.0.0.1:$discord_rest_port (control http://127.0.0.1:$discord_control_port)"
   fi
-  local hold_for
-  hold_for=$(cat "$state/hold-for" 2>/dev/null || true)
-  printf '%-9s %-8s %s\n' holds "${hold_for:+for}${hold_for:-none}" \
-    "${hold_for:+workspaces of other stacks: $hold_for}${hold_for:-only its own workspaces (TILO_SH_HOLD_FOR names others)}"
   if [[ $mode == native ]]; then
     printf '\nRunning this checkout'"'"'s programs; after a change, %s restart relay (or api, web, …).\n' "$0"
   else
@@ -2303,7 +2257,6 @@ case $cmd in
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
   tilo) owner_tilo "$@" ;;
-  hold | unhold) hold_workspace "$cmd" "$@" ;;
   browser) browser "$@" ;;
   check)
     exec bash "$here/check.sh" "$@" ;;

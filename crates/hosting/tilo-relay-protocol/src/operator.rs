@@ -15,14 +15,14 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 15 leaves bringing people in to the workspace's own actions (`tilo members
-/// add` and `tilo members invite`, which its owners and administrators ask
-/// with their keys): the operator names its first owner at start; 14 takes in
-/// the people an earlier release kept ([`OperatorCommand::ImportPeople`]); 12
-/// has the operator have another host hold a workspace governed here
-/// ([`OperatorCommand::Hold`]). A reader of another version decodes no line
-/// of this.
-pub const VERSION: u16 = 15;
+/// 16 leaves which hosts hold a workspace to its owners' own actions (`tilo
+/// workspace hosts add` and `remove`); 15 leaves bringing people in to the
+/// workspace's own actions (`tilo members add` and `tilo members invite`,
+/// which its owners and administrators ask with their keys): the operator
+/// names its first owner at start; 14 takes in the people an earlier release
+/// kept ([`OperatorCommand::ImportPeople`]). A reader of another version
+/// decodes no line of this.
+pub const VERSION: u16 = 16;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -129,28 +129,6 @@ pub enum OperatorCommand {
         /// What the earlier release kept.
         people: crate::release_people::People,
     },
-    /// Have the host at `host`, a site's or a relay's origin
-    /// (`https://eu1.tilo.sh`), hold `workspace`, governed here, as well: it
-    /// is handed the workspace and named among its hosts, so both hold it
-    /// from then on and a change on either reaches the other. The host takes
-    /// it only when its own operator's work setting does. The child answers
-    /// [`OperatorEvent::Held`] or [`OperatorEvent::HoldRefused`] for the
-    /// same workspace.
-    Hold {
-        /// The workspace, as listing workspaces names it.
-        workspace: String,
-        /// The other host's origin.
-        host: String,
-    },
-    /// Have the host at `host` hold `workspace` no more: it is no longer
-    /// named among the workspace's hosts, and is asked to let it go. The
-    /// child answers [`OperatorEvent::Unheld`] or [`OperatorEvent::HoldRefused`].
-    Unhold {
-        /// The workspace, as listing workspaces names it.
-        workspace: String,
-        /// The other host's origin.
-        host: String,
-    },
 }
 
 /// What a host-made invitation makes of whoever accepts it.
@@ -221,27 +199,6 @@ pub enum OperatorEvent {
     /// other person.
     PeopleImported {
         imported: crate::release_people::Imported,
-    },
-    /// The host the operator named holds the workspace as well.
-    Held {
-        workspace: String,
-        /// The device key (hex) of the host holding it now.
-        host_device: String,
-    },
-    /// The host the operator named holds the workspace no more.
-    Unheld {
-        workspace: String,
-        /// The device key (hex) of the host that held it.
-        host_device: String,
-        /// Whether that host said it let the workspace go; one that could not
-        /// be reached is still no longer named.
-        confirmed: bool,
-    },
-    /// The host the operator named does not hold the workspace, or still does.
-    HoldRefused {
-        workspace: String,
-        /// Why not.
-        reason: String,
     },
     /// An admitted pairing code certified nobody.
     AdmitRefused {
@@ -599,21 +556,8 @@ mod tests {
             OperatorEvent::DeploymentRoutes {
                 origin: "http://127.0.0.1:8790".into(),
             },
-            OperatorEvent::Held {
-                workspace: "w".into(),
-                host_device: "ab".repeat(32),
-            },
-            OperatorEvent::Unheld {
-                workspace: "w".into(),
-                host_device: "ab".repeat(32),
-                confirmed: true,
-            },
-            OperatorEvent::HoldRefused {
-                workspace: "w".into(),
-                reason: "it takes no workspace of another person".into(),
-            },
             OperatorEvent::Unanswered {
-                reason: "the operator socket takes import_people, standing, hold and unhold".into(),
+                reason: "the operator socket takes import_people and standing".into(),
             },
         ]
     }
@@ -621,9 +565,9 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_fifteen_round_trips_and_pins_its_wire_form;
+        phase protocol_sixteen_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 15);
+            assert_eq!(VERSION, 16);
             assert_eq!(InviteRole::parse("administrator"), Some(InviteRole::Administrator));
             assert_eq!(InviteRole::parse("Owner"), None);
             assert!(
@@ -725,15 +669,6 @@ mod tests {
                 .to_line(),
                 "tilo-workspace-operator {\"event\":\"online\",\"people\":7}"
             );
-            let hold = OperatorCommand::Hold {
-                workspace: "w".into(),
-                host: "https://eu1.tilo.sh".into(),
-            };
-            assert_eq!(
-                hold.to_line(),
-                "{\"op\":\"hold\",\"workspace\":\"w\",\"host\":\"https://eu1.tilo.sh\"}\n"
-            );
-            assert_eq!(OperatorCommand::from_line(&hold.to_line()).unwrap(), hold);
         }
 
         phase wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log;

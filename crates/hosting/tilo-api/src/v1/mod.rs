@@ -720,6 +720,27 @@ impl<'a> Caller<'a> {
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
+            "listHosts" => {
+                let listed = self
+                    .call("tilo_do", json!({"path": "workspace/hosts#list"}))
+                    .await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "addHost" => {
+                let new: answers::NewHost = self.json_body()?;
+                let added = json!({"path": "workspace/hosts#add", "args": new});
+                let listed = self.call("tilo_do", added).await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "removeHost" => {
+                let host = self.params.get("host").to_owned();
+                let removed = json!({"path": "workspace/hosts#remove", "args": {"host": host}});
+                let listed = self.call("tilo_do", removed).await?;
+                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "invitePerson" => {
                 let new: answers::NewInvitation = self.json_body()?;
                 let invite = json!({"path": "workspace/members#invite", "args": new});

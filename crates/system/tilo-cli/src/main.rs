@@ -581,7 +581,12 @@ fn command_here(here: Here) -> clap::Command {
         })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
-                "open" | "action" | "workspace" => !here.desktop,
+                "open" | "action" => !here.desktop,
+                // A hosted workspace's hosts are chosen from anywhere; only
+                // branching one is this desktop's.
+                "workspace" => {
+                    return sub.mut_subcommand("branch", |branch| branch.hide(!here.desktop));
+                }
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 // A computer logged in as one of the person's devices tells of its folders.
@@ -1038,6 +1043,11 @@ fn run_hosted(
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
+        Cmd::Workspace {
+            cmd: desktop::WorkspaceCmd::Hosts { cmd },
+        } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::hosts(reach, &workspace, cmd)),
         other => return Err(other),
     })
 }
@@ -2338,8 +2348,8 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "do", "ls", "read", "view", "keys", "members", "account", "files",
-                    "run", "invocations", "sdk", "login", "folders", "migrate"
+                    "app", "do", "ls", "read", "view", "workspace", "keys", "members", "account",
+                    "files", "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2358,9 +2368,8 @@ mod tests {
             assert_eq!(
                 listed(nothing),
                 [
-                    "do", "ls", "read", "view", "keys", "members", "account", "files", "run",
-                    "invocations",
-                    "sdk", "login", "folders", "migrate"
+                    "do", "ls", "read", "view", "workspace", "keys", "members", "account", "files",
+                    "run", "invocations", "sdk", "login", "folders", "migrate"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
@@ -2537,6 +2546,18 @@ mod tests {
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
+            let hosts = Cli::try_parse_from([
+                "tilo", "workspace", "hosts", "add", "https://tilo.sh", "-w", "Tilo",
+            ])
+            .expect("workspace hosts add parses");
+            assert!(matches!(
+                hosts.cmd,
+                Cmd::Workspace {
+                    cmd: desktop::WorkspaceCmd::Hosts {
+                        cmd: hosted::HostsCmd::Add { ref origin }
+                    }
+                } if origin == "https://tilo.sh"
+            ));
             let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
             assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
             let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");

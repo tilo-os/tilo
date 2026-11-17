@@ -87,6 +87,36 @@ pub enum KeysCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum HostsCmd {
+    /// The hosts holding the workspace (-w): the one it was made on, which
+    /// governs it, first.
+    Ls,
+    /// Have the host whose site is ORIGIN hold the workspace (-w) as well.
+    #[command(
+        after_help = "Example:\n  tilo workspace hosts add https://tilo.sh -w Tilo\n\n\
+                      Both hosts keep the workspace from then on: a change on either reaches the \
+                      other, and its people reach it at either. Only its owners choose its \
+                      hosts, and the other host takes it only if it let you in and has room for \
+                      it: sign in there first."
+    )]
+    Add {
+        /// The other host's site, like `https://tilo.sh`.
+        origin: String,
+    },
+    /// Have a host hold the workspace (-w) no more.
+    #[command(
+        after_help = "Example:\n  tilo workspace hosts remove https://tilo.sh -w Tilo\n\n\
+                      HOST is its site, or its device key as `tilo workspace hosts ls` names it. \
+                      It is no longer named to anyone at once, and lets the workspace go when it \
+                      hears so; the host the workspace was made on stays."
+    )]
+    Remove {
+        /// The host's site, or its device key.
+        host: String,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum MembersCmd {
     /// A link that brings one more person into the workspace (-w) as --role.
@@ -1217,6 +1247,58 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
             }
         }
     })
+}
+
+/// `tilo workspace hosts … -w <workspace>`: the hosts holding the workspace,
+/// and choosing them.
+pub fn hosts(reach: Reach<'_>, workspace: &str, cmd: HostsCmd) -> ExitCode {
+    run(async {
+        let client = Client::open(reach)?;
+        let workspace = client.workspace_id(workspace).await?;
+        let path = format!("/v1/workspaces/{workspace}/hosts");
+        let listed = match cmd {
+            HostsCmd::Ls => client.get(&path).await?,
+            HostsCmd::Add { origin } => {
+                client
+                    .post(&path, &serde_json::json!({ "origin": origin }))
+                    .await?
+            }
+            HostsCmd::Remove { host } => {
+                let host = percent_encoding::utf8_percent_encode(
+                    &host,
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
+                client.delete(&format!("{path}/{host}")).await?
+            }
+        };
+        Ok(show(reach.json, &listed, &hosts_text(&listed)))
+    })
+}
+
+/// A workspace's hosts, as lines: each by its device key, the one governing
+/// it marked.
+fn hosts_text(listed: &Value) -> String {
+    let hosts = listed
+        .get("hosts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut said = String::from("held by:");
+    for host in &hosts {
+        let governs = if host.get("governs").and_then(Value::as_bool) == Some(true) {
+            "  (made here; governs it)"
+        } else {
+            ""
+        };
+        let _ = write!(said, "\n  {}{governs}", text(host, "device"));
+    }
+    if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
+        said.push_str(
+            "\nthe host that was let go was not reached: it is no longer named, and lets the \
+             workspace go once it hears so",
+        );
+    }
+    said
 }
 
 /// A workspace's wait list, as lines: each address with its entry, and
